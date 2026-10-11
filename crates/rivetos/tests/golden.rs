@@ -1,9 +1,10 @@
+use parking_lot::Mutex;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
@@ -50,7 +51,7 @@ fn serve() -> (String, Arc<Mutex<Vec<Hit>>>) {
                 reply.len()
             );
             let _ = stream.write_all(response.as_bytes());
-            stored.lock().unwrap().push(hit);
+            stored.lock().push(hit);
         }
     });
     (format!("http://127.0.0.1:{port}"), hits)
@@ -121,19 +122,72 @@ fn content_length(headers: &[u8]) -> Option<usize> {
     None
 }
 
+fn js_json(text: &str) -> Value {
+    js_json_value(&protocol::js::parse(text).unwrap())
+}
+
+fn json_number(number: f64) -> Value {
+    if number.is_finite() && number.fract() == 0.0 {
+        if number >= 0.0 {
+            let bits = number as u64;
+            if bits as f64 == number {
+                return Value::Number(bits.into());
+            }
+        } else {
+            let bits = number as i64;
+            if bits as f64 == number {
+                return Value::Number(bits.into());
+            }
+        }
+    }
+    serde_json::Number::from_f64(number)
+        .map(Value::Number)
+        .unwrap_or(Value::Null)
+}
+
+fn js_json_value(value: &protocol::js::JsValue) -> Value {
+    match value {
+        protocol::js::JsValue::Null => Value::Null,
+        protocol::js::JsValue::Bool(flag) => Value::Bool(*flag),
+        protocol::js::JsValue::Number(number) => json_number(*number),
+        protocol::js::JsValue::String(text) => Value::String(text.to_utf8().to_string()),
+        protocol::js::JsValue::Array(items) => {
+            Value::Array(items.iter().map(js_json_value).collect())
+        }
+        protocol::js::JsValue::Object(object) => {
+            let mut map = serde_json::Map::new();
+            for (key, child) in object.iter() {
+                map.insert(key.to_utf8().to_string(), js_json_value(child));
+            }
+            Value::Object(map)
+        }
+    }
+}
+
+fn sub_all(text: &str, pattern: &str, replacement: &str) -> String {
+    protocol::js::js_replace(
+        &protocol::js::JsString::from_text(text),
+        pattern,
+        "g",
+        replacement,
+    )
+    .unwrap()
+    .to_utf8()
+    .to_string()
+}
+
 fn normalize_body(body: &str, transcript: &str) -> String {
     let body = body.replace(transcript, "__TRANSCRIPT__");
-    let ingest = regex::Regex::new(r#""ingest_key":"[0-9]+-[0-9a-z]{6}""#).unwrap();
-    let body = ingest
-        .replace_all(&body, r#""ingest_key":"<ms>-<rand>""#)
-        .into_owned();
-    let stamp = regex::Regex::new(
+    let body = sub_all(
+        &body,
+        r#""ingest_key":"[0-9]+-[0-9a-z]{6}""#,
+        r#""ingest_key":"<ms>-<rand>""#,
+    );
+    sub_all(
+        &body,
         r#""last_ingest_at":"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z""#,
+        r#""last_ingest_at":"<ts>""#,
     )
-    .unwrap();
-    stamp
-        .replace_all(&body, r#""last_ingest_at":"<ts>""#)
-        .into_owned()
 }
 
 fn normalize_log(text: &str) -> String {
@@ -184,11 +238,8 @@ fn wait_until(label: &str, mut ready: impl FnMut() -> bool) {
 
 #[test]
 fn golden_hook_matches_the_typescript_runtime() {
-    let events = protocol::js::to_serde(
-        &protocol::js::parse(&std::fs::read_to_string(fixture("hook-ts.json")).unwrap()).unwrap(),
-    );
+    let events = js_json(&std::fs::read_to_string(fixture("hook-ts.json")).unwrap());
     let (url, hits) = serve();
-    let ingest_key = regex::Regex::new(r#""ingest_key":"([0-9]+-[0-9a-z]{6})""#).unwrap();
     for event in events.as_array().unwrap() {
         let home = tempfile::tempdir().unwrap();
         let transcript = home.path().join("transcript.jsonl");
@@ -199,7 +250,7 @@ fn golden_hook_matches_the_typescript_runtime() {
             .unwrap()
             .replace("__TRANSCRIPT__", &transcript_text);
         let spool = home.path().join("hook-spool");
-        let before = hits.lock().unwrap().len();
+        let before = hits.lock().len();
         let mut child = Command::new(env!("CARGO_BIN_EXE_rivetos"))
             .args(["capture", "hook", "--harness", "claude-code"])
             .env_clear()
@@ -235,14 +286,14 @@ fn golden_hook_matches_the_typescript_runtime() {
         );
         let expected_posts = event["posts"].as_array().unwrap();
         wait_until(&format!("posts {}", event["event"]), || {
-            hits.lock().unwrap().len() >= before + expected_posts.len()
+            hits.lock().len() >= before + expected_posts.len()
         });
         let log_path = home.path().join(".rivetos").join("claude-capture.log");
         wait_until(&format!("log {}", event["event"]), || log_path.is_file());
         wait_until(&format!("spool {}", event["event"]), || {
             !spool_has_json(&spool)
         });
-        let got = hits.lock().unwrap();
+        let got = hits.lock();
         let slice = &got[before..];
         assert_eq!(slice.len(), expected_posts.len());
         for (hit, post) in slice.iter().zip(expected_posts) {
@@ -251,8 +302,9 @@ fn golden_hook_matches_the_typescript_runtime() {
             assert_eq!(hit.content_type, post["contentType"].as_str().unwrap());
             let expected_body = post["body"].as_str().unwrap();
             if expected_body.contains("ingest_key") {
+                let marked = sub_all(&hit.body, r#""ingest_key":"([0-9]+-[0-9a-z]{6})""#, "\u{1}");
                 assert!(
-                    ingest_key.is_match(&hit.body),
+                    marked.contains('\u{1}'),
                     "ingest_key format {}",
                     event["event"]
                 );

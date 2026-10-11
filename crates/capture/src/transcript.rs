@@ -4,11 +4,11 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use capture::{
+use crate::{
     CaptureError, CaptureRole, CaptureTransport, CaptureUser, CaptureWriterOptions, EventIdParts,
     HttpExchange, OccurrenceCounts, OccurrenceKey, ProcessEnv, UserSource, WriteOutcome,
     content_tuple_hash, create_capture_writer, event_id_from_content, resolve_capture_transport,
-    resolve_den_url, sha256_hex,
+    resolve_den_url,
 };
 use protocol::js::{JsObject, JsString, JsValue};
 use serde_json::Value;
@@ -46,8 +46,8 @@ pub fn apply_capture_guards() -> [&'static str; 2] {
     ]
 }
 
-pub fn capture_agent(env: &dyn capture::EnvLookup) -> String {
-    match env.get("RIVETOS_CAPTURE_AGENT") {
+pub fn capture_agent(env: &dyn protocol::host::Env) -> String {
+    match env.var("RIVETOS_CAPTURE_AGENT") {
         Some(value) if !value.is_empty() => value,
         _ => "rivet-claude".to_string(),
     }
@@ -124,7 +124,7 @@ pub struct IngestOptions {
     pub mark_inactive: bool,
     pub event: Option<String>,
     pub herdr: Option<HerdrPane>,
-    pub env: Option<Arc<dyn capture::EnvLookup>>,
+    pub env: Option<Arc<dyn protocol::host::Env + Send + Sync>>,
     pub exchange: Option<HttpExchange>,
     pub spool_dir: Option<PathBuf>,
     pub now_iso: Option<Arc<dyn Fn() -> String + Send + Sync>>,
@@ -155,7 +155,7 @@ pub struct HookEventOptions {
     pub task_id: Option<String>,
     pub pg_url: Option<String>,
     pub herdr: Option<HerdrPane>,
-    pub env: Option<Arc<dyn capture::EnvLookup>>,
+    pub env: Option<Arc<dyn protocol::host::Env + Send + Sync>>,
     pub exchange: Option<HttpExchange>,
     pub spool_dir: Option<PathBuf>,
     pub idempotency_key: Option<String>,
@@ -264,14 +264,14 @@ pub fn is_task_id(value: Option<&str>) -> bool {
     true
 }
 
-pub fn resolve_task_context(env: &dyn capture::EnvLookup) -> TaskCaptureContext {
+pub fn resolve_task_context(env: &dyn protocol::host::Env) -> TaskCaptureContext {
     let override_key = env
-        .get("RIVETOS_SESSION_KEY")
+        .var("RIVETOS_SESSION_KEY")
         .filter(|value| !value.is_empty());
     let legacy_task_key = override_key
         .as_deref()
         .is_some_and(|value| value.starts_with(LEGACY_TASK_KEY_PREFIX));
-    let explicit = env.get("RIVETOS_TASK_ID").filter(|value| !value.is_empty());
+    let explicit = env.var("RIVETOS_TASK_ID").filter(|value| !value.is_empty());
     let from_legacy = if legacy_task_key {
         override_key
             .as_deref()
@@ -288,9 +288,9 @@ pub fn resolve_task_context(env: &dyn capture::EnvLookup) -> TaskCaptureContext 
     }
 }
 
-pub fn derive_session_key(transcript_path: &Path, env: &dyn capture::EnvLookup) -> String {
+pub fn derive_session_key(transcript_path: &Path, env: &dyn protocol::host::Env) -> String {
     let home = env
-        .get("HOME")
+        .var("HOME")
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| "/tmp".to_string());
     let root = PathBuf::from(home).join(".claude").join("projects");
@@ -310,7 +310,7 @@ pub fn parse_transcript(file: &Path) -> std::io::Result<ParsedTranscript> {
 }
 
 pub(crate) async fn select_transport_async(
-    env: Option<Arc<dyn capture::EnvLookup>>,
+    env: Option<Arc<dyn protocol::host::Env + Send + Sync>>,
     pg_url: Option<String>,
 ) -> CaptureTransport {
     tokio::task::spawn_blocking(move || match &env {
@@ -324,7 +324,7 @@ pub(crate) async fn select_transport_async(
 }
 
 pub(crate) fn select_transport(
-    env: Option<&dyn capture::EnvLookup>,
+    env: Option<&dyn protocol::host::Env>,
     pg_url: Option<&str>,
 ) -> CaptureTransport {
     if let Some(env) = env {
@@ -335,7 +335,7 @@ pub(crate) fn select_transport(
             pg_url: url.to_string(),
         };
     }
-    resolve_capture_transport(&ProcessEnv, capture::default_config_reader)
+    resolve_capture_transport(&ProcessEnv, crate::default_config_reader)
 }
 
 pub async fn resolve_hook_event_id(opts: &HookEventOptions) -> ResolvedHookId {
@@ -433,7 +433,7 @@ pub async fn ingest_transcript(opts: IngestOptions) -> Result<IngestResult, Stri
     let env = opts.env.clone();
     let env_ref = env
         .as_ref()
-        .map(|item| item.as_ref() as &dyn capture::EnvLookup);
+        .map(|item| item.as_ref() as &(dyn protocol::host::Env + Send + Sync));
     let fallback_key = derive_session_key(&opts.transcript_path, env_ref.unwrap_or(&ProcessEnv));
     if !path_is_file(&opts.transcript_path).await {
         return Ok(IngestResult {
@@ -499,7 +499,7 @@ pub async fn ingest_transcript(opts: IngestOptions) -> Result<IngestResult, Stri
                     &message.content_units,
                     (None, None, None),
                     metadata,
-                    iso_timestamp(message.ts.as_deref()),
+                    parsed_timestamp(message.ts.as_deref(), env_ref.unwrap_or(&ProcessEnv)),
                 ));
             }
             for (offset, tool) in tools.iter().enumerate() {
@@ -525,7 +525,7 @@ pub async fn ingest_transcript(opts: IngestOptions) -> Result<IngestResult, Stri
                         tool.result_units.as_ref(),
                     ),
                     metadata,
-                    iso_timestamp(tool.ts.as_deref()),
+                    parsed_timestamp(tool.ts.as_deref(), env_ref.unwrap_or(&ProcessEnv)),
                 ));
             }
             for (offset, index) in users.iter().enumerate() {
@@ -542,7 +542,7 @@ pub async fn ingest_transcript(opts: IngestOptions) -> Result<IngestResult, Stri
                     &message.content_units,
                     (None, None, None),
                     metadata,
-                    iso_timestamp(message.ts.as_deref()),
+                    parsed_timestamp(message.ts.as_deref(), env_ref.unwrap_or(&ProcessEnv)),
                 ));
             }
             let mut settings = JsObject::new();
@@ -564,7 +564,7 @@ pub async fn ingest_transcript(opts: IngestOptions) -> Result<IngestResult, Stri
                 insert_units(&mut settings, "cwd", cwd);
             }
             insert_opt_text(&mut settings, "last_event", opts.event.as_deref());
-            insert_text(&mut settings, "last_ingest_at", &now_iso(&opts.now_iso));
+            insert_text(&mut settings, "last_ingest_at", &clock_stamp(&opts.now_iso));
             let mut batch = JsObject::new();
             let hook_units = opts
                 .session_id
@@ -644,7 +644,7 @@ pub async fn ingest_hook_event(opts: HookEventOptions) -> Result<HookEventResult
         if protocol::js::js_trim(prompt.to_utf8()).is_empty() {
             return Ok(skipped_hook(session_key, "empty prompt"));
         }
-        let title = slice_units(prompt.units(), TITLE_LIMIT);
+        let title = title_limited(prompt.units());
         (CaptureRole::User, prompt, title, None, None, None)
     } else if event == "PostToolUse" {
         let name = js_field(&opts.payload, "tool_name")
@@ -681,7 +681,7 @@ pub async fn ingest_hook_event(opts: HookEventOptions) -> Result<HookEventResult
     let env = opts.env.clone();
     let env_ref = env
         .as_ref()
-        .map(|item| item.as_ref() as &dyn capture::EnvLookup);
+        .map(|item| item.as_ref() as &(dyn protocol::host::Env + Send + Sync));
     let transport = select_transport_async(env.clone(), opts.pg_url.clone()).await;
     match transport {
         CaptureTransport::None { reason } => {
@@ -718,7 +718,7 @@ pub async fn ingest_hook_event(opts: HookEventOptions) -> Result<HookEventResult
                 insert_units(&mut settings, "cwd", cwd);
             }
             insert_text(&mut settings, "last_event", &event);
-            insert_text(&mut settings, "last_ingest_at", &now_iso(&opts.now_iso));
+            insert_text(&mut settings, "last_ingest_at", &clock_stamp(&opts.now_iso));
             let mut batch = JsObject::new();
             insert_units(
                 &mut batch,
@@ -1065,8 +1065,12 @@ fn nonempty(value: Option<&str>) -> Option<&str> {
     value.filter(|text| !text.is_empty())
 }
 
-fn slice_units(units: &[u16], limit: usize) -> JsString {
-    JsString::from_units(units.iter().take(limit).copied().collect())
+fn title_limited(units: &[u16]) -> JsString {
+    JsString::from_units(protocol::js::js_slice_units(
+        units,
+        Some(0.0),
+        Some(TITLE_LIMIT as f64),
+    ))
 }
 
 fn fallback_title_units(parsed: &ParsedTranscript) -> JsString {
@@ -1075,33 +1079,27 @@ fn fallback_title_units(parsed: &ParsedTranscript) -> JsString {
         .as_ref()
         .filter(|value| !value.to_utf8().is_empty())
     {
-        return slice_units(title.units(), TITLE_LIMIT);
+        return title_limited(title.units());
     }
     if let Some(message) = parsed.msgs.iter().find(|message| message.role == "user")
         && !message.content_units.to_utf8().is_empty()
     {
-        return slice_units(message.content_units.units(), TITLE_LIMIT);
+        return title_limited(message.content_units.units());
     }
     let fallback = JsString::from_text("Claude Code session");
-    slice_units(fallback.units(), TITLE_LIMIT)
+    title_limited(fallback.units())
 }
 
-fn iso_timestamp(value: Option<&str>) -> Option<String> {
-    let text = protocol::js::js_trim(value?);
-    if text.is_empty() || !text.contains('T') {
-        return None;
-    }
-    if text.ends_with('Z') || text.contains('+') || text.matches('-').count() > 2 {
-        Some(text.to_string())
-    } else {
-        None
-    }
+fn parsed_timestamp(value: Option<&str>, env: &dyn protocol::host::Env) -> Option<String> {
+    let text = value?;
+    let ms = protocol::js::date_parse(text, env)?;
+    protocol::js::to_iso_string(ms).ok()
 }
 
-fn now_iso(clock: &Option<Arc<dyn Fn() -> String + Send + Sync>>) -> String {
+fn clock_stamp(clock: &Option<Arc<dyn Fn() -> String + Send + Sync>>) -> String {
     match clock {
         Some(clock) => clock(),
-        None => capture::iso_now(),
+        None => crate::iso_now(),
     }
 }
 
@@ -1259,7 +1257,11 @@ fn native_event_id(
     n: u64,
 ) -> JsString {
     let Some(id) = id else {
-        return JsString::from_text(&occ_event_id(session_part.to_utf8(), &sha256_hex(tuple), n));
+        return JsString::from_text(&occ_event_id(
+            session_part.to_utf8(),
+            &protocol::digest::sha256_hex(tuple.as_bytes()),
+            n,
+        ));
     };
     let prefix: Vec<u16> = "claude-code:".encode_utf16().collect();
     let middle: Vec<u16> = marker.encode_utf16().collect();
@@ -1289,7 +1291,7 @@ fn last_match_event_id(path: &Path, key: &OccurrenceKey, session_hint: &str) -> 
     let want = content_tuple_hash(key);
     let mut found = None;
     for_each_captured(&parsed, |n, tuple, slot| {
-        if sha256_hex(tuple) != want {
+        if protocol::digest::sha256_hex(tuple.as_bytes()) != want {
             return;
         }
         found = Some(match slot {
@@ -1299,9 +1301,11 @@ fn last_match_event_id(path: &Path, key: &OccurrenceKey, session_hint: &str) -> 
             CapturedSlot::User(message) => {
                 native_event_id(&session_part, ":", message.uuid_units.as_ref(), tuple, n)
             }
-            CapturedSlot::Assistant(_) => {
-                JsString::from_text(&occ_event_id(session_part.to_utf8(), &sha256_hex(tuple), n))
-            }
+            CapturedSlot::Assistant(_) => JsString::from_text(&occ_event_id(
+                session_part.to_utf8(),
+                &protocol::digest::sha256_hex(tuple.as_bytes()),
+                n,
+            )),
         });
     });
     found
@@ -1568,12 +1572,12 @@ async fn post_js(
     count: u64,
     den_url: &str,
     user: Option<CaptureUser>,
-    env: Option<Arc<dyn capture::EnvLookup>>,
+    env: Option<Arc<dyn protocol::host::Env + Send + Sync>>,
     exchange: Option<HttpExchange>,
     spool_dir: Option<PathBuf>,
 ) -> Result<PostedCounts, String> {
     let injected = env.is_some();
-    let env_arc: Arc<dyn capture::EnvLookup> = match env {
+    let env_arc: Arc<dyn protocol::host::Env + Send + Sync> = match env {
         Some(env) => env,
         None => Arc::new(ProcessEnv),
     };
@@ -1618,14 +1622,14 @@ fn capture_error_text(error: &CaptureError) -> String {
     error.to_string()
 }
 
-fn ca_path(env: &dyn capture::EnvLookup, injected: bool, den_url: &str) -> Option<PathBuf> {
-    if !capture::den_scheme_is_https(den_url) {
+fn ca_path(env: &dyn protocol::host::Env, injected: bool, den_url: &str) -> Option<PathBuf> {
+    if !crate::den_scheme_is_https(den_url) {
         return None;
     }
     let resolved = if injected {
-        resolve_den_url(env, || None, &capture::path_exists)
+        resolve_den_url(env, || None, &crate::path_exists)
     } else {
-        resolve_den_url(env, capture::default_config_reader, &capture::path_exists)
+        resolve_den_url(env, crate::default_config_reader, &crate::path_exists)
     };
     resolved.map(|item| PathBuf::from(item.ca_path))
 }

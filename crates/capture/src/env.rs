@@ -1,58 +1,42 @@
 use std::collections::HashMap;
-use std::sync::Arc;
 
-pub trait EnvLookup: Send + Sync {
-    fn get(&self, key: &str) -> Option<String>;
-}
+pub use protocol::host::{Env, ProcessEnv};
 
-#[derive(Debug, Default, Clone, Copy)]
-pub struct ProcessEnv;
-
-impl EnvLookup for ProcessEnv {
-    fn get(&self, key: &str) -> Option<String> {
-        std::env::var(key).ok()
-    }
-}
-
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct MapEnv {
-    values: HashMap<String, String>,
+    inner: protocol::host::MapEnv,
 }
 
 impl MapEnv {
     pub fn new(values: HashMap<String, String>) -> Self {
-        Self { values }
+        let mut inner = protocol::host::MapEnv::new();
+        for (key, value) in values {
+            inner.set(key, value);
+        }
+        Self { inner }
     }
 
     pub fn from_pairs(pairs: &[(&str, &str)]) -> Self {
-        let values = pairs
-            .iter()
-            .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
-            .collect();
-        Self { values }
+        let mut inner = protocol::host::MapEnv::new();
+        for (key, value) in pairs {
+            inner.set(*key, *value);
+        }
+        Self { inner }
     }
 }
 
-impl EnvLookup for MapEnv {
-    fn get(&self, key: &str) -> Option<String> {
-        self.values.get(key).cloned()
+impl Env for MapEnv {
+    fn var(&self, name: &str) -> Option<String> {
+        self.inner.var(name)
     }
 }
 
-impl EnvLookup for Arc<dyn EnvLookup> {
-    fn get(&self, key: &str) -> Option<String> {
-        (**self).get(key)
-    }
+pub fn trimmed(env: &dyn Env, key: &str) -> String {
+    protocol::host::env_trimmed(env, key).unwrap_or_default()
 }
 
-pub fn trimmed(env: &dyn EnvLookup, key: &str) -> String {
-    env.get(key)
-        .map(|value| protocol::js::js_trim(&value).to_string())
-        .unwrap_or_default()
-}
-
-pub fn present_non_empty(env: &dyn EnvLookup, key: &str) -> bool {
-    match env.get(key) {
+pub fn present_non_empty(env: &dyn Env, key: &str) -> bool {
+    match env.var(key) {
         None => false,
         Some(value) => !value.is_empty(),
     }

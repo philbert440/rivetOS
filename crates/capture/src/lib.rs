@@ -1,13 +1,16 @@
 mod base64url;
+pub mod cli;
 mod den_url;
 mod env;
 mod error;
 mod event_id;
 mod helpers;
+pub mod hooks;
 mod lock;
 mod redaction;
 mod spool;
 mod timeutil;
+pub mod transcript;
 mod transport;
 mod types;
 mod wire;
@@ -18,20 +21,21 @@ pub use den_url::{
     acceptable_http_url, default_config_reader, den_scheme_is_https, den_settings,
     den_tls_configured, guard_den_url, path_exists, resolve_den_url,
 };
-pub use env::{EnvLookup, MapEnv, ProcessEnv, trimmed};
+pub use env::{Env, MapEnv, ProcessEnv, trimmed};
 pub use error::{CaptureError, ReplayReport, WriteOutcome};
 pub use event_id::{
     EventIdParts, OccurrenceCounts, OccurrenceKey, content_tuple_hash, event_id_from_content,
-    occurrence_index, sha256_hex,
+    occurrence_index,
 };
 pub use helpers::{
     CONTENT_LIMIT, CappedText, as_string, cap_field, cap_for_storage, is_record, json_utf8_len,
-    load_env_file, safe_json, split_utf16, utf16_len, utf16_slice,
+    load_env_file, safe_json,
 };
 pub use lock::{
     BeforeReaddir, FileLockOptions, LockError, ReadFault, UnlinkHook, hex_host, pid_dead,
     system_hostname, with_file_lock,
 };
+pub use protocol::digest::sha256_hex;
 pub use redaction::{
     BuiltinDetectorId, OperatorPattern, REDACT_SCAN_LIMIT, RedactionApplyResult,
     ResolvedCaptureRedaction, capture_redaction_from_env, is_unsafe_regex_source,

@@ -72,7 +72,7 @@ fn caps_at_the_configured_limit() {
     );
     let emoji = format!("{}😀", "z".repeat(15_999));
     let split = cap_for_storage(&emoji, Some(CONTENT_LIMIT));
-    assert_eq!(split.text, "z".repeat(15_999));
+    assert_eq!(split.text, format!("{}\u{FFFD}", "z".repeat(15_999)));
     assert_eq!(split.full_length, 16_001);
     assert!(split.truncated);
 }
@@ -158,7 +158,7 @@ fn tool_less_tuple_hash() {
         tool_name: None,
         tool_args: None,
     };
-    assert_eq!(content_tuple_hash(&key), sha256_hex("user\0ship it\0\0"));
+    assert_eq!(content_tuple_hash(&key), sha256_hex(b"user\0ship it\0\0"));
 }
 
 #[test]
@@ -227,6 +227,6 @@ fn occurrence_counts_match_each_inclusive_prefix() {
     for (index, key) in rows.iter().enumerate() {
         let (n, tuple) = counts.next(key);
         assert_eq!(n, occurrence_index(&rows[..=index], key));
-        assert_eq!(sha256_hex(&tuple), content_tuple_hash(key));
+        assert_eq!(sha256_hex(tuple.as_bytes()), content_tuple_hash(key));
     }
 }

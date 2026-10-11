@@ -25,34 +25,12 @@ pub struct CappedText {
     pub full_length: usize,
 }
 
-pub fn utf16_len(text: &str) -> usize {
-    text.encode_utf16().count()
-}
-
-pub fn split_utf16(text: &str, limit: usize) -> (&str, &str) {
-    if utf16_len(text) <= limit {
-        return (text, "");
-    }
-    let mut units = 0;
-    for (index, ch) in text.char_indices() {
-        let width = ch.len_utf16();
-        if units + width > limit {
-            return (&text[..index], &text[index..]);
-        }
-        units += width;
-    }
-    (text, "")
-}
-
-pub fn utf16_slice(text: &str, limit: usize) -> String {
-    split_utf16(text, limit).0.to_string()
-}
-
 pub fn cap_for_storage(text: &str, limit: Option<usize>) -> CappedText {
     let limit = limit.unwrap_or(CONTENT_LIMIT);
-    let full_length = utf16_len(text);
+    let full_length = protocol::js::utf16_len(text);
+    let sliced = protocol::js::js_slice(text, Some(0.0), Some(limit as f64));
     CappedText {
-        text: utf16_slice(text, limit),
+        text: sliced.to_utf8().to_string(),
         truncated: full_length > limit,
         full_length,
     }

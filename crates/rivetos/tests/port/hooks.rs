@@ -1,8 +1,9 @@
 use crate::common;
 
+use parking_lot::Mutex;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use rivetos::{
@@ -100,7 +101,7 @@ async fn deadline_invokes_exit_and_closes_clients() {
         }),
         close: Arc::new(move || close_flag.store(true, Ordering::SeqCst)),
         log: Arc::new(move |message| {
-            *log_slot.lock().unwrap() = message.to_string();
+            *log_slot.lock() = message.to_string();
         }),
     });
     assert!(!exit.load(Ordering::SeqCst));
@@ -113,7 +114,7 @@ async fn deadline_invokes_exit_and_closes_clients() {
     assert!(close.load(Ordering::SeqCst));
     assert!(exit.load(Ordering::SeqCst));
     assert_eq!(
-        logged.lock().unwrap().as_str(),
+        logged.lock().as_str(),
         "worker: deadline exceeded (120000ms) — closing clients and exiting"
     );
 }
@@ -326,7 +327,7 @@ async fn retry_reuses_the_stored_event_id_after_the_transcript_grows() {
     let bodies_exchange = bodies.clone();
     let exchange: rivetos::HttpExchange = Arc::new(move |body| {
         let n = calls_exchange.fetch_add(1, Ordering::SeqCst);
-        bodies_exchange.lock().unwrap().push(body.to_string());
+        bodies_exchange.lock().push(body.to_string());
         if n == 0 {
             Ok(rivetos::HttpReply {
                 status: 400,
@@ -362,8 +363,7 @@ async fn retry_reuses_the_stored_event_id_after_the_transcript_grows() {
     );
     std::fs::write(&transcript, grown).unwrap();
     ingest_spool_file(&retained, &deps).await.unwrap();
-    let posted: serde_json::Value =
-        serde_json::from_str(bodies.lock().unwrap().last().unwrap()).unwrap();
+    let posted: serde_json::Value = serde_json::from_str(bodies.lock().last().unwrap()).unwrap();
     assert_eq!(posted["messages"][0]["event_id"], "claude-code:sess-1:u1");
     assert!(!retained.exists());
 }
@@ -407,7 +407,7 @@ async fn delayed_prompt_binds_the_user_uuid_when_the_assistant_is_present() {
     deps.poll_ms = Some(20);
     deps.poll_for_ms = Some(80);
     ingest_spool_file(&file, &deps).await.unwrap();
-    let posted: serde_json::Value = serde_json::from_str(&bodies.lock().unwrap()[0]).unwrap();
+    let posted: serde_json::Value = serde_json::from_str(&bodies.lock()[0]).unwrap();
     let messages = common::msgs(&posted);
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0]["role"], "user");
@@ -422,7 +422,7 @@ async fn spool_stem_is_the_idempotency_key() {
     let seen = Arc::new(Mutex::new(None));
     let slot = seen.clone();
     let ingest: HookIngestFn = Arc::new(move |opts| {
-        *slot.lock().unwrap() = opts.idempotency_key.clone();
+        *slot.lock() = opts.idempotency_key.clone();
         Box::pin(async {
             Ok(HookEventResult {
                 session_key: "k".to_string(),
@@ -436,7 +436,7 @@ async fn spool_stem_is_the_idempotency_key() {
     let mut deps = silent();
     deps.ingest_hook = Some(ingest);
     ingest_spool_file(&file, &deps).await.unwrap();
-    assert_eq!(seen.lock().unwrap().as_deref(), Some("abc123"));
+    assert_eq!(seen.lock().as_deref(), Some("abc123"));
 }
 
 #[test]

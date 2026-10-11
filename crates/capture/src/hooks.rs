@@ -1,3 +1,4 @@
+use parking_lot::Mutex;
 use std::collections::HashSet;
 use std::io::Write;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
@@ -5,14 +6,14 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::process::Stdio;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, UNIX_EPOCH};
 
-use capture::{EnvLookup, HttpExchange, iso_now, system_hostname, unix_ms_now};
+use crate::{HttpExchange, iso_now, system_hostname, unix_ms_now};
+use protocol::host::Env;
 use protocol::js::{JsString, JsValue};
 use serde_json::{Map, Value};
-use sha2::Digest;
 use tokio::sync::Notify;
 
 use crate::transcript::{
@@ -70,7 +71,7 @@ pub struct DeadlineOptions {
     pub ms: u64,
     pub exit: Arc<dyn Fn(i32) + Send + Sync>,
     pub close: Arc<dyn Fn() + Send + Sync>,
-    pub log: capture::LogFn,
+    pub log: crate::LogFn,
 }
 
 #[derive(Clone)]
@@ -82,8 +83,8 @@ pub struct WorkerDeps {
     pub max_attempts: Option<u64>,
     pub now_ms: Option<Arc<dyn Fn() -> i64 + Send + Sync>>,
     pub skip_files: Arc<Mutex<HashSet<String>>>,
-    pub log: Option<capture::LogFn>,
-    pub env: Option<Arc<dyn capture::EnvLookup>>,
+    pub log: Option<crate::LogFn>,
+    pub env: Option<Arc<dyn protocol::host::Env + Send + Sync>>,
     pub exchange: Option<HttpExchange>,
     pub capture_spool_dir: Option<PathBuf>,
     pub poll_ms: Option<u64>,
@@ -135,31 +136,27 @@ pub fn arm_worker_deadline(opts: DeadlineOptions) -> DeadlineHandle {
     DeadlineHandle { flag, notify }
 }
 
-pub fn home_dir(env: &dyn capture::EnvLookup) -> PathBuf {
-    env.get("HOME")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
+pub fn log_path(env: &dyn protocol::host::Env) -> PathBuf {
+    PathBuf::from(protocol::host::home_dir(env).unwrap_or_default())
+        .join(".rivetos")
+        .join("claude-capture.log")
 }
 
-pub fn log_path(env: &dyn capture::EnvLookup) -> PathBuf {
-    home_dir(env).join(".rivetos").join("claude-capture.log")
+pub fn settings_path(env: &dyn protocol::host::Env) -> PathBuf {
+    PathBuf::from(protocol::host::home_dir(env).unwrap_or_default())
+        .join(".claude")
+        .join("settings.json")
 }
 
-pub fn settings_path(env: &dyn capture::EnvLookup) -> PathBuf {
-    home_dir(env).join(".claude").join("settings.json")
-}
-
-pub fn spool_dir(env: &dyn capture::EnvLookup) -> PathBuf {
+pub fn spool_dir(env: &dyn protocol::host::Env) -> PathBuf {
     let base = env
-        .get("RIVETOS_CLAUDE_HOOK_SPOOL")
+        .var("RIVETOS_CLAUDE_HOOK_SPOOL")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| std::env::temp_dir().join("rivetos-claude-hook"));
-    match env.get("RIVETOS_USER_ID").filter(|value| !value.is_empty()) {
+    match env.var("RIVETOS_USER_ID").filter(|value| !value.is_empty()) {
         Some(user_id) => {
-            let digest = sha2::Sha256::digest(user_id.as_bytes());
-            let encoded = hex::encode(digest);
+            let encoded = protocol::digest::sha256_hex(user_id.as_bytes());
             let hash: String = encoded.chars().take(32).collect();
             PathBuf::from(format!("{}-user-{hash}", base.display()))
         }
@@ -167,16 +164,16 @@ pub fn spool_dir(env: &dyn capture::EnvLookup) -> PathBuf {
     }
 }
 
-pub fn worker_deadline_ms(env: &dyn capture::EnvLookup) -> u64 {
+pub fn worker_deadline_ms(env: &dyn protocol::host::Env) -> u64 {
     positive_number(
-        env.get("RIVETOS_HOOK_WORKER_DEADLINE_MS").as_deref(),
+        env.var("RIVETOS_HOOK_WORKER_DEADLINE_MS").as_deref(),
         DEFAULT_WORKER_DEADLINE_MS,
     )
 }
 
-pub fn spool_max_attempts(env: &dyn capture::EnvLookup) -> u64 {
+pub fn spool_max_attempts(env: &dyn protocol::host::Env) -> u64 {
     let value = positive_number(
-        env.get("RIVETOS_HOOK_SPOOL_MAX_ATTEMPTS").as_deref(),
+        env.var("RIVETOS_HOOK_SPOOL_MAX_ATTEMPTS").as_deref(),
         DEFAULT_SPOOL_MAX_ATTEMPTS,
     );
     if value == 0 {
@@ -256,7 +253,7 @@ pub async fn ingest_spool_file(spool_file: &Path, deps: &WorkerDeps) -> Result<(
         .await;
         return Ok(());
     };
-    lock_set(&deps.skip_files).insert(display_path(&claimed));
+    deps.skip_files.lock().insert(display_path(&claimed));
     let claimed_read = claimed.clone();
     let mut payload = match spawn_io(move || std::fs::read_to_string(&claimed_read)).await? {
         Ok(text) => match protocol::js::parse(&text) {
@@ -300,7 +297,7 @@ pub async fn sweep_stale_spools(deps: &WorkerDeps) -> Result<(), String> {
     let dir = deps
         .spool_dir
         .clone()
-        .unwrap_or_else(|| spool_dir(deps.env.as_deref().unwrap_or(&capture::ProcessEnv)));
+        .unwrap_or_else(|| spool_dir(deps.env.as_deref().unwrap_or(&crate::ProcessEnv)));
     let now = deps
         .now_ms
         .as_ref()
@@ -308,8 +305,8 @@ pub async fn sweep_stale_spools(deps: &WorkerDeps) -> Result<(), String> {
         .unwrap_or_else(unix_ms_now);
     let stale_after = deps
         .deadline_ms
-        .unwrap_or_else(|| worker_deadline_ms(deps.env.as_deref().unwrap_or(&capture::ProcessEnv)));
-    let skip = lock_set(&deps.skip_files).clone();
+        .unwrap_or_else(|| worker_deadline_ms(deps.env.as_deref().unwrap_or(&crate::ProcessEnv)));
+    let skip = deps.skip_files.lock().clone();
     let listed = dir.clone();
     let paths = spawn_io(move || stale_candidates(&listed, now, stale_after, &skip)).await?;
     for full in paths.into_iter().take(MAX_SWEEP_FILES) {
@@ -324,7 +321,7 @@ pub async fn sweep_stale_spools(deps: &WorkerDeps) -> Result<(), String> {
 }
 
 pub async fn run_worker(spool_file: &Path, deps: &WorkerDeps) -> Result<(), String> {
-    let mut skip = lock_set(&deps.skip_files).clone();
+    let mut skip = deps.skip_files.lock().clone();
     skip.insert(display_path(spool_file));
     let mut next = deps.clone();
     next.skip_files = Arc::new(Mutex::new(skip));
@@ -347,16 +344,16 @@ pub async fn run_hook(harness: &str) -> Result<(), String> {
     if session.is_none() && transcript.is_none() {
         return Ok(());
     }
-    let task = resolve_task_context(&capture::ProcessEnv);
-    let herdr_pane = if capture::ProcessEnv.get("HERDR_ENV").as_deref() == Some("1") {
-        capture::ProcessEnv
-            .get("HERDR_PANE_ID")
+    let task = resolve_task_context(&crate::ProcessEnv);
+    let herdr_pane = if crate::ProcessEnv.var("HERDR_ENV").as_deref() == Some("1") {
+        crate::ProcessEnv
+            .var("HERDR_PANE_ID")
             .filter(|value| !value.is_empty())
     } else {
         None
     };
-    let herdr_workspace = capture::ProcessEnv
-        .get("HERDR_WORKSPACE_ID")
+    let herdr_workspace = crate::ProcessEnv
+        .var("HERDR_WORKSPACE_ID")
         .filter(|value| !value.is_empty());
     let herdr_host = if herdr_pane.is_some() {
         Some(
@@ -396,7 +393,7 @@ pub async fn run_hook(harness: &str) -> Result<(), String> {
             }
         }
     }
-    let dir = spool_dir(&capture::ProcessEnv);
+    let dir = spool_dir(&crate::ProcessEnv);
     let payload_for_disk = payload.clone();
     let spool_file = match spawn_io(move || write_spool_js(&payload_for_disk, &dir)).await? {
         Ok(path) => path,
@@ -413,7 +410,7 @@ pub async fn run_hook(harness: &str) -> Result<(), String> {
 }
 
 pub async fn run_replay(file: Option<PathBuf>) -> Result<(), String> {
-    let ms = worker_deadline_ms(&capture::ProcessEnv);
+    let ms = worker_deadline_ms(&crate::ProcessEnv);
     let handle = arm_worker_deadline(DeadlineOptions {
         ms,
         exit: Arc::new(|code| std::process::exit(code)),
@@ -533,17 +530,17 @@ async fn dispatch_claimed(
     if deps.ingest_hook.is_none() && deps.ingest_transcript.is_none() {
         let transport = crate::transcript::select_transport_async(deps.env.clone(), None).await;
         match &transport {
-            capture::CaptureTransport::None { reason } => {
+            crate::CaptureTransport::None { reason } => {
                 return Err(format!("capture transport unavailable: {reason}"));
             }
-            capture::CaptureTransport::Den { warnings, .. } => {
+            crate::CaptureTransport::Den { warnings, .. } => {
                 if let Some(warnings) = warnings {
                     for warning in warnings {
                         emit(deps, warning).await;
                     }
                 }
             }
-            capture::CaptureTransport::Pg { .. } => {}
+            crate::CaptureTransport::Pg { .. } => {}
         }
     }
     let event = js_str(payload, "hook_event_name").unwrap_or("unknown");
@@ -730,7 +727,7 @@ async fn call_transcript(
 async fn fail_spool(spool_file: &Path, deps: &WorkerDeps) {
     let max = deps
         .max_attempts
-        .unwrap_or_else(|| spool_max_attempts(deps.env.as_deref().unwrap_or(&capture::ProcessEnv)));
+        .unwrap_or_else(|| spool_max_attempts(deps.env.as_deref().unwrap_or(&crate::ProcessEnv)));
     let attempt = spool_attempt(spool_file);
     if attempt >= max {
         emit(
@@ -777,7 +774,7 @@ async fn emit_process(message: &str) {
 }
 
 fn append_log_sync(message: &str) {
-    let path = log_path(&capture::ProcessEnv);
+    let path = log_path(&crate::ProcessEnv);
     let line = format!("{} {message}\n", iso_now());
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -1003,7 +1000,10 @@ fn stale_candidates(
         let Ok(modified) = meta.modified() else {
             continue;
         };
-        let Some(mtime) = system_ms(modified) else {
+        let Ok(duration) = modified.duration_since(UNIX_EPOCH) else {
+            continue;
+        };
+        let Ok(mtime) = i64::try_from(duration.as_millis()) else {
             continue;
         };
         if is_stale(now, mtime, stale_after) {
@@ -1017,23 +1017,39 @@ fn display_path(path: &Path) -> String {
     path.display().to_string()
 }
 
-fn lock_set(set: &Mutex<HashSet<String>>) -> std::sync::MutexGuard<'_, HashSet<String>> {
-    set.lock().unwrap_or_else(|error| error.into_inner())
-}
-
-fn system_ms(time: SystemTime) -> Option<i64> {
-    let duration = time.duration_since(UNIX_EPOCH).ok()?;
-    i64::try_from(duration.as_millis()).ok()
-}
-
 fn is_stale(now: i64, mtime: i64, stale_after: u64) -> bool {
     i128::from(now) - i128::from(mtime) >= i128::from(stale_after)
+}
+
+fn js_to_json(value: &JsValue) -> Value {
+    match value {
+        JsValue::Null => Value::Null,
+        JsValue::Bool(flag) => Value::Bool(*flag),
+        JsValue::Number(number) => {
+            if number.is_finite() {
+                serde_json::Number::from_f64(*number)
+                    .map(Value::Number)
+                    .unwrap_or(Value::Null)
+            } else {
+                Value::Null
+            }
+        }
+        JsValue::String(text) => Value::String(text.to_utf8().to_string()),
+        JsValue::Array(items) => Value::Array(items.iter().map(js_to_json).collect()),
+        JsValue::Object(object) => {
+            let mut map = Map::new();
+            for (key, child) in object.iter() {
+                map.insert(key.to_utf8().to_string(), js_to_json(child));
+            }
+            Value::Object(map)
+        }
+    }
 }
 
 fn read_settings(path: &Path) -> Result<Map<String, Value>, String> {
     match std::fs::read_to_string(path) {
         Ok(text) => match protocol::js::parse(&text) {
-            Ok(value) => match protocol::js::to_serde(&value) {
+            Ok(value) => match js_to_json(&value) {
                 Value::Object(map) => Ok(map),
                 _ => Ok(Map::new()),
             },

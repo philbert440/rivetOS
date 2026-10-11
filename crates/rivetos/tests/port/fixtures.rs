@@ -53,7 +53,7 @@ async fn transcript_fixture_posts_the_recorded_body() {
     assert_eq!(result.inserted, 4);
     assert!(!result.created);
     assert!(result.skipped.is_none());
-    let raw = harness.bodies.lock().unwrap()[0].clone();
+    let raw = harness.bodies.lock()[0].clone();
     let path = transcript.display().to_string();
     let normalized = raw.replace(&path, "__PATH__");
     let expected = std::fs::read_to_string(dir.join("expected_post.json")).unwrap();

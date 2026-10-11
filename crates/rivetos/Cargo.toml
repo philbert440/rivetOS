@@ -14,20 +14,15 @@ name = "rivetos"
 path = "src/main.rs"
 
 [dependencies]
-anyhow.workspace = true
 capture = { path = "../capture" }
 clap.workspace = true
-hex.workspace = true
-protocol = { path = "../protocol" }
-regex.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-sha2.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
+parking_lot.workspace = true
+protocol = { path = "../protocol" }
 serde_json.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }

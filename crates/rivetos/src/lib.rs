@@ -1,12 +1,6 @@
-mod hooks;
 mod logging;
-mod transcript;
 
-pub use capture::{
-    CaptureRole, EnvLookup, HttpExchange, HttpReply, MapEnv, OccurrenceKey, content_tuple_hash,
-    sha256_hex,
-};
-pub use hooks::{
+pub use capture::hooks::{
     CAPTURE_EVENTS, DEFAULT_SPOOL_MAX_ATTEMPTS, DEFAULT_WORKER_DEADLINE_MS, DeadlineHandle,
     DeadlineOptions, HOOK_MARKER_LEGACY, HOOK_MARKER_RUST, HookIngestFn, MAX_SWEEP_FILES,
     TranscriptIngestFn, WorkerDeps, arm_worker_deadline, claim_spool, hook_command,
@@ -15,8 +9,7 @@ pub use hooks::{
     status_text, sweep_stale_spools, uninstall_hooks, with_spool_attempt, worker_deadline_ms,
     write_spool_payload,
 };
-pub use logging::init as init_logging;
-pub use transcript::{
+pub use capture::transcript::{
     CAPTURE_CHANNEL, CapturePoolOptions, ConversationKeyParts, HerdrPane, HookEventOptions,
     HookEventResult, IDLE_IN_TRANSACTION_TIMEOUT, IDLE_IN_TRANSACTION_TIMEOUT_MS, IngestOptions,
     IngestResult, LEGACY_TASK_KEY_PREFIX, ParsedTranscript, SET_IDLE_IN_TRANSACTION_TIMEOUT_SQL,
@@ -25,3 +18,8 @@ pub use transcript::{
     ingest_hook_event, ingest_transcript, is_task_id, parse_transcript, resolve_conversation_key,
     resolve_hook_event_id, resolve_task_context, session_key_from_id,
 };
+pub use capture::{
+    CaptureRole, Env, HttpExchange, HttpReply, MapEnv, OccurrenceKey, content_tuple_hash,
+    sha256_hex,
+};
+pub use logging::init as init_logging;

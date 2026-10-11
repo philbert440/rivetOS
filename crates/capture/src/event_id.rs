@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 
 use protocol::js::JsValue;
-use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct OccurrenceKey {
@@ -19,11 +18,6 @@ pub struct EventIdParts {
     pub tool_name: Option<String>,
     pub tool_args: Option<JsValue>,
     pub occurrence: Option<u64>,
-}
-
-pub fn sha256_hex(material: &str) -> String {
-    let digest = Sha256::digest(material.as_bytes());
-    hex::encode(digest)
 }
 
 fn tuple_fields(
@@ -61,7 +55,7 @@ pub fn event_id_from_content(parts: &EventIdParts) -> String {
     if let Some(occurrence) = parts.occurrence {
         fields.push(occurrence.to_string());
     }
-    sha256_hex(&join_fields(&fields))
+    protocol::digest::sha256_hex(join_fields(&fields).as_bytes())
 }
 
 fn content_tuple(parts: &OccurrenceKey) -> String {
@@ -74,7 +68,7 @@ fn content_tuple(parts: &OccurrenceKey) -> String {
 }
 
 pub fn content_tuple_hash(parts: &OccurrenceKey) -> String {
-    sha256_hex(&content_tuple(parts))
+    protocol::digest::sha256_hex(content_tuple(parts).as_bytes())
 }
 
 pub fn occurrence_index(rows: &[OccurrenceKey], key: &OccurrenceKey) -> u64 {

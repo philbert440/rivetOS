@@ -2,12 +2,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use protocol::js::{JsObject, JsString, JsValue};
-use reqwest::header::{CONTENT_TYPE, HeaderValue, LOCATION};
-use sha2::{Digest, Sha256};
-use tokio::sync::OnceCell;
-
-use crate::env::EnvLookup;
 use crate::error::{CaptureError, ReplayReport, WriteOutcome};
 use crate::helpers::CONTENT_LIMIT;
 use crate::redaction::{self, ResolvedCaptureRedaction, keep_metadata_key};
@@ -18,6 +12,10 @@ use crate::types::{
     CaptureBatch, CaptureResult, CaptureWriterOptions, HttpReply, LogFn, UserSource,
 };
 use crate::wire;
+use protocol::host::Env;
+use protocol::js::{JsObject, JsString, JsValue};
+use reqwest::header::{CONTENT_TYPE, HeaderValue, LOCATION};
+use tokio::sync::OnceCell;
 
 pub const DEFAULT_CHUNK_BYTES: usize = 768 * 1024;
 pub const CHUNK_OVER_LIMIT: &str = "chunk exceeds maxChunkBytes after elision";
@@ -74,9 +72,9 @@ pub fn create_capture_writer(
     })
 }
 
-fn spool_dir_for(env: &dyn EnvLookup, user: Option<&CaptureUser>) -> PathBuf {
+fn spool_dir_for(env: &dyn Env, user: Option<&CaptureUser>) -> PathBuf {
     let home = env
-        .get("HOME")
+        .var("HOME")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/tmp"));
@@ -90,8 +88,7 @@ fn spool_dir_for(env: &dyn EnvLookup, user: Option<&CaptureUser>) -> PathBuf {
 }
 
 pub fn spool_name_for(user_id: &str) -> String {
-    let digest = Sha256::digest(user_id.as_bytes());
-    let hex = hex::encode(digest);
+    let hex = protocol::digest::sha256_hex(user_id.as_bytes());
     hex.chars().take(32).collect()
 }
 
@@ -647,12 +644,63 @@ fn prepare_batch(
 #[derive(Clone)]
 struct Tracked {
     message: JsValue,
+    wire_len: usize,
     args_done: bool,
     meta_done: bool,
 }
 
+struct Shell {
+    with_finalize: usize,
+    without_finalize: usize,
+}
+
+fn track(message: JsValue) -> Tracked {
+    let wire_len = protocol::js::stringify(&message).len();
+    Tracked {
+        message,
+        wire_len,
+        args_done: false,
+        meta_done: false,
+    }
+}
+
+fn retarget(mut tracked: Tracked) -> Tracked {
+    tracked.wire_len = protocol::js::stringify(&tracked.message).len();
+    tracked
+}
+
+fn shell_lengths(batch: &JsValue) -> Shell {
+    let with_finalize = protocol::js::stringify(&project_chunk(batch, &[], true)).len();
+    let without_finalize = if batch.get("finalize").is_some() {
+        protocol::js::stringify(&project_chunk(batch, &[], false)).len()
+    } else {
+        with_finalize
+    };
+    Shell {
+        with_finalize,
+        without_finalize,
+    }
+}
+
+fn chunk_len(base: usize, lengths: &[usize]) -> usize {
+    if lengths.is_empty() {
+        base
+    } else {
+        base + lengths.iter().sum::<usize>() + lengths.len() - 1
+    }
+}
+
+fn lengths_fit(shell: &Shell, lengths: &[usize], is_last: bool, limit: usize) -> bool {
+    let base = if is_last {
+        shell.with_finalize
+    } else {
+        shell.without_finalize
+    };
+    chunk_len(base, lengths) <= limit
+}
+
 fn split_chunks(batch: &mut JsValue, limit: usize, log: &Option<LogFn>) -> Vec<JsValue> {
-    if batch.get("settings").is_some() && encoded_messages(batch, &[], true) > limit {
+    if batch.get("settings").is_some() && !lengths_fit(&shell_lengths(batch), &[], true, limit) {
         let bytes = batch
             .get("settings")
             .map(|value| protocol::js::stringify(value).len())
@@ -660,6 +708,7 @@ fn split_chunks(batch: &mut JsValue, limit: usize, log: &Option<LogFn>) -> Vec<J
         emit(log, &format!("elided settings ({bytes} bytes)"));
         insert_field(batch, "settings", elided_value(bytes));
     }
+    let shell = shell_lengths(batch);
     let messages = batch
         .get("messages")
         .and_then(JsValue::as_array)
@@ -668,19 +717,12 @@ fn split_chunks(batch: &mut JsValue, limit: usize, log: &Option<LogFn>) -> Vec<J
     if messages.is_empty() {
         return vec![project_chunk(batch, &[], true)];
     }
-    let messages: Vec<Tracked> = messages
-        .into_iter()
-        .map(|message| Tracked {
-            message,
-            args_done: false,
-            meta_done: false,
-        })
-        .collect();
+    let messages: Vec<Tracked> = messages.into_iter().map(track).collect();
     let mut groups: Vec<Vec<Tracked>> = Vec::new();
     let mut current: Vec<Tracked> = Vec::new();
     for original in messages {
-        let alone = message_fits(batch, &original.message, false, limit)
-            || message_fits(batch, &original.message, true, limit);
+        let alone = lengths_fit(&shell, &[original.wire_len], false, limit)
+            || lengths_fit(&shell, &[original.wire_len], true, limit);
         let message = if alone {
             original
         } else {
@@ -689,7 +731,7 @@ fn split_chunks(batch: &mut JsValue, limit: usize, log: &Option<LogFn>) -> Vec<J
         let solo = !alone;
         let overflows = !current.is_empty()
             && !fits_messages(
-                batch,
+                &shell,
                 &current,
                 std::slice::from_ref(&message),
                 false,
@@ -711,7 +753,7 @@ fn split_chunks(batch: &mut JsValue, limit: usize, log: &Option<LogFn>) -> Vec<J
     while guard < guard_limit && !groups.is_empty() {
         guard += 1;
         let last_index = groups.len() - 1;
-        if fits_group(batch, &groups[last_index], true, limit) {
+        if fits_group(&shell, &groups[last_index], true, limit) {
             break;
         }
         if groups[last_index].len() <= 1 {
@@ -719,7 +761,7 @@ fn split_chunks(batch: &mut JsValue, limit: usize, log: &Option<LogFn>) -> Vec<J
                 Some(only) => only.clone(),
                 None => break,
             };
-            let next = shrink_singleton(only.clone(), true, batch, limit, log);
+            let next = shrink_singleton(only.clone(), true, &shell, limit, log);
             if same_tracked(&only, &next) {
                 break;
             }
@@ -737,11 +779,11 @@ fn split_chunks(batch: &mut JsValue, limit: usize, log: &Option<LogFn>) -> Vec<J
             continue;
         }
         let is_last = index + 1 == group_count;
-        if fits_group(batch, group, is_last, limit) {
+        if fits_group(&shell, group, is_last, limit) {
             continue;
         }
         let only = group[0].clone();
-        *group = vec![shrink_singleton(only, is_last, batch, limit, log)];
+        *group = vec![shrink_singleton(only, is_last, &shell, limit, log)];
     }
     groups
         .into_iter()
@@ -773,17 +815,17 @@ fn message_wire(message: &JsValue) -> String {
 fn shrink_singleton(
     mut current: Tracked,
     is_last: bool,
-    batch: &JsValue,
+    shell: &Shell,
     limit: usize,
     log: &Option<LogFn>,
 ) -> Tracked {
-    if message_fits(batch, &current.message, is_last, limit) {
+    if lengths_fit(shell, &[current.wire_len], is_last, limit) {
         return current;
     }
     if !current.args_done {
         current = elide_tool_args(current, log);
     }
-    if message_fits(batch, &current.message, is_last, limit) {
+    if lengths_fit(shell, &[current.wire_len], is_last, limit) {
         return current;
     }
     if !current.meta_done {
@@ -820,11 +862,12 @@ fn elide_tool_args(current: Tracked, log: &Option<LogFn>) -> Tracked {
     let mut message = current.message;
     insert_field(&mut message, "tool_args", elided_value(bytes));
     insert_field(&mut message, "metadata", JsValue::Object(metadata));
-    Tracked {
+    retarget(Tracked {
         message,
+        wire_len: 0,
         args_done: true,
         meta_done: current.meta_done,
-    }
+    })
 }
 
 fn elide_metadata(current: Tracked, log: &Option<LogFn>) -> Tracked {
@@ -854,11 +897,12 @@ fn elide_metadata(current: Tracked, log: &Option<LogFn>) -> Tracked {
     kept.insert(wire::key("full_metadata_bytes"), wire::number_value(bytes));
     let mut message = current.message;
     insert_field(&mut message, "metadata", JsValue::Object(kept));
-    Tracked {
+    retarget(Tracked {
         message,
+        wire_len: 0,
         args_done: true,
         meta_done: true,
-    }
+    })
 }
 
 fn elided_value(bytes: usize) -> JsValue {
@@ -868,46 +912,44 @@ fn elided_value(bytes: usize) -> JsValue {
     JsValue::Object(map)
 }
 
-fn message_fits(batch: &JsValue, message: &JsValue, is_last: bool, limit: usize) -> bool {
-    encoded_messages(batch, std::slice::from_ref(message), is_last) <= limit
-}
-
 fn fits_messages(
-    batch: &JsValue,
+    shell: &Shell,
     current: &[Tracked],
     extra: &[Tracked],
     is_last: bool,
     limit: usize,
 ) -> bool {
-    let mut messages = current
-        .iter()
-        .map(|item| item.message.clone())
-        .collect::<Vec<_>>();
-    messages.extend(extra.iter().map(|item| item.message.clone()));
-    encoded_messages(batch, &messages, is_last) <= limit
+    let mut lengths = Vec::with_capacity(current.len() + extra.len());
+    lengths.extend(current.iter().map(|item| item.wire_len));
+    lengths.extend(extra.iter().map(|item| item.wire_len));
+    lengths_fit(shell, &lengths, is_last, limit)
 }
 
-fn fits_group(batch: &JsValue, group: &[Tracked], is_last: bool, limit: usize) -> bool {
-    let messages = group
-        .iter()
-        .map(|item| item.message.clone())
-        .collect::<Vec<_>>();
-    encoded_messages(batch, &messages, is_last) <= limit
-}
-
-fn encoded_messages(batch: &JsValue, messages: &[JsValue], is_last: bool) -> usize {
-    protocol::js::stringify(&project_chunk(batch, messages, is_last)).len()
+fn fits_group(shell: &Shell, group: &[Tracked], is_last: bool, limit: usize) -> bool {
+    let lengths = group.iter().map(|item| item.wire_len).collect::<Vec<_>>();
+    lengths_fit(shell, &lengths, is_last, limit)
 }
 
 fn project_chunk(batch: &JsValue, messages: &[JsValue], is_last: bool) -> JsValue {
     let Some(object) = batch.as_object() else {
         return JsValue::Object(JsObject::new());
     };
-    let mut out = object.clone();
-    if !is_last && out.get("finalize").is_some() {
-        out.remove("finalize");
+    let mut out = JsObject::new();
+    let mut saw_messages = false;
+    for (name, value) in object.iter() {
+        if !is_last && name.to_utf8() == "finalize" {
+            continue;
+        }
+        if name.to_utf8() == "messages" {
+            saw_messages = true;
+            out.insert(name.clone(), JsValue::Array(messages.to_vec()));
+        } else {
+            out.insert(name.clone(), value.clone());
+        }
     }
-    out.insert(wire::key("messages"), JsValue::Array(messages.to_vec()));
+    if !saw_messages {
+        out.insert(wire::key("messages"), JsValue::Array(messages.to_vec()));
+    }
     JsValue::Object(out)
 }
 
@@ -931,4 +973,41 @@ fn emit(log: &Option<LogFn>, line: &str) {
         return;
     };
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| callback(line)));
+}
+
+#[cfg(test)]
+mod chunk_math {
+    use super::{chunk_len, project_chunk, shell_lengths};
+
+    #[test]
+    fn sized_chunks_match_stringify() {
+        let batch = protocol::js::parse(
+            r#"{"session_key":"s","agent":"a","finalize":true,"settings":{"k":1},"messages":[{"event_id":"1","content":"hi"},{"event_id":"2","content":"yo, there"},{"event_id":"3","content":"end"}],"z":false}"#,
+        )
+        .unwrap();
+        let shell = shell_lengths(&batch);
+        let messages = batch
+            .get("messages")
+            .and_then(|value| value.as_array())
+            .unwrap();
+        let lengths: Vec<usize> = messages
+            .iter()
+            .map(|message| protocol::js::stringify(message).len())
+            .collect();
+        for is_last in [false, true] {
+            let base = if is_last {
+                shell.with_finalize
+            } else {
+                shell.without_finalize
+            };
+            for end in 0..=lengths.len() {
+                let projected = project_chunk(&batch, &messages[..end], is_last);
+                assert_eq!(
+                    protocol::js::stringify(&projected).len(),
+                    chunk_len(base, &lengths[..end]),
+                    "is_last={is_last} end={end}"
+                );
+            }
+        }
+    }
 }

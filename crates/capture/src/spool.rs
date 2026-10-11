@@ -30,95 +30,16 @@ pub async fn spool_files(dir: &Path) -> io::Result<Vec<String>> {
     }
 }
 
-fn node_error(error: io::Error, syscall: &str, path: &Path) -> io::Error {
+fn node_error(error: io::Error, syscall: &'static str, path: &Path) -> io::Error {
     let kind = error.kind();
-    let text = match node_errno(&error) {
-        Some((code, message)) => format!("{code}: {message}, {syscall} '{}'", path.display()),
-        None => format!("{error}, {syscall} '{}'", path.display()),
-    };
+    let text = protocol::host::fs_error(syscall, Some(path), None, &error).to_string();
     io::Error::new(kind, text)
 }
 
 fn node_rename(error: io::Error, from: &Path, to: &Path) -> io::Error {
     let kind = error.kind();
-    let rendered = format!("rename '{}' -> '{}'", from.display(), to.display());
-    let text = match node_errno(&error) {
-        Some((code, message)) => format!("{code}: {message}, {rendered}"),
-        None => format!("{error}, {rendered}"),
-    };
+    let text = protocol::host::fs_error("rename", Some(from), Some(to), &error).to_string();
     io::Error::new(kind, text)
-}
-
-fn node_errno(error: &io::Error) -> Option<(&'static str, &'static str)> {
-    if let Some(code) = error.raw_os_error() {
-        return errno_pair(code);
-    }
-    kind_pair(error.kind())
-}
-
-fn errno_pair(code: i32) -> Option<(&'static str, &'static str)> {
-    Some(match code {
-        1 => ("EPERM", "operation not permitted"),
-        2 => ("ENOENT", "no such file or directory"),
-        4 => ("EINTR", "interrupted system call"),
-        5 => ("EIO", "i/o error"),
-        6 => ("ENXIO", "no such device or address"),
-        7 => ("E2BIG", "argument list too long"),
-        8 => ("ENOEXEC", "exec format error"),
-        9 => ("EBADF", "bad file descriptor"),
-        11 => ("EAGAIN", "resource temporarily unavailable"),
-        12 => ("ENOMEM", "not enough memory"),
-        13 => ("EACCES", "permission denied"),
-        14 => ("EFAULT", "bad address"),
-        16 => ("EBUSY", "resource busy or locked"),
-        17 => ("EEXIST", "file already exists"),
-        18 => ("EXDEV", "cross-device link not permitted"),
-        19 => ("ENODEV", "no such device"),
-        20 => ("ENOTDIR", "not a directory"),
-        21 => ("EISDIR", "illegal operation on a directory"),
-        22 => ("EINVAL", "invalid argument"),
-        23 => ("ENFILE", "file table overflow"),
-        24 => ("EMFILE", "too many open files"),
-        25 => ("ENOTTY", "inappropriate ioctl for device"),
-        26 => ("ETXTBSY", "text file is busy"),
-        27 => ("EFBIG", "file too large"),
-        28 => ("ENOSPC", "no space left on device"),
-        29 => ("ESPIPE", "invalid seek"),
-        30 => ("EROFS", "read-only file system"),
-        31 => ("EMLINK", "too many links"),
-        32 => ("EPIPE", "broken pipe"),
-        36 => ("ENAMETOOLONG", "name too long"),
-        39 => ("ENOTEMPTY", "directory not empty"),
-        40 => ("ELOOP", "too many symbolic links encountered"),
-        122 => ("EDQUOT", "quota exceeded"),
-        _ => return None,
-    })
-}
-
-fn kind_pair(kind: ErrorKind) -> Option<(&'static str, &'static str)> {
-    Some(match kind {
-        ErrorKind::NotFound => ("ENOENT", "no such file or directory"),
-        ErrorKind::PermissionDenied => ("EACCES", "permission denied"),
-        ErrorKind::AlreadyExists => ("EEXIST", "file already exists"),
-        ErrorKind::WouldBlock => ("EAGAIN", "resource temporarily unavailable"),
-        ErrorKind::InvalidInput => ("EINVAL", "invalid argument"),
-        ErrorKind::Interrupted => ("EINTR", "interrupted system call"),
-        ErrorKind::OutOfMemory => ("ENOMEM", "not enough memory"),
-        ErrorKind::IsADirectory => ("EISDIR", "illegal operation on a directory"),
-        ErrorKind::NotADirectory => ("ENOTDIR", "not a directory"),
-        ErrorKind::ReadOnlyFilesystem => ("EROFS", "read-only file system"),
-        ErrorKind::FileTooLarge => ("EFBIG", "file too large"),
-        ErrorKind::QuotaExceeded => ("EDQUOT", "quota exceeded"),
-        ErrorKind::CrossesDevices => ("EXDEV", "cross-device link not permitted"),
-        ErrorKind::TooManyLinks => ("EMLINK", "too many links"),
-        ErrorKind::InvalidFilename => ("ENAMETOOLONG", "name too long"),
-        ErrorKind::ResourceBusy => ("EBUSY", "resource busy or locked"),
-        ErrorKind::StorageFull => ("ENOSPC", "no space left on device"),
-        ErrorKind::NotSeekable => ("ESPIPE", "invalid seek"),
-        ErrorKind::ArgumentListTooLong => ("E2BIG", "argument list too long"),
-        ErrorKind::ExecutableFileBusy => ("ETXTBSY", "text file is busy"),
-        _ => return None,
-    })
 }
 
 async fn list_files(dir: &Path) -> io::Result<Vec<String>> {
@@ -167,10 +88,10 @@ pub async fn spool_batch(dir: &Path, batch: &CaptureBatch, now_ms: i64) -> io::R
 pub(crate) async fn spool_text(dir: &Path, body: &str, now_ms: i64) -> io::Result<PathBuf> {
     let dir = dir.to_path_buf();
     let body = body.to_string();
-    with_timeout(async move { write_text(&dir, &body, now_ms).await }).await
+    with_timeout(async move { write_spool_file(&dir, &body, now_ms).await }).await
 }
 
-async fn write_text(dir: &Path, body: &str, now_ms: i64) -> io::Result<PathBuf> {
+async fn write_spool_file(dir: &Path, body: &str, now_ms: i64) -> io::Result<PathBuf> {
     ensure_dir(dir, 0o700).await?;
     let file = dir.join(format!("{now_ms}-{}.json", uuid::Uuid::new_v4()));
     let temp = PathBuf::from(format!("{}.tmp", file.display()));

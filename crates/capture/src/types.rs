@@ -6,8 +6,8 @@ use protocol::MessageRole;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use crate::env::{EnvLookup, ProcessEnv};
 use crate::transport::CaptureUser;
+use protocol::host::{Env, ProcessEnv};
 
 pub type CaptureRole = MessageRole;
 
@@ -97,7 +97,7 @@ pub struct CaptureWriterOptions {
     pub now_ms: Option<Arc<dyn Fn() -> i64 + Send + Sync>>,
     pub max_chunk_bytes: Option<f64>,
     pub redaction: Option<CaptureRedactionOptions>,
-    pub env: Arc<dyn EnvLookup>,
+    pub env: Arc<dyn Env + Send + Sync>,
     pub ca_path: Option<PathBuf>,
     pub timeout: Duration,
     pub exchange: Option<HttpExchange>,

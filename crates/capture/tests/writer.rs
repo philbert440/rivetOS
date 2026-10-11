@@ -1,9 +1,10 @@
+use parking_lot::Mutex;
 use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use capture::{
@@ -62,7 +63,7 @@ impl Server {
                 let Some(hit) = read_hit(&mut stream) else {
                     continue;
                 };
-                hits_thread.lock().unwrap().push(Hit {
+                hits_thread.lock().push(Hit {
                     method: hit.method.clone(),
                     path: hit.path.clone(),
                     token: hit.token.clone(),
@@ -252,9 +253,7 @@ fn open_writer(
     let mut opts = CaptureWriterOptions::new(url);
     opts.spool_dir = Some(spool.clone());
     opts.now_ms = Some(Arc::new(move || now_ms));
-    opts.log = Some(Arc::new(move |line| {
-        sink.lock().unwrap().push(line.to_string())
-    }));
+    opts.log = Some(Arc::new(move |line| sink.lock().push(line.to_string())));
     opts.env = Arc::new(env);
     opts.user = user;
     opts.max_chunk_bytes = limit;
@@ -317,7 +316,7 @@ async fn posts_the_exact_batch() {
         }
     );
     assert_eq!(
-        server.hits.lock().unwrap()[0].body,
+        server.hits.lock()[0].body,
         serde_json::to_string(&batch()).unwrap()
     );
 }
@@ -354,7 +353,6 @@ async fn spools_on_http_and_transport_failure() {
         built
             .logs
             .lock()
-            .unwrap()
             .iter()
             .any(|line| line == "Error: capture HTTP 503")
     );
@@ -384,7 +382,6 @@ async fn spools_on_http_and_transport_failure() {
         closed
             .logs
             .lock()
-            .unwrap()
             .iter()
             .any(|line| line.starts_with("Error:"))
     );
@@ -413,10 +410,10 @@ async fn reports_spool_failure_without_saving() {
         "capture spool failed; batch was not saved: Error: ENOTDIR: not a directory, open '"
     ));
     assert!(error.contains(&blocked.display().to_string()));
-    let logs = built.logs.lock().unwrap().clone();
+    let logs = built.logs.lock().clone();
     assert!(logs.iter().any(|line| line == &error));
     assert!(logs.iter().any(|line| line == "Error: capture HTTP 503"));
-    assert_eq!(server.hits.lock().unwrap().len(), 1);
+    assert_eq!(server.hits.lock().len(), 1);
     assert_eq!(std::fs::read_to_string(&blocked).unwrap(), "blocked");
 }
 
@@ -450,7 +447,7 @@ async fn replays_oldest_first_and_dead_letters_client_errors() {
         (200, ok_body(1, 0)),
     ])));
     let pending = queue.clone();
-    let server = Server::start(move |_| pending.lock().unwrap().pop_front().unwrap());
+    let server = Server::start(move |_| pending.lock().pop_front().unwrap());
     let spool = tempfile::tempdir().unwrap().keep();
     for time in [30, 10, 20] {
         let mut item = batch();
@@ -476,7 +473,6 @@ async fn replays_oldest_first_and_dead_letters_client_errors() {
     let keys = server
         .hits
         .lock()
-        .unwrap()
         .iter()
         .map(|hit| {
             serde_json::from_str::<Value>(&hit.body).unwrap()["session_key"]
@@ -511,7 +507,7 @@ async fn stops_replay_on_server_and_transport_errors() {
     );
     let report = built.writer.replay(capture::ReplayOptions::default()).await;
     assert_eq!((report.replayed, report.remaining, report.dead), (0, 2, 0));
-    assert_eq!(server.hits.lock().unwrap().len(), 1);
+    assert_eq!(server.hits.lock().len(), 1);
 
     let closed = open_writer(
         &accept_and_drop(),
@@ -548,7 +544,7 @@ async fn drains_fifty_files_before_the_new_write() {
         None,
     );
     built.writer.write(batch()).await.unwrap();
-    let hits = server.hits.lock().unwrap();
+    let hits = server.hits.lock();
     assert_eq!(hits.len(), 51);
     assert_eq!(
         serde_json::from_str::<Value>(&hits[0].body).unwrap()["session_key"],
@@ -607,7 +603,7 @@ async fn packs_chunks_and_finalizes_only_the_last() {
         None,
     );
     let saved = built.writer.write(source).await.unwrap();
-    let hits = server.hits.lock().unwrap();
+    let hits = server.hits.lock();
     assert!(hits.len() > 1);
     assert_eq!(hits[0].body.len(), limit);
     for hit in hits.iter() {
@@ -671,7 +667,7 @@ async fn sends_an_empty_finalize_batch() {
             skipped: 0,
         }
     );
-    let posted: Value = serde_json::from_str(&server.hits.lock().unwrap()[0].body).unwrap();
+    let posted: Value = serde_json::from_str(&server.hits.lock()[0].body).unwrap();
     assert_eq!(posted, serde_json::to_value(empty).unwrap());
 }
 
@@ -734,7 +730,6 @@ async fn returns_every_spooled_chunk() {
         built
             .logs
             .lock()
-            .unwrap()
             .iter()
             .any(|line| line.starts_with("Error:"))
     );
@@ -774,7 +769,7 @@ async fn elides_tool_args_over_budget() {
         None,
     );
     built.writer.write(source).await.unwrap();
-    let posted: CaptureBatch = serde_json::from_str(&server.hits.lock().unwrap()[0].body).unwrap();
+    let posted: CaptureBatch = serde_json::from_str(&server.hits.lock()[0].body).unwrap();
     assert_eq!(
         posted.messages[0].tool_args,
         Some(json!({"_elided": true, "bytes": bytes}))
@@ -787,7 +782,6 @@ async fn elides_tool_args_over_budget() {
         built
             .logs
             .lock()
-            .unwrap()
             .iter()
             .any(|line| line == &format!("elided tool_args for event big ({bytes} bytes)"))
     );
@@ -828,7 +822,7 @@ async fn caps_content_and_tool_result() {
         None,
     );
     built.writer.write(source).await.unwrap();
-    let posted: CaptureBatch = serde_json::from_str(&server.hits.lock().unwrap()[0].body).unwrap();
+    let posted: CaptureBatch = serde_json::from_str(&server.hits.lock()[0].body).unwrap();
     assert_eq!(posted.messages[0].content, "x".repeat(16_000));
     assert_eq!(
         posted.messages[0].tool_result.as_deref(),
@@ -875,17 +869,10 @@ async fn dead_letters_an_oversized_spool_once() {
         .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
         .collect();
     assert_eq!(dead, vec![name.to_string()]);
-    assert!(
-        built
-            .logs
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|line| line.contains("413"))
-    );
+    assert!(built.logs.lock().iter().any(|line| line.contains("413")));
     let again = built.writer.replay(capture::ReplayOptions::default()).await;
     assert_eq!((again.replayed, again.dead, again.remaining), (0, 0, 0));
-    assert_eq!(server.hits.lock().unwrap().len(), 1);
+    assert_eq!(server.hits.lock().len(), 1);
 }
 
 #[tokio::test]
@@ -925,7 +912,7 @@ async fn elides_huge_metadata() {
         None,
     );
     built.writer.write(source).await.unwrap();
-    let raw = server.hits.lock().unwrap()[0].body.clone();
+    let raw = server.hits.lock()[0].body.clone();
     assert!(raw.len() <= 768 * 1024);
     let posted: CaptureBatch = serde_json::from_str(&raw).unwrap();
     let metadata = posted.messages[0].metadata.as_ref().unwrap();
@@ -966,7 +953,7 @@ async fn elides_settings_when_the_header_exceeds_the_limit() {
         None,
     );
     built.writer.write(source).await.unwrap();
-    let raw = server.hits.lock().unwrap()[0].body.clone();
+    let raw = server.hits.lock()[0].body.clone();
     assert!(raw.len() <= 500);
     let posted: Value = serde_json::from_str(&raw).unwrap();
     assert_eq!(posted["settings"], json!({"_elided": true, "bytes": bytes}));
@@ -1023,14 +1010,13 @@ async fn refuses_a_singleton_that_still_exceeds_the_limit() {
             error: CHUNK_OVER_LIMIT.to_string()
         }
     );
-    assert_eq!(server.hits.lock().unwrap().len(), 1);
-    let posted: CaptureBatch = serde_json::from_str(&server.hits.lock().unwrap()[0].body).unwrap();
+    assert_eq!(server.hits.lock().len(), 1);
+    let posted: CaptureBatch = serde_json::from_str(&server.hits.lock()[0].body).unwrap();
     assert_eq!(posted.messages[0].event_id, "e1");
     assert!(
         built
             .logs
             .lock()
-            .unwrap()
             .iter()
             .any(|line| line == CHUNK_OVER_LIMIT)
     );
@@ -1069,12 +1055,11 @@ async fn does_not_spool_a_header_that_still_exceeds() {
             error: CHUNK_OVER_LIMIT.to_string()
         }
     );
-    assert!(server.hits.lock().unwrap().is_empty());
+    assert!(server.hits.lock().is_empty());
     assert!(
         built
             .logs
             .lock()
-            .unwrap()
             .iter()
             .any(|line| line == CHUNK_OVER_LIMIT)
     );
@@ -1098,7 +1083,7 @@ async fn redaction_is_opt_in() {
     );
     built.writer.write(secret.clone()).await.unwrap();
     assert_eq!(
-        server.hits.lock().unwrap()[0].body,
+        server.hits.lock()[0].body,
         serde_json::to_string(&secret).unwrap()
     );
     assert_eq!(std::fs::read_dir(&spool).unwrap().count(), 0);
@@ -1124,14 +1109,14 @@ async fn redacts_before_post_and_logs_a_count() {
         Some(redaction),
     );
     built.writer.write(secret).await.unwrap();
-    let posted: CaptureBatch = serde_json::from_str(&server.hits.lock().unwrap()[0].body).unwrap();
+    let posted: CaptureBatch = serde_json::from_str(&server.hits.lock()[0].body).unwrap();
     assert!(posted.messages[0].content.contains("[REDACTED:sk_token]"));
     assert!(
         !posted.messages[0]
             .content
             .contains("sk-abcdefghijklmnopqrstuvwxyz")
     );
-    let logs = built.logs.lock().unwrap().clone();
+    let logs = built.logs.lock().clone();
     assert!(
         logs.iter()
             .any(|line| line.starts_with("redacted ") && line.ends_with(" spans"))
@@ -1148,7 +1133,7 @@ async fn env_enable_redacts_and_falsey_values_do_not() {
     let env = MapEnv::from_pairs(&[("RIVETOS_CAPTURE_REDACTION", "1")]);
     let built = open_writer(&server.url, spool, 1000, None, env, UserSource::Owner, None);
     built.writer.write(secret).await.unwrap();
-    let posted: CaptureBatch = serde_json::from_str(&server.hits.lock().unwrap()[0].body).unwrap();
+    let posted: CaptureBatch = serde_json::from_str(&server.hits.lock()[0].body).unwrap();
     assert!(posted.messages[0].content.contains("[REDACTED:sk_token]"));
 
     for value in ["0", "false", "no", "off"] {
@@ -1160,7 +1145,7 @@ async fn env_enable_redacts_and_falsey_values_do_not() {
         let built = open_writer(&server.url, spool, 1000, None, env, UserSource::Owner, None);
         built.writer.write(secret.clone()).await.unwrap();
         assert_eq!(
-            server.hits.lock().unwrap()[0].body,
+            server.hits.lock()[0].body,
             serde_json::to_string(&secret).unwrap()
         );
     }
@@ -1183,7 +1168,7 @@ async fn empty_redaction_options_do_not_override_env() {
         Some(CaptureRedactionOptions::default()),
     );
     built.writer.write(secret).await.unwrap();
-    let posted: CaptureBatch = serde_json::from_str(&server.hits.lock().unwrap()[0].body).unwrap();
+    let posted: CaptureBatch = serde_json::from_str(&server.hits.lock()[0].body).unwrap();
     assert!(posted.messages[0].content.contains("[REDACTED:sk_token]"));
 }
 
@@ -1209,7 +1194,7 @@ async fn explicit_disable_wins_over_env() {
     );
     built.writer.write(secret.clone()).await.unwrap();
     assert_eq!(
-        server.hits.lock().unwrap()[0].body,
+        server.hits.lock()[0].body,
         serde_json::to_string(&secret).unwrap()
     );
 }
@@ -1265,10 +1250,7 @@ async fn routed_user_token_and_private_spool() {
         None,
     );
     built.writer.write(one()).await.unwrap();
-    assert_eq!(
-        server.hits.lock().unwrap()[0].token.as_deref(),
-        Some("tok-123")
-    );
+    assert_eq!(server.hits.lock()[0].token.as_deref(), Some("tok-123"));
     status.store(403, Ordering::SeqCst);
     let saved = built.writer.write(one()).await.unwrap();
     assert!(matches!(saved, WriteOutcome::Spooled { .. }));
@@ -1401,7 +1383,7 @@ async fn user_comes_from_the_environment() {
         None,
     );
     plain.writer.write(one()).await.unwrap();
-    let hits = server.hits.lock().unwrap();
+    let hits = server.hits.lock();
     assert_eq!(hits[0].token.as_deref(), Some("tok-123"));
     assert!(hits[1].token.is_none());
     assert!(hits[2].token.is_none());
@@ -1465,7 +1447,7 @@ async fn replays_chunked_files_in_write_order() {
         .await;
     assert_eq!(report.dead, 0);
     assert_eq!(report.remaining, 0);
-    let hits = server.hits.lock().unwrap();
+    let hits = server.hits.lock();
     let seen = hits
         .iter()
         .map(|hit| {
@@ -1515,7 +1497,7 @@ async fn later_chunk_spool_failure_returns_not_saved() {
     let queue = Arc::new(Mutex::new(VecDeque::from([200u16])));
     let pending = queue.clone();
     let server = Server::start(move |_| {
-        let status = pending.lock().unwrap().pop_front().unwrap_or(503);
+        let status = pending.lock().pop_front().unwrap_or(503);
         if status == 200 {
             (200, ok_body(1, 0))
         } else {
@@ -1539,7 +1521,7 @@ async fn later_chunk_spool_failure_returns_not_saved() {
         panic!("expected not saved");
     };
     assert!(error.contains("capture spool failed; batch was not saved:"));
-    assert!(server.hits.lock().unwrap().len() >= 2);
+    assert!(server.hits.lock().len() >= 2);
     assert_eq!(std::fs::read_to_string(&blocked).unwrap(), "blocked");
 }
 
@@ -1554,7 +1536,7 @@ async fn plain_http_does_not_read_the_ca_file() {
     let writer = create_capture_writer(opts).unwrap();
     let saved = writer.write(batch()).await.unwrap();
     assert!(matches!(saved, WriteOutcome::Delivered { .. }));
-    assert_eq!(server.hits.lock().unwrap().len(), 1);
+    assert_eq!(server.hits.lock().len(), 1);
 }
 
 #[tokio::test]
@@ -1613,7 +1595,7 @@ async fn explicit_null_survives_post_and_spool() {
     );
     let saved = built.writer.write_value(input).await.unwrap();
     assert!(matches!(saved, WriteOutcome::Delivered { .. }));
-    assert_eq!(server.hits.lock().unwrap()[0].body, expected);
+    assert_eq!(server.hits.lock()[0].body, expected);
 
     let mut typed = one();
     typed.settings = Some(Value::Null);
@@ -1637,7 +1619,7 @@ async fn explicit_null_survives_post_and_spool() {
         panic!("expected spool");
     };
     assert_eq!(std::fs::read_to_string(&file).unwrap(), typed_wire);
-    assert_eq!(refused.hits.lock().unwrap()[0].body, typed_wire);
+    assert_eq!(refused.hits.lock()[0].body, typed_wire);
 }
 
 #[tokio::test]
@@ -1661,13 +1643,12 @@ async fn global_replace_keeps_trailing_empty_match() {
     batch.messages[0].content = "a".to_string();
     let saved = built.writer.write(batch).await.unwrap();
     assert!(matches!(saved, WriteOutcome::Delivered { .. }));
-    let body = server.hits.lock().unwrap()[0].body.clone();
+    let body = server.hits.lock()[0].body.clone();
     assert!(body.contains(r#""content":"[REDACTED:pattern:0][REDACTED:pattern:0]""#));
     assert!(
         built
             .logs
             .lock()
-            .unwrap()
             .iter()
             .any(|line| line == "redacted 2 spans")
     );
@@ -1694,7 +1675,7 @@ async fn replacement_keeps_lone_surrogate() {
     );
     let saved = built.writer.write_value(input).await.unwrap();
     assert!(matches!(saved, WriteOutcome::Delivered { .. }));
-    let body = server.hits.lock().unwrap()[0].body.clone();
+    let body = server.hits.lock()[0].body.clone();
     let expected = r#"{"session_key":"s","agent":"a","messages":[{"event_id":"e","role":"user","content":"[REDACTED:pattern:0]\ude00","tool_args":{"q":"[REDACTED:pattern:0]\ude00"}}]}"#;
     assert_eq!(body, expected);
     let refused = Server::start(|_| (503, String::new()));
@@ -1743,10 +1724,10 @@ async fn invalid_patterns_only_resolve_to_none() {
     batch.messages[0].tool_args = Some(json!({"password": "hunter2"}));
     let saved = built.writer.write(batch).await.unwrap();
     assert!(matches!(saved, WriteOutcome::Delivered { .. }));
-    let body = &server.hits.lock().unwrap()[0].body;
+    let body = &server.hits.lock()[0].body;
     assert!(body.contains("hunter2"));
     assert!(!body.contains("REDACTED"));
-    assert!(built.logs.lock().unwrap().is_empty());
+    assert!(built.logs.lock().is_empty());
 }
 
 #[tokio::test]
@@ -1782,7 +1763,7 @@ async fn extension_field_splits_like_the_posted_object() {
     );
     let saved = built.writer.write_value(input).await.unwrap();
     assert!(matches!(saved, WriteOutcome::Delivered { inserted: 2, .. }));
-    let hits = server.hits.lock().unwrap();
+    let hits = server.hits.lock();
     assert_eq!(hits.len(), 2);
     assert_eq!(hits[0].body, first);
     assert_eq!(hits[1].body, second);
@@ -1816,7 +1797,7 @@ async fn redirect_307_and_308_keep_the_post_body() {
         );
         let saved = built.writer.write(one()).await.unwrap();
         assert!(matches!(saved, WriteOutcome::Delivered { inserted: 1, .. }));
-        let hits = server.hits.lock().unwrap();
+        let hits = server.hits.lock();
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].method, "POST");
         assert_eq!(hits[1].method, "POST");
@@ -1849,7 +1830,7 @@ async fn redirect_301_302_and_303_post_become_get() {
         );
         let saved = built.writer.write(one()).await.unwrap();
         assert!(matches!(saved, WriteOutcome::Delivered { inserted: 1, .. }));
-        let hits = server.hits.lock().unwrap();
+        let hits = server.hits.lock();
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].method, "POST");
         assert_eq!(hits[1].method, "GET");
@@ -1883,7 +1864,7 @@ async fn the_twenty_first_redirect_is_a_transport_error() {
     );
     let saved = built.writer.write(one()).await.unwrap();
     assert!(matches!(saved, WriteOutcome::Spooled { .. }));
-    assert_eq!(server.hits.lock().unwrap().len(), 21);
+    assert_eq!(server.hits.lock().len(), 21);
     assert_eq!(std::fs::read_dir(&spool).unwrap().count(), 1);
 }
 
@@ -1914,7 +1895,7 @@ async fn twenty_redirects_then_ok_is_delivered() {
     );
     let saved = built.writer.write(one()).await.unwrap();
     assert!(matches!(saved, WriteOutcome::Delivered { inserted: 1, .. }));
-    let hits = server.hits.lock().unwrap();
+    let hits = server.hits.lock();
     assert_eq!(hits.len(), 21);
     assert!(hits.iter().all(|hit| hit.method == "POST"));
     assert!(!hits.last().unwrap().body.is_empty());
@@ -1941,6 +1922,55 @@ async fn a_non_http_redirect_is_a_transport_error() {
     );
     let saved = built.writer.write(one()).await.unwrap();
     assert!(matches!(saved, WriteOutcome::Spooled { .. }));
-    assert_eq!(server.hits.lock().unwrap().len(), 1);
+    assert_eq!(server.hits.lock().len(), 1);
     assert_eq!(std::fs::read_dir(&spool).unwrap().count(), 1);
+}
+
+#[tokio::test]
+async fn thousands_of_rows_stay_within_the_chunk_limit() {
+    let bodies = Arc::new(Mutex::new(Vec::new()));
+    let stored = bodies.clone();
+    let exchange: capture::HttpExchange = Arc::new(move |body: &str| {
+        stored.lock().push(body.to_string());
+        Ok(capture::HttpReply {
+            status: 200,
+            body: r#"{"ok":true,"conversation_id":"c","inserted":1,"skipped":0}"#.to_string(),
+        })
+    });
+    let spool = tempfile::tempdir().unwrap();
+    let mut opts = CaptureWriterOptions::new("http://127.0.0.1:9");
+    opts.spool_dir = Some(spool.path().to_path_buf());
+    opts.env = Arc::new(MapEnv::default());
+    opts.user = UserSource::Owner;
+    opts.max_chunk_bytes = Some((256 * 1024) as f64);
+    opts.exchange = Some(exchange);
+    let writer = create_capture_writer(opts).unwrap();
+    let content = "x".repeat(4096);
+    let messages = (0..2000)
+        .map(|index| message(&format!("e{index}"), CaptureRole::User, &content))
+        .collect();
+    let batch = CaptureBatch {
+        session_key: "s".to_string(),
+        agent: "a".to_string(),
+        channel: None,
+        title: None,
+        settings: None,
+        task_id: None,
+        finalize: Some(true),
+        created_at: None,
+        updated_at: None,
+        messages,
+    };
+    let saved = writer.write(batch).await.unwrap();
+    assert!(matches!(saved, WriteOutcome::Delivered { .. }));
+    let limit = 256 * 1024;
+    let posted = bodies.lock();
+    let mut total = 0usize;
+    assert!(posted.len() > 1);
+    for body in posted.iter() {
+        assert!(body.len() <= limit);
+        let value: Value = serde_json::from_str(body).unwrap();
+        total += value["messages"].as_array().unwrap().len();
+    }
+    assert_eq!(total, 2000);
 }

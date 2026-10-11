@@ -1,7 +1,8 @@
+use parking_lot::Mutex;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use capture::{
@@ -10,6 +11,48 @@ use capture::{
 use serde_json::Value;
 
 const PROVENANCE: &str = "ts-runtime-c72e851f-rivet-harness";
+
+fn js_json(text: &str) -> Value {
+    js_json_value(&protocol::js::parse(text).unwrap())
+}
+
+fn json_number(number: f64) -> Value {
+    if number.is_finite() && number.fract() == 0.0 {
+        if number >= 0.0 {
+            let bits = number as u64;
+            if bits as f64 == number {
+                return Value::Number(bits.into());
+            }
+        } else {
+            let bits = number as i64;
+            if bits as f64 == number {
+                return Value::Number(bits.into());
+            }
+        }
+    }
+    serde_json::Number::from_f64(number)
+        .map(Value::Number)
+        .unwrap_or(Value::Null)
+}
+
+fn js_json_value(value: &protocol::js::JsValue) -> Value {
+    match value {
+        protocol::js::JsValue::Null => Value::Null,
+        protocol::js::JsValue::Bool(flag) => Value::Bool(*flag),
+        protocol::js::JsValue::Number(number) => json_number(*number),
+        protocol::js::JsValue::String(text) => Value::String(text.to_utf8().to_string()),
+        protocol::js::JsValue::Array(items) => {
+            Value::Array(items.iter().map(js_json_value).collect())
+        }
+        protocol::js::JsValue::Object(object) => {
+            let mut map = serde_json::Map::new();
+            for (key, child) in object.iter() {
+                map.insert(key.to_utf8().to_string(), js_json_value(child));
+            }
+            Value::Object(map)
+        }
+    }
+}
 
 fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -57,7 +100,7 @@ impl Server {
                     reply.len()
                 );
                 let _ = stream.write_all(response.as_bytes());
-                stored.lock().unwrap().push(hit);
+                stored.lock().push(hit);
             }
         });
         Self {
@@ -156,9 +199,7 @@ fn assert_same(case: &str, actual: &str, expected: &str) {
 
 #[tokio::test]
 async fn golden_writer_matches_the_typescript_runtime() {
-    let results = protocol::js::to_serde(
-        &protocol::js::parse(&std::fs::read_to_string(fixture("results.json")).unwrap()).unwrap(),
-    );
+    let results = js_json(&std::fs::read_to_string(fixture("results.json")).unwrap());
     for case in [
         "single",
         "numbers_and_keys",
@@ -169,12 +210,8 @@ async fn golden_writer_matches_the_typescript_runtime() {
     ] {
         let raw = std::fs::read_to_string(fixture(&format!("{case}.input.json"))).unwrap();
         let input = protocol::js::parse(&raw).unwrap();
-        let expected = protocol::js::to_serde(
-            &protocol::js::parse(
-                &std::fs::read_to_string(fixture(&format!("{case}.posts.json"))).unwrap(),
-            )
-            .unwrap(),
-        );
+        let expected =
+            js_json(&std::fs::read_to_string(fixture(&format!("{case}.posts.json"))).unwrap());
         let server = Server::start();
         let spool = tempfile::tempdir().unwrap();
         let mut opts = CaptureWriterOptions::new(&server.url);
@@ -196,12 +233,10 @@ async fn golden_writer_matches_the_typescript_runtime() {
         let saved = writer.write_value(input).await.unwrap();
         let posts = expected.as_array().unwrap();
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while server.hits.lock().unwrap().len() < posts.len()
-            && std::time::Instant::now() < deadline
-        {
+        while server.hits.lock().len() < posts.len() && std::time::Instant::now() < deadline {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        let hits = server.hits.lock().unwrap();
+        let hits = server.hits.lock();
         assert_eq!(hits.len(), posts.len(), "{case}");
         for (hit, post) in hits.iter().zip(posts) {
             assert_eq!(hit.method, post["method"].as_str().unwrap_or(""));

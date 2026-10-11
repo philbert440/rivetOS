@@ -1,6 +1,7 @@
+use parking_lot::{Condvar, Mutex};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 use capture::{
@@ -394,7 +395,7 @@ async fn unreadable_same_host_body_stays_live() {
     let token = host_token(pid, "eacces", &host);
     let file = write_owner(&lock_dir, pid, &host, &token);
     let bytes = std::fs::read(&file).unwrap();
-    let fault = Arc::new(std::sync::Mutex::new(Some(ReadFault {
+    let fault = Arc::new(Mutex::new(Some(ReadFault {
         path: file.clone(),
         code: "EACCES".to_string(),
     })));
@@ -415,7 +416,7 @@ async fn enoent_body_is_already_released() {
     let pid = dead_pid();
     let token = host_token(pid, "gone", &host);
     let file = write_owner(&lock_dir, pid, &host, &token);
-    let fault = Arc::new(std::sync::Mutex::new(Some(ReadFault {
+    let fault = Arc::new(Mutex::new(Some(ReadFault {
         path: file.clone(),
         code: "ENOENT".to_string(),
     })));
@@ -608,7 +609,7 @@ async fn smaller_token_takes_the_first_turn() {
     };
     let inside = Arc::new(AtomicUsize::new(0));
     let max_inside = Arc::new(AtomicUsize::new(0));
-    let order = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let order = Arc::new(Mutex::new(Vec::<String>::new()));
     let (hold_tx, hold_rx) = watch::channel(false);
     let run = |label: &'static str| {
         let lock_dir = lock_dir.clone();
@@ -639,7 +640,7 @@ async fn smaller_token_takes_the_first_turn() {
                         .cloned()
                         .unwrap_or_else(|| label.to_string());
                     let len = {
-                        let mut guard = order.lock().unwrap();
+                        let mut guard = order.lock();
                         guard.push(first.clone());
                         guard.len()
                     };
@@ -667,7 +668,7 @@ async fn smaller_token_takes_the_first_turn() {
     }
     assert_eq!(arrived.load(Ordering::SeqCst), 2);
     let saw = std::time::Instant::now();
-    while order.lock().unwrap().is_empty() && saw.elapsed() < Duration::from_secs(2) {
+    while order.lock().is_empty() && saw.elapsed() < Duration::from_secs(2) {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     assert_eq!(max_inside.load(Ordering::SeqCst), 1);
@@ -675,7 +676,7 @@ async fn smaller_token_takes_the_first_turn() {
     let mut results = vec![first.await.unwrap(), second.await.unwrap()];
     results.sort();
     assert_eq!(results, ["a", "b"]);
-    assert_eq!(order.lock().unwrap().len(), 2);
+    assert_eq!(order.lock().len(), 2);
     assert_eq!(max_inside.load(Ordering::SeqCst), 1);
     assert!(lock_dir.is_dir());
 }
@@ -859,8 +860,8 @@ fn stalled_unlink_lets_the_runtime_progress() {
     options.unlink_hook = Some(Arc::new(move || {
         entered_hook.store(true, Ordering::SeqCst);
         let (lock, cv) = &*gate_hook;
-        let guard = lock.lock().unwrap();
-        let _ = cv.wait_timeout(guard, Duration::from_secs(3)).unwrap();
+        let mut guard = lock.lock();
+        cv.wait_for(&mut guard, Duration::from_secs(3));
     }));
     let checker_entered = entered.clone();
     let checker_progressed = progressed.clone();
@@ -876,7 +877,7 @@ fn stalled_unlink_lets_the_runtime_progress() {
         std::thread::sleep(Duration::from_millis(200));
         let saw = checker_progressed.load(Ordering::SeqCst);
         let (lock, cv) = &*checker_gate;
-        let mut guard = lock.lock().unwrap();
+        let mut guard = lock.lock();
         *guard = true;
         cv.notify_all();
         saw
@@ -920,9 +921,9 @@ fn cancelled_cleanup_still_unlinks_the_holder() {
         if seen == 0 {
             entered_hook.store(true, Ordering::SeqCst);
             let (lock, cv) = &*gate_hook;
-            let mut guard = lock.lock().unwrap();
+            let mut guard = lock.lock();
             while !*guard {
-                guard = cv.wait(guard).unwrap();
+                cv.wait(&mut guard);
             }
         }
     }));
@@ -950,7 +951,7 @@ fn cancelled_cleanup_still_unlinks_the_holder() {
         let joined = task.await;
         {
             let (lock, cv) = &*gate_release;
-            let mut guard = lock.lock().unwrap();
+            let mut guard = lock.lock();
             *guard = true;
             cv.notify_all();
         }
@@ -968,12 +969,21 @@ fn cancelled_cleanup_still_unlinks_the_holder() {
             tokio::task::yield_now().await;
         }
         assert_eq!(calls_wait.load(Ordering::SeqCst), 2);
-        let names = std::fs::read_dir(&lock_probe)
-            .unwrap()
-            .filter_map(|entry| entry.ok())
-            .map(|entry| entry.file_name().to_string_lossy().into_owned())
-            .filter(|name| name.starts_with("holder.") || name.starts_with(".holderpub."))
-            .collect::<Vec<_>>();
-        assert!(names.is_empty(), "{names:?}");
+        let start = Instant::now();
+        loop {
+            let names = std::fs::read_dir(&lock_probe)
+                .unwrap()
+                .filter_map(|entry| entry.ok())
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .filter(|name| name.starts_with("holder.") || name.starts_with(".holderpub."))
+                .collect::<Vec<_>>();
+            if names.is_empty() {
+                break;
+            }
+            if start.elapsed() > Duration::from_secs(2) {
+                panic!("holder files remained after unlink: {names:?}");
+            }
+            tokio::task::yield_now().await;
+        }
     });
 }

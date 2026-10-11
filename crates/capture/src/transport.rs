@@ -2,7 +2,9 @@ use thiserror::Error;
 
 use crate::base64url;
 use crate::den_url::{self, ResolvedDenUrl};
-use crate::env::{self, EnvLookup};
+use protocol::host::Env;
+
+use crate::env;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CaptureUser {
@@ -52,8 +54,8 @@ pub fn capture_user(fallback_id: &str, token: &str) -> CaptureUser {
     }
 }
 
-pub fn capture_user_from_env(env: &dyn EnvLookup) -> Result<Option<CaptureUser>, MissingUserToken> {
-    match env.get("RIVETOS_USER_ID") {
+pub fn capture_user_from_env(env: &dyn Env) -> Result<Option<CaptureUser>, MissingUserToken> {
+    match env.var("RIVETOS_USER_ID") {
         None => Ok(None),
         Some(id) if id.is_empty() => Ok(None),
         Some(id) => {
@@ -68,7 +70,7 @@ pub fn capture_user_from_env(env: &dyn EnvLookup) -> Result<Option<CaptureUser>,
 }
 
 pub fn resolve_capture_transport(
-    env: &dyn EnvLookup,
+    env: &dyn Env,
     mut read_config: impl FnMut() -> Option<String>,
 ) -> CaptureTransport {
     let forced = env::trimmed(env, "RIVETOS_CAPTURE_TRANSPORT");
@@ -138,13 +140,13 @@ pub fn resolve_capture_transport(
 fn den_transport(
     den_url: String,
     resolved: Option<&ResolvedDenUrl>,
-    env: &dyn EnvLookup,
+    env: &dyn Env,
     user_token: &str,
     routed_user: bool,
 ) -> CaptureTransport {
     let warnings = resolved.and_then(|item| item.warnings.clone());
     let user = if routed_user && !user_token.is_empty() {
-        env.get("RIVETOS_USER_ID")
+        env.var("RIVETOS_USER_ID")
             .map(|id| capture_user(&id, user_token))
     } else {
         None

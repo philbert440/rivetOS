@@ -64,10 +64,6 @@ x509-parser = "0.18.1"
 zstd = "0.13"
 regex = "1"
 anyhow = "1"
-clap = { version = "4", features = ["derive"] }
-hex = "0.4"
-reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
-sha2 = "0.10"
 tempfile = "3"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 

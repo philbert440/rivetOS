@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::env::EnvLookup;
+use protocol::host::Env;
 
 pub const DEFAULT_CA_PATH: &str = "/rivet-shared/rivet-ca/intermediate/chain.pem";
 pub const DEFAULT_DEN_PORT: u32 = 5174;
@@ -80,7 +80,7 @@ fn section_header(line: &str) -> Option<&'static str> {
     } else {
         "mesh"
     };
-    let rest = rest.trim_start_matches([' ', '\t']);
+    let rest = protocol::js::js_trim_start(rest);
     if rest.is_empty() || rest.starts_with('#') {
         Some(name)
     } else {
@@ -89,7 +89,9 @@ fn section_header(line: &str) -> Option<&'static str> {
 }
 
 fn starts_unindented(line: &str) -> bool {
-    line.chars().next().is_some_and(|ch| !ch.is_whitespace())
+    line.chars()
+        .next()
+        .is_some_and(|ch| !protocol::js::is_js_whitespace(ch))
 }
 
 fn blank_or_comment(line: &str) -> bool {
@@ -98,12 +100,15 @@ fn blank_or_comment(line: &str) -> bool {
 }
 
 fn leading_ws(line: &str) -> Option<usize> {
-    let count = line.chars().take_while(|ch| ch.is_whitespace()).count();
+    let count = line
+        .chars()
+        .take_while(|ch| protocol::js::is_js_whitespace(*ch))
+        .count();
     if count == 0 { None } else { Some(count) }
 }
 
 fn split_key(line: &str) -> Option<(&str, &str)> {
-    let trimmed = line.trim_start();
+    let trimmed = protocol::js::js_trim_start(line);
     let (key, rest) = trimmed.split_once(':')?;
     if key.is_empty()
         || !key
@@ -181,21 +186,24 @@ fn unwrap_quotes(value: &str) -> String {
 }
 
 pub fn den_tls_configured(
-    env: &dyn EnvLookup,
+    env: &dyn Env,
     config: &DenConfigScalars,
     exists: &dyn Fn(&Path) -> bool,
 ) -> bool {
-    let cert_env = env.get("RIVETOS_DEN_TLS_CERT");
-    let key_env = env.get("RIVETOS_DEN_TLS_KEY");
+    let cert_env = env.var("RIVETOS_DEN_TLS_CERT");
+    let key_env = env.var("RIVETOS_DEN_TLS_KEY");
     let mut cert = first_non_empty([
         config.tls_cert.as_deref(),
-        cert_env.as_deref().map(str::trim),
+        cert_env.as_deref().map(protocol::js::js_trim),
     ]);
-    let mut key = first_non_empty([config.tls_key.as_deref(), key_env.as_deref().map(str::trim)]);
+    let mut key = first_non_empty([
+        config.tls_key.as_deref(),
+        key_env.as_deref().map(protocol::js::js_trim),
+    ]);
     if (cert.is_empty() || key.is_empty())
         && let Some(node_name) = config.node_name.as_deref().filter(|name| !name.is_empty())
     {
-        let shared_env = env.get("RIVETOS_SHARED_DIR");
+        let shared_env = env.var("RIVETOS_SHARED_DIR");
         let shared = shared_env
             .as_deref()
             .map(protocol::js::js_trim)
@@ -284,7 +292,7 @@ fn loopback_http(url: &str) -> bool {
 }
 
 pub fn resolve_den_url(
-    env: &dyn EnvLookup,
+    env: &dyn Env,
     mut read_config: impl FnMut() -> Option<String>,
     exists: &dyn Fn(&Path) -> bool,
 ) -> Option<ResolvedDenUrl> {
@@ -298,7 +306,7 @@ pub fn resolve_den_url(
     let mut den_url = format!("https://127.0.0.1:{port}");
     let mut warnings = Vec::new();
     if let Some(preset) = env
-        .get("RIVET_DEN_URL")
+        .var("RIVET_DEN_URL")
         .map(|value| protocol::js::js_trim(&value).to_string())
         .filter(|value| !value.is_empty())
     {
@@ -309,8 +317,8 @@ pub fn resolve_den_url(
     if !acceptable_http_url(&den_url) {
         return None;
     }
-    let den_ca = env.get("RIVET_DEN_CA");
-    let tls_ca_env = env.get("RIVETOS_DEN_TLS_CA");
+    let den_ca = env.var("RIVET_DEN_CA");
+    let tls_ca_env = env.var("RIVETOS_DEN_TLS_CA");
     let ca_path = den_ca
         .as_deref()
         .map(protocol::js::js_trim)

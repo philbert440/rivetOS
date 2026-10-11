@@ -1,11 +1,12 @@
+use parking_lot::Mutex;
 use std::fs::{FileTimes, OpenOptions};
 use std::future::Future;
 use std::io::{self, ErrorKind, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 use serde_json::Value;
@@ -612,16 +613,17 @@ fn read_body(
     path: &Path,
     fault: &Option<Arc<Mutex<Option<ReadFault>>>>,
 ) -> Result<String, ReadFail> {
-    if let Some(slot) = fault
-        && let Ok(guard) = slot.lock()
-        && let Some(injected) = guard.as_ref()
-        && injected.path == path
-    {
-        return if injected.code == "ENOENT" {
-            Err(ReadFail::Missing)
-        } else {
-            Err(ReadFail::Unreadable)
-        };
+    if let Some(slot) = fault {
+        let guard = slot.lock();
+        if let Some(injected) = guard.as_ref()
+            && injected.path == path
+        {
+            return if injected.code == "ENOENT" {
+                Err(ReadFail::Missing)
+            } else {
+                Err(ReadFail::Unreadable)
+            };
+        }
     }
     match std::fs::read_to_string(path) {
         Ok(text) => Ok(text),

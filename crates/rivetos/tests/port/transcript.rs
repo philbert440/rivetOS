@@ -257,7 +257,7 @@ async fn pg_url_does_not_open_a_pool() {
         Err(error) => error,
     };
     assert_eq!(error, "capture postgres pool is not ported");
-    assert!(harness.bodies.lock().unwrap().is_empty());
+    assert!(harness.bodies.lock().is_empty());
 }
 
 #[test]
@@ -896,7 +896,6 @@ async fn post_tool_use_then_stop_binds_t1_and_t2() {
     let mut ids = harness
         .bodies
         .lock()
-        .unwrap()
         .iter()
         .map(|body| serde_json::from_str::<serde_json::Value>(body).unwrap())
         .flat_map(|body| {
@@ -1002,7 +1001,7 @@ async fn missing_transcript_is_skipped() {
         Some("transcript file does not exist")
     );
     assert_eq!(result.inserted, 0);
-    assert!(harness.bodies.lock().unwrap().is_empty());
+    assert!(harness.bodies.lock().is_empty());
 }
 
 #[tokio::test]
@@ -1029,7 +1028,7 @@ async fn post_tool_use_keeps_unpaired_surrogates() {
     ingest_hook_event(attach_hook(&harness, opts))
         .await
         .unwrap();
-    let raw = harness.bodies.lock().unwrap()[0].clone();
+    let raw = harness.bodies.lock()[0].clone();
     assert!(raw.contains(r#""q":"\ud800""#), "{raw}");
     assert!(raw.contains(r#""\ud801":"a""#), "{raw}");
     assert!(raw.contains(r#""\ud802":"b""#), "{raw}");
@@ -1051,7 +1050,7 @@ async fn prompt_title_keeps_a_split_surrogate() {
     ingest_hook_event(attach_hook(&harness, opts))
         .await
         .unwrap();
-    let raw = harness.bodies.lock().unwrap()[0].clone();
+    let raw = harness.bodies.lock()[0].clone();
     let title = raw.split("\"title\":\"").nth(1).unwrap();
     let title_value = title.split('"').next().unwrap();
     assert!(title_value.ends_with("\\ud83d"), "{title_value}");
@@ -1072,7 +1071,7 @@ async fn transcript_title_keeps_a_split_surrogate() {
     ingest_transcript(attach(&harness, IngestOptions::new(&file)))
         .await
         .unwrap();
-    let raw = harness.bodies.lock().unwrap()[0].clone();
+    let raw = harness.bodies.lock()[0].clone();
     let title = raw.split("\"title\":\"").nth(1).unwrap();
     let title_value = title.split('"').next().unwrap();
     assert!(title_value.ends_with("\\ud83d"), "{title_value}");
@@ -1092,7 +1091,7 @@ async fn prompt_whitespace_follows_javascript_trim() {
     bom.poll_for_ms = Some(0);
     let skipped = ingest_hook_event(attach_hook(&harness, bom)).await.unwrap();
     assert_eq!(skipped.skipped.as_deref(), Some("empty prompt"));
-    assert!(harness.bodies.lock().unwrap().is_empty());
+    assert!(harness.bodies.lock().is_empty());
 
     let mut next = HookEventOptions::new(serde_json::json!({
         "hook_event_name": "UserPromptSubmit",
@@ -1106,7 +1105,7 @@ async fn prompt_whitespace_follows_javascript_trim() {
         .unwrap();
     assert_eq!(posted.skipped, None);
     assert_eq!(posted.inserted, 1);
-    let raw = harness.bodies.lock().unwrap()[0].clone();
+    let raw = harness.bodies.lock()[0].clone();
     assert!(raw.contains('\u{0085}'), "{raw}");
 
     let mut kept = HookEventOptions::new(serde_json::json!({
@@ -1119,7 +1118,7 @@ async fn prompt_whitespace_follows_javascript_trim() {
     ingest_hook_event(attach_hook(&harness, kept))
         .await
         .unwrap();
-    let raw = harness.bodies.lock().unwrap()[1].clone();
+    let raw = harness.bodies.lock()[1].clone();
     assert!(raw.contains("\u{FEFF}hello"), "{raw}");
 }
 
@@ -1420,6 +1419,6 @@ async fn missing_session_id_is_omitted() {
     ingest_hook_event(attach_hook(&harness, number_id))
         .await
         .unwrap();
-    let raw = harness.bodies.lock().unwrap()[2].clone();
+    let raw = harness.bodies.lock()[2].clone();
     assert!(raw.contains("\"session_id\":7"), "{raw}");
 }

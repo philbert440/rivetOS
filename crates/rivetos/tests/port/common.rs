@@ -1,9 +1,11 @@
+use parking_lot::Mutex;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use rivetos::{EnvLookup, HttpExchange, HttpReply, MapEnv};
+use protocol::host::Env;
+use rivetos::{HttpExchange, HttpReply, MapEnv};
 
-pub fn den_env() -> Arc<dyn EnvLookup> {
+pub fn den_env() -> Arc<dyn Env + Send + Sync> {
     Arc::new(MapEnv::from_pairs(&[
         ("RIVETOS_CAPTURE_TRANSPORT", "den"),
         ("RIVET_DEN_URL", "https://127.0.0.1:5174"),
@@ -20,7 +22,7 @@ pub fn ok_exchange(bodies: Arc<Mutex<Vec<String>>>) -> HttpExchange {
             .ok()
             .and_then(|value| value.get("messages")?.as_array().map(|items| items.len()))
             .unwrap_or(0);
-        bodies.lock().unwrap().push(body.to_string());
+        bodies.lock().push(body.to_string());
         Ok(HttpReply {
             status: 200,
             body: format!(
@@ -33,7 +35,7 @@ pub fn ok_exchange(bodies: Arc<Mutex<Vec<String>>>) -> HttpExchange {
 pub struct DenHarness {
     pub dir: tempfile::TempDir,
     pub bodies: Arc<Mutex<Vec<String>>>,
-    pub env: Arc<dyn EnvLookup>,
+    pub env: Arc<dyn Env + Send + Sync>,
     pub exchange: HttpExchange,
 }
 
@@ -54,7 +56,7 @@ impl DenHarness {
     }
 
     pub fn body(&self, index: usize) -> serde_json::Value {
-        serde_json::from_str(&self.bodies.lock().unwrap()[index]).unwrap()
+        serde_json::from_str(&self.bodies.lock()[index]).unwrap()
     }
 }
 

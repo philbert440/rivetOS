@@ -1,13 +1,11 @@
 use std::sync::OnceLock;
 
-use protocol::js::{JsObject, JsString, JsValue};
-use regex::bytes::Regex as BytesRegex;
-use regress::Regex;
-use serde_json::{Map, Value};
-
-use crate::env::EnvLookup;
 use crate::helpers::CONTENT_LIMIT;
 use crate::types::{CaptureMessage, CaptureRedactionOptions};
+use protocol::host::Env;
+use protocol::js::{JsObject, JsString, JsValue};
+use regress::Regex;
+use serde_json::{Map, Value};
 
 pub const REDACT_SCAN_LIMIT: usize = CONTENT_LIMIT;
 
@@ -47,17 +45,22 @@ pub struct RedactionApplyResult {
 }
 
 struct Detector {
-    regex: Regex,
-    replacement: &'static str,
+    source: String,
+    flags: &'static str,
+    replacement: String,
 }
 
 pub fn is_unsafe_regex_source(source: &str) -> bool {
-    static RE: OnceLock<Option<BytesRegex>> = OnceLock::new();
+    static RE: OnceLock<Option<Regex>> = OnceLock::new();
     RE.get_or_init(|| {
-        BytesRegex::new(r"(?-u)\((?:[^\\)]|\\.)*[+*](?:[^\\)]|\\.)*\)(?:[+*?]|\{\d+,?\d*\})").ok()
+        Regex::with_flags(
+            r"\((?:[^\\)]|\\.)*[+*](?:[^\\)]|\\.)*\)(?:[+*?]|\{\d+,?\d*\})",
+            "",
+        )
+        .ok()
     })
     .as_ref()
-    .is_some_and(|regex| regex.is_match(source.as_bytes()))
+    .is_some_and(|regex| regex.find(source).is_some())
 }
 
 pub fn secret_key_matches(key: &str) -> bool {
@@ -113,8 +116,8 @@ pub fn resolve_capture_redaction(
     })
 }
 
-pub fn capture_redaction_from_env(env: &dyn EnvLookup) -> Option<CaptureRedactionOptions> {
-    if !truthy_env(env.get("RIVETOS_CAPTURE_REDACTION").as_deref()) {
+pub fn capture_redaction_from_env(env: &dyn Env) -> Option<CaptureRedactionOptions> {
+    if !truthy_env(env.var("RIVETOS_CAPTURE_REDACTION").as_deref()) {
         return None;
     }
     Some(CaptureRedactionOptions {
@@ -150,67 +153,56 @@ fn redact_units(units: &[u16], resolved: &ResolvedCaptureRedaction) -> (Vec<u16>
     let mut count = 0usize;
     if resolved.builtins {
         for detector in builtin_detectors() {
-            let (next, added) = apply_units(&current, &detector.regex, detector.replacement);
+            let (next, added) = apply_units(
+                &current,
+                &detector.source,
+                detector.flags,
+                &detector.replacement,
+            );
             current = next;
             count += added;
         }
     }
     for pattern in &resolved.patterns {
         let replacement = format!("[REDACTED:pattern:{}]", pattern.index);
-        let (next, added) = apply_units(&current, &pattern.regex, &replacement);
+        let (next, added) = apply_units(&current, &pattern.source, "g", &replacement);
         current = next;
         count += added;
     }
     (current, count)
 }
 
-fn apply_units(units: &[u16], regex: &Regex, replacement: &str) -> (Vec<u16>, usize) {
-    let mut out = Vec::with_capacity(units.len());
-    let mut last = 0usize;
+fn apply_units(units: &[u16], source: &str, flags: &str, replacement: &str) -> (Vec<u16>, usize) {
+    let count = regress::Regex::with_flags(source, flags)
+        .map(|regex| count_ucs2(&regex, units))
+        .unwrap_or(0);
+    let text = JsString::from_units(units.to_vec());
+    match protocol::js::js_replace(&text, source, flags, replacement) {
+        Ok(replaced) => (replaced.units().to_vec(), count),
+        Err(_) => (units.to_vec(), 0),
+    }
+}
+
+fn count_ucs2(regex: &Regex, units: &[u16]) -> usize {
     let mut count = 0usize;
     let mut cursor = 0usize;
     while let Some(found) = regex.find_from_ucs2(units, cursor).next() {
         let start = found.start();
         let end = found.end();
-        if start < last || start > units.len() {
+        if start < cursor || start > units.len() {
             break;
         }
-        out.extend_from_slice(&units[last..start.min(units.len())]);
         count += 1;
-        out.extend(expand_replacement(&found, units, replacement).encode_utf16());
         if end <= start {
             if start >= units.len() {
-                last = start;
                 break;
             }
-            out.push(units[start]);
-            last = start + 1;
             cursor = start + 1;
             continue;
         }
-        let end = end.min(units.len());
-        last = end;
-        cursor = end;
+        cursor = end.min(units.len());
     }
-    if last < units.len() {
-        out.extend_from_slice(&units[last..]);
-    }
-    (out, count)
-}
-
-fn expand_replacement(found: &regress::Match, units: &[u16], replacement: &str) -> String {
-    if !replacement.contains("$1") {
-        return replacement.to_string();
-    }
-    let group = found
-        .group(1)
-        .map(|range| {
-            let start = range.start.min(units.len());
-            let end = range.end.min(units.len());
-            String::from_utf16_lossy(&units[start..end])
-        })
-        .unwrap_or_default();
-    replacement.replace("$1", &group)
+    count
 }
 
 fn builtin_detectors() -> &'static [Detector] {
@@ -247,17 +239,22 @@ fn builtin_detectors() -> &'static [Detector] {
         ];
         let mut compiled = Vec::new();
         for (source, flags, replacement) in specs {
-            if let Ok(regex) = Regex::with_flags(source, flags) {
-                compiled.push(Detector { regex, replacement });
+            if Regex::with_flags(source, flags).is_ok() {
+                compiled.push(Detector {
+                    source: source.to_string(),
+                    flags,
+                    replacement: replacement.to_string(),
+                });
             }
         }
         let assignment = format!(
             r"\b((?:[\w-]*[_-](?:{SECRET_STEM}|key|auth)|(?:{SECRET_STEM}))\s*[=:]\s*)(?!\[REDACTED)[^\s\n\r,;[\]]+(?:[ \t]+[^\s\n\r,;[\]]+)*"
         );
-        if let Ok(regex) = Regex::with_flags(&assignment, "gi") {
+        if Regex::with_flags(&assignment, "gi").is_ok() {
             compiled.push(Detector {
-                regex,
-                replacement: "$1[REDACTED:assignment]",
+                source: assignment,
+                flags: "gi",
+                replacement: "$1[REDACTED:assignment]".to_string(),
             });
         }
         compiled
