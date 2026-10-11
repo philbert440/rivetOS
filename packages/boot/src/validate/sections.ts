@@ -1311,6 +1311,19 @@ export function validateDen(den: Record<string, unknown>, issues: ValidationIssu
     }
   }
 
+  // acp_harnesses: roster commands whose chat runs over ACP. The den refuses
+  // anything else at startup, so catch it here first.
+  if (den.acp_harnesses !== undefined) {
+    const v = den.acp_harnesses
+    if (!Array.isArray(v) || v.some((e) => e !== 'grok' && e !== 'opencode')) {
+      issues.push({
+        severity: 'error',
+        path: `${path}.acp_harnesses`,
+        message: '"den.acp_harnesses" must be a list of: grok, opencode',
+      })
+    }
+  }
+
   for (const key of ['static_dir'] as const) {
     if (den[key] !== undefined && (typeof den[key] !== 'string' || den[key].trim() === '')) {
       issues.push({
