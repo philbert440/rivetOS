@@ -101,6 +101,24 @@ fn load_env_file_keeps_first_non_empty() {
 }
 
 #[test]
+fn load_env_file_keeps_a_bom_prefixed_first_setting() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join(".env");
+    std::fs::write(
+        &file,
+        "\u{FEFF}RIVETOS_PG_URL=postgres://localhost/rivet\r\n\u{00A0}TOKEN=\"secret\"\r\n\u{0085}SKIP=no\r\n",
+    )
+    .unwrap();
+    let values = load_env_file(&file);
+    assert_eq!(
+        values.get("RIVETOS_PG_URL").map(String::as_str),
+        Some("postgres://localhost/rivet")
+    );
+    assert_eq!(values.get("TOKEN").map(String::as_str), Some("secret"));
+    assert_eq!(values.get("SKIP"), None);
+}
+
+#[test]
 fn iso_epoch_and_year_boundary() {
     assert_eq!(iso_from_unix_ms(0), "1970-01-01T00:00:00.000Z");
     assert_eq!(

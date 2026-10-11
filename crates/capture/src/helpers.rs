@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use protocol::js::JsString;
+use protocol::js::{JsString, is_js_whitespace, js_trim_start};
 use serde_json::Value;
 
 pub const CONTENT_LIMIT: usize = 16_000;
@@ -47,7 +47,6 @@ pub fn load_env_file(path: impl AsRef<Path>) -> std::collections::BTreeMap<Strin
         return values;
     };
     for line in raw.split('\n') {
-        let line = line.trim_end_matches('\r');
         let Some((key, raw_value)) = parse_env_line(line) else {
             continue;
         };
@@ -64,38 +63,42 @@ pub fn load_env_file(path: impl AsRef<Path>) -> std::collections::BTreeMap<Strin
 }
 
 fn parse_env_line(line: &str) -> Option<(&str, &str)> {
-    let bytes = line.as_bytes();
-    let mut index = 0usize;
-    while index < bytes.len() && is_ascii_ws(bytes[index]) {
-        index += 1;
-    }
-    let key_start = index;
-    while index < bytes.len() && is_env_key(bytes[index]) {
-        index += 1;
-    }
-    if index == key_start {
+    let rest = js_trim_start(line);
+    let key_end = rest
+        .char_indices()
+        .find(|(_, ch)| !is_env_key(*ch))
+        .map(|(index, _)| index)
+        .unwrap_or(rest.len());
+    if key_end == 0 {
         return None;
     }
-    let key_end = index;
-    while index < bytes.len() && is_ascii_ws(bytes[index]) {
-        index += 1;
-    }
-    if index >= bytes.len() || bytes[index] != b'=' {
-        return None;
-    }
-    index += 1;
-    while index < bytes.len() && is_ascii_ws(bytes[index]) {
-        index += 1;
-    }
-    Some((&line[key_start..key_end], &line[index..]))
+    let key = &rest[..key_end];
+    let rest = js_trim_start(&rest[key_end..]);
+    let rest = rest.strip_prefix('=')?;
+    let value = capture_env_value(rest)?;
+    Some((key, value))
 }
 
-fn is_ascii_ws(byte: u8) -> bool {
-    matches!(byte, b' ' | b'\t' | b'\n' | b'\r' | 0x0c | 0x0b)
+fn capture_env_value(raw: &str) -> Option<&str> {
+    let value = js_trim_start(raw);
+    let end = value
+        .char_indices()
+        .find(|(_, ch)| is_js_line_terminator(*ch))
+        .map(|(index, _)| index)
+        .unwrap_or(value.len());
+    if value[end..].chars().all(is_js_whitespace) {
+        Some(&value[..end])
+    } else {
+        None
+    }
 }
 
-fn is_env_key(byte: u8) -> bool {
-    byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_'
+fn is_js_line_terminator(ch: char) -> bool {
+    matches!(ch, '\n' | '\r' | '\u{2028}' | '\u{2029}')
+}
+
+fn is_env_key(ch: char) -> bool {
+    ch.is_ascii_uppercase() || ch.is_ascii_digit() || ch == '_'
 }
 
 fn strip_one_quote(value: &str) -> String {
@@ -118,5 +121,58 @@ pub fn json_utf8_len(value: &impl serde::Serialize) -> usize {
     match serde_json::to_value(value) {
         Ok(parsed) => protocol::js::stringify(&protocol::js::from_serde(&parsed)).len(),
         Err(_) => 0,
+    }
+}
+
+#[cfg(test)]
+mod env_line {
+    use super::{parse_env_line, strip_one_quote};
+
+    fn from_regex(line: &str) -> Option<(String, String)> {
+        let regex = regress::Regex::new(r"^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$").unwrap();
+        let found = regex.find(line)?;
+        let key = found.group(1).unwrap();
+        let value = found.group(2).unwrap();
+        Some((line[key].to_string(), strip_one_quote(&line[value])))
+    }
+
+    fn from_parser(line: &str) -> Option<(String, String)> {
+        parse_env_line(line).map(|(key, value)| (key.to_string(), strip_one_quote(value)))
+    }
+
+    #[test]
+    fn env_lines_match_the_javascript_pattern() {
+        let lines = [
+            "\u{FEFF}RIVETOS_PG_URL=postgres://localhost/rivet",
+            "\u{00A0}TOKEN=\"secret\"",
+            "\u{0085}SKIP=no",
+            "# comment",
+            "A=\"one\"",
+            "B='two'",
+            "A=ignored",
+            "lower=no",
+            "export C=no",
+            "EMPTY=",
+            "A=\"one\"  ",
+            "  B = 'two'",
+            "KEY=value\r",
+            "KEY=value  \r",
+            "KEY=\u{FEFF}value",
+            "KEY=value\u{FEFF}",
+            "KEY=foo\rbar",
+            "KEY=foo\u{2028}",
+            "KEY=\u{00A0}value\u{00A0}",
+            " =NO",
+            "A='",
+            "A=\"",
+            "A=\"one'",
+            "",
+            "\u{FEFF}",
+            "KEY==value",
+            "\u{FEFF}\u{00A0}A=\"one\"\r",
+        ];
+        for line in lines {
+            assert_eq!(from_parser(line), from_regex(line), "{line:?}");
+        }
     }
 }

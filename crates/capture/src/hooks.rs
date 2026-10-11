@@ -136,7 +136,11 @@ pub fn arm_worker_deadline(opts: DeadlineOptions) -> DeadlineHandle {
     DeadlineHandle { flag, notify }
 }
 
-const HOMEDIR_MISSING: &str = "ENOENT: no such file or directory, uv_os_homedir";
+pub(crate) const HOMEDIR_MISSING: &str = "ENOENT: no such file or directory, uv_os_homedir";
+
+pub(crate) fn require_home(home: Option<String>) -> Result<(), String> {
+    joined_home(home, &[]).map(|_| ())
+}
 
 fn joined_home(home: Option<String>, parts: &[&str]) -> Result<PathBuf, String> {
     let Some(home) = home else {
@@ -1169,7 +1173,7 @@ mod home_paths {
 
     use protocol::host::MapEnv;
 
-    use super::{joined_home, log_path, settings_path};
+    use super::{HOMEDIR_MISSING, joined_home, log_path, require_home, settings_path};
 
     #[test]
     fn home_paths_use_the_directory_and_fail_when_it_is_missing() {
@@ -1188,9 +1192,11 @@ mod home_paths {
             log_path(&env).unwrap(),
             PathBuf::from(".rivetos/claude-capture.log")
         );
+        assert!(require_home(Some(String::new())).is_ok());
         assert_eq!(
             joined_home(None, &[".claude", "settings.json"]).unwrap_err(),
             "ENOENT: no such file or directory, uv_os_homedir"
         );
+        assert_eq!(require_home(None).unwrap_err(), HOMEDIR_MISSING);
     }
 }
