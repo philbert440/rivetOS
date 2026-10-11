@@ -2,7 +2,7 @@ use serde::de::{self, Deserializer};
 use serde::{Deserialize, Serialize};
 
 use crate::js::{JsString, JsValue, parse};
-use crate::message::ContentPart;
+use crate::message::{ContentPart, content_part_from_js};
 
 pub const BLOCKED_PREFIX: &str = "Blocked: ";
 pub const TOOL_ERROR_PREFIX: &str = "Error: ";
@@ -28,10 +28,13 @@ impl<'de> Deserialize<'de> for ToolResult {
                 JsString::from_units(Vec::new()),
             )));
         }
-        if value.is_array() {
-            return serde_json::from_str(text)
-                .map(Self::Parts)
-                .map_err(de::Error::custom);
+        if let JsValue::Array(items) = &mut value {
+            let items = std::mem::take(items);
+            let mut parts = Vec::with_capacity(items.len());
+            for item in items {
+                parts.push(content_part_from_js(item).map_err(de::Error::custom)?);
+            }
+            return Ok(Self::Parts(parts));
         }
         Err(de::Error::custom("tool-result"))
     }

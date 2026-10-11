@@ -1,6 +1,7 @@
+use serde::de::{self, Deserializer};
 use serde::{Deserialize, Serialize};
 
-use crate::js::{JsObject, JsValue};
+use crate::js::{JsObject, JsString, JsValue, parse};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -54,11 +55,11 @@ crate::wire_enum! {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "type", rename_all_fields = "camelCase")]
 pub enum ContentPart {
     #[serde(rename = "text")]
-    Text { text: String },
+    Text { text: JsString },
     #[serde(rename = "image")]
     Image {
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -77,6 +78,75 @@ pub enum ContentPart {
         #[serde(skip_serializing_if = "Option::is_none")]
         mime_type: Option<String>,
     },
+}
+
+impl<'de> Deserialize<'de> for ContentPart {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = Box::<serde_json::value::RawValue>::deserialize(deserializer)?;
+        let value = parse(raw.get()).map_err(de::Error::custom)?;
+        content_part_from_js(value).map_err(de::Error::custom)
+    }
+}
+
+pub(crate) fn content_part_from_js(value: JsValue) -> Result<ContentPart, &'static str> {
+    let mut object = match value.into_object() {
+        Some(object) => object,
+        None => return Err("content-part"),
+    };
+    let kind = match take_js_string(object.remove("type")) {
+        Some(text) => text.to_utf8().to_string(),
+        None => return Err("content-part"),
+    };
+    match kind.as_str() {
+        "text" => {
+            let text = match take_js_string(object.remove("text")) {
+                Some(text) => text,
+                None => return Err("content-part"),
+            };
+            Ok(ContentPart::Text { text })
+        }
+        "image" => Ok(ContentPart::Image {
+            data: take_string(&mut object, "data")?,
+            url: take_string(&mut object, "url")?,
+            mime_type: take_string(&mut object, "mimeType")?,
+        }),
+        "video" => Ok(ContentPart::Video {
+            data: take_string(&mut object, "data")?,
+            url: take_string(&mut object, "url")?,
+            mime_type: take_string(&mut object, "mimeType")?,
+        }),
+        _ => Err("content-part"),
+    }
+}
+
+fn take_js_string(value: Option<JsValue>) -> Option<JsString> {
+    let mut value = value?;
+    if let JsValue::String(slot) = &mut value {
+        Some(std::mem::replace(slot, JsString::from_units(Vec::new())))
+    } else {
+        None
+    }
+}
+
+fn take_string(object: &mut JsObject, key: &str) -> Result<Option<String>, &'static str> {
+    match object.remove(key) {
+        None => Ok(None),
+        Some(value) if value.is_null() => Ok(None),
+        Some(value) => match take_js_string(Some(value)) {
+            Some(text) => {
+                let utf8 = text.to_utf8();
+                let round: Vec<u16> = utf8.encode_utf16().collect();
+                if round.as_slice() != text.units() {
+                    return Err("content-part");
+                }
+                Ok(Some(utf8.to_string()))
+            }
+            None => Err("content-part"),
+        },
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use std::os::unix::fs::OpenOptionsExt;
 
@@ -96,7 +97,9 @@ pub fn read_text_capped(path: &Path, max_bytes: u64) -> Result<String, FsError> 
 }
 
 pub fn write_text(path: &Path, text: &str) -> Result<(), FsError> {
-    std::fs::write(path, text).map_err(|err| fs_error("open", Some(path), None, &err))
+    let mut file = open_write(path)?;
+    file.write_all(text.as_bytes())
+        .map_err(|err| fs_error("write", None, None, &err))
 }
 
 pub fn mkdir(path: &Path) -> Result<(), FsError> {
@@ -173,28 +176,35 @@ pub fn open_write(path: &Path) -> Result<std::fs::File, FsError> {
 }
 
 pub fn atomic_replace(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let mut tmp_name = path.as_os_str().to_os_string();
-    tmp_name.push(".tmp");
-    let tmp = PathBuf::from(tmp_name);
-    let result = write_exclusive(&tmp, bytes).and_then(|_| {
-        std::fs::rename(&tmp, path)?;
-        sync_parent(path)
-    });
-    if result.is_err() {
+    let tmp = unique_temp(path);
+    let mut file = create_exclusive(&tmp)?;
+    let written = file.write_all(bytes).and_then(|_| file.sync_all());
+    drop(file);
+    if let Err(err) = written {
         let _ = std::fs::remove_file(&tmp);
+        return Err(err);
     }
-    result
+    if let Err(err) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(err);
+    }
+    sync_parent(path)
 }
 
-fn write_exclusive(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let mut file = OpenOptions::new()
+fn unique_temp(path: &Path) -> PathBuf {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    let ticket = NEXT.fetch_add(1, Ordering::Relaxed);
+    let mut name = path.as_os_str().to_os_string();
+    name.push(format!(".{}.{ticket}.tmp", std::process::id()));
+    PathBuf::from(name)
+}
+
+fn create_exclusive(path: &Path) -> std::io::Result<std::fs::File> {
+    OpenOptions::new()
         .write(true)
         .create_new(true)
         .mode(0o600)
-        .open(path)?;
-    file.write_all(bytes)?;
-    file.sync_all()?;
-    Ok(())
+        .open(path)
 }
 
 pub fn fs_error(
@@ -322,6 +332,82 @@ mod tests {
         tmp_name.push(".tmp");
         assert!(!std::path::PathBuf::from(tmp_name).exists());
         std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn atomic_replace_leaves_another_writers_temp() {
+        let dir = std::env::temp_dir().join(format!("rr0-atomic-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("state.json");
+        let mut decoy_name = target.as_os_str().to_os_string();
+        decoy_name.push(".tmp");
+        let decoy = std::path::PathBuf::from(decoy_name);
+        std::fs::write(&decoy, b"other").unwrap();
+        atomic_replace(&target, b"ours").unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"ours");
+        assert_eq!(std::fs::read(&decoy).unwrap(), b"other");
+        atomic_replace(&target, b"second").unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"second");
+        assert_eq!(std::fs::read(&decoy).unwrap(), b"other");
+        let names = dir_names(&dir);
+        assert!(names.iter().any(|name| name == "state.json"));
+        assert!(names.iter().any(|name| name == "state.json.tmp"));
+        assert_eq!(names.len(), 2);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn atomic_replace_failure_removes_only_its_temp() {
+        let dir = std::env::temp_dir().join(format!("rr0-atomic-fail-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("adir");
+        std::fs::create_dir(&target).unwrap();
+        let mut decoy_name = target.as_os_str().to_os_string();
+        decoy_name.push(".tmp");
+        let decoy = std::path::PathBuf::from(decoy_name);
+        std::fs::write(&decoy, b"other").unwrap();
+        let keep = dir.join("keep");
+        std::fs::write(&keep, b"safe").unwrap();
+        assert!(atomic_replace(&target, b"ours").is_err());
+        assert!(target.is_dir());
+        assert_eq!(std::fs::read(&decoy).unwrap(), b"other");
+        assert_eq!(std::fs::read(&keep).unwrap(), b"safe");
+        let missing = dir.join("missing").join("state.json");
+        assert!(atomic_replace(&missing, b"x").is_err());
+        assert_eq!(std::fs::read(&decoy).unwrap(), b"other");
+        assert_eq!(std::fs::read(&keep).unwrap(), b"safe");
+        let leftovers: Vec<_> = dir_names(&dir)
+            .into_iter()
+            .filter(|name| name.contains(".tmp") && name != "adir.tmp")
+            .collect();
+        assert!(leftovers.is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn write_failure_uses_the_write_syscall() {
+        let path = Path::new("/dev/full");
+        let err = write_text(path, "x").unwrap_err();
+        assert_eq!(err.code, "ENOSPC");
+        assert_eq!(err.errno, -28);
+        assert_eq!(err.syscall, "write");
+        assert_eq!(err.path, None);
+        assert_eq!(err.to_string(), "ENOSPC: no space left on device, write");
+        assert_eq!(
+            err.node_string(),
+            "Error: ENOSPC: no space left on device, write"
+        );
+    }
+
+    fn dir_names(dir: &Path) -> Vec<String> {
+        let mut names: Vec<_> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
     }
 
     #[test]

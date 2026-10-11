@@ -250,11 +250,11 @@ impl JsObject {
     }
 
     pub fn keys(&self) -> impl Iterator<Item = &JsString> {
-        self.entries.iter().map(|(key, _)| key)
+        ordered_pairs(self).into_iter().map(|(key, _)| key)
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (&JsString, &JsValue)> {
-        self.entries.iter().map(|(key, value)| (key, value))
+        ordered_pairs(self).into_iter()
     }
 }
 
@@ -1193,6 +1193,28 @@ mod code_units {
         assert_eq!(object.remove("b").unwrap(), JsValue::Bool(true));
         assert!(!object.contains_key("b"));
         assert_eq!(object.len(), 1);
+        let mut indexed = JsObject::new();
+        indexed.insert("10", JsValue::from_text("ten"));
+        indexed.insert("b", JsValue::from_text("bee"));
+        indexed.insert("0", JsValue::from_text("zero"));
+        indexed.insert("2", JsValue::from_text("two"));
+        indexed.insert("02", JsValue::from_text("pad"));
+        let order = ["0", "2", "10", "b", "02"];
+        assert_eq!(
+            indexed.keys().map(|key| key.to_utf8()).collect::<Vec<_>>(),
+            order
+        );
+        assert_eq!(
+            indexed
+                .iter()
+                .map(|(key, _)| key.to_utf8())
+                .collect::<Vec<_>>(),
+            order
+        );
+        assert_eq!(
+            stringify(&JsValue::Object(indexed)),
+            r#"{"0":"zero","2":"two","10":"ten","b":"bee","02":"pad"}"#
+        );
         let mut array = JsValue::Array(vec![JsValue::Null]);
         array.as_array_mut().unwrap().push(JsValue::Bool(false));
         assert_eq!(array.as_array().unwrap().len(), 2);

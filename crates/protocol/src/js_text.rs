@@ -6,18 +6,14 @@ pub fn utf16_len(text: &str) -> usize {
     text.encode_utf16().count()
 }
 
-pub fn js_slice(text: &str, start: Option<f64>, end: Option<f64>) -> String {
+pub fn js_slice(text: &str, start: Option<f64>, end: Option<f64>) -> JsString {
     let units: Vec<u16> = text.encode_utf16().collect();
     JsString::from_units(js_slice_units(&units, start, end))
-        .to_utf8()
-        .to_string()
 }
 
-pub fn js_substring(text: &str, start: Option<f64>, end: Option<f64>) -> String {
+pub fn js_substring(text: &str, start: Option<f64>, end: Option<f64>) -> JsString {
     let units: Vec<u16> = text.encode_utf16().collect();
     JsString::from_units(js_substring_units(&units, start, end))
-        .to_utf8()
-        .to_string()
 }
 
 pub fn js_slice_units(units: &[u16], start: Option<f64>, end: Option<f64>) -> Vec<u16> {
@@ -234,9 +230,19 @@ mod tests {
     #[test]
     fn slice_and_trim_cover_edges() {
         assert_eq!(utf16_len("a😀b"), 4);
-        assert_eq!(js_slice("a😀b", Some(1.5), Some(-1.0)), "😀");
-        assert_eq!(js_substring("abc", Some(-1.0), Some(2.2)), "ab");
-        assert_eq!(js_slice("abc", None, Some(f64::NAN)), "");
+        assert_eq!(js_slice("a😀b", Some(1.5), Some(-1.0)).to_utf8(), "😀");
+        assert_eq!(js_substring("abc", Some(-1.0), Some(2.2)).to_utf8(), "ab");
+        assert_eq!(js_slice("abc", None, Some(f64::NAN)).to_utf8(), "");
+        assert_eq!(js_slice("😀", Some(0.0), Some(1.0)).units(), &[0xD83D]);
+        let mut capped = "a".repeat(199);
+        capped.push('😀');
+        let sliced = js_slice(&capped, Some(0.0), Some(200.0));
+        assert_eq!(sliced.len(), 200);
+        assert_eq!(sliced.units()[199], 0xD83D);
+        assert_eq!(
+            js_substring(&capped, Some(0.0), Some(200.0)).units(),
+            sliced.units()
+        );
         assert!(is_js_whitespace('\u{00A0}'));
         assert!(!is_js_whitespace('\u{0085}'));
         assert_eq!(js_trim_start(" \t x"), "x");

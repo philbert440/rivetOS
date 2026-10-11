@@ -66,6 +66,18 @@ fn built_stream_metadata_orders_index_keys() {
     metadata.insert("10", JsValue::from_text("ten"));
     metadata.insert("2", JsValue::from_text("two"));
     metadata.insert("limit", JsValue::Number(1.0));
+    let order = ["2", "10", "limit"];
+    assert_eq!(
+        metadata.keys().map(|key| key.to_utf8()).collect::<Vec<_>>(),
+        order
+    );
+    assert_eq!(
+        metadata
+            .iter()
+            .map(|(key, _)| key.to_utf8())
+            .collect::<Vec<_>>(),
+        order
+    );
     let event = StreamEvent {
         r#type: StreamEventType::Status,
         content: JsString::from_text("ok"),

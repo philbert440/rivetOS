@@ -8,9 +8,9 @@ use protocol::host::{
 };
 use protocol::js::{
     JsString, JsValue, date_parse, default_locale, from_serde, js_boolean, js_replace,
-    js_replace_all_string, js_replace_string, js_slice_units, js_string, js_substring_units,
-    js_trim_end_units, js_trim_start_units, js_trim_units, local_date_parts, local_timestamp,
-    locale_compare, number_to_locale_string, number_to_locale_string_en,
+    js_replace_all_string, js_replace_string, js_slice, js_slice_units, js_string, js_substring,
+    js_substring_units, js_trim_end_units, js_trim_start_units, js_trim_units, local_date_parts,
+    local_timestamp, locale_compare, number_to_locale_string, number_to_locale_string_en,
     number_to_locale_string_en_us, posix_basename, posix_dirname, posix_extname, posix_is_absolute,
     posix_join, posix_normalize, posix_relative, posix_resolve, resolved_time_zone,
     time_zone_name_short, timezone_offset_minutes, to_fixed, to_iso_string, to_locale_string,
@@ -101,21 +101,23 @@ fn utf16_length_slice_and_substring() {
     }
     for case in root["utf16"]["slice"].as_array().unwrap() {
         let text = units_of(&case["text"]);
-        let actual = js_slice_units(
-            &text,
-            optional_number(case, "start_undefined", "start"),
-            optional_number(case, "end_undefined", "end"),
-        );
+        let start = optional_number(case, "start_undefined", "start");
+        let end = optional_number(case, "end_undefined", "end");
+        let actual = js_slice_units(&text, start, end);
         assert_eq!(actual, units_of(&case["result"]));
+        if let Ok(utf8) = String::from_utf16(&text) {
+            assert_eq!(js_slice(&utf8, start, end).units(), actual.as_slice());
+        }
     }
     for case in root["utf16"]["substring"].as_array().unwrap() {
         let text = units_of(&case["text"]);
-        let actual = js_substring_units(
-            &text,
-            optional_number(case, "start_undefined", "start"),
-            optional_number(case, "end_undefined", "end"),
-        );
+        let start = optional_number(case, "start_undefined", "start");
+        let end = optional_number(case, "end_undefined", "end");
+        let actual = js_substring_units(&text, start, end);
         assert_eq!(actual, units_of(&case["result"]));
+        if let Ok(utf8) = String::from_utf16(&text) {
+            assert_eq!(js_substring(&utf8, start, end).units(), actual.as_slice());
+        }
     }
 }
 
@@ -289,14 +291,21 @@ fn read_file_sha256_and_home() {
     }
     for case in root["homedir"].as_array().unwrap() {
         let mut env = MapEnv::new();
-        if !case["home"].is_null() {
+        let expected = if case["home"].is_null() {
+            account_home()
+        } else {
             env.set("HOME", case["home"].as_str().unwrap());
-        }
-        assert_eq!(
-            home_dir(&env).as_deref(),
-            Some(case["result"].as_str().unwrap())
-        );
+            Some(case["result"].as_str().unwrap().to_string())
+        };
+        assert_eq!(home_dir(&env), expected, "{}", case["label"]);
     }
+}
+
+fn account_home() -> Option<String> {
+    let user = nix::unistd::User::from_uid(nix::unistd::Uid::current())
+        .ok()
+        .flatten()?;
+    Some(user.dir.to_string_lossy().into_owned())
 }
 
 #[test]
@@ -423,8 +432,15 @@ fn node_path_matches_posix() {
     }
     for case in node["relative"].as_array().unwrap() {
         assert_eq!(
-            posix_relative(case["from"].as_str().unwrap(), case["to"].as_str().unwrap()),
-            case["r"].as_str().unwrap()
+            posix_relative(
+                cwd,
+                case["from"].as_str().unwrap(),
+                case["to"].as_str().unwrap()
+            ),
+            case["r"].as_str().unwrap(),
+            "{} -> {}",
+            case["from"],
+            case["to"]
         );
     }
 }
@@ -445,7 +461,11 @@ fn filesystem_errors_match_node() {
     permissions.set_mode(0o0);
     std::fs::set_permissions(&locked, permissions.clone()).unwrap();
     let missing = root.join("missing.txt");
+    let locked_denied = read_text(&locked).is_err();
     for case in golden()["fs_errors"].as_array().unwrap() {
+        if case["op"].as_str() == Some("readFile(locked)") && !locked_denied {
+            continue;
+        }
         let err = fs_op(
             case["op"].as_str().unwrap(),
             &root,

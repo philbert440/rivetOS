@@ -19532,6 +19532,66 @@
     "from": "/a/",
     "to": "/a/b/",
     "r": "b"
+   },
+   {
+    "from": "/opt/rivetos",
+    "to": "/rivet-shared",
+    "r": "../../rivet-shared"
+   },
+   {
+    "from": "/a",
+    "to": "/b",
+    "r": "../b"
+   },
+   {
+    "from": "/home/example",
+    "to": "/tmp/session.jsonl",
+    "r": "../../tmp/session.jsonl"
+   },
+   {
+    "from": "/a",
+    "to": "/",
+    "r": ".."
+   },
+   {
+    "from": "/",
+    "to": "/",
+    "r": ""
+   },
+   {
+    "from": "a",
+    "to": "b",
+    "r": "../b"
+   },
+   {
+    "from": "a",
+    "to": "/b",
+    "r": "../../../../b"
+   },
+   {
+    "from": "",
+    "to": "b",
+    "r": "b"
+   },
+   {
+    "from": "..",
+    "to": "b",
+    "r": "work/b"
+   },
+   {
+    "from": "a/b",
+    "to": "a",
+    "r": ".."
+   },
+   {
+    "from": "a",
+    "to": "a/c",
+    "r": "c"
+   },
+   {
+    "from": "b",
+    "to": "a",
+    "r": "../a"
    }
   ]
  }
