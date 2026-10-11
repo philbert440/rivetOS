@@ -9,7 +9,7 @@
  * RivetGateway on an https base cannot authenticate from the desktop shell.
  */
 
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type JSX } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type JSX } from 'react'
 import * as Dialog from '@radix-ui/react-dialog'
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
@@ -1506,9 +1506,25 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
                 }}
               />
             )
-            // Compact rows are not draggable. No wrapper classes or handlers —
-            // a border here used to grow every row, including the rail.
-            if (compact) return <Fragment key={agent.id}>{row}</Fragment>
+            // Compact rows do not reorder, but they can still be dragged out
+            // onto an empty canvas thread slot (copy only, no drop target
+            // here). The wrapper carries no classes — a border here used to
+            // grow every row, including the rail.
+            if (compact) {
+              return (
+                <div
+                  key={agent.id}
+                  draggable
+                  data-agent-drag={agent.id}
+                  onDragStart={(e) => {
+                    e.dataTransfer.effectAllowed = 'copy'
+                    e.dataTransfer.setData(AGENT_DRAG_MIME, agent.id)
+                  }}
+                >
+                  {row}
+                </div>
+              )
+            }
             const showBefore = dropIndex === index
             const showAfter = dropIndex === index + 1 && index === agents.length - 1
             return (
