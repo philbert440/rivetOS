@@ -254,6 +254,7 @@ pub fn redact_url(url: &str) -> String {
     let Ok(mut parsed) = reqwest::Url::parse(url) else {
         return redact_text(url);
     };
+    strip_userinfo(&mut parsed);
     let pairs: Vec<(String, String)> = parsed
         .query_pairs()
         .map(|(key, value)| (key.into_owned(), value.into_owned()))
@@ -307,6 +308,18 @@ fn redact_url_piece(piece: &str) -> String {
     }
 }
 
+fn strip_userinfo(url: &mut reqwest::Url) {
+    if url.username().is_empty() && url.password().is_none() {
+        return;
+    }
+    if url.password().is_some() {
+        let _ = url.set_password(None);
+    }
+    if !url.username().is_empty() {
+        let _ = url.set_username("");
+    }
+}
+
 fn secret_query(key: &str) -> bool {
     SECRET_QUERY
         .iter()
@@ -324,5 +337,28 @@ fn host_header_value(url: &str) -> Option<String> {
     match parsed.port() {
         Some(port) => Some(format!("{host}:{port}")),
         None => Some(host),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{redact_text, redact_url};
+
+    #[test]
+    fn strips_userinfo_before_query_secrets() {
+        let out = redact_url("https://user:pass@example.com/v1?token=sekret&x=1");
+        assert!(!out.contains("user"));
+        assert!(!out.contains("pass"));
+        assert!(!out.contains('@'));
+        assert!(out.contains("token=REDACTED"), "{out}");
+        assert!(out.contains("x=1"), "{out}");
+        let bare = redact_url("https://operator:secret@example.test/v1");
+        assert!(!bare.contains("operator"), "{bare}");
+        assert!(!bare.contains("secret"), "{bare}");
+        assert!(!bare.contains('@'), "{bare}");
+        assert!(bare.contains("example.test"), "{bare}");
+        let text = redact_text("see https://user:pass@example.com/v1?api_key=abc now");
+        assert!(!text.contains("user:pass"), "{text}");
+        assert!(text.contains("api_key=REDACTED"), "{text}");
     }
 }

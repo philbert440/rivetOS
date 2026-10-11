@@ -32,14 +32,27 @@ pub fn canonical_pair(raw: &str) -> (String, Value) {
 
 pub fn canonical_parts(raw: &str) -> (String, Value, bool) {
     let source = if raw.is_empty() { "{}" } else { raw };
-    let text = canonical_json(source);
-    match serde_json::from_str::<Value>(&text) {
-        Ok(value) => (text, value, false),
-        Err(_) => {
-            let embed = text.starts_with('{') || text.starts_with('[');
-            (text, Value::Null, embed)
+    match js::parse(source) {
+        Ok(parsed) => {
+            let text = js::stringify(&parsed);
+            match serde_json::from_str::<Value>(&text) {
+                Ok(value) => (text, value, false),
+                Err(_) => (text, Value::Null, true),
+            }
         }
+        Err(_) => invalid_argument(source),
     }
+}
+
+fn invalid_argument(source: &str) -> (String, Value, bool) {
+    let mut map = Map::new();
+    map.insert("raw".to_string(), Value::String(source.to_string()));
+    let value = Value::Object(map);
+    let text = match serde_json::to_string(&value) {
+        Ok(text) => text,
+        Err(_) => "{\"raw\":\"\"}".to_string(),
+    };
+    (text, value, false)
 }
 
 pub fn canonical_from_value(value: &Value) -> (String, Value) {
@@ -337,4 +350,47 @@ fn strip_video_markers(text: &str) -> (String, Vec<String>) {
         index += 1;
     }
     (out, urls)
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::Value;
+
+    use super::canonical_parts;
+
+    #[test]
+    fn empty_arguments_stay_an_object() {
+        let (text, value, embed) = canonical_parts("");
+        assert!(!embed);
+        assert_eq!(text, "{}");
+        assert!(value.as_object().is_some());
+    }
+
+    #[test]
+    fn valid_object_is_not_embedded() {
+        let (text, value, embed) = canonical_parts(r#"{"a":1}"#);
+        assert!(!embed);
+        assert_eq!(value["a"], 1);
+        assert!(serde_json::from_str::<Value>(&text).is_ok());
+    }
+
+    #[test]
+    fn truncated_object_becomes_raw_field() {
+        let source = r#"{"path":"#;
+        let (text, value, embed) = canonical_parts(source);
+        assert!(!embed);
+        assert_eq!(value["raw"], source);
+        let parsed: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(parsed["raw"], source);
+    }
+
+    #[test]
+    fn lone_surrogate_embeds_only_when_serde_rejects_it() {
+        let (text, value, embed) = canonical_parts(r#"{"a":"\ud800"}"#);
+        let serde_ok = serde_json::from_str::<Value>(&text).is_ok();
+        assert_eq!(embed, !serde_ok);
+        if embed {
+            assert!(value.is_null());
+        }
+    }
 }

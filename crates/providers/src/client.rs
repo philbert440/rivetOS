@@ -2071,9 +2071,6 @@ fn openai_body(
         "stream_options".to_string(),
         obj(vec![("include_usage", Value::Bool(true))]),
     );
-    for (key, value) in lock(&provider.extras).iter() {
-        map.entry(key.clone()).or_insert_with(|| value.clone());
-    }
     let mut kwargs = provider.sampling.chat_template_kwargs.clone();
     if let Some(Value::Object(existing)) = map.get("chat_template_kwargs").cloned() {
         for (key, value) in existing {
@@ -2101,6 +2098,9 @@ fn openai_body(
             }
         }
         map.insert("mm_processor_kwargs".to_string(), Value::Object(merged));
+    }
+    for (key, value) in lock(&provider.extras).iter() {
+        map.entry(key.clone()).or_insert_with(|| value.clone());
     }
     Value::Object(map)
 }
@@ -2327,15 +2327,26 @@ fn push_raw(raws: &mut Vec<String>, raw: &str) -> String {
 }
 
 fn tool_result_text(content: &str, parts: &[MediaPart]) -> String {
+    let from_parts: String = parts
+        .iter()
+        .filter(|part| part.kind == MediaKind::Text)
+        .map(|part| part.text.as_str())
+        .collect();
+    let mut value = if content.is_empty() && !from_parts.is_empty() {
+        from_parts
+    } else {
+        content.to_string()
+    };
     let images = parts
         .iter()
         .filter(|part| part.kind == MediaKind::Image)
         .count();
-    if images == 0 {
-        content.to_string()
-    } else {
-        format!("{content}\n[{images} image(s) returned — see image content in context]")
+    if images > 0 {
+        value.push_str(&format!(
+            "\n[{images} image(s) returned — see image content in context]"
+        ));
     }
+    value
 }
 
 fn message_has_visual(message: &TurnMessage) -> bool {
@@ -2521,4 +2532,73 @@ fn openai_user_content(text: &str, parts: &[MediaPart], videos: bool) -> Value {
         }
     }
     Value::Array(blocks)
+}
+
+#[cfg(test)]
+mod tests {
+    use protocol::ThinkingLevel;
+    use serde_json::Value;
+
+    use super::{anthropic_body, to_bytes, tool_result_text};
+    use crate::types::{CapturedTool, ChatRequest, MediaKind, MediaPart, StepCapture, TurnMessage};
+
+    fn part(kind: MediaKind, text: &str) -> MediaPart {
+        MediaPart {
+            kind,
+            text: text.to_string(),
+            url: None,
+            data: None,
+            mime: None,
+        }
+    }
+
+    #[test]
+    fn tool_result_reads_text_parts_when_content_is_empty() {
+        let text = tool_result_text(
+            "",
+            &[
+                part(MediaKind::Text, "OCR"),
+                part(MediaKind::Text, " result"),
+                part(MediaKind::Image, ""),
+            ],
+        );
+        assert_eq!(
+            text,
+            "OCR result\n[1 image(s) returned — see image content in context]"
+        );
+        assert_eq!(
+            tool_result_text("kept", &[part(MediaKind::Text, "OCR result")]),
+            "kept"
+        );
+    }
+
+    #[test]
+    fn truncated_tool_arguments_replay_as_json() {
+        let mut capture = StepCapture::default();
+        capture.tools.push(CapturedTool {
+            id: "t1".to_string(),
+            name: "read".to_string(),
+            raw_args: r#"{"path":"#.to_string(),
+            thought_signature: None,
+            done: true,
+            index: 0,
+        });
+        let mut request = ChatRequest::simple("sys", "user", ThinkingLevel::Off);
+        request.tools.clear();
+        request.messages = vec![TurnMessage::Assistant {
+            text: String::new(),
+            reasoning: String::new(),
+            anthropic_signature: None,
+            xai_reasoning_id: None,
+            tool_calls: capture.replay_tools(),
+        }];
+        let mut raws = Vec::new();
+        let body = anthropic_body(&request, "claude-test", &mut raws);
+        let bytes = to_bytes(&body, &raws).unwrap();
+        let parsed: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            parsed["messages"][0]["content"][0]["input"]["raw"],
+            r#"{"path":"#
+        );
+    }
 }

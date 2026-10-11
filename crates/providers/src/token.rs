@@ -10,6 +10,7 @@ use protocol::js::js_trim;
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 
+use crate::cli::group_has_live;
 use crate::error::now_ms;
 use crate::types::lock;
 
@@ -271,29 +272,30 @@ pub async fn default_run_command(
         };
         format!("token_command failed (exit {code})")
     })?;
+    let pgid = child.id().unwrap_or(0);
     let mut stdout = child.stdout.take();
     let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
     let mut buf = Vec::new();
     loop {
         if tokio::time::Instant::now() >= deadline {
-            reap_token_child(&mut child).await;
+            reap_token_child(&mut child, pgid).await;
             return Err(format!("token_command timed out after {timeout_ms} ms"));
         }
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         let read = read_token_chunk(&mut stdout);
         match tokio::time::timeout(remaining, read).await {
             Err(_) => {
-                reap_token_child(&mut child).await;
+                reap_token_child(&mut child, pgid).await;
                 return Err(format!("token_command timed out after {timeout_ms} ms"));
             }
             Ok(Err(_)) => {
-                reap_token_child(&mut child).await;
+                reap_token_child(&mut child, pgid).await;
                 return Err("token_command failed (exit error)".to_string());
             }
             Ok(Ok(None)) => break,
             Ok(Ok(Some(chunk))) => {
                 if buf.len() + chunk.len() > TOKEN_COMMAND_MAX_BUFFER {
-                    reap_token_child(&mut child).await;
+                    reap_token_child(&mut child, pgid).await;
                     return Err("token_command failed (exit error)".to_string());
                 }
                 buf.extend_from_slice(&chunk);
@@ -307,14 +309,14 @@ pub async fn default_run_command(
                 wait_token_child(&mut child, deadline).await,
                 TokenWait::Timeout
             ) {
-                reap_token_child(&mut child).await;
+                reap_token_child(&mut child, pgid).await;
             }
             return Err("token_command failed (exit error)".to_string());
         }
     };
     match wait_token_child(&mut child, deadline).await {
         TokenWait::Timeout => {
-            reap_token_child(&mut child).await;
+            reap_token_child(&mut child, pgid).await;
             Err(format!("token_command timed out after {timeout_ms} ms"))
         }
         TokenWait::Io => Err("token_command failed (exit error)".to_string()),
@@ -364,18 +366,26 @@ async fn wait_token_child(
     }
 }
 
-async fn reap_token_child(child: &mut tokio::process::Child) {
-    if let Some(pid) = child.id() {
-        let _ = tokio::task::spawn_blocking(move || signal_token_group(pid, "-TERM")).await;
+async fn reap_token_child(child: &mut tokio::process::Child, pgid: u32) {
+    let _ = tokio::task::spawn_blocking(move || reap_token_group(pgid)).await;
+    let _ = child.wait().await;
+}
+
+fn reap_token_group(pgid: u32) {
+    if pgid == 0 {
+        return;
     }
-    match tokio::time::timeout(Duration::from_millis(3_000), child.wait()).await {
-        Ok(_) => {}
-        Err(_) => {
-            if let Some(pid) = child.id() {
-                let _ = tokio::task::spawn_blocking(move || signal_token_group(pid, "-KILL")).await;
-            }
-            let _ = child.wait().await;
+    signal_token_group(pgid, "-TERM");
+    let started = std::time::Instant::now();
+    loop {
+        if !group_has_live(pgid) {
+            return;
         }
+        if started.elapsed() >= Duration::from_millis(3_000) {
+            signal_token_group(pgid, "-KILL");
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(50));
     }
 }
 

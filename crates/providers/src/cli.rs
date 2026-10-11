@@ -543,6 +543,7 @@ impl CliProvider {
                 guard.disarm();
                 return;
             }
+            let mut pgid = child.id().unwrap_or(0);
             loop {
                 let stdin_text = match kind {
                     CliKind::Claude => Some(claude_stdin(&user_prompt)),
@@ -555,6 +556,7 @@ impl CliProvider {
                     stdin_text.as_deref(),
                     timeout_ms,
                     &provider_id,
+                    pgid,
                     |line| {
                         let (chunks, fatal) = machine.push_line(line);
                         for chunk in chunks {
@@ -591,6 +593,7 @@ impl CliProvider {
                     ) {
                         Ok(next) => {
                             child = next;
+                            pgid = child.id().unwrap_or(0);
                             guard = arm_watch(&mut child);
                             continue;
                         }
@@ -619,6 +622,7 @@ impl CliProvider {
                     ) {
                         Ok(next) => {
                             child = next;
+                            pgid = child.id().unwrap_or(0);
                             guard = arm_watch(&mut child);
                             continue;
                         }
@@ -1996,6 +2000,7 @@ async fn supervise<F>(
     stdin_text: Option<&str>,
     timeout_ms: u64,
     provider_id: &str,
+    pgid: u32,
     mut on_line: F,
 ) -> Result<ChildOutput, ProviderError>
 where
@@ -2126,12 +2131,12 @@ where
         }
     }
     if timed_out {
-        terminate_child(child).await;
+        terminate_child(child, pgid).await;
         guard.disarm();
         return Err(ProviderError::timeout(provider_id, timeout_ms));
     }
     if capped {
-        terminate_child(child).await;
+        terminate_child(child, pgid).await;
         guard.disarm();
         return Err(ProviderError::new(
             "output exceeded buffer".to_string(),
@@ -2140,7 +2145,7 @@ where
         ));
     }
     if let Some(err) = wait_err {
-        terminate_child(child).await;
+        terminate_child(child, pgid).await;
         guard.disarm();
         return Err(ProviderError::new(
             format!("{provider_id} failed to spawn: {err}"),
@@ -2149,7 +2154,7 @@ where
         ));
     }
     if fatal.is_some() {
-        terminate_child(child).await;
+        terminate_child(child, pgid).await;
     }
     guard.disarm();
     Ok(ChildOutput {
@@ -2190,6 +2195,7 @@ async fn run_child(
     provider_id: &str,
 ) -> Result<ChildOutput, ProviderError> {
     let mut child = spawn_command(binary, args, env, cwd, stdin_text.is_some(), provider_id)?;
+    let pgid = child.id().unwrap_or(0);
     let guard = arm_watch(&mut child);
     supervise(
         &mut child,
@@ -2197,6 +2203,7 @@ async fn run_child(
         stdin_text,
         timeout_ms,
         provider_id,
+        pgid,
         |_| None,
     )
     .await
@@ -2300,6 +2307,41 @@ fn still_running(pid: u32, started: u64) -> bool {
     !matches!(state, 'Z' | 'X' | 'x')
 }
 
+pub(crate) fn group_has_live(pgid: u32) -> bool {
+    if pgid == 0 {
+        return false;
+    }
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        let Ok(pid) = name.parse::<u32>() else {
+            continue;
+        };
+        let Some((state, group)) = proc_group(pid) else {
+            continue;
+        };
+        if group == pgid && !matches!(state, 'Z' | 'X' | 'x') {
+            return true;
+        }
+    }
+    false
+}
+
+fn proc_group(pid: u32) -> Option<(char, u32)> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let end = stat.rfind(')')?;
+    let mut parts = stat[end + 1..].split_whitespace();
+    let state = parts.next()?.chars().next()?;
+    let _ppid = parts.next()?;
+    let group = parts.next()?.parse().ok()?;
+    Some((state, group))
+}
+
 fn signal_tree(pid: u32, flag: &str) {
     let group = kill_cmd(flag).arg(format!("-{pid}")).status();
     if !matches!(group, Ok(status) if status.success()) {
@@ -2385,24 +2427,27 @@ fn kill_cmd(flag: &str) -> std::process::Command {
     cmd
 }
 
-async fn terminate_child(child: &mut tokio::process::Child) {
-    if let Some(pid) = child.id() {
-        let _ = tokio::task::spawn_blocking(move || signal_tree(pid, "-TERM")).await;
+async fn terminate_child(child: &mut tokio::process::Child, pgid: u32) {
+    let _ = tokio::task::spawn_blocking(move || reap_group(pgid)).await;
+    let _ = child.wait().await;
+}
+
+fn reap_group(pgid: u32) {
+    if pgid == 0 {
+        return;
     }
+    signal_tree(pgid, "-TERM");
     let started = Instant::now();
     loop {
-        match child.try_wait() {
-            Ok(Some(_)) => break,
-            _ if started.elapsed() >= KILL_GRACE => {
-                if let Some(pid) = child.id() {
-                    let _ = tokio::task::spawn_blocking(move || signal_tree(pid, "-KILL")).await;
-                }
-                break;
-            }
-            _ => tokio::time::sleep(Duration::from_millis(50)).await,
+        if !group_has_live(pgid) {
+            return;
         }
+        if started.elapsed() >= KILL_GRACE {
+            signal_tree(pgid, "-KILL");
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(50));
     }
-    let _ = child.wait().await;
 }
 
 fn codex_thread_id(stdout: &str) -> Option<String> {

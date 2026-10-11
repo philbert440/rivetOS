@@ -9,11 +9,12 @@ use protocol::{LlmChunk, ThinkingLevel};
 use providers::{
     ChatRequest, CliProvider, HermesTokenCounts, HermesTokenKind, HttpProvider, ManifestConfig,
     PermissionAnswer, PermissionAsk, PermissionEvent, Provider, Runner, TokenCommandInput,
-    TurnMessage, chat_completions_url, execute_permission_prompt, models_probe_url,
-    normalize_api_prefix, permission_decision_text, process_env, read_hermes_session_tokens,
-    session_map_strings, strip_openai_base, tokens_for_turn, unknown_tokens, usage_delta,
+    TurnMessage, chat_completions_url, default_run_command, execute_permission_prompt,
+    models_probe_url, normalize_api_prefix, permission_decision_text, process_env,
+    read_hermes_session_tokens, session_map_strings, strip_openai_base, tokens_for_turn,
+    unknown_tokens, usage_delta, uuid_for_conversation,
 };
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
@@ -1232,13 +1233,25 @@ async fn cli_sessions_hermes_db_and_signals() {
     write_script(
         &drop_bin,
         &format!(
-            "#!/bin/bash\nfile={}\nprintf '%s' start > \"$file\"\ntrap 'printf %s TERM > \"$file\"; exit 0' TERM\nsleep 30\n",
+            "#!/bin/bash\nfile={}\ntrap 'printf %s TERM > \"$file\"; exit 0' TERM\nprintf '%s' ready > \"$file\"\nsleep 30\n",
             bash_quote(&drop_file)
         ),
     );
     let mut dropped = CliProvider::claude(&drop_bin);
     dropped.set_home(Some(home));
     let stream = dropped.stream_chat(chat("hi", "c", 20_000)).await.unwrap();
+    let ready_deadline = Instant::now() + Duration::from_secs(2);
+    let mut ready = String::new();
+    while Instant::now() < ready_deadline {
+        if let Ok(text) = std::fs::read_to_string(&drop_file) {
+            ready = text;
+            if ready == "ready" {
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(ready, "ready");
     drop(stream);
     let deadline = Instant::now() + Duration::from_secs(2);
     let mut saw = String::new();
@@ -1252,4 +1265,285 @@ async fn cli_sessions_hermes_db_and_signals() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     assert_eq!(saw, "TERM");
+}
+
+fn script_with(template: &str, pairs: &[(&str, &str)]) -> String {
+    let mut body = template.to_string();
+    for (key, value) in pairs {
+        body = body.replace(key, &bash_quote(value));
+    }
+    body
+}
+
+fn as_map(value: Value) -> Map<String, Value> {
+    match value {
+        Value::Object(map) => map,
+        other => panic!("expected object, got {other}"),
+    }
+}
+
+fn hold_stdout_script(pid_file: &str, lived: &str) -> String {
+    script_with(
+        r#"#!/bin/bash
+pidfile=PIDFILE
+lived=LIVED
+(
+  trap '' TERM HUP
+  printf '%s\n' "$BASHPID" > "$pidfile"
+  while true; do
+    sleep 30
+  done
+  printf '%s\n' lived > "$lived"
+) &
+while [ ! -s "$pidfile" ]; do
+  sleep 0.05
+done
+exit 0
+"#,
+        &[("PIDFILE", pid_file), ("LIVED", lived)],
+    )
+}
+
+async fn wait_gone(pid: &str) {
+    let path = format!("/proc/{pid}");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Path::new(&path).exists() && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(!Path::new(&path).exists(), "{pid}");
+}
+
+#[tokio::test]
+async fn cli_timeout_kills_descendants_after_the_leader_exits() {
+    let dir = scratch("cli-desc");
+    let pid_file = format!("{dir}/pid");
+    let lived = format!("{dir}/lived");
+    let bin = format!("{dir}/bin");
+    write_script(&bin, &hold_stdout_script(&pid_file, &lived));
+    let mut provider = CliProvider::claude(&bin);
+    provider.set_home(Some(dir));
+    let started = Instant::now();
+    let err = drain(provider.stream_chat(chat("hi", "desc", 1_000)).await)
+        .await
+        .unwrap_err();
+    let elapsed = started.elapsed();
+    assert!(err.message.contains("timed out"), "{}", err.message);
+    assert!(elapsed >= Duration::from_millis(3_500), "{elapsed:?}");
+    assert!(elapsed < Duration::from_secs(8), "{elapsed:?}");
+    assert!(!Path::new(&lived).exists());
+    let pid = std::fs::read_to_string(&pid_file).unwrap();
+    wait_gone(pid.trim()).await;
+}
+
+#[tokio::test]
+async fn token_timeout_kills_descendants_after_the_leader_exits() {
+    let dir = scratch("tok-desc");
+    let pid_file = format!("{dir}/pid");
+    let lived = format!("{dir}/lived");
+    let bin = format!("{dir}/bin");
+    write_script(&bin, &hold_stdout_script(&pid_file, &lived));
+    let started = Instant::now();
+    let err = default_run_command(&[bin], 600, None).await.unwrap_err();
+    let elapsed = started.elapsed();
+    assert!(err.contains("timed out"), "{err}");
+    assert!(elapsed >= Duration::from_millis(3_200), "{elapsed:?}");
+    assert!(elapsed < Duration::from_secs(8), "{elapsed:?}");
+    assert!(!Path::new(&lived).exists());
+    let pid = std::fs::read_to_string(&pid_file).unwrap();
+    wait_gone(pid.trim()).await;
+}
+
+#[tokio::test]
+async fn qwen_recovered_answer_survives_resume_retry() {
+    let dir = scratch("qwen-retry");
+    let args_log = format!("{dir}/args");
+    let count = format!("{dir}/count");
+    let bin = format!("{dir}/qwen");
+    write_script(
+        &bin,
+        &script_with(
+            r#"#!/bin/bash
+args=ARGS
+count=COUNT
+printf '\n---\n' >> "$args"
+printf '%s\n' "$@" >> "$args"
+n=0
+if [ -f "$count" ]; then
+  IFS= read -r n < "$count" || true
+fi
+case "$n" in
+  ''|*[!0-9]*) n=0 ;;
+esac
+n=$((n + 1))
+printf '%s\n' "$n" > "$count"
+if printf '%s\n' "$@" | grep -q -- --resume; then
+  printf '%s\n' 'No saved session found with ID stale'
+  exit 1
+fi
+if [ "$n" = 1 ]; then
+  printf '%s\n' '{"type":"result","is_error":false,"result":"ok"}'
+  exit 0
+fi
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"recovered answer"}]}}'
+printf '%s\n' '{"type":"result","is_error":false,"result":"recovered answer"}'
+exit 0
+"#,
+            &[("ARGS", args_log.as_str()), ("COUNT", count.as_str())],
+        ),
+    );
+    let map = format!("{dir}/map.json");
+    let mut qwen = CliProvider::qwen(&bin);
+    qwen.set_home(Some(dir.clone()));
+    qwen.set_session_map_path(Some(map));
+    drain(qwen.stream_chat(chat("hi", "qwen-recover", 2_000)).await)
+        .await
+        .unwrap();
+    let chunks = drain(qwen.stream_chat(chat("again", "qwen-recover", 2_000)).await)
+        .await
+        .unwrap();
+    let text: String = chunks.into_iter().filter_map(|chunk| chunk.delta).collect();
+    assert!(text.contains("recovered answer"), "{text}");
+    assert!(!text.contains("qwen-code bridge error"), "{text}");
+    let logged = std::fs::read_to_string(&args_log).unwrap();
+    assert!(logged.contains("--resume"), "{logged}");
+    assert!(logged.contains("--session-id"), "{logged}");
+}
+
+#[tokio::test]
+async fn grok_fresh_resume_id_wins_over_the_dead_one() {
+    let dir = scratch("grok-retry");
+    let args_log = format!("{dir}/args");
+    let count = format!("{dir}/count");
+    let bin = format!("{dir}/grok");
+    write_script(
+        &bin,
+        &script_with(
+            r#"#!/bin/bash
+args=ARGS
+count=COUNT
+printf '\n---\n' >> "$args"
+printf '%s\n' "$@" >> "$args"
+n=0
+if [ -f "$count" ]; then
+  IFS= read -r n < "$count" || true
+fi
+case "$n" in
+  ''|*[!0-9]*) n=0 ;;
+esac
+n=$((n + 1))
+printf '%s\n' "$n" > "$count"
+if printf '%s\n' "$@" | grep -q -- --resume; then
+  printf '%s\n' '{"type":"system","session_id":"dead-1"}'
+  exit 1
+fi
+if [ "$n" = 1 ]; then
+  printf '%s\n' '{"type":"result","session_id":"dead-1","result":"ok"}'
+  exit 0
+fi
+printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"kept"}}}'
+exit 0
+"#,
+            &[("ARGS", args_log.as_str()), ("COUNT", count.as_str())],
+        ),
+    );
+    let map = format!("{dir}/map.json");
+    let key = "grok-fresh";
+    let expected = uuid_for_conversation(key);
+    let mut grok = CliProvider::grok(&bin);
+    grok.set_home(Some(dir));
+    grok.set_session_map_path(Some(map.clone()));
+    drain(grok.stream_chat(chat("hi", key, 2_000)).await)
+        .await
+        .unwrap();
+    assert_eq!(
+        session_map_strings(&map).get(key).map(String::as_str),
+        Some("dead-1")
+    );
+    let chunks = drain(grok.stream_chat(chat("again", key, 2_000)).await)
+        .await
+        .unwrap();
+    let text: String = chunks.into_iter().filter_map(|chunk| chunk.delta).collect();
+    assert!(text.contains("kept"), "{text}");
+    assert_eq!(
+        session_map_strings(&map).get(key).map(String::as_str),
+        Some(expected.as_str())
+    );
+}
+
+#[tokio::test]
+async fn vllm_extra_body_does_not_override_named_kwargs() {
+    let (base, gate) = serve().await;
+    gate.script(&[("", 200)]);
+    let mut extra = Map::new();
+    extra.insert(
+        "chat_template_kwargs".to_string(),
+        json!({"format": "text"}),
+    );
+    extra.insert("mm_processor_kwargs".to_string(), json!({"fps": 9}));
+    extra.insert(
+        "guided_decoding_backend".to_string(),
+        Value::from("outlines"),
+    );
+    extra.insert("temperature".to_string(), json!(0.1));
+    let provider = HttpProvider::from_manifest(
+        "vllm",
+        ManifestConfig {
+            base_url: Some(base.clone()),
+            model: "m".to_string(),
+            probe_models: Some(false),
+            chat_template_kwargs: Some(as_map(json!({"format": "json"}))),
+            mm_processor_kwargs: Some(json!({"fps": 2})),
+            extra_body: Some(extra),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    provider
+        .stream_chat(chat("ask", "vllm", 5_000))
+        .await
+        .unwrap();
+    let hits = gate.hits();
+    let hit = hits
+        .iter()
+        .find(|hit| hit.target.contains("chat/completions"))
+        .unwrap();
+    let body: Value = serde_json::from_str(&hit.body).unwrap();
+    assert_eq!(body["chat_template_kwargs"]["format"], "json");
+    assert_eq!(body["chat_template_kwargs"]["enable_thinking"], false);
+    assert_eq!(body["mm_processor_kwargs"]["fps"], 2);
+    assert_eq!(body["guided_decoding_backend"], "outlines");
+    assert_eq!(body["temperature"].to_string(), "0.7");
+
+    gate.script(&[("", 200)]);
+    let mut llama_extra = Map::new();
+    llama_extra.insert(
+        "guided_decoding_backend".to_string(),
+        Value::from("outlines"),
+    );
+    llama_extra.insert("temperature".to_string(), json!(0.1));
+    let llama = HttpProvider::from_manifest(
+        "llama-server",
+        ManifestConfig {
+            base_url: Some(base),
+            model: "m".to_string(),
+            probe_models: Some(false),
+            extra_body: Some(llama_extra),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    llama
+        .stream_chat(chat("ask", "llama", 5_000))
+        .await
+        .unwrap();
+    let hits = gate.hits();
+    let hit = hits
+        .iter()
+        .rev()
+        .find(|hit| hit.target.contains("chat/completions"))
+        .unwrap();
+    let body: Value = serde_json::from_str(&hit.body).unwrap();
+    assert!(body.get("chat_template_kwargs").is_none());
+    assert_eq!(body["guided_decoding_backend"], "outlines");
+    assert_eq!(body["temperature"].to_string(), "0.7");
 }

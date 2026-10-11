@@ -1,10 +1,7 @@
 use protocol::{JsNumber, LlmChunk, LlmUsage};
 use serde_json::Value;
 
-use crate::chunks::{
-    done_chunk, error_chunk, reasoning_chunk, status_chunk, text_chunk, tool_delta, tool_done,
-    tool_start,
-};
+use crate::chunks::{done_chunk, error_chunk, reasoning_chunk, status_chunk, text_chunk};
 use crate::error::ProviderError;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -48,7 +45,6 @@ pub struct Machine {
     fallback_text: String,
     fallback_reason: String,
     fatal: Option<String>,
-    tool_index: u64,
     grok_usage: GrokUsage,
 }
 
@@ -101,7 +97,6 @@ impl Machine {
             fallback_text: String::new(),
             fallback_reason: String::new(),
             fatal: None,
-            tool_index: 0,
             grok_usage: GrokUsage::default(),
         }
     }
@@ -123,6 +118,7 @@ impl Machine {
         self.stop_reason = None;
         self.grok_usage = GrokUsage::default();
         self.saw_usage = false;
+        self.session_id = None;
     }
 
     pub fn push_line(&mut self, line: &str) -> (Vec<LlmChunk>, Option<ProviderError>) {
@@ -142,11 +138,20 @@ impl Machine {
     }
 
     pub fn finish(&mut self, code: Option<i32>, stderr: &str, stdout: &str) -> Finish {
+        let retry_qwen = self.family == Family::Qwen
+            && self.allow_retry
+            && !self.retried
+            && !self.saw_init
+            && self.resume_rejected;
         let mut chunks = Vec::new();
         let mut error = None;
         match self.family {
             Family::Pi => chunks.extend(self.finish_pi(code, stderr)),
-            Family::Qwen => chunks.extend(self.finish_qwen(code, stderr)),
+            Family::Qwen => {
+                if !retry_qwen {
+                    chunks.extend(self.finish_qwen(code, stderr));
+                }
+            }
             Family::Opencode => chunks.extend(self.finish_opencode(code, stderr, stdout)),
             Family::Grok => error = self.finish_grok(code, stderr, stdout, &mut chunks),
             Family::Claude => error = self.finish_claude(code, stderr, &mut chunks),
@@ -163,11 +168,7 @@ impl Machine {
         Finish {
             chunks,
             error,
-            retry_qwen: self.family == Family::Qwen
-                && self.allow_retry
-                && !self.retried
-                && !self.saw_init
-                && self.resume_rejected,
+            retry_qwen,
             retry_grok: self.family == Family::Grok
                 && self.allow_retry
                 && !self.retried
@@ -223,27 +224,13 @@ impl Machine {
                 {
                     self.note_text(&mut chunks, text, true);
                 }
-            } else if event == "thinking_delta" {
-                if let Some(text) = inner
+            } else if event == "thinking_delta"
+                && let Some(text) = inner
                     .get("delta")
                     .and_then(Value::as_str)
                     .filter(|t| !t.is_empty())
-                {
-                    self.note_reason(&mut chunks, text, true);
-                }
-            } else if event == "toolcall_delta" {
-                if let Some(text) = inner
-                    .get("delta")
-                    .and_then(Value::as_str)
-                    .filter(|t| !t.is_empty())
-                {
-                    chunks.push(tool_delta(self.tool_index.saturating_sub(1), text));
-                }
-            } else if matches!(
-                event,
-                "toolcall_start" | "toolcall_end" | "tool_call_start" | "tool_call_end"
-            ) {
-                self.note_tool(&mut chunks, inner);
+            {
+                self.note_reason(&mut chunks, text, true);
             }
             return chunks;
         }
@@ -252,7 +239,6 @@ impl Machine {
         {
             let role = message.get("role").and_then(Value::as_str).unwrap_or("");
             if role == "toolResult" || role == "tool_result" {
-                chunks.push(tool_done(self.tool_index.saturating_sub(1)));
                 return chunks;
             }
             if role == "assistant" {
@@ -288,16 +274,13 @@ impl Machine {
                         {
                             self.note_text(&mut chunks, text, false);
                         }
-                    } else if ty == "thinking" {
-                        if let Some(text) = block
+                    } else if ty == "thinking"
+                        && let Some(text) = block
                             .get("thinking")
                             .and_then(Value::as_str)
                             .filter(|t| !t.is_empty())
-                        {
-                            self.note_reason(&mut chunks, text, false);
-                        }
-                    } else if matches!(ty, "toolCall" | "tool_call" | "toolUse" | "tool_use") {
-                        self.note_tool(&mut chunks, block);
+                    {
+                        self.note_reason(&mut chunks, text, false);
                     }
                 }
             }
@@ -368,21 +351,13 @@ impl Machine {
                     {
                         self.note_text(&mut chunks, text, true);
                     }
-                } else if ty == "thinking_delta" {
-                    if let Some(text) = delta
+                } else if ty == "thinking_delta"
+                    && let Some(text) = delta
                         .and_then(|d| d.get("thinking"))
                         .and_then(Value::as_str)
                         .filter(|t| !t.is_empty())
-                    {
-                        self.note_reason(&mut chunks, text, true);
-                    }
-                } else if ty == "input_json_delta"
-                    && let Some(text) = delta
-                        .and_then(|d| d.get("partial_json"))
-                        .and_then(Value::as_str)
-                        .filter(|t| !t.is_empty())
                 {
-                    chunks.push(tool_delta(self.tool_index.saturating_sub(1), text));
+                    self.note_reason(&mut chunks, text, true);
                 }
             }
             return chunks;
@@ -405,16 +380,13 @@ impl Machine {
                             {
                                 self.note_text(&mut chunks, text, false);
                             }
-                        } else if ty == "thinking" {
-                            if let Some(text) = block
+                        } else if ty == "thinking"
+                            && let Some(text) = block
                                 .get("thinking")
                                 .and_then(Value::as_str)
                                 .filter(|t| !t.is_empty())
-                            {
-                                self.note_reason(&mut chunks, text, false);
-                            }
-                        } else if ty == "tool_use" {
-                            self.note_tool(&mut chunks, block);
+                        {
+                            self.note_reason(&mut chunks, text, false);
                         }
                     }
                 }
@@ -867,17 +839,6 @@ impl Machine {
             return;
         }
         chunks.push(reasoning_chunk(text));
-    }
-
-    fn note_tool(&mut self, chunks: &mut Vec<LlmChunk>, block: &Value) {
-        let name = first_str(block, &["name", "toolName"]).unwrap_or_default();
-        if name.is_empty() {
-            return;
-        }
-        let id = first_str(block, &["id", "toolCallId"]).unwrap_or_default();
-        let index = self.tool_index;
-        self.tool_index += 1;
-        chunks.push(tool_start(index, &id, &name));
     }
 
     fn note_pi_usage(&mut self, usage: Option<&Value>) {
@@ -1342,4 +1303,96 @@ pub fn parse_grok_json(stdout: &str) -> Option<Value> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use protocol::LlmChunkType;
+
+    use super::{Family, Machine};
+
+    fn tool_chunk(chunk: &protocol::LlmChunk) -> bool {
+        matches!(
+            chunk.r#type,
+            LlmChunkType::ToolCallStart | LlmChunkType::ToolCallDelta | LlmChunkType::ToolCallDone
+        )
+    }
+
+    #[test]
+    fn pi_tool_events_stay_internal() {
+        let mut machine = Machine::new(Family::Pi, "pi");
+        let (delta, _) = machine.push_line(
+            r#"{"type":"message_update","assistantMessageEvent":{"type":"toolcall_delta","delta":"{\"a\":"}}"#,
+        );
+        assert!(delta.iter().all(|chunk| !tool_chunk(chunk)));
+        let (start, _) = machine.push_line(
+            r#"{"type":"message_update","assistantMessageEvent":{"type":"toolcall_start","id":"t","name":"Bash"}}"#,
+        );
+        assert!(start.iter().all(|chunk| !tool_chunk(chunk)));
+        let (done, _) = machine.push_line(
+            r#"{"type":"message_end","message":{"role":"toolResult","toolCallId":"t","toolName":"Bash"}}"#,
+        );
+        assert!(done.is_empty());
+        let (text, _) = machine.push_line(
+            r#"{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"hello"}}"#,
+        );
+        assert_eq!(text[0].delta.as_deref(), Some("hello"));
+        assert!(!tool_chunk(&text[0]));
+    }
+
+    #[test]
+    fn qwen_tool_events_stay_internal() {
+        let mut machine = Machine::new(Family::Qwen, "qwen");
+        let (partial, _) = machine.push_line(
+            r#"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"input_json_delta","partial_json":"{\"path\":"}}}"#,
+        );
+        assert!(partial.iter().all(|chunk| !tool_chunk(chunk)));
+        let (tool, _) = machine.push_line(
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t","name":"read","input":{}}]}}"#,
+        );
+        assert!(tool.iter().all(|chunk| !tool_chunk(chunk)));
+        let (text, _) = machine.push_line(
+            r#"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"hi"}}}"#,
+        );
+        assert_eq!(text[0].delta.as_deref(), Some("hi"));
+    }
+
+    #[test]
+    fn qwen_resume_retry_keeps_the_recovered_answer() {
+        let mut machine = Machine::new(Family::Qwen, "qwen");
+        machine.arm_retry(true);
+        let (rejected, _) = machine.push_line("No saved session found with ID stale");
+        assert!(rejected.is_empty());
+        let finish = machine.finish(Some(1), "", "");
+        assert!(finish.retry_qwen);
+        assert!(finish.chunks.is_empty());
+        assert!(!machine.saw_text);
+        assert!(!machine.saw_text_delta);
+        machine.mark_retried();
+        let (snap, _) = machine.push_line(
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"recovered answer"}]}}"#,
+        );
+        assert_eq!(snap[0].delta.as_deref(), Some("recovered answer"));
+        let mut fallback = Machine::new(Family::Qwen, "qwen");
+        fallback.arm_retry(true);
+        fallback.push_line("No saved session found with ID stale");
+        assert!(fallback.finish(Some(1), "", "").retry_qwen);
+        fallback.mark_retried();
+        let (result, _) = fallback.push_line(r#"{"type":"result","result":"recovered answer"}"#);
+        assert_eq!(result[0].delta.as_deref(), Some("recovered answer"));
+    }
+
+    #[test]
+    fn grok_mark_retried_clears_the_dead_session() {
+        let mut machine = Machine::new(Family::Grok, "grok");
+        machine.arm_retry(true);
+        let (chunks, err) = machine.push_line(r#"{"type":"system","session_id":"dead-1"}"#);
+        assert!(chunks.is_empty());
+        assert!(err.is_none());
+        assert_eq!(machine.session_id.as_deref(), Some("dead-1"));
+        let finish = machine.finish(Some(1), "", "");
+        assert!(finish.retry_grok);
+        machine.mark_retried();
+        assert!(machine.session_id.is_none());
+    }
 }
