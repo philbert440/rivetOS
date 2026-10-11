@@ -29,7 +29,37 @@ const KNOWN_META: &[&str] = &[
     "sources",
 ];
 
-pub fn parse_wiki_page(input: &str) -> Result<WikiPage, WikiParseError> {
+pub trait WikiMarkdown {
+    fn to_markdown_text(&self) -> JsText;
+}
+
+impl WikiMarkdown for str {
+    fn to_markdown_text(&self) -> JsText {
+        JsText::from(self)
+    }
+}
+
+impl WikiMarkdown for String {
+    fn to_markdown_text(&self) -> JsText {
+        JsText::from(self.as_str())
+    }
+}
+
+impl WikiMarkdown for JsText {
+    fn to_markdown_text(&self) -> JsText {
+        self.clone()
+    }
+}
+
+pub fn parse_wiki_page(input: &(impl WikiMarkdown + ?Sized)) -> Result<WikiPage, WikiParseError> {
+    let text = input.to_markdown_text();
+    match String::from_utf16(text.units()) {
+        Ok(markdown) => parse_markdown(&markdown),
+        Err(_) => parse_with_units(text.units()),
+    }
+}
+
+fn parse_markdown(input: &str) -> Result<WikiPage, WikiParseError> {
     let markdown = input.replace("\r\n", "\n");
     let Some((yaml, body)) = split_frontmatter(&markdown) else {
         return Err(WikiParseError::new("missing YAML frontmatter"));
@@ -93,6 +123,81 @@ pub fn parse_wiki_page(input: &str) -> Result<WikiPage, WikiParseError> {
             .unwrap_or_default(),
         citations: citations
             .map(|section| parse_citations(&section.body))
+            .unwrap_or_default(),
+        see_also,
+        preamble,
+        extra_sections,
+    })
+}
+
+fn parse_with_units(units: &[u16]) -> Result<WikiPage, WikiParseError> {
+    let markdown = normalize_crlf(units);
+    let Some((yaml_units, body)) = split_frontmatter_units(&markdown) else {
+        return Err(WikiParseError::new("missing YAML frontmatter"));
+    };
+    let value = parse_yaml_value(&units_as_utf8(yaml_units))?;
+    if value.as_object().is_none() {
+        return Err(WikiParseError::new("frontmatter not a map"));
+    }
+    let mut meta = normalize_meta(&value)?;
+    let (preamble_units, sections) = split_sections_units(body);
+    let summary = sections
+        .iter()
+        .find(|section| same_heading(&section.heading, "summary"))
+        .or_else(|| {
+            sections
+                .iter()
+                .find(|section| same_heading(&section.heading, "current state"))
+        });
+    let article = sections
+        .iter()
+        .find(|section| same_heading(&section.heading, "article"));
+    let see_also_sec = sections
+        .iter()
+        .find(|section| same_heading(&section.heading, "see also"));
+    let history = sections
+        .iter()
+        .find(|section| same_heading(&section.heading, "history"));
+    let citations = sections
+        .iter()
+        .find(|section| same_heading(&section.heading, "citations"));
+    let extra_sections: Vec<WikiSection> = sections
+        .iter()
+        .filter(|section| !is_core_heading(&section.heading))
+        .map(|section| WikiSection {
+            heading: section.heading.clone(),
+            body: protocol::js::js_trim(&units_as_utf8(&section.body)).to_string(),
+        })
+        .collect();
+    let see_from = see_also_sec
+        .map(|section| parse_see_also(&units_as_utf8(&section.body)))
+        .unwrap_or_default();
+    let see_also = union_slices(&[&meta.related, &see_from]);
+    meta.related = union_slices(&[&meta.related, &see_also]);
+    let preamble_text = units_as_utf8(&preamble_units);
+    let preamble = {
+        let trimmed = protocol::js::js_trim(&preamble_text);
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    };
+    let summary_body = summary
+        .map(|section| section.body.clone())
+        .unwrap_or_default();
+    let article_body = article
+        .map(|section| section.body.clone())
+        .unwrap_or_default();
+    Ok(WikiPage {
+        meta,
+        current_state: JsText::from_units(protocol::js::js_trim_units(&summary_body).to_vec()),
+        article: protocol::js::js_trim(&units_as_utf8(&article_body)).to_string(),
+        history: history
+            .map(|section| parse_history_units(&section.body))
+            .unwrap_or_default(),
+        citations: citations
+            .map(|section| parse_citations(&units_as_utf8(&section.body)))
             .unwrap_or_default(),
         see_also,
         preamble,
@@ -184,29 +289,29 @@ pub fn apply_patch(existing: Option<&WikiPage>, patch: &WikiPatch) -> WikiPage {
     if let Some(delta) = &patch.summary_delta
         && !protocol::js::js_trim(delta).is_empty()
     {
-        let folded = demote_h2_headings(protocol::js::js_trim(delta));
-        page.current_state = JsText::from(merge_summary_text(&page.current_state, &folded));
+        let folded = demote_h2(&JsText::from(protocol::js::js_trim(delta)));
+        page.current_state = merge_summary_text(&page.current_state, &folded);
     }
     if let Some(incoming) = &patch.current_state {
         let incoming_trim = protocol::js::js_trim(incoming);
-        if incoming_trim != protocol::js::js_trim(&page.current_state) {
-            let next = demote_h2_headings(incoming_trim);
-            let prev = protocol::js::js_trim(&page.current_state).to_string();
+        let current_trim = page.current_state.trimmed();
+        if current_trim != incoming_trim {
+            let next = demote_h2(&JsText::from(incoming_trim));
+            let prev = current_trim;
             let would_shrink = !prev.is_empty()
                 && !next.is_empty()
-                && (protocol::js::utf16_len(&next) as f64)
-                    < (protocol::js::utf16_len(&prev) as f64) * SUMMARY_SHRINK_FLOOR
+                && (next.len() as f64) < (prev.len() as f64) * SUMMARY_SHRINK_FLOOR
                 && !patch.allow_shrink;
             if would_shrink {
-                if protocol::js::utf16_len(&prev) < SUMMARY_MAX_CHARS {
-                    page.current_state = JsText::from(merge_summary_text(&prev, &next));
+                if prev.len() < SUMMARY_MAX_CHARS {
+                    page.current_state = merge_summary_text(&prev, &next);
                 } else {
                     page.history.insert(
                         0,
                         WikiHistoryEntry {
                             date: day.clone(),
                             title: "Summary thrash refused (v7 cap)".to_string(),
-                            body: JsText::from(next),
+                            body: next,
                         },
                     );
                 }
@@ -217,11 +322,11 @@ pub fn apply_patch(existing: Option<&WikiPage>, patch: &WikiPatch) -> WikiPage {
                         WikiHistoryEntry {
                             date: day.clone(),
                             title: "Superseded current state".to_string(),
-                            body: JsText::from(prev),
+                            body: prev,
                         },
                     );
                 }
-                page.current_state = JsText::from(next);
+                page.current_state = next;
             }
         }
     }
@@ -268,7 +373,7 @@ pub fn apply_patch(existing: Option<&WikiPage>, patch: &WikiPatch) -> WikiPage {
         page.article = apply_article_patches(&page.article, &demoted);
     }
     if let Some(entry) = &patch.history_entry {
-        let body = demote_h2(&entry.body).trimmed();
+        let body = demote_h2(&entry.body.trimmed());
         let dup = page.history.iter().any(|have| {
             have.date == entry.date && have.title == entry.title && have.body.trimmed() == body
         });
@@ -370,7 +475,7 @@ pub fn merge_pages(canonical: &WikiPage, losers: &[WikiPage]) -> WikiPage {
                     body: loser_state.clone(),
                 },
             );
-            out.current_state = JsText::from(merge_summary_text(&out.current_state, &loser_state));
+            out.current_state = merge_summary_text(&out.current_state, &loser_state);
         }
         let loser_article = protocol::js::js_trim(&loser.article).to_string();
         if !loser_article.is_empty() {
@@ -448,23 +553,29 @@ pub fn merge_pages(canonical: &WikiPage, losers: &[WikiPage]) -> WikiPage {
     out
 }
 
-pub fn merge_summary_text(existing: &str, delta: &str) -> String {
-    let left = protocol::js::js_trim(existing);
-    let right = protocol::js::js_trim(delta);
+pub fn merge_summary_text(existing: &JsText, delta: &JsText) -> JsText {
+    let left = existing.trimmed();
+    let right = delta.trimmed();
     if right.is_empty() {
-        return left.to_string();
+        return left;
     }
-    if left.is_empty() || left == right || left.contains(right) {
-        return if left.is_empty() {
-            right.to_string()
-        } else {
-            left.to_string()
-        };
+    if left.is_empty() || left == right || units_contains(left.units(), right.units()) {
+        return if left.is_empty() { right } else { left };
     }
-    if right.contains(left) && protocol::js::utf16_len(right) > protocol::js::utf16_len(left) {
-        return right.to_string();
+    if units_contains(right.units(), left.units()) && right.len() > left.len() {
+        return right;
     }
-    format!("{left}\n\n{right}")
+    JsText::join(&[left, right], "\n\n")
+}
+
+fn units_contains(hay: &[u16], needle: &[u16]) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    if needle.len() > hay.len() {
+        return false;
+    }
+    hay.windows(needle.len()).any(|window| window == needle)
 }
 
 pub fn cap_summary(text: &str, max_chars: usize) -> SummaryCap {
@@ -635,7 +746,10 @@ pub fn apply_article_patches(article: &str, patches: &[WikiArticlePatch]) -> Str
 pub fn merge_article_bodies(left: &str, right: &str) -> String {
     let (left_lead, left_sections) = split_article_sections(left);
     let (right_lead, right_sections) = split_article_sections(right);
-    let lead = merge_summary_text(&left_lead, &right_lead);
+    let lead = merge_summary_text(
+        &JsText::from(left_lead.as_str()),
+        &JsText::from(right_lead.as_str()),
+    );
     let mut order = Vec::new();
     let mut bodies: Vec<WikiArticleSection> = Vec::new();
     for section in left_sections {
@@ -672,7 +786,7 @@ pub fn merge_article_bodies(left: &str, right: &str) -> String {
             bodies.push(section);
         }
     }
-    join_article_sections(&lead, &bodies)
+    join_article_sections(lead.utf8(), &bodies)
 }
 
 pub fn parse_see_also(body: &str) -> Vec<String> {
@@ -838,40 +952,7 @@ fn source_identity(source: &WikiSource) -> (Option<String>, String) {
 }
 
 fn js_sort_key(value: &protocol::js::JsValue) -> Vec<u16> {
-    match value {
-        protocol::js::JsValue::String(text) => text.units().to_vec(),
-        other => js_primitive(other).encode_utf16().collect(),
-    }
-}
-
-fn js_primitive(value: &protocol::js::JsValue) -> String {
-    match value {
-        protocol::js::JsValue::String(text) => text.to_utf8().to_string(),
-        protocol::js::JsValue::Null => "null".to_string(),
-        protocol::js::JsValue::Bool(true) => "true".to_string(),
-        protocol::js::JsValue::Bool(false) => "false".to_string(),
-        protocol::js::JsValue::Number(number) => js_number_string(*number),
-        protocol::js::JsValue::Array(items) => {
-            items.iter().map(js_primitive).collect::<Vec<_>>().join(",")
-        }
-        protocol::js::JsValue::Object(_) => "[object Object]".to_string(),
-    }
-}
-
-fn js_number_string(number: f64) -> String {
-    if number.is_nan() {
-        "NaN".to_string()
-    } else if number.is_infinite() {
-        if number.is_sign_negative() {
-            "-Infinity".to_string()
-        } else {
-            "Infinity".to_string()
-        }
-    } else if number == 0.0 {
-        "0".to_string()
-    } else {
-        protocol::js::stringify(&protocol::js::JsValue::Number(number))
-    }
+    protocol::js::js_string(value).units().to_vec()
 }
 
 fn split_frontmatter(markdown: &str) -> Option<(&str, &str)> {
@@ -883,6 +964,176 @@ fn split_frontmatter(markdown: &str) -> Option<(&str, &str)> {
         after += 1;
     }
     Some((yaml, &rest[after..]))
+}
+
+fn split_frontmatter_units(markdown: &[u16]) -> Option<(&[u16], &[u16])> {
+    let prefix = (*b"---\n").map(u16::from);
+    if !markdown.starts_with(&prefix) {
+        return None;
+    }
+    let rest = &markdown[prefix.len()..];
+    let close_mark = (*b"\n---").map(u16::from);
+    let close = find_units(rest, &close_mark)?;
+    let yaml = &rest[..close];
+    let mut after = close + close_mark.len();
+    if rest.get(after) == Some(&u16::from(b'\n')) {
+        after += 1;
+    }
+    Some((yaml, &rest[after..]))
+}
+
+fn normalize_crlf(units: &[u16]) -> Vec<u16> {
+    let mut out = Vec::with_capacity(units.len());
+    let mut index = 0usize;
+    while index < units.len() {
+        if units[index] == u16::from(b'\r') && units.get(index + 1) == Some(&u16::from(b'\n')) {
+            out.push(u16::from(b'\n'));
+            index += 2;
+        } else {
+            out.push(units[index]);
+            index += 1;
+        }
+    }
+    out
+}
+
+fn units_as_utf8(units: &[u16]) -> String {
+    String::from_utf16(units).unwrap_or_else(|_| {
+        char::decode_utf16(units.iter().copied())
+            .map(|item| item.unwrap_or('\u{FFFD}'))
+            .collect()
+    })
+}
+
+fn find_units(hay: &[u16], needle: &[u16]) -> Option<usize> {
+    if needle.is_empty() {
+        return Some(0);
+    }
+    hay.windows(needle.len())
+        .position(|window| window == needle)
+}
+
+struct UnitSection {
+    heading: String,
+    body: Vec<u16>,
+}
+
+fn split_sections_units(body: &[u16]) -> (Vec<u16>, Vec<UnitSection>) {
+    let mut sections = Vec::new();
+    let mut pre = Vec::new();
+    let mut heading: Option<String> = None;
+    let mut buf = Vec::new();
+    let mut in_fence = false;
+    for line in split_unit_lines(body) {
+        let trimmed = protocol::js::js_trim_units(line);
+        if units_start(trimmed, "```") {
+            in_fence = !in_fence;
+        }
+        if !in_fence && let Some(title) = h2_title_units(line) {
+            if let Some(previous) = heading.take() {
+                sections.push(UnitSection {
+                    heading: previous,
+                    body: join_unit_lines(&buf),
+                });
+            }
+            heading = Some(units_as_utf8(protocol::js::js_trim_units(title)));
+            buf.clear();
+            continue;
+        }
+        if heading.is_some() {
+            buf.push(line.to_vec());
+        } else {
+            pre.push(line.to_vec());
+        }
+    }
+    if let Some(previous) = heading {
+        sections.push(UnitSection {
+            heading: previous,
+            body: join_unit_lines(&buf),
+        });
+    }
+    (join_unit_lines(&pre), sections)
+}
+
+fn h2_title_units(line: &[u16]) -> Option<&[u16]> {
+    let prefix = (*b"## ").map(u16::from);
+    if line.starts_with(&prefix) && line.len() > prefix.len() {
+        Some(&line[prefix.len()..])
+    } else {
+        None
+    }
+}
+
+fn parse_history_units(body: &[u16]) -> Vec<WikiHistoryEntry> {
+    let mut entries = Vec::new();
+    let mut current: Option<(String, String)> = None;
+    let mut buf = Vec::new();
+    let mut in_fence = false;
+    for line in split_unit_lines(body) {
+        let trimmed = protocol::js::js_trim_units(line);
+        if units_start(trimmed, "```") {
+            in_fence = !in_fence;
+        }
+        if !in_fence && let Some((date, title)) = history_heading_units(line) {
+            if let Some((date, title)) = current.take() {
+                entries.push(WikiHistoryEntry {
+                    date,
+                    title,
+                    body: JsText::from_units(
+                        protocol::js::js_trim_units(&join_unit_lines(&buf)).to_vec(),
+                    ),
+                });
+            }
+            current = Some((date, title));
+            buf.clear();
+            continue;
+        }
+        if current.is_some() {
+            buf.push(line.to_vec());
+        }
+    }
+    if let Some((date, title)) = current {
+        entries.push(WikiHistoryEntry {
+            date,
+            title,
+            body: JsText::from_units(protocol::js::js_trim_units(&join_unit_lines(&buf)).to_vec()),
+        });
+    }
+    entries
+}
+
+fn history_heading_units(line: &[u16]) -> Option<(String, String)> {
+    let text = String::from_utf16(line).ok()?;
+    history_heading(&text)
+}
+
+fn units_start(units: &[u16], prefix: &str) -> bool {
+    let prefix: Vec<u16> = prefix.encode_utf16().collect();
+    units.starts_with(&prefix)
+}
+
+fn split_unit_lines(units: &[u16]) -> Vec<&[u16]> {
+    let mut lines = Vec::new();
+    let mut start = 0usize;
+    for (index, unit) in units.iter().enumerate() {
+        if *unit == u16::from(b'\n') {
+            lines.push(&units[start..index]);
+            start = index + 1;
+        }
+    }
+    lines.push(&units[start..]);
+    lines
+}
+
+fn join_unit_lines(lines: &[Vec<u16>]) -> Vec<u16> {
+    let mut out = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
+        if index > 0 {
+            out.push(u16::from(b'\n'));
+        }
+        out.extend_from_slice(line);
+    }
+    out
 }
 
 fn normalize_meta(raw: &Passthrough) -> Result<WikiFrontmatter, WikiParseError> {
@@ -1411,4 +1662,17 @@ fn word_boundary(chars: &[char], index: usize) -> bool {
 
 fn is_js_word(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || ch == '_'
+}
+
+#[cfg(test)]
+mod tests {
+    use super::source_identity;
+    use crate::model::WikiSource;
+
+    #[test]
+    fn nested_null_array_id_sorts_like_javascript_tostring() {
+        let source: WikiSource = serde_json::from_str(r#"{"ids":["b",[null]]}"#).expect("source");
+        let (_, key) = source_identity(&source);
+        assert_eq!(key, "[[null],\"b\"]");
+    }
 }

@@ -536,6 +536,53 @@ fn demotes_headings_inside_history_entries() {
 }
 
 #[test]
+fn history_normalization_trims_before_demoting_headings() {
+    let entry = WikiHistoryEntry {
+        date: "2026-07-27".to_string(),
+        title: "Update".to_string(),
+        body: "  ## Update\n\nBody".into(),
+    };
+    let mut once_patch = patch(
+        PatchAction::Update,
+        "release-checklist",
+        "2026-07-27T00:00:00Z",
+    );
+    once_patch.history_entry = Some(entry.clone());
+    let once = apply_patch(Some(&page()), &once_patch);
+    let stored_body = once
+        .history
+        .iter()
+        .find(|item| item.title == "Update")
+        .expect("update");
+    assert_eq!(stored_body.body, "### Update\n\nBody");
+    let stored = parse_wiki_page(&serialize_wiki_page(&once)).expect("stored");
+    let mut twice_patch = patch(
+        PatchAction::Update,
+        "release-checklist",
+        "2026-07-28T00:00:00Z",
+    );
+    twice_patch.history_entry = Some(entry);
+    let twice = apply_patch(Some(&stored), &twice_patch);
+    assert_eq!(
+        twice
+            .history
+            .iter()
+            .filter(|item| item.title == "Update")
+            .count(),
+        1
+    );
+    assert_eq!(
+        twice
+            .history
+            .iter()
+            .find(|item| item.title == "Update")
+            .expect("update")
+            .body,
+        "### Update\n\nBody"
+    );
+}
+
+#[test]
 fn reapplying_the_same_history_entry_dedups() {
     let entry = WikiHistoryEntry {
         date: "2026-07-27".to_string(),
@@ -1019,6 +1066,51 @@ fn source_objects_keep_original_order_and_unknown_keys() {
 }
 
 #[test]
+fn second_summary_patch_keeps_the_unpaired_surrogate() {
+    let mut first = patch(PatchAction::Create, "example-topic", "2026-07-01T00:00:00Z");
+    first.current_state = Some(format!("{}😀", "a".repeat(2399)));
+    let once = apply_patch(None, &first);
+    assert_eq!(once.current_state.units().last().copied(), Some(0xD83D));
+    let overflow = once
+        .history
+        .iter()
+        .find(|entry| entry.title == "Summary overflow (v7 cap)")
+        .expect("overflow");
+    assert_eq!(overflow.body.units().first().copied(), Some(0xDE00));
+
+    let mut delta = patch(PatchAction::Update, "example-topic", "2026-07-02T00:00:00Z");
+    delta.summary_delta = Some("Extra fact.".to_string());
+    let twice = apply_patch(Some(&once), &delta);
+    assert_eq!(twice.current_state.units().last().copied(), Some(0xD83D));
+    assert!(!twice.current_state.units().contains(&0xFFFD));
+    let serialized = serialize_wiki_page(&twice);
+    assert!(serialized.units().contains(&0xD83D));
+    let json = serde_json::to_string(&serialized).expect("json");
+    assert!(json.contains("\\ud83d"), "{json}");
+    assert!(!json.contains("\\ufffd"), "{json}");
+    let round = parse_wiki_page(&serialized).expect("round");
+    assert_eq!(round.current_state.units().last().copied(), Some(0xD83D));
+    let round_overflow = round
+        .history
+        .iter()
+        .find(|entry| entry.body.units().contains(&0xDE00))
+        .expect("overflow");
+    assert_eq!(round_overflow.body.units().first().copied(), Some(0xDE00));
+
+    let mut shrink = patch(PatchAction::Update, "example-topic", "2026-07-03T00:00:00Z");
+    shrink.current_state = Some("short replacement".to_string());
+    shrink.allow_shrink = true;
+    let replaced = apply_patch(Some(&once), &shrink);
+    let archived = replaced
+        .history
+        .iter()
+        .find(|entry| entry.title == "Superseded current state")
+        .expect("archived");
+    assert_eq!(archived.body.units().last().copied(), Some(0xD83D));
+    assert!(!archived.body.units().contains(&0xFFFD));
+}
+
+#[test]
 fn summary_cap_keeps_an_unpaired_surrogate() {
     let text = format!("{}😀", "a".repeat(2399));
     let capped = cap_summary(&text, 2400);
@@ -1062,6 +1154,25 @@ fn integer_index_keys_precede_other_properties() {
 }
 
 #[test]
+fn set_span_keeps_unknown_span_keys() {
+    let raw = r#"{"ids":["id1"],"span":{"earliest":"a","latest":"b","note":"imported"}}"#;
+    let mut source: WikiSource = serde_json::from_str(raw).expect("source");
+    source.set_span("2026-01-01", "2026-02-02");
+    assert_eq!(
+        serde_json::to_string(&source).expect("json"),
+        r#"{"ids":["id1"],"span":{"earliest":"2026-01-01","latest":"2026-02-02","note":"imported"}}"#
+    );
+    let mut created = WikiSource::summary(vec!["id1".to_string()]);
+    created.set_span("a", "b");
+    let created_json = serde_json::to_string(&created).expect("created");
+    assert!(
+        created_json.contains("\"earliest\":\"a\""),
+        "{created_json}"
+    );
+    assert!(created_json.contains("\"latest\":\"b\""), "{created_json}");
+}
+
+#[test]
 fn source_edits_reach_the_serialized_page() {
     let mut source = WikiSource::summary(vec!["old-id".to_string()]);
     source.set_ids(vec!["id1".to_string()]);
@@ -1100,6 +1211,64 @@ fn json_patch_sources_keep_original_properties() {
         serde_json::to_string(&round.meta.sources[0]).expect("round source"),
         r#"{"conversationId":"c1","kind":"summary","ids":["id1"],"note":"imported"}"#
     );
+}
+
+#[test]
+fn strip_chomped_block_scalar_keeps_nonfinite_text() {
+    let literal = "---\ntoken: |-\n  .nan\ntitle: T\nslug: t\n---\n\n## Summary\n\nLead.\n";
+    let parsed = parse_wiki_page(literal).expect("literal");
+    let token = parsed
+        .meta
+        .extra
+        .as_ref()
+        .and_then(|extra| extra.get("token"))
+        .expect("token");
+    assert_eq!(token.as_str(), Some(".nan"));
+    assert!(token.as_f64().is_none());
+
+    let folded = "---\ntoken: >-\n  .inf\ntitle: T\nslug: t\n---\n\n## Summary\n\nLead.\n";
+    let parsed = parse_wiki_page(folded).expect("folded");
+    let token = parsed
+        .meta
+        .extra
+        .as_ref()
+        .and_then(|extra| extra.get("token"))
+        .expect("token");
+    assert_eq!(token.as_str(), Some(".inf"));
+
+    let signed = "---\ntoken: |-\n  -.inf\ntitle: T\nslug: t\n---\n\n## Summary\n\nLead.\n";
+    let parsed = parse_wiki_page(signed).expect("signed");
+    let token = parsed
+        .meta
+        .extra
+        .as_ref()
+        .and_then(|extra| extra.get("token"))
+        .expect("token");
+    assert_eq!(token.as_str(), Some("-.inf"));
+
+    let plain = "---\ntoken: .nan\ntitle: T\nslug: t\n---\n\n## Summary\n\nLead.\n";
+    let parsed = parse_wiki_page(plain).expect("plain");
+    assert!(
+        parsed
+            .meta
+            .extra
+            .as_ref()
+            .and_then(|extra| extra.get("token"))
+            .and_then(|token| token.as_f64())
+            .expect("nan")
+            .is_nan()
+    );
+
+    let sequence = "---\nlist:\n  - .nan\ntitle: T\nslug: t\n---\n\n## Summary\n\nLead.\n";
+    let parsed = parse_wiki_page(sequence).expect("sequence");
+    let first = parsed
+        .meta
+        .extra
+        .as_ref()
+        .and_then(|extra| extra.get("list"))
+        .and_then(|list| list.as_array().and_then(|items| items.first().cloned()))
+        .expect("item");
+    assert!(first.as_f64().expect("nan").is_nan());
 }
 
 #[test]

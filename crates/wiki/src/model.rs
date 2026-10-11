@@ -230,11 +230,28 @@ impl WikiSource {
     }
 
     pub fn set_span(&mut self, earliest: impl Into<String>, latest: impl Into<String>) {
+        let earliest = earliest.into();
+        let latest = latest.into();
+        let updated = if let Some(span) = self
+            .raw
+            .as_object_mut()
+            .and_then(|object| object.get_mut("span"))
+            .and_then(JsValue::as_object_mut)
+        {
+            span.insert("earliest", JsValue::from_text(&earliest));
+            span.insert("latest", JsValue::from_text(&latest));
+            true
+        } else {
+            false
+        };
+        if updated {
+            return;
+        }
         self.insert(
             "span",
             Passthrough::object([
-                ("earliest", Passthrough::string(earliest.into())),
-                ("latest", Passthrough::string(latest.into())),
+                ("earliest", Passthrough::string(earliest)),
+                ("latest", Passthrough::string(latest)),
             ]),
         );
     }

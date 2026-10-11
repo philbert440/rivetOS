@@ -1203,9 +1203,50 @@ fn quoted_or_block(text: &str, span: serde_saphyr::Span) -> bool {
     if trimmed.starts_with(['"', '\'', '|', '>']) || slice.contains('\n') {
         return true;
     }
+    quote_before(text, span.offset()) || block_header_before(text, span.offset())
+}
+
+fn quote_before(text: &str, offset: usize) -> bool {
+    matches!(text.chars().take(offset).last(), Some('"' | '\''))
+}
+
+fn block_header_before(text: &str, offset: usize) -> bool {
+    let chars: Vec<char> = text.chars().take(offset).collect();
+    let mut end = chars.len();
+    while end > 0 && is_yaml_space(chars[end - 1]) {
+        end -= 1;
+    }
+    if end == 0 {
+        return false;
+    }
+    let mut start = end;
+    let mut taken = 0usize;
+    while start > 0 && taken < 3 && !is_yaml_space(chars[start - 1]) {
+        start -= 1;
+        taken += 1;
+    }
+    is_block_header(&chars[start..end])
+}
+
+fn is_yaml_space(ch: char) -> bool {
+    matches!(ch, ' ' | '\t' | '\n' | '\r')
+}
+
+fn is_block_header(chars: &[char]) -> bool {
+    let text: String = chars.iter().collect();
+    let bytes = text.as_bytes();
+    if bytes
+        .first()
+        .is_none_or(|byte| !matches!(byte, b'|' | b'>'))
+    {
+        return false;
+    }
     matches!(
-        previous_non_ws(text, span.offset()),
-        Some('"' | '\'' | '|' | '>')
+        &bytes[1..],
+        [] | [b'-' | b'+']
+            | [b'1'..=b'9']
+            | [b'-' | b'+', b'1'..=b'9']
+            | [b'1'..=b'9', b'-' | b'+']
     )
 }
 
@@ -1229,13 +1270,6 @@ fn source_slice(text: &str, span: serde_saphyr::Span) -> Option<&str> {
         return None;
     }
     Some(&text[start..end])
-}
-
-fn previous_non_ws(text: &str, offset: usize) -> Option<char> {
-    text.chars()
-        .take(offset)
-        .filter(|ch| !matches!(ch, ' ' | '\t' | '\n' | '\r'))
-        .last()
 }
 
 #[cfg(test)]
