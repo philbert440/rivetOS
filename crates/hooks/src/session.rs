@@ -12,6 +12,7 @@ use crate::shell::{ShellError, ShellExecutor};
 use crate::time_format::{fixed_1, group_en_us, utc_date};
 
 const DAILY_NOTE_CAP: i64 = 2000;
+const AGENT_ENV: &str = "RIVET_AGENT_ID";
 
 #[derive(Clone, Default)]
 pub struct SessionHooksContext {
@@ -260,8 +261,10 @@ async fn commit_workspace(
     shell.exec("git add -A", Some(workspace)).await?;
     let agent = hook_ctx.agent_id.as_deref().unwrap_or("unknown");
     let turns = hook_ctx.turn_count.unwrap_or(0);
-    let command = format!("git commit -m \"auto: session end ({agent}, {turns} turns)\"");
-    let commit = shell.exec(&command, Some(workspace)).await?;
+    let command = format!("git commit -m \"auto: session end (${{{AGENT_ENV}}}, {turns} turns)\"");
+    let commit = shell
+        .exec_with_env(&command, Some(workspace), &[(AGENT_ENV, agent)])
+        .await?;
     let status_text = if commit.exit_code == 0 {
         "committed"
     } else {

@@ -140,8 +140,15 @@ impl AuditWriter for MemAudit {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShellCall {
+    pub command: String,
+    pub cwd: Option<String>,
+    pub env: Vec<(String, String)>,
+}
+
 pub struct ScriptShell {
-    pub calls: Mutex<Vec<(String, Option<String>)>>,
+    pub calls: Mutex<Vec<ShellCall>>,
     results: Mutex<Vec<Result<ShellOutput, ShellError>>>,
 }
 
@@ -165,7 +172,7 @@ impl ScriptShell {
         Self::sequence(vec![Err(ShellError::new(message))])
     }
 
-    pub fn calls(&self) -> Vec<(String, Option<String>)> {
+    pub fn calls(&self) -> Vec<ShellCall> {
         self.calls
             .lock()
             .unwrap_or_else(|err| err.into_inner())
@@ -174,18 +181,23 @@ impl ScriptShell {
 }
 
 impl ShellExecutor for ScriptShell {
-    fn exec<'a>(
+    fn exec_with_env<'a>(
         &'a self,
         command: &'a str,
         cwd: Option<&'a str>,
+        env: &'a [(&'a str, &'a str)],
     ) -> BoxFuture<'a, Result<ShellOutput, ShellError>> {
         let command = command.to_string();
         let cwd = cwd.map(str::to_string);
+        let env = env
+            .iter()
+            .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
+            .collect::<Vec<_>>();
         Box::pin(async move {
             self.calls
                 .lock()
                 .unwrap_or_else(|err| err.into_inner())
-                .push((command, cwd));
+                .push(ShellCall { command, cwd, env });
             let mut results = self.results.lock().unwrap_or_else(|err| err.into_inner());
             if results.is_empty() {
                 return Err(ShellError::new("script exhausted"));

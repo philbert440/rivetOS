@@ -131,13 +131,13 @@ pub fn create_custom_action_hook(
                 return Box::pin(async { Ok(HookSignal::Continue) });
             }
             let replacement = selected.as_ref().map(js_string).unwrap_or_default();
-            let command = substitute_file(&action.command, &replacement);
+            let command = substitute_file(&action.command);
             let action_id = action.id.clone();
             let soft_fail = action.soft_fail;
             let config = config.clone();
-            Box::pin(
-                async move { finish_custom(ctx, &action_id, &command, soft_fail, &config).await },
-            )
+            Box::pin(async move {
+                finish_custom(ctx, &action_id, &command, &replacement, soft_fail, &config).await
+            })
         },
     ))
 }
@@ -224,11 +224,8 @@ async fn run_format(
     if !pattern_matches(format_pattern(), &file_path) {
         return Ok(HookSignal::Continue);
     }
-    let command = format!(
-        "npx prettier --write {} 2>/dev/null",
-        posix_shell_quote(&file_path)
-    );
-    match exec_shell(config, &command).await {
+    let command = format!("npx prettier --write \"{FILE_EXPANSION}\" 2>/dev/null");
+    match exec_shell(config, &command, Some(&file_path)).await {
         Ok(result) if result.exit_code == 0 => {
             ctx.metadata.insert_json(
                 "autoFormat",
@@ -263,11 +260,8 @@ async fn run_lint(
     if !pattern_matches(lint_pattern(), &file_path) {
         return Ok(HookSignal::Continue);
     }
-    let command = format!(
-        "npx eslint --fix {} 2>/dev/null",
-        posix_shell_quote(&file_path)
-    );
-    match exec_shell(config, &command).await {
+    let command = format!("npx eslint --fix \"{FILE_EXPANSION}\" 2>/dev/null");
+    match exec_shell(config, &command, Some(&file_path)).await {
         Ok(result) if result.exit_code == 0 => {
             ctx.metadata.insert_json(
                 "autoLint",
@@ -316,11 +310,9 @@ async fn run_test(
     {
         return Ok(HookSignal::Continue);
     }
-    let command = format!(
-        "npx vitest run --related {} --reporter=verbose 2>&1 | tail -20",
-        posix_shell_quote(&file_path)
-    );
-    match exec_shell(config, &command).await {
+    let command =
+        format!("npx vitest run --related \"{FILE_EXPANSION}\" --reporter=verbose 2>&1 | tail -20");
+    match exec_shell(config, &command, Some(&file_path)).await {
         Ok(result) => {
             let status = if result.exit_code == 0 {
                 "passed"
@@ -364,7 +356,7 @@ async fn run_git_check(
     if !command_text.contains("git commit") {
         return Ok(HookSignal::Continue);
     }
-    match exec_shell(config, "npx tsc --noEmit 2>&1 | tail -10").await {
+    match exec_shell(config, "npx tsc --noEmit 2>&1 | tail -10", None).await {
         Ok(result) => {
             let status = if result.exit_code == 0 {
                 "passed"
@@ -399,11 +391,12 @@ async fn finish_custom(
     ctx: &mut HookContext,
     action_id: &str,
     command: &str,
+    file: &str,
     soft_fail: bool,
     config: &AutoActionConfig,
 ) -> Result<HookSignal, HookFailure> {
     let key = format!("auto:{action_id}");
-    match exec_shell(config, command).await {
+    match exec_shell(config, command, Some(file)).await {
         Ok(result) => {
             let status = if result.exit_code == 0 {
                 "success"
@@ -440,8 +433,20 @@ async fn finish_custom(
     }
 }
 
-async fn exec_shell(config: &AutoActionConfig, command: &str) -> Result<ShellOutput, ShellError> {
-    config.shell.exec(command, config.cwd.as_deref()).await
+async fn exec_shell(
+    config: &AutoActionConfig,
+    command: &str,
+    file: Option<&str>,
+) -> Result<ShellOutput, ShellError> {
+    match file {
+        Some(path) => {
+            config
+                .shell
+                .exec_with_env(command, config.cwd.as_deref(), &[(FILE_ENV, path)])
+                .await
+        }
+        None => config.shell.exec(command, config.cwd.as_deref()).await,
+    }
 }
 
 fn truthy_file_path(args: Option<&Map<String, Value>>) -> Option<String> {
@@ -523,20 +528,130 @@ fn test_file_pattern() -> Option<&'static Regex> {
     compile_static(&CELL, r"\.(test|spec)\.(ts|tsx|js|jsx)$", "i")
 }
 
-fn substitute_file(command: &str, path: &str) -> String {
-    command.replace("{{file}}", &posix_shell_quote(path))
+const FILE_ENV: &str = "RIVET_FILE";
+const FILE_EXPANSION: &str = "${RIVET_FILE}";
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ShellQuote {
+    None,
+    Single,
+    Double,
 }
 
-fn posix_shell_quote(value: &str) -> String {
-    let mut quoted = String::with_capacity(value.len() + 2);
-    quoted.push('\'');
-    for ch in value.chars() {
-        if ch == '\'' {
-            quoted.push_str("'\\''");
-        } else {
-            quoted.push(ch);
+fn substitute_file(command: &str) -> String {
+    let mut out = String::with_capacity(command.len());
+    let mut rest = command;
+    let mut base = 0;
+    while let Some(rel) = rest.find("{{file}}") {
+        let abs = base + rel;
+        out.push_str(&command[base..abs]);
+        match quote_at(command, abs) {
+            ShellQuote::Single => {
+                out.push('\'');
+                out.push('"');
+                out.push_str(FILE_EXPANSION);
+                out.push('"');
+                out.push('\'');
+            }
+            ShellQuote::None | ShellQuote::Double => out.push_str(FILE_EXPANSION),
+        }
+        base = abs + "{{file}}".len();
+        rest = &command[base..];
+    }
+    out.push_str(&command[base..]);
+    out
+}
+
+fn quote_at(command: &str, index: usize) -> ShellQuote {
+    let bytes = command.as_bytes();
+    let mut i = 0;
+    let mut state = ShellQuote::None;
+    while i < index && i < bytes.len() {
+        let ch = bytes[i];
+        match state {
+            ShellQuote::None => {
+                if ch == b'\\' {
+                    i = skip_escaped(bytes, i);
+                    continue;
+                } else if ch == b'\'' {
+                    state = ShellQuote::Single;
+                } else if ch == b'"' {
+                    state = ShellQuote::Double;
+                }
+                i += 1;
+            }
+            ShellQuote::Single => {
+                if ch == b'\'' {
+                    state = ShellQuote::None;
+                }
+                i += 1;
+            }
+            ShellQuote::Double => {
+                if ch == b'\\' {
+                    i = skip_escaped(bytes, i);
+                    continue;
+                } else if ch == b'"' {
+                    state = ShellQuote::None;
+                }
+                i += 1;
+            }
         }
     }
-    quoted.push('\'');
-    quoted
+    state
+}
+
+fn skip_escaped(bytes: &[u8], slash: usize) -> usize {
+    let next = slash + 1;
+    if next >= bytes.len() {
+        return next;
+    }
+    next + utf8_width(bytes[next])
+}
+
+fn utf8_width(lead: u8) -> usize {
+    if lead < 0x80 {
+        1
+    } else if lead < 0xE0 {
+        2
+    } else if lead < 0xF0 {
+        3
+    } else {
+        4
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FILE_ENV, FILE_EXPANSION, substitute_file};
+
+    #[test]
+    fn file_placeholder_becomes_an_env_expansion() {
+        assert_eq!(FILE_EXPANSION, format!("${{{FILE_ENV}}}"));
+        assert_eq!(substitute_file("echo {{file}}"), "echo ${RIVET_FILE}");
+        assert_eq!(
+            substitute_file("echo \"{{file}}\""),
+            "echo \"${RIVET_FILE}\""
+        );
+        assert_eq!(
+            substitute_file("echo '{{file}}'"),
+            "echo ''\"${RIVET_FILE}\"''"
+        );
+        assert_eq!(
+            substitute_file("cp \"{{file}}\" '{{file}}' {{file}}"),
+            "cp \"${RIVET_FILE}\" ''\"${RIVET_FILE}\"'' ${RIVET_FILE}"
+        );
+        assert_eq!(
+            substitute_file("cp {{file}} {{file}}.bak"),
+            "cp ${RIVET_FILE} ${RIVET_FILE}.bak"
+        );
+        assert_eq!(
+            substitute_file("cp '{{file}}.bak'"),
+            "cp ''\"${RIVET_FILE}\"'.bak'"
+        );
+        assert_eq!(substitute_file("echo hello"), "echo hello");
+        assert_eq!(
+            substitute_file("echo \\\"{{file}}"),
+            "echo \\\"${RIVET_FILE}"
+        );
+    }
 }

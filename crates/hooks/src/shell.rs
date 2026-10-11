@@ -34,11 +34,20 @@ impl ShellError {
 }
 
 pub trait ShellExecutor: Send + Sync {
+    fn exec_with_env<'a>(
+        &'a self,
+        command: &'a str,
+        cwd: Option<&'a str>,
+        env: &'a [(&'a str, &'a str)],
+    ) -> BoxFuture<'a, Result<ShellOutput, ShellError>>;
+
     fn exec<'a>(
         &'a self,
         command: &'a str,
         cwd: Option<&'a str>,
-    ) -> BoxFuture<'a, Result<ShellOutput, ShellError>>;
+    ) -> BoxFuture<'a, Result<ShellOutput, ShellError>> {
+        self.exec_with_env(command, cwd, &[])
+    }
 }
 
 pub struct ProcessShell {
@@ -70,9 +79,11 @@ impl ProcessShell {
         &self,
         command: &str,
         cwd: Option<&str>,
+        env: &[(&str, &str)],
     ) -> Result<ShellOutput, ShellError> {
         let dir = cwd.map_or_else(|| self.workspace.clone(), PathBuf::from);
-        let mut child = match Command::new("sh")
+        let mut command_proc = Command::new("sh");
+        command_proc
             .arg("-c")
             .arg(command)
             .current_dir(&dir)
@@ -80,9 +91,11 @@ impl ProcessShell {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true)
-            .process_group(0)
-            .spawn()
-        {
+            .process_group(0);
+        for (key, value) in env {
+            command_proc.env(key, value);
+        }
+        let mut child = match command_proc.spawn() {
             Ok(child) => child,
             Err(_) => return Ok(failed_spawn()),
         };
@@ -157,12 +170,13 @@ impl ProcessShell {
 }
 
 impl ShellExecutor for ProcessShell {
-    fn exec<'a>(
+    fn exec_with_env<'a>(
         &'a self,
         command: &'a str,
         cwd: Option<&'a str>,
+        env: &'a [(&'a str, &'a str)],
     ) -> BoxFuture<'a, Result<ShellOutput, ShellError>> {
-        Box::pin(async move { self.exec_inner(command, cwd).await })
+        Box::pin(async move { self.exec_inner(command, cwd, env).await })
     }
 }
 

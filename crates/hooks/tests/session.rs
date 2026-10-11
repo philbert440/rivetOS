@@ -1,11 +1,13 @@
+use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use super::common::ScriptFiles;
 use hooks::{
-    HookContext, HookPipeline, SessionHooksConfig, SessionHooksContext, SessionTokenTotals,
-    ShellError, ShellExecutor, create_auto_commit_hook, create_post_compact_hook,
-    create_pre_compact_hook, create_session_hooks, create_session_start_hook,
-    create_session_summary_hook,
+    HookContext, HookPipeline, ProcessShell, SessionHooksConfig, SessionHooksContext,
+    SessionTokenTotals, ShellError, ShellExecutor, create_auto_commit_hook,
+    create_post_compact_hook, create_pre_compact_hook, create_session_hooks,
+    create_session_start_hook, create_session_summary_hook,
 };
 use protocol::js::JsValue;
 use serde_json::{Value, json};
@@ -240,12 +242,21 @@ async fn auto_commit_uses_the_typescript_git_commands() {
     let mut ctx = end_ctx();
     pipeline.run(&mut ctx).await;
     assert_eq!(shell.calls().len(), 3);
-    assert_eq!(shell.calls()[0].0, "git status --porcelain");
-    assert_eq!(shell.calls()[0].1.as_deref(), Some("/home/user/workspace"));
-    assert_eq!(shell.calls()[1].0, "git add -A");
+    assert_eq!(shell.calls()[0].command, "git status --porcelain");
     assert_eq!(
-        shell.calls()[2].0,
-        "git commit -m \"auto: session end (opus, 5 turns)\""
+        shell.calls()[0].cwd.as_deref(),
+        Some("/home/user/workspace")
+    );
+    assert_eq!(shell.calls()[1].command, "git add -A");
+    assert!(shell.calls()[0].env.is_empty());
+    assert!(shell.calls()[1].env.is_empty());
+    assert_eq!(
+        shell.calls()[2].command,
+        "git commit -m \"auto: session end (${RIVET_AGENT_ID}, 5 turns)\""
+    );
+    assert_eq!(
+        shell.calls()[2].env,
+        vec![("RIVET_AGENT_ID".to_string(), "opus".to_string())]
     );
     assert!(same_json(
         ctx.metadata
@@ -253,6 +264,40 @@ async fn auto_commit_uses_the_typescript_git_commands() {
             .and_then(|value| value.get("status")),
         json!("committed")
     ));
+
+    let shell = super::common::ScriptShell::sequence(vec![
+        Ok(hooks::ShellOutput {
+            stdout: " M file.ts\n".to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+        }),
+        Ok(hooks::ShellOutput {
+            stdout: String::new(),
+            stderr: String::new(),
+            exit_code: 0,
+        }),
+        Ok(hooks::ShellOutput {
+            stdout: String::new(),
+            stderr: String::new(),
+            exit_code: 0,
+        }),
+    ]);
+    let pipeline = HookPipeline::new();
+    pipeline.register(create_auto_commit_hook(context(
+        Some(shell.clone()),
+        None,
+        Some("/home/user/workspace"),
+    )));
+    let mut ctx = HookContext::session_end();
+    pipeline.run(&mut ctx).await;
+    assert_eq!(
+        shell.calls()[2].command,
+        "git commit -m \"auto: session end (${RIVET_AGENT_ID}, 0 turns)\""
+    );
+    assert_eq!(
+        shell.calls()[2].env,
+        vec![("RIVET_AGENT_ID".to_string(), "unknown".to_string())]
+    );
 
     let shell = super::common::ScriptShell::ok(0, "   \n", "");
     let pipeline = HookPipeline::new();
@@ -461,4 +506,69 @@ fn create_session_hooks_defaults_and_flags() {
         post_compact: Some(false),
     });
     assert!(none.is_empty());
+}
+
+#[tokio::test]
+async fn auto_commit_keeps_a_hostile_agent_id_out_of_shell_source() {
+    let dir = super::common::make_temp().await;
+    let cwd = dir.to_str().expect("utf-8").to_string();
+    let hooks = dir.join("empty-hooks");
+    tokio::fs::create_dir(&hooks).await.expect("hooks dir");
+    git_ok(&dir, "git init").await;
+    git_ok(&dir, "git config user.email dev@example.com").await;
+    git_ok(&dir, "git config user.name dev").await;
+    git_ok(&dir, "git config commit.gpgsign false").await;
+    git_ok(
+        &dir,
+        &format!("git config core.hooksPath {}", hooks.display()),
+    )
+    .await;
+    tokio::fs::write(dir.join("note.txt"), "hello\n")
+        .await
+        .expect("note");
+    let agent =
+        "opus $(touch${IFS}injected) `touch${IFS}tick` \";touch${IFS}quote;\n$(touch${IFS}nl)";
+    let shell: Arc<dyn ShellExecutor> =
+        Arc::new(ProcessShell::new(&dir).with_timeout(Duration::from_secs(5)));
+    let pipeline = HookPipeline::new();
+    pipeline.register(create_auto_commit_hook(context(
+        Some(shell),
+        None,
+        Some(&cwd),
+    )));
+    let mut ctx = HookContext::session_end().with_agent(agent);
+    ctx.turn_count = Some(5);
+    pipeline.run(&mut ctx).await;
+    assert_no_commit_markers(&dir);
+    assert!(same_json(
+        ctx.metadata
+            .get("autoCommit")
+            .and_then(|value| value.get("status")),
+        json!("committed")
+    ));
+    let message = git_out(&dir, "git --no-pager log -1 --format=%B").await;
+    let expected = format!("auto: session end ({agent}, 5 turns)");
+    assert!(message.starts_with(&expected), "{message:?}");
+    assert_no_commit_markers(&dir);
+}
+
+async fn git_ok(dir: &Path, command: &str) {
+    git_out(dir, command).await;
+}
+
+async fn git_out(dir: &Path, command: &str) -> String {
+    let shell = ProcessShell::new(dir);
+    let cwd = dir.to_str().expect("utf-8");
+    let out = shell.exec(command, Some(cwd)).await.expect("git");
+    assert_eq!(out.exit_code, 0, "{command}\n{}{}", out.stdout, out.stderr);
+    out.stdout
+}
+
+fn assert_no_commit_markers(dir: &Path) {
+    for marker in ["injected", "tick", "quote", "nl"] {
+        assert!(
+            !dir.join(marker).exists(),
+            "{marker} was executed from an agent id"
+        );
+    }
 }
