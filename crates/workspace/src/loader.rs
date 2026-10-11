@@ -1,17 +1,18 @@
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
+use parking_lot::Mutex;
 
-use protocol::js::JsValue;
+use protocol::js::{self, JsValue};
 
 use crate::error::{PinReject, WorkspaceError};
 use crate::lock::with_lock;
 use crate::posix::{basename, is_absolute, parent_dir, posix_join, posix_resolve};
 use crate::prompt::{TurnAssembly, TurnAssemblyInput, apply_turn_extras};
-use crate::text::{js_is_truthy, js_value_to_string, kib_one_decimal, slice_utf16};
-use crate::timefmt::{format_en_us_new_york, utc_day};
+use crate::text::{cap_utf16, kib_one_decimal};
+use crate::timefmt::format_en_us_new_york;
 
 pub const FILE_IO_TIMEOUT: Duration = Duration::from_secs(30);
 pub const PIN_MAX_BYTES: usize = 50 * 1024;
@@ -70,7 +71,7 @@ pub struct PinResult {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DailyContext {
     pub date: String,
-    pub content: String,
+    pub content: js::JsString,
 }
 
 struct PinnedFile {
@@ -237,10 +238,10 @@ impl WorkspaceLoader {
         }
         let value = protocol::js::parse(&raw).ok()?;
         let entry = profile_entry(&value, user_id)?;
-        if !js_is_truthy(entry) {
+        if !js::js_boolean(entry) {
             return None;
         }
-        Some(js_value_to_string(entry))
+        Some(js::js_string(entry).to_utf8().to_string())
     }
 
     pub fn set_skill_catalog(&self, text: &str) {
@@ -326,7 +327,8 @@ impl WorkspaceLoader {
     }
 
     pub async fn read_daily_context(&self) -> Option<DailyContext> {
-        let date = utc_day((self.clock)());
+        let ms = (self.clock)().timestamp_millis() as f64;
+        let date = js::utc_day(ms).ok()?;
         let relative = format!("memory/{date}.md");
         let path = posix_join(&self.base_dir, &relative);
         let content = match read_file(&path).await {
@@ -342,7 +344,7 @@ impl WorkspaceLoader {
         }
         Some(DailyContext {
             date,
-            content: slice_utf16(&content, DAILY_CONTEXT_UTF16_UNITS),
+            content: cap_utf16(&content, DAILY_CONTEXT_UTF16_UNITS),
         })
     }
 

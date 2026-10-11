@@ -6,6 +6,8 @@ mod posix;
 mod prompt;
 mod queue;
 mod router;
+#[cfg(test)]
+mod semantics;
 mod sessions;
 mod text;
 mod timefmt;

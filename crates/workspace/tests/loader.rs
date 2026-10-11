@@ -369,6 +369,12 @@ async fn pin_file_reports_size_order_and_the_typescript_errors() {
         too_big.message,
         "File too large: big.txt is 51.0KB (max 50KB)"
     );
+    write_rel(dir.path(), "half.txt", &"x".repeat(51_456));
+    let half = loader.pin_file("half.txt").await.unwrap_err();
+    assert_eq!(
+        half.message,
+        "File too large: half.txt is 50.3KB (max 50KB)"
+    );
 
     write_rel(dir.path(), "exact.txt", &"x".repeat(50 * 1024));
     let exact = loader.pin_file("exact.txt").await.unwrap();
@@ -470,9 +476,12 @@ async fn daily_context_uses_the_utc_day_bypasses_cache_and_caps_utf16() {
     write_rel(dir.path(), "memory/2026-10-10.md", "one");
     let first = loader.read_daily_context().await.unwrap();
     assert_eq!(first.date, "2026-10-10");
-    assert_eq!(first.content, "one");
+    assert_eq!(first.content.to_utf8(), "one");
     write_rel(dir.path(), "memory/2026-10-10.md", "two");
-    assert_eq!(loader.read_daily_context().await.unwrap().content, "two");
+    assert_eq!(
+        loader.read_daily_context().await.unwrap().content.to_utf8(),
+        "two"
+    );
     assert_eq!(
         loader.read("memory/2026-10-10.md").await.as_deref(),
         Some("two")
@@ -482,14 +491,20 @@ async fn daily_context_uses_the_utc_day_bypasses_cache_and_caps_utf16() {
         loader.read("memory/2026-10-10.md").await.as_deref(),
         Some("two")
     );
-    assert_eq!(loader.read_daily_context().await.unwrap().content, "three");
+    assert_eq!(
+        loader.read_daily_context().await.unwrap().content.to_utf8(),
+        "three"
+    );
 
     let text = format!("{}😀z", "a".repeat(1999));
     write_rel(dir.path(), "memory/2026-10-10.md", &text);
     loader.clear_cache();
+    let capped = loader.read_daily_context().await.unwrap();
+    assert_eq!(capped.content.len(), 2000);
+    assert_eq!(capped.content.units()[1999], 0xD83D);
     assert_eq!(
-        loader.read_daily_context().await.unwrap().content,
-        "a".repeat(1999)
+        capped.content.to_utf8(),
+        format!("{}\u{FFFD}", "a".repeat(1999))
     );
 
     let winter = WorkspaceLoader::with_unix_seconds(dir.path().to_string_lossy(), 1_768_446_000);
@@ -497,7 +512,7 @@ async fn daily_context_uses_the_utc_day_bypasses_cache_and_caps_utf16() {
     write_rel(dir.path(), "memory/2026-01-14.md", "ny-day");
     let daily = winter.read_daily_context().await.unwrap();
     assert_eq!(daily.date, "2026-01-15");
-    assert_eq!(daily.content, "utc-day");
+    assert_eq!(daily.content.to_utf8(), "utc-day");
 }
 
 #[tokio::test]

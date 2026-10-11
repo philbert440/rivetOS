@@ -1,5 +1,7 @@
 use std::io;
+use std::path::Path;
 
+use protocol::host::fs_error;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -11,44 +13,8 @@ pub enum WorkspaceError {
 }
 
 impl WorkspaceError {
-    pub(crate) fn io(path: &str, syscall: &str, source: io::Error) -> Self {
-        Self::Io(node_fs_message(syscall, path, &source))
-    }
-}
-
-fn node_fs_message(syscall: &str, path: &str, source: &io::Error) -> String {
-    let (code, detail) = match source.raw_os_error() {
-        Some(errno) => node_errno(errno),
-        None => ("UNKNOWN", "unknown error"),
-    };
-    format!("{code}: {detail}, {syscall} '{path}'")
-}
-
-fn node_errno(errno: i32) -> (&'static str, &'static str) {
-    match errno {
-        1 => ("EPERM", "operation not permitted"),
-        2 => ("ENOENT", "no such file or directory"),
-        5 => ("EIO", "i/o error"),
-        11 => ("EAGAIN", "resource temporarily unavailable"),
-        12 => ("ENOMEM", "not enough memory"),
-        13 => ("EACCES", "permission denied"),
-        16 => ("EBUSY", "device or resource busy"),
-        17 => ("EEXIST", "file already exists"),
-        18 => ("EXDEV", "cross-device link not permitted"),
-        20 => ("ENOTDIR", "not a directory"),
-        21 => ("EISDIR", "illegal operation on a directory"),
-        22 => ("EINVAL", "invalid argument"),
-        23 => ("ENFILE", "file table overflow"),
-        24 => ("EMFILE", "too many open files"),
-        26 => ("ETXTBSY", "text file busy"),
-        27 => ("EFBIG", "file too large"),
-        28 => ("ENOSPC", "no space left on device"),
-        30 => ("EROFS", "read-only file system"),
-        32 => ("EPIPE", "broken pipe"),
-        36 => ("ENAMETOOLONG", "name too long"),
-        39 => ("ENOTEMPTY", "directory not empty"),
-        40 => ("ELOOP", "too many symbolic links encountered"),
-        _ => ("UNKNOWN", "unknown error"),
+    pub(crate) fn io(path: &str, syscall: &'static str, source: io::Error) -> Self {
+        Self::Io(fs_error(syscall, Some(Path::new(path)), None, &source).to_string())
     }
 }
 

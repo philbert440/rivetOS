@@ -1,14 +1,14 @@
 use std::collections::VecDeque;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
+use parking_lot::Mutex;
 use protocol::{InboundMessage, JsNumber, QueuedMessage};
 
 use crate::commands::is_known_command;
 use crate::lock::with_lock;
 use crate::text::js_split_whitespace;
-use crate::timefmt::now_millis;
 
 type HandlerFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
 type Handler = Arc<dyn Fn(InboundMessage) -> HandlerFuture + Send + Sync>;
@@ -181,7 +181,7 @@ fn decide_enqueue(inner: &mut QueueInner, message: InboundMessage) -> Enqueue {
 fn push_back(inner: &mut QueueInner, message: InboundMessage) {
     inner.queue.push_back(QueuedMessage {
         message,
-        received_at: JsNumber::from(now_millis()),
+        received_at: JsNumber::from(protocol::js::date_now()),
     });
 }
 

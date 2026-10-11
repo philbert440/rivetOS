@@ -1,10 +1,13 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
+use parking_lot::Mutex;
 
 use async_trait::async_trait;
 use protocol::{
-    CompactionPending, InboundMessage, JsNumber, Message, MessageContent, MessageRole, ToolCall,
+    CompactionPending, InboundMessage, JsNumber, Message, MessageContent, MessageRole,
+    ThinkingLevel, ToolCall,
 };
-use serde_json::{Map, json};
+use serde_json::json;
 use workspace::{
     AgentConfig, LifecycleError, LlmProvider, LoadedSessionSettings, ProviderError,
     RECENT_ACTIVITY_MAX_TOKENS, RECENT_ACTIVITY_QUERY, RouteError, Router, SavedSessionSettings,
@@ -34,7 +37,7 @@ struct Capture {
 #[async_trait]
 impl SessionLifecycle for Capture {
     async fn on_start(&self, ctx: &workspace::SessionStartContext) -> Result<(), LifecycleError> {
-        self.starts.lock().unwrap().push(ctx.clone());
+        self.starts.lock().push(ctx.clone());
         if self.fail_start {
             Err(LifecycleError::new("hook exploded"))
         } else {
@@ -43,7 +46,7 @@ impl SessionLifecycle for Capture {
     }
 
     async fn on_end(&self, ctx: &workspace::SessionEndContext) -> Result<(), LifecycleError> {
-        self.ends.lock().unwrap().push(ctx.clone());
+        self.ends.lock().push(ctx.clone());
         Ok(())
     }
 }
@@ -72,20 +75,20 @@ impl SessionStore for Memory {
         max_tokens: u32,
         user_id: Option<&str>,
     ) -> Result<String, SessionStoreError> {
-        self.queries.lock().unwrap().push(SeenQuery {
+        self.queries.lock().push(SeenQuery {
             query: query.to_string(),
             agent_id: agent_id.to_string(),
             max_tokens,
             user_id: user_id.map(str::to_string),
         });
-        self.context.lock().unwrap().clone()
+        self.context.lock().clone()
     }
 
     async fn load_session_settings(
         &self,
         _session_id: &str,
     ) -> Result<Option<LoadedSessionSettings>, SessionStoreError> {
-        self.settings.lock().unwrap().clone()
+        self.settings.lock().clone()
     }
 
     async fn save_session_settings(
@@ -95,7 +98,6 @@ impl SessionStore for Memory {
     ) -> Result<(), SessionStoreError> {
         self.saved
             .lock()
-            .unwrap()
             .push((session_id.to_string(), settings.clone()));
         Ok(())
     }
@@ -160,18 +162,18 @@ fn session_key_joins_channel_and_user() {
 }
 
 #[test]
-fn settings_json_uses_camel_case_and_keeps_invalid_thinking() {
+fn settings_json_uses_camel_case_and_ignores_unknown_thinking() {
     let loaded = session_settings_from_json(&json!({
         "thinking": "low",
         "reasoningVisible": false,
         "toolsVisible": true
     }))
     .unwrap();
-    let mut thinking = "medium".to_string();
+    let mut thinking = ThinkingLevel::Medium;
     let mut reasoning = true;
     let mut tools = false;
     workspace::apply_loaded_settings(&mut thinking, &mut reasoning, &mut tools, &loaded);
-    assert_eq!(thinking, "low");
+    assert_eq!(thinking, ThinkingLevel::Low);
     assert!(!reasoning);
     assert!(tools);
 
@@ -180,11 +182,12 @@ fn settings_json_uses_camel_case_and_keeps_invalid_thinking() {
         "reasoningVisible": "yes"
     }))
     .unwrap();
-    let mut thinking = "high".to_string();
+    assert_eq!(invalid.thinking.as_deref(), Some("turbo"));
+    let mut thinking = ThinkingLevel::High;
     let mut reasoning = true;
     let mut tools = false;
     workspace::apply_loaded_settings(&mut thinking, &mut reasoning, &mut tools, &invalid);
-    assert_eq!(thinking, "turbo");
+    assert_eq!(thinking, ThinkingLevel::High);
     assert!(reasoning);
     assert!(!tools);
 
@@ -193,9 +196,9 @@ fn settings_json_uses_camel_case_and_keeps_invalid_thinking() {
     }))
     .unwrap();
     assert!(not_a_string.thinking.is_none());
-    let mut thinking = "high".to_string();
+    let mut thinking = ThinkingLevel::High;
     workspace::apply_loaded_settings(&mut thinking, &mut reasoning, &mut tools, &not_a_string);
-    assert_eq!(thinking, "high");
+    assert_eq!(thinking, ThinkingLevel::High);
 
     assert!(session_settings_from_json(&json!(null)).is_none());
     assert!(session_settings_from_json(&json!(["low"])).is_none());
@@ -231,7 +234,7 @@ async fn create_session_emits_start_and_does_not_insert() {
         .await;
     let state = session.snapshot();
     assert_eq!(state.id, "ch-1:user-1");
-    assert_eq!(state.thinking, "medium");
+    assert_eq!(state.thinking, ThinkingLevel::Medium);
     assert!(!state.reasoning_visible);
     assert!(!state.tools_visible);
     assert!(state.history.is_empty());
@@ -244,7 +247,7 @@ async fn create_session_emits_start_and_does_not_insert() {
     assert_eq!(book.agent_id, "opus");
     assert_eq!(book.turn_count, 0);
 
-    let starts = capture.starts.lock().unwrap();
+    let starts = capture.starts.lock();
     assert_eq!(starts.len(), 1);
     assert_eq!(starts[0].event, "session:start");
     assert_eq!(starts[0].agent_id, "opus");
@@ -272,7 +275,7 @@ async fn get_or_create_emits_start_once() {
     assert!(SharedSession::ptr_eq(&first, &second));
     assert_eq!(first.snapshot().id, second.snapshot().id);
     assert!(manager.has("ch-1:user-1"));
-    assert_eq!(capture.starts.lock().unwrap().len(), 1);
+    assert_eq!(capture.starts.lock().len(), 1);
 }
 
 #[tokio::test]
@@ -314,7 +317,7 @@ async fn end_session_emits_turn_totals_and_delete_does_not() {
     assert!(manager.book("ch-1:user-1").is_none());
 
     {
-        let ends = capture.ends.lock().unwrap();
+        let ends = capture.ends.lock();
         assert_eq!(ends.len(), 1);
         assert_eq!(ends[0].event, "session:end");
         assert_eq!(ends[0].agent_id.as_deref(), Some("opus"));
@@ -335,7 +338,7 @@ async fn end_session_emits_turn_totals_and_delete_does_not() {
     manager.set("s1", session);
     manager.delete("s1");
     assert!(!manager.has("s1"));
-    assert_eq!(capture.ends.lock().unwrap().len(), 1);
+    assert_eq!(capture.ends.lock().len(), 1);
 }
 
 #[tokio::test]
@@ -362,7 +365,6 @@ async fn end_all_sessions_ends_inserted_sessions_in_order() {
     let mut ends: Vec<String> = capture
         .ends
         .lock()
-        .unwrap()
         .iter()
         .map(|ctx| ctx.session_id.clone())
         .collect();
@@ -381,7 +383,7 @@ async fn end_without_bookkeeping_omits_the_turn_fields() {
     manager.delete("s1");
     manager.set("s1", session);
     manager.end_session("s1").await;
-    let ends = capture.ends.lock().unwrap();
+    let ends = capture.ends.lock();
     assert_eq!(ends.len(), 1);
     assert!(ends[0].agent_id.is_none());
     assert!(ends[0].turn_count.is_none());
@@ -391,7 +393,7 @@ async fn end_without_bookkeeping_omits_the_turn_fields() {
 #[tokio::test]
 async fn memory_context_and_settings_follow_the_session_manager() {
     let store = memory(Ok("  kept raw  ".to_string()));
-    *store.settings.lock().unwrap() = Ok(Some(LoadedSessionSettings {
+    *store.settings.lock() = Ok(Some(LoadedSessionSettings {
         thinking: Some("high".to_string()),
         reasoning_visible: Some(false),
         tools_visible: Some(true),
@@ -409,7 +411,7 @@ async fn memory_context_and_settings_follow_the_session_manager() {
         )
         .await;
     let state = session.snapshot();
-    assert_eq!(state.thinking, "high");
+    assert_eq!(state.thinking, ThinkingLevel::High);
     assert!(!state.reasoning_visible);
     assert!(state.tools_visible);
     assert_eq!(state.history.len(), 1);
@@ -421,7 +423,7 @@ async fn memory_context_and_settings_follow_the_session_manager() {
         MessageContent::Parts(_) => panic!("text"),
     }
     {
-        let queries = store.queries.lock().unwrap();
+        let queries = store.queries.lock();
         assert_eq!(
             queries.as_slice(),
             [SeenQuery {
@@ -435,7 +437,7 @@ async fn memory_context_and_settings_follow_the_session_manager() {
 
     manager.set("ch-1:user-1", session.clone());
     manager.save_session_settings(&session).await;
-    let saved = store.saved.lock().unwrap();
+    let saved = store.saved.lock();
     assert_eq!(saved.len(), 1);
     assert_eq!(saved[0].0, "ch-1:user-1");
     assert_eq!(saved[0].1.thinking, "high");
@@ -455,17 +457,17 @@ async fn blank_or_failed_memory_context_leaves_history_empty() {
     assert!(session.snapshot().reasoning_visible);
 
     let store = memory(Err(SessionStoreError::new("down")));
-    *store.settings.lock().unwrap() = Err(SessionStoreError::new("down"));
+    *store.settings.lock() = Err(SessionStoreError::new("down"));
     let manager = SessionManager::new(router());
     manager.set_store(store);
     let session = manager
         .create_session("s", &agent(false), SessionOptions::default())
         .await;
     assert!(session.snapshot().history.is_empty());
-    assert_eq!(session.snapshot().thinking, "medium");
+    assert_eq!(session.snapshot().thinking, ThinkingLevel::Medium);
 
     let store = memory(Ok(String::new()));
-    *store.settings.lock().unwrap() = Ok(Some(LoadedSessionSettings {
+    *store.settings.lock() = Ok(Some(LoadedSessionSettings {
         thinking: Some(String::new()),
         reasoning_visible: None,
         tools_visible: None,
@@ -475,7 +477,7 @@ async fn blank_or_failed_memory_context_leaves_history_empty() {
     let session = manager
         .create_session("s", &agent(false), SessionOptions::default())
         .await;
-    assert_eq!(session.snapshot().thinking, "");
+    assert_eq!(session.snapshot().thinking, ThinkingLevel::Medium);
 }
 
 #[tokio::test]
@@ -528,7 +530,7 @@ async fn compaction_drops_tool_rows_and_clears_assistant_tool_calls() {
             tool_calls: Some(vec![ToolCall {
                 id: "call-1".to_string(),
                 name: "memory_search".to_string(),
-                arguments: Map::new(),
+                arguments: protocol::js::JsObject::new(),
                 thought_signature: None,
             }]),
             tool_call_id: None,
@@ -582,7 +584,7 @@ async fn session_reads_are_the_live_map_object() {
         .await;
     manager.set("ch-1:user-1", created.clone());
     created.with_mut(|state| {
-        state.thinking = "high".to_string();
+        state.thinking = ThinkingLevel::High;
         state.reasoning_visible = true;
         state.history.push(Message {
             role: MessageRole::User,
@@ -594,12 +596,12 @@ async fn session_reads_are_the_live_map_object() {
     let fetched = manager.get("ch-1:user-1").unwrap();
     assert!(SharedSession::ptr_eq(&created, &fetched));
     let state = fetched.snapshot();
-    assert_eq!(state.thinking, "high");
+    assert_eq!(state.thinking, ThinkingLevel::High);
     assert!(state.reasoning_visible);
     assert_eq!(state.history.len(), 1);
     manager.save_session_settings(&fetched).await;
     {
-        let saved = store.saved.lock().unwrap();
+        let saved = store.saved.lock();
         assert_eq!(saved.len(), 1);
         assert_eq!(saved[0].1.thinking, "high");
         assert!(saved[0].1.reasoning_visible);

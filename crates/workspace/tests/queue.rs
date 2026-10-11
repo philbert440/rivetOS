@@ -1,4 +1,6 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
+use parking_lot::Mutex;
 
 use protocol::{InboundMessage, JsNumber};
 use tokio::sync::Notify;
@@ -28,7 +30,7 @@ fn queue_with(processed: &Arc<Mutex<Vec<String>>>) -> MessageQueue {
     queue.set_handler(move |message| {
         let seen = Arc::clone(&seen);
         async move {
-            seen.lock().unwrap().push(message.text);
+            seen.lock().push(message.text);
         }
     });
     queue
@@ -39,7 +41,7 @@ async fn processes_immediately_when_idle() {
     let processed = Arc::new(Mutex::new(Vec::new()));
     let queue = queue_with(&processed);
     queue.enqueue(message("hello")).await;
-    assert_eq!(processed.lock().unwrap().as_slice(), ["hello"]);
+    assert_eq!(processed.lock().as_slice(), ["hello"]);
     assert!(!queue.is_processing());
     assert_eq!(queue.depth(), 0);
 }
@@ -49,7 +51,7 @@ async fn commands_are_queued_like_any_other_message() {
     let processed = Arc::new(Mutex::new(Vec::new()));
     let queue = queue_with(&processed);
     queue.enqueue(message("/stop")).await;
-    assert_eq!(processed.lock().unwrap().as_slice(), ["/stop"]);
+    assert_eq!(processed.lock().as_slice(), ["/stop"]);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -67,15 +69,12 @@ async fn queues_a_message_that_arrives_during_a_turn() {
             let started = Arc::clone(&started);
             let release = Arc::clone(&release);
             async move {
-                order
-                    .lock()
-                    .unwrap()
-                    .push(format!("start:{}", message.text));
+                order.lock().push(format!("start:{}", message.text));
                 if message.text == "first" {
                     started.notify_one();
                     release.notified().await;
                 }
-                order.lock().unwrap().push(format!("end:{}", message.text));
+                order.lock().push(format!("end:{}", message.text));
             }
         });
     }
@@ -94,7 +93,7 @@ async fn queues_a_message_that_arrives_during_a_turn() {
     first.await.unwrap();
 
     assert_eq!(
-        order.lock().unwrap().as_slice(),
+        order.lock().as_slice(),
         ["start:first", "end:first", "start:second", "end:second"]
     );
     assert_eq!(queue.depth(), 0);
@@ -115,14 +114,14 @@ async fn depth_clear_and_turn_markers_match_the_queue_tests() {
     queue.clear();
     assert_eq!(queue.depth(), 0);
     queue.end_turn().await;
-    assert!(processed.lock().unwrap().is_empty());
+    assert!(processed.lock().is_empty());
 
     queue.begin_turn();
     queue.enqueue(message("during-turn")).await;
-    assert!(processed.lock().unwrap().is_empty());
+    assert!(processed.lock().is_empty());
     assert_eq!(queue.depth(), 1);
     queue.end_turn().await;
-    assert_eq!(processed.lock().unwrap().as_slice(), ["during-turn"]);
+    assert_eq!(processed.lock().as_slice(), ["during-turn"]);
     assert_eq!(queue.depth(), 0);
     assert!(!queue.is_processing());
 }
@@ -185,7 +184,7 @@ fn parse_command_keeps_trailing_space_and_collapses_separators() {
 async fn wait_until_drained(queue: &MessageQueue, order: &Mutex<Vec<String>>, expected: &str) {
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
     loop {
-        let seen = order.lock().unwrap().clone();
+        let seen = order.lock().clone();
         if !queue.is_processing() && queue.depth() == 0 && seen.iter().any(|text| text == expected)
         {
             return;
@@ -218,7 +217,7 @@ async fn aborting_a_handler_clears_processing_and_drains() {
             let started = Arc::clone(&started);
             let release = Arc::clone(&release);
             async move {
-                order.lock().unwrap().push(message.text.clone());
+                order.lock().push(message.text.clone());
                 if message.text == "first" {
                     started.notify_one();
                     release.notified().await;
@@ -240,7 +239,7 @@ async fn aborting_a_handler_clears_processing_and_drains() {
     wait_until_drained(&queue, &order, "second").await;
     assert!(!queue.is_processing());
     assert_eq!(queue.depth(), 0);
-    assert!(order.lock().unwrap().iter().any(|text| text == "second"));
+    assert!(order.lock().iter().any(|text| text == "second"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -263,7 +262,7 @@ async fn a_panicking_handler_clears_processing_and_drains() {
                     release.notified().await;
                     panic!("handler boom");
                 }
-                order.lock().unwrap().push(message.text);
+                order.lock().push(message.text);
             }
         });
     }
@@ -282,7 +281,7 @@ async fn a_panicking_handler_clears_processing_and_drains() {
     wait_until_drained(&queue, &order, "second").await;
     assert!(!queue.is_processing());
     assert_eq!(queue.depth(), 0);
-    assert_eq!(order.lock().unwrap().as_slice(), ["second"]);
+    assert_eq!(order.lock().as_slice(), ["second"]);
 }
 
 #[tokio::test]
@@ -295,7 +294,7 @@ async fn a_large_backlog_drains_in_order() {
         let seen = Arc::clone(&seen);
         async move {
             tokio::task::yield_now().await;
-            seen.lock().unwrap().push(message.text);
+            seen.lock().push(message.text);
         }
     });
     queue.begin_turn();
@@ -303,9 +302,9 @@ async fn a_large_backlog_drains_in_order() {
         queue.enqueue(message(&format!("{i}"))).await;
     }
     assert_eq!(queue.depth(), N);
-    assert!(order.lock().unwrap().is_empty());
+    assert!(order.lock().is_empty());
     queue.end_turn().await;
-    let seen = order.lock().unwrap().clone();
+    let seen = order.lock().clone();
     assert_eq!(seen.len(), N);
     for (i, text) in seen.iter().enumerate() {
         assert_eq!(text, &i.to_string());
@@ -333,7 +332,7 @@ async fn cancelling_after_many_completions_keeps_fifo() {
             let release = Arc::clone(&release);
             async move {
                 tokio::task::yield_now().await;
-                order.lock().unwrap().push(message.text.clone());
+                order.lock().push(message.text.clone());
                 if message.text == "block" {
                     started.notify_one();
                     release.notified().await;
@@ -379,7 +378,7 @@ async fn cancelling_after_many_completions_keeps_fifo() {
     for i in 0..LATE {
         expected.push(format!("c{i:04}"));
     }
-    assert_eq!(order.lock().unwrap().as_slice(), expected.as_slice());
+    assert_eq!(order.lock().as_slice(), expected.as_slice());
     assert!(!queue.is_processing());
     assert_eq!(queue.depth(), 0);
 }

@@ -49,7 +49,7 @@ async fn assembled_system_prompt_matches_the_byte_fixture() {
         );
     }
     let daily = loader.read_daily_context().await.expect("daily");
-    assert_eq!(daily.content, "DAILY_NOTE_MARKER");
+    assert_eq!(daily.content.to_utf8(), "DAILY_NOTE_MARKER");
 
     let message = recent_activity_message("user looked at weather").expect("recent");
     assert_eq!(message.role, MessageRole::System);

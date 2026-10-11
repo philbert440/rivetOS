@@ -1,7 +1,8 @@
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use async_trait::async_trait;
+use parking_lot::Mutex;
 use protocol::{
     CompactionPending, HookEventName, InboundMessage, JsNumber, Message, SessionState,
     ThinkingLevel,
@@ -14,7 +15,6 @@ use crate::loader::WorkspaceLoader;
 use crate::lock::with_lock;
 use crate::prompt::{VOICE_MODE_PROMPT, recent_activity_message};
 use crate::router::{AgentConfig, RouteError, Router};
-use crate::timefmt::now_millis;
 
 pub const RECENT_ACTIVITY_QUERY: &str = "recent activity summary";
 pub const RECENT_ACTIVITY_MAX_TOKENS: u32 = 500;
@@ -161,13 +161,15 @@ pub fn session_settings_from_json(value: &Value) -> Option<LoadedSessionSettings
 }
 
 pub fn apply_loaded_settings(
-    thinking: &mut String,
+    thinking: &mut ThinkingLevel,
     reasoning_visible: &mut bool,
     tools_visible: &mut bool,
     settings: &LoadedSessionSettings,
 ) {
-    if let Some(text) = settings.thinking.clone() {
-        *thinking = text;
+    if let Some(text) = settings.thinking.as_deref()
+        && let Ok(level) = text.parse()
+    {
+        *thinking = level;
     }
     if let Some(value) = settings.reasoning_visible {
         *reasoning_visible = value;
@@ -339,11 +341,7 @@ impl SessionManager {
             history.push(message);
         }
 
-        let mut thinking = agent
-            .default_thinking
-            .unwrap_or(ThinkingLevel::Medium)
-            .as_str()
-            .to_string();
+        let mut thinking = agent.default_thinking.unwrap_or(ThinkingLevel::Medium);
         let mut reasoning_visible = agent.local;
         let mut tools_visible = false;
         if let Some(store) = &store
@@ -390,7 +388,7 @@ impl SessionManager {
                 session_id: session_key.to_string(),
                 platform: options.platform.clone(),
                 user_id: options.user_id.clone(),
-                timestamp: JsNumber::from(now_millis()),
+                timestamp: JsNumber::from(protocol::js::date_now()),
                 metadata: Map::new(),
             };
             let _ = lifecycle.on_start(&ctx).await;
@@ -418,7 +416,9 @@ impl SessionManager {
             prompt.push_str(VOICE_MODE_PROMPT);
         }
         if let Some(metadata) = &message.metadata
-            && let Some(Value::String(extra)) = metadata.get("systemPrompt")
+            && let Some(extra) = metadata
+                .get("systemPrompt")
+                .and_then(protocol::js::JsValue::as_str)
         {
             let trimmed = protocol::js::js_trim(extra);
             if !trimmed.is_empty() {
@@ -442,7 +442,7 @@ impl SessionManager {
             return;
         };
         let settings = session.with(|state| SavedSessionSettings {
-            thinking: state.thinking.clone(),
+            thinking: state.thinking.as_str().to_string(),
             reasoning_visible: state.reasoning_visible,
             tools_visible: state.tools_visible,
         });
@@ -505,7 +505,7 @@ impl SessionManager {
             session_id: session_key.to_string(),
             turn_count: book.as_ref().map(|info| info.turn_count),
             total_tokens: book.as_ref().map(|info| info.total_tokens),
-            timestamp: JsNumber::from(now_millis()),
+            timestamp: JsNumber::from(protocol::js::date_now()),
             metadata: Map::new(),
         };
         let _ = lifecycle.on_end(&ctx).await;
@@ -533,11 +533,9 @@ fn remove_key(maps: &mut Maps, session_key: &str) {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
 
-    use async_trait::async_trait;
-    use chrono::{DateTime, Utc};
-    use serde_json::{Map, Value};
+    use parking_lot::Mutex;
 
     use super::SessionManager;
     use crate::error::ProviderError;
@@ -545,6 +543,8 @@ mod tests {
     use crate::prompt::VOICE_MODE_PROMPT;
     use crate::router::{AgentConfig, LlmProvider, Router};
     use crate::sessions::{SessionOptions, session_key};
+    use async_trait::async_trait;
+    use chrono::{DateTime, Utc};
 
     struct Stub;
 
@@ -568,8 +568,8 @@ mod tests {
 
     fn message(chat_type: &str, extra: Option<&str>) -> protocol::InboundMessage {
         let metadata = extra.map(|text| {
-            let mut map = Map::new();
-            map.insert("systemPrompt".to_string(), Value::String(text.to_string()));
+            let mut map = protocol::js::JsObject::new();
+            map.insert("systemPrompt", protocol::js::JsValue::from_text(text));
             map
         });
         protocol::InboundMessage {
@@ -624,10 +624,7 @@ mod tests {
         WorkspaceLoader::with_clock(
             dir.to_string_lossy().into_owned(),
             Arc::new(move || {
-                let seconds = match ticks.lock() {
-                    Ok(guard) => *guard,
-                    Err(poisoned) => *poisoned.into_inner(),
-                };
+                let seconds = *ticks.lock();
                 DateTime::from_timestamp(seconds, 0).unwrap_or_else(Utc::now)
             }),
         )
@@ -651,7 +648,7 @@ mod tests {
         assert!(first.contains("11:45:12 AM"));
         assert!(!first.contains('\u{202f}'));
         assert!(!first.contains("VOICE MODE"));
-        *ticks.lock().unwrap() = 1_768_491_912;
+        *ticks.lock() = 1_768_491_912;
         let later = message("voice", Some("  be terse  "));
         let second = manager
             .ensure_system_prompt(&session, &loader, "opus", &later)
@@ -687,7 +684,7 @@ mod tests {
         assert!(voice.contains(VOICE_MODE_PROMPT));
         assert!(voice.contains("\n\nbe terse"));
         let frozen = voice.clone();
-        *ticks.lock().unwrap() = 1_791_647_112;
+        *ticks.lock() = 1_791_647_112;
         let text_later = message("dm", Some("different"));
         let again = manager
             .ensure_system_prompt(&voice_session, &loader, "opus", &text_later)

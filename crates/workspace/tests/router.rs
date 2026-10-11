@@ -1,4 +1,6 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
+use parking_lot::Mutex;
 
 use async_trait::async_trait;
 use protocol::js::{parse, stringify};
@@ -17,7 +19,7 @@ impl LlmProvider for Stub {
     }
 
     async fn is_available(&self) -> Result<bool, ProviderError> {
-        self.result.lock().unwrap().clone()
+        self.result.lock().clone()
     }
 }
 
