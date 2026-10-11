@@ -42,6 +42,8 @@ fn cursor_numbers_emitted_pieces_and_stamps_the_file() {
         Some(format!("cursor:{id}:line:0:part:1").as_str())
     );
     assert_eq!(read.messages[1].tool_name.as_deref(), Some("Read"));
+    assert_eq!(read.messages[1].content, "Read");
+    assert!(read.messages[1].tool_result.is_none());
     let extra = read.messages[0].extra.as_ref().expect("extra");
     assert_eq!(
         extra
@@ -151,7 +153,7 @@ fn pi_session_and_tool_names_survive_the_next_chunk() {
     let called = cursor.read(&path, "pi", Some("other-hint"), false);
     assert_eq!(
         called[0].event_id.as_deref(),
-        Some(format!("pi:{id}:abcd1234").as_str())
+        Some(format!("pi:{id}:abcd1234:tool:t1").as_str())
     );
     let mut file = std::fs::OpenOptions::new()
         .append(true)
@@ -215,7 +217,7 @@ fn pi_hint_fills_until_a_native_header_and_tool_text_is_extracted() {
 }
 
 #[test]
-fn same_prefix_rewrite_rereads_and_a_new_inode_resets() {
+fn shrink_resets_the_jsonl_cursor_and_a_same_size_rewrite_does_not() {
     let tmp = Tmp::new("r3-rewrite");
     let stem = "A".repeat(80);
     let file = tmp.path().join("t.jsonl");
@@ -229,28 +231,42 @@ fn same_prefix_rewrite_rereads_and_a_new_inode_resets() {
         json!({"type":"user","message":{"content": stem}}),
         json!({"type":"user","message":{"content":"new-body"}})
     );
+    assert!(second.len() > first.len());
     assert_eq!(&first.as_bytes()[..64], &second.as_bytes()[..64]);
     std::fs::write(&file, first.as_bytes()).expect("write");
     let mut tail = TranscriptTail::new();
     let read = tail.read_new_jsonl(&file);
-    assert!(read.offset > 64);
+    assert_eq!(read.offset, first.len() as u64);
     std::fs::write(&file, second.as_bytes()).expect("rewrite");
     let again = tail.read_new_jsonl(&file);
-    assert!(again.text.contains(&stem), "{}", again.text);
-    assert!(again.text.contains("new-body"), "{}", again.text);
+    assert!(!again.text.contains(&stem), "{}", again.text);
+    assert!(!again.text.contains("new-body"), "{}", again.text);
+    let short = format!(
+        "{}\n",
+        json!({"type":"user","message":{"content":"shrunk"}})
+    );
+    assert!(short.len() < second.len());
+    std::fs::write(&file, short.as_bytes()).expect("shrink");
+    let shrunk = tail.read_new_jsonl(&file);
+    assert!(shrunk.text.contains("shrunk"), "{}", shrunk.text);
     let mut cursor = CaptureCursor::new();
     let captured = cursor.read(&file, "claude", None, false);
-    assert!(captured.iter().any(|row| row.content.contains(&stem)));
-    std::fs::write(&file, second.as_bytes()).expect("same");
+    assert!(captured.iter().any(|row| row.content.contains("shrunk")));
+    std::fs::write(&file, short.as_bytes()).expect("same");
     let quiet = cursor.read(&file, "claude", None, false);
     assert!(quiet.is_empty());
     let other = tmp.path().join("u.jsonl");
     let gone = tmp.path().join("gone.jsonl");
-    std::fs::write(&other, second.as_bytes()).expect("other");
+    std::fs::write(&other, short.as_bytes()).expect("other");
     std::fs::rename(&file, &gone).expect("rename away");
     std::fs::rename(&other, &file).expect("rename in");
-    let reread = cursor.read(&file, "claude", None, false);
-    assert!(reread.iter().any(|row| row.content.contains("new-body")));
+    let renamed = cursor.read(&file, "claude", None, false);
+    assert!(renamed.is_empty());
+    let smaller = format!("{}\n", json!({"type":"user","message":{"content":"x"}}));
+    assert!(smaller.len() < short.len());
+    std::fs::write(&file, smaller.as_bytes()).expect("cursor shrink");
+    let reset = cursor.read(&file, "claude", None, false);
+    assert!(reset.iter().any(|row| row.content == "x"));
     let append_path = tmp.path().join("append.jsonl");
     std::fs::write(&append_path, first.as_bytes()).expect("append base");
     let mut append_tail = TranscriptTail::new();

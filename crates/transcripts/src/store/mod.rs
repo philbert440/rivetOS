@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use parking_lot::Mutex;
 
-use crate::capture::{capture_parsed, capture_snapshot, project_turns};
+use crate::capture::{capture_snapshot, project_turns, read_store_window};
 use crate::identity::{den_session_ref, path_unsafe};
 use crate::jsonl::read_jsonl;
 use crate::nest::DelegatedLink;
@@ -465,19 +465,9 @@ impl Store {
         path: &std::path::Path,
         source: Option<&str>,
     ) -> (Vec<crate::turn::Turn>, Vec<CaptureMessage>, bool) {
-        let Some(bytes) = crate::fsutil::read_bytes(path) else {
-            return (Vec::new(), Vec::new(), false);
-        };
-        let text = crate::fsutil::lossy(&bytes);
-        let lines = crate::jsonl::parse_lines(&text);
-        let (kept, truncated) = crate::jsonl::kept_window_offset(&bytes, self.roots.max_bytes);
         let native = den_session_ref(id).native;
         let hint = (!native.is_empty()).then_some(native.as_str());
-        let turns = project_turns(command, &lines, source, truncated, kept);
-        let mtime = crate::fsutil::file_stamp(path).map(|stamp| stamp.mtime_ms);
-        let last_line = crate::jsonl::last_line_index(&text);
-        let messages = capture_parsed(command, &lines, hint, path, mtime, last_line);
-        (turns, messages, truncated)
+        read_store_window(command, path, hint, self.roots.max_bytes, source)
     }
 }
 

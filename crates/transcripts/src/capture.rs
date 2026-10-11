@@ -169,7 +169,7 @@ fn capture_batch(command: &str, lines: &[ParsedLine], hint: Option<&str>) -> Vec
         "kimi" => kimi_capture_for(lines, hint),
         "pi" => {
             let mut state = PiAccum::default();
-            pi_capture_lines(lines, hint, &mut state)
+            pi_capture_lines(lines, hint, &mut state, false)
         }
         "qwen" => {
             let mut state = QwenAccum::default();
@@ -941,13 +941,14 @@ pub fn pi_capture_text(text: &str) -> Vec<CaptureMessage> {
 
 pub fn pi_capture_text_for(text: &str, hint: Option<&str>) -> Vec<CaptureMessage> {
     let mut state = PiAccum::default();
-    pi_capture_lines(&parse_lines(text), hint, &mut state)
+    pi_capture_lines(&parse_lines(text), hint, &mut state, false)
 }
 
 fn pi_capture_lines(
     lines: &[ParsedLine],
     hint: Option<&str>,
     state: &mut PiAccum,
+    pointer: bool,
 ) -> Vec<CaptureMessage> {
     let mut session_id = std::mem::take(&mut state.session_id);
     if session_id.is_empty()
@@ -1019,44 +1020,72 @@ fn pi_capture_lines(
         if role != "assistant" {
             continue;
         }
-        let body = text_items(message);
-        let thinking = thinking_items(message);
-        if body.is_none() && thinking.is_none() && tool_items(message).is_empty() {
+        let body = pi_text_body(message);
+        let thinking = pi_thinking_text(message);
+        let calls = tool_items(message);
+        if body.is_none() && thinking.is_none() && calls.is_empty() {
             continue;
         }
+        let usage = pi_usage_value(message);
+        let stop = pi_stop_reason(message);
+        let mut accounting = false;
         if body.is_some() || thinking.is_some() {
             let mut row = CaptureMessage::new("assistant", body.unwrap_or_default());
-            if row.content.is_empty()
-                && let Some(think) = thinking.clone()
-            {
-                row.content = format!("[thinking] {think}");
-            }
             row.event_id = Some(event_id.clone());
             row.event_ts = event_ts.clone();
             row.session_id = Some(pi_sid(&session_id).to_string());
+            row.extra = Some(pi_row_extra(
+                "message:assistant",
+                thinking.as_deref(),
+                pointer,
+                usage.as_ref(),
+                stop.as_deref(),
+                None,
+            ));
             out.push(place(row, line));
+            accounting = true;
         }
-        for item in tool_items(message) {
+        for item in calls {
             let name = item
                 .get("name")
                 .and_then(Value::as_str)
                 .or_else(|| item.get("toolName").and_then(Value::as_str))
                 .unwrap_or("unknown");
-            if let Some(id) = item
+            let call_id = item
                 .get("id")
                 .and_then(Value::as_str)
-                .or_else(|| item.get("toolCallId").and_then(Value::as_str))
-            {
+                .filter(|text| !text.is_empty())
+                .or_else(|| {
+                    item.get("toolCallId")
+                        .and_then(Value::as_str)
+                        .filter(|text| !text.is_empty())
+                });
+            if let Some(id) = call_id {
                 names.insert(id.to_string(), name.to_string());
             }
+            let tool_event = match call_id {
+                Some(id) => format!("{event_id}:tool:{id}"),
+                None => format!("{event_id}:tool"),
+            };
             let mut row = CaptureMessage::tool(format!("[tool] {name}"), name, None);
             row.tool_args = item
                 .get("arguments")
                 .or_else(|| item.get("input"))
                 .map(parse_tool_input);
-            row.event_id = Some(event_id.clone());
+            row.event_id = Some(tool_event);
             row.event_ts = event_ts.clone();
             row.session_id = Some(pi_sid(&session_id).to_string());
+            row.extra = Some(pi_row_extra(
+                "message:toolCall",
+                None,
+                false,
+                if accounting { None } else { usage.as_ref() },
+                if accounting { None } else { stop.as_deref() },
+                call_id,
+            ));
+            if !accounting {
+                accounting = true;
+            }
             out.push(place(row, line));
         }
     }
@@ -1269,7 +1298,7 @@ fn cursor_capture_lines(lines: &[ParsedLine], frame: &CursorFrame<'_>) -> Vec<Ca
                         let Some(name) = part.get("name").and_then(Value::as_str) else {
                             continue;
                         };
-                        let mut row = CaptureMessage::tool(format!("[tool] {name}"), name, None);
+                        let mut row = CaptureMessage::tool(name, name, None);
                         row.tool_args = part.get("input").map(js_norm);
                         pieces.push(row);
                     }
@@ -1757,6 +1786,134 @@ fn pi_sid(session_id: &str) -> &str {
     }
 }
 
+fn pi_text_body(message: &Obj) -> Option<String> {
+    if let Some(text) = message.get("content").and_then(Value::as_str) {
+        let trimmed = jtrim(text);
+        return (!trimmed.is_empty()).then(|| trimmed.to_string());
+    }
+    let items = message.get("content").and_then(Value::as_array)?;
+    let objects = items
+        .iter()
+        .filter_map(Value::as_object)
+        .collect::<Vec<_>>();
+    let text = pi_text_from_items(&objects);
+    (!text.is_empty()).then_some(text)
+}
+
+fn pi_thinking_text(message: &Obj) -> Option<String> {
+    let mut out = String::new();
+    let items = message.get("content").and_then(Value::as_array)?;
+    for item in items.iter().filter_map(Value::as_object) {
+        if item.get("type").and_then(Value::as_str) != Some("thinking") {
+            continue;
+        }
+        if let Some(text) = item.get("thinking").and_then(Value::as_str)
+            && !text.is_empty()
+        {
+            out.push_str(text);
+        }
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+fn pi_stop_reason(message: &Obj) -> Option<String> {
+    message
+        .get("stopReason")
+        .and_then(Value::as_str)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
+}
+
+fn pi_usage_value(message: &Obj) -> Option<Value> {
+    let usage = message.get("usage")?.as_object()?;
+    let num = |keys: &[&str]| -> f64 {
+        for key in keys {
+            if let Some(value) = usage.get(*key).and_then(Value::as_f64)
+                && value.is_finite()
+                && value != 0.0
+            {
+                return value;
+            }
+        }
+        0.0
+    };
+    let input = num(&["input", "input_tokens", "inputTokens", "promptTokens"]);
+    let output = num(&[
+        "output",
+        "output_tokens",
+        "outputTokens",
+        "completionTokens",
+    ]);
+    let cache_read = num(&["cacheRead", "cache_read_tokens"]);
+    let cache_write = num(&["cacheWrite", "cache_write_tokens"]);
+    let reasoning = num(&["reasoning", "reasoning_tokens"]);
+    let total = num(&["totalTokens", "total_tokens"]);
+    if input <= 0.0 && output <= 0.0 && cache_read <= 0.0 && cache_write <= 0.0 && reasoning <= 0.0
+    {
+        return None;
+    }
+    let mut map = serde_json::Map::new();
+    map.insert("input".into(), json_finite(input));
+    map.insert("output".into(), json_finite(output));
+    map.insert("cacheRead".into(), json_finite(cache_read));
+    map.insert("cacheWrite".into(), json_finite(cache_write));
+    map.insert("reasoning".into(), json_finite(reasoning));
+    map.insert("totalTokens".into(), json_finite(total));
+    Some(Value::Object(map))
+}
+
+fn json_finite(value: f64) -> Value {
+    if value.fract() == 0.0 && value >= i64::MIN as f64 && value <= i64::MAX as f64 {
+        return Value::from(value as i64);
+    }
+    serde_json::Number::from_f64(value)
+        .map(Value::Number)
+        .unwrap_or(Value::Null)
+}
+
+fn pi_row_extra(
+    source_event: &str,
+    thinking: Option<&str>,
+    pointer: bool,
+    usage: Option<&Value>,
+    stop_reason: Option<&str>,
+    call_id: Option<&str>,
+) -> Value {
+    let mut extra = serde_json::Map::new();
+    extra.insert(
+        "sourceEvent".into(),
+        Value::String(source_event.to_string()),
+    );
+    extra.insert("source".into(), Value::String("pi-session".into()));
+    if let Some(id) = call_id {
+        extra.insert("callId".into(), Value::String(id.to_string()));
+    }
+    if let Some(usage) = usage {
+        extra.insert("usage".into(), usage.clone());
+    }
+    if let Some(reason) = stop_reason {
+        extra.insert("stopReason".into(), Value::String(reason.to_string()));
+    }
+    if let Some(thinking) = thinking {
+        extra.insert("partType".into(), Value::String("think".into()));
+        let units = protocol::js::utf16_len(thinking);
+        let (stored, truncated) = if pointer && units > 16_000 {
+            (crate::value::slice_text(thinking, 0, Some(16_000)), true)
+        } else {
+            (thinking.to_string(), false)
+        };
+        extra.insert("reasoning".into(), Value::String(stored));
+        if truncated {
+            extra.insert(
+                "full_reasoning_length".into(),
+                Value::from(u64::try_from(units).unwrap_or(u64::MAX)),
+            );
+            extra.insert("truncated".into(), Value::Bool(true));
+        }
+    }
+    Value::Object(extra)
+}
+
 fn pi_tool_result_text(message: &Obj) -> Option<String> {
     let from_items = pi_result_items(message);
     if !from_items.is_empty() {
@@ -2142,11 +2299,6 @@ fn text_items(message: &Obj) -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
-fn thinking_items(message: &Obj) -> Option<String> {
-    let text = item_texts(message, true);
-    (!text.is_empty()).then_some(text)
-}
-
 fn item_texts(message: &Obj, thinking: bool) -> String {
     message
         .get("content")
@@ -2185,7 +2337,10 @@ fn tool_items(message: &Obj) -> Vec<Obj> {
                 .filter_map(Value::as_object)
                 .filter(|row| {
                     let kind = row.get("type").and_then(Value::as_str).unwrap_or("");
-                    kind == "toolCall" || kind == "tool_call" || kind == "functionCall"
+                    kind == "toolCall"
+                        || kind == "tool_call"
+                        || kind == "toolUse"
+                        || kind == "tool_use"
                 })
                 .cloned()
                 .collect()
@@ -2332,9 +2487,6 @@ fn tool_results(obj: &Obj) -> Vec<(String, String)> {
 struct CaptureSlot {
     offset: u64,
     next_line: usize,
-    dev: u64,
-    ino: u64,
-    mark: fsutil::RewriteMark,
     grok: GrokAccum,
     codex: CodexAccum,
     kimi: KimiAccum,
@@ -2344,28 +2496,16 @@ struct CaptureSlot {
 }
 
 impl CaptureSlot {
-    fn fresh(dev: u64, ino: u64) -> Self {
+    fn fresh() -> Self {
         Self {
             offset: 0,
             next_line: 0,
-            dev,
-            ino,
-            mark: fsutil::RewriteMark::default(),
             grok: GrokAccum::default(),
             codex: CodexAccum::default(),
             kimi: KimiAccum::default(),
             pi: PiAccum::default(),
             qwen: QwenAccum::default(),
             cowork_pending: HashMap::new(),
-        }
-    }
-
-    fn identity(&self) -> fsutil::CursorIdentity {
-        fsutil::CursorIdentity {
-            offset: self.offset,
-            dev: self.dev,
-            ino: self.ino,
-            mark: self.mark.clone(),
         }
     }
 }
@@ -2391,14 +2531,9 @@ impl CaptureCursor {
         let key = path.to_string_lossy().into_owned();
         let stamp = fsutil::file_stamp(path);
         let len = stamp.as_ref().map(|item| item.size).unwrap_or(0);
-        let dev = stamp.as_ref().map(|item| item.dev).unwrap_or(0);
-        let ino = stamp.as_ref().map(|item| item.ino).unwrap_or(0);
-        let mut slot = self
-            .slots
-            .remove(&key)
-            .unwrap_or_else(|| CaptureSlot::fresh(dev, ino));
-        if fsutil::cursor_was_replaced(path, &slot.identity(), len, dev, ino) {
-            slot = CaptureSlot::fresh(dev, ino);
+        let mut slot = self.slots.remove(&key).unwrap_or_else(CaptureSlot::fresh);
+        if fsutil::cursor_was_replaced(slot.offset, len) {
+            slot = CaptureSlot::fresh();
         }
         let bytes = fsutil::read_range(path, slot.offset, len).unwrap_or_default();
         let end_rel = if finish {
@@ -2423,11 +2558,7 @@ impl CaptureCursor {
         let mtime = stamp.as_ref().map(|item| item.mtime_ms);
         let messages = ingest_slot(&mut slot, command, hint, path, &lines, mtime, last_line);
         slot.next_line = slot.next_line.saturating_add(line_count);
-        let new_offset = slot.offset.saturating_add(end_rel as u64);
-        slot.mark = fsutil::rewrite_mark(path, new_offset);
-        slot.offset = new_offset;
-        slot.dev = dev;
-        slot.ino = ino;
+        slot.offset = slot.offset.saturating_add(end_rel as u64);
         self.slots.insert(key, slot);
         messages
     }
@@ -2444,16 +2575,107 @@ pub fn capture_snapshot(path: &Path, command: &str, hint: Option<&str>) -> Vec<C
     cursor.read(path, command, hint, true)
 }
 
-pub fn capture_parsed(
+pub(crate) fn read_store_window(
     command: &str,
-    lines: &[ParsedLine],
-    hint: Option<&str>,
     path: &Path,
-    mtime_ms: Option<i64>,
-    last_line: usize,
-) -> Vec<CaptureMessage> {
-    let mut slot = CaptureSlot::fresh(0, 0);
-    ingest_slot(&mut slot, command, hint, path, lines, mtime_ms, last_line)
+    hint: Option<&str>,
+    max_bytes: u64,
+    source: Option<&str>,
+) -> (Vec<Turn>, Vec<CaptureMessage>, bool) {
+    let Some(size) = fsutil::file_len(path) else {
+        return (Vec::new(), Vec::new(), false);
+    };
+    let mtime = fsutil::file_stamp(path).map(|stamp| stamp.mtime_ms);
+    let mut display = Vec::new();
+    let mut fold = StoreFold::new();
+    let (complete, truncated) =
+        crate::jsonl::stream_json_objects(path, size, max_bytes, |line, in_window| {
+            if in_window {
+                display.push(ParsedLine {
+                    index: line.index,
+                    offset: line.offset,
+                    value: line.value.clone(),
+                });
+            }
+            fold.push(command, hint, path, &line, mtime);
+        });
+    let last_line = complete.saturating_sub(1);
+    let messages = fold.finish(command, mtime, last_line);
+    let turns = project_turns(command, &display, source, truncated, 0);
+    (turns, messages, truncated)
+}
+
+struct StoreFold {
+    slot: CaptureSlot,
+    messages: Vec<CaptureMessage>,
+}
+
+impl StoreFold {
+    fn new() -> Self {
+        Self {
+            slot: CaptureSlot::fresh(),
+            messages: Vec::new(),
+        }
+    }
+
+    fn push(
+        &mut self,
+        command: &str,
+        hint: Option<&str>,
+        path: &Path,
+        line: &ParsedLine,
+        mtime: Option<i64>,
+    ) {
+        let more = ingest_slot(
+            &mut self.slot,
+            command,
+            hint,
+            path,
+            std::slice::from_ref(line),
+            mtime,
+            0,
+        );
+        self.messages.extend(more);
+    }
+
+    fn finish(
+        mut self,
+        command: &str,
+        mtime: Option<i64>,
+        last_line: usize,
+    ) -> Vec<CaptureMessage> {
+        if command == "cursor" {
+            restamp_cursor(&mut self.messages, mtime, last_line);
+        }
+        self.messages
+    }
+}
+
+fn restamp_cursor(messages: &mut [CaptureMessage], mtime: Option<i64>, last_line: usize) {
+    let Some(mtime) = mtime else {
+        return;
+    };
+    let last = i64::try_from(last_line).unwrap_or(i64::MAX);
+    for row in messages {
+        let Some(line) = row.line_index else {
+            continue;
+        };
+        let part = cursor_part(row.event_id.as_deref());
+        let gap = last
+            .saturating_sub(i64::try_from(line).unwrap_or(i64::MAX))
+            .max(0);
+        let ms = mtime
+            .saturating_sub(gap.saturating_mul(1_000))
+            .saturating_add(part);
+        row.created_at = Some(crate::timeutil::iso_from_ms(ms));
+    }
+}
+
+fn cursor_part(event_id: Option<&str>) -> i64 {
+    event_id
+        .and_then(|id| id.rsplit_once(":part:"))
+        .and_then(|(_, part)| part.parse::<i64>().ok())
+        .unwrap_or(0)
 }
 
 fn ingest_slot(
@@ -2469,7 +2691,7 @@ fn ingest_slot(
         "claude" => claude_capture_lines(lines, hint),
         "codex" => codex_capture_lines(lines, hint, &mut slot.codex),
         "kimi" => kimi_resume(&mut slot.kimi, lines, hint),
-        "pi" => pi_capture_lines(lines, hint, &mut slot.pi),
+        "pi" => pi_capture_lines(lines, hint, &mut slot.pi, !path.as_os_str().is_empty()),
         "qwen" => qwen_capture_lines(lines, hint, &mut slot.qwen),
         "cursor" => {
             let owned = path.to_string_lossy();

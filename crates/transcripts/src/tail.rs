@@ -103,15 +103,12 @@ impl TranscriptTail {
 
     pub fn read_new_jsonl(&mut self, path: &Path) -> JsonlCursor {
         let key = path.to_string_lossy().into_owned();
-        let stamp = fsutil::file_stamp(path);
-        let len = stamp.as_ref().map(|item| item.size).unwrap_or(0);
-        let dev = stamp.as_ref().map(|item| item.dev).unwrap_or(0);
-        let ino = stamp.as_ref().map(|item| item.ino).unwrap_or(0);
+        let len = fsutil::file_len(path).unwrap_or(0);
         let mut state = self.jsonl.get(&key).cloned().unwrap_or_else(|| JsonlState {
-            identity: fsutil::CursorIdentity::fresh(dev, ino),
+            identity: fsutil::CursorIdentity::fresh(),
         });
-        if fsutil::cursor_was_replaced(path, &state.identity, len, dev, ino) {
-            state.identity = fsutil::CursorIdentity::fresh(dev, ino);
+        if fsutil::cursor_was_replaced(state.identity.offset, len) {
+            state.identity = fsutil::CursorIdentity::fresh();
         }
         let bytes = fsutil::read_range(path, state.identity.offset, len).unwrap_or_default();
         let end_rel = bytes
@@ -121,10 +118,7 @@ impl TranscriptTail {
             .unwrap_or(0);
         let text = String::from_utf8_lossy(&bytes[..end_rel]).into_owned();
         let new_offset = state.identity.offset.saturating_add(end_rel as u64);
-        state.identity.mark = fsutil::rewrite_mark(path, new_offset);
         state.identity.offset = new_offset;
-        state.identity.dev = dev;
-        state.identity.ino = ino;
         self.jsonl.insert(key, state);
         JsonlCursor {
             text,

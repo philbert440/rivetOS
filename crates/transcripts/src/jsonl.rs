@@ -1,3 +1,4 @@
+use std::io::Read;
 use std::path::Path;
 
 use serde_json::Value;
@@ -5,6 +6,7 @@ use serde_json::Value;
 use crate::fsutil::{self, lossy};
 use crate::value::{Obj, jtrim};
 
+#[derive(Clone)]
 pub struct ParsedLine {
     pub index: usize,
     pub offset: u64,
@@ -75,12 +77,87 @@ pub fn kept_window_offset(bytes: &[u8], max_bytes: u64) -> (u64, bool) {
 }
 
 pub fn last_line_index(text: &str) -> usize {
-    if text.is_empty() {
-        return 0;
+    let mut count = 0usize;
+    let mut rest = text;
+    while let Some(idx) = rest.find('\n') {
+        count = count.saturating_add(1);
+        rest = &rest[idx + 1..];
     }
-    let newlines = text.bytes().filter(|byte| *byte == b'\n').count();
-    let extra = usize::from(!text.ends_with('\n'));
-    newlines.saturating_add(extra).saturating_sub(1)
+    count.saturating_sub(1)
+}
+
+pub(crate) fn stream_json_objects(
+    path: &Path,
+    size: u64,
+    max_bytes: u64,
+    mut on_object: impl FnMut(ParsedLine, bool),
+) -> (usize, bool) {
+    let truncated = size > max_bytes;
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return (0, false);
+    };
+    let cut = size.saturating_sub(max_bytes);
+    let mut window: Option<u64> = if truncated { None } else { Some(0) };
+    let mut pending = Vec::new();
+    let mut buf = [0_u8; 65_536];
+    let mut remaining = size;
+    let mut byte_off = 0u64;
+    let mut lossy_off = 0u64;
+    let mut index = 0usize;
+    while remaining > 0 {
+        let want = usize::try_from(remaining.min(buf.len() as u64)).unwrap_or(0);
+        if want == 0 {
+            break;
+        }
+        let read = match file.read(&mut buf[..want]) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(_) => break,
+        };
+        remaining = remaining.saturating_sub(read as u64);
+        pending.extend_from_slice(&buf[..read]);
+        while let Some(nl) = pending.iter().position(|byte| *byte == b'\n') {
+            let mut raw = pending.drain(..=nl).collect::<Vec<_>>();
+            let raw_len = raw.len() as u64;
+            let raw_decoded = decoded_len(&raw);
+            let nl_at = byte_off.saturating_add(raw_len).saturating_sub(1);
+            if truncated && window.is_none() && nl_at >= cut {
+                window = Some(lossy_off.saturating_add(raw_decoded));
+            }
+            let start = lossy_off;
+            let in_window = window.is_some_and(|bound| start >= bound);
+            raw.pop();
+            if raw.last() == Some(&b'\r') {
+                raw.pop();
+            }
+            let text = String::from_utf8_lossy(&raw);
+            let trimmed = jtrim(&text);
+            if trimmed.starts_with('{')
+                && let Ok(value) = crate::value::parse_json(trimmed)
+                && value.is_object()
+            {
+                on_object(
+                    ParsedLine {
+                        index,
+                        offset: start,
+                        value,
+                    },
+                    in_window,
+                );
+            }
+            byte_off = byte_off.saturating_add(raw_len);
+            lossy_off = lossy_off.saturating_add(raw_decoded);
+            index = index.saturating_add(1);
+        }
+    }
+    (index, truncated)
+}
+
+fn decoded_len(bytes: &[u8]) -> u64 {
+    match std::str::from_utf8(bytes) {
+        Ok(text) => text.len() as u64,
+        Err(_) => String::from_utf8_lossy(bytes).len() as u64,
+    }
 }
 
 pub fn parse_lines(text: &str) -> Vec<ParsedLine> {

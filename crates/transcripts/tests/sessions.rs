@@ -1308,7 +1308,7 @@ fn over_cap_file_is_truncated() {
 }
 
 #[test]
-fn jsonl_cursor_rereads_a_file_replaced_in_place() {
+fn jsonl_cursor_rereads_only_after_a_shrink() {
     let tmp = Tmp::new("replace-jsonl");
     let file = tmp.path().join("t.jsonl");
     let first = format!(
@@ -1319,17 +1319,21 @@ fn jsonl_cursor_rereads_a_file_replaced_in_place() {
     let mut tail = TranscriptTail::new();
     let read = tail.read_new_jsonl(&file);
     assert!(read.text.contains("one"));
-    assert!(read.offset > 0);
-    let replacement = format!(
-        "{}\n{}\n",
-        serde_json::json!({"type":"user","message":{"content":"aaa"}}),
-        serde_json::json!({"type":"user","message":{"content":"bbb"}})
-    );
-    assert!(replacement.len() >= first.len());
-    std::fs::write(&file, replacement.as_bytes()).unwrap();
+    assert_eq!(read.offset, first.len() as u64);
+    let mut same = vec![b'x'; first.len() - 1];
+    same.push(b'\n');
+    std::fs::write(&file, &same).unwrap();
     let again = tail.read_new_jsonl(&file);
-    assert!(again.text.contains("aaa"), "{}", again.text);
-    assert!(again.text.contains("bbb"), "{}", again.text);
+    assert!(again.text.is_empty(), "{}", again.text);
+    assert_eq!(again.offset, first.len() as u64);
+    let short = format!(
+        "{}\n",
+        serde_json::json!({"type":"user","message":{"content":"z"}})
+    );
+    assert!(short.len() < first.len());
+    std::fs::write(&file, short.as_bytes()).unwrap();
+    let shrunk = tail.read_new_jsonl(&file);
+    assert!(shrunk.text.contains("\"z\""), "{}", shrunk.text);
 }
 
 #[test]

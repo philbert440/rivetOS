@@ -131,77 +131,17 @@ pub fn lossy(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
 
-#[derive(Clone, Debug, Default)]
-pub struct RewriteMark {
-    pub head: Vec<u8>,
-    pub boundary: Vec<u8>,
-}
-
-pub fn rewrite_mark(path: &Path, offset: u64) -> RewriteMark {
-    if offset == 0 {
-        return RewriteMark::default();
-    }
-    let head_len = offset.min(64);
-    let head = read_range(path, 0, head_len).unwrap_or_default();
-    let boundary_len = offset.min(64);
-    let boundary_start = offset - boundary_len;
-    let boundary = if boundary_start == 0 {
-        head.clone()
-    } else {
-        read_range(path, boundary_start, offset).unwrap_or_default()
-    };
-    RewriteMark { head, boundary }
-}
-
 #[derive(Clone, Debug)]
 pub struct CursorIdentity {
     pub offset: u64,
-    pub dev: u64,
-    pub ino: u64,
-    pub mark: RewriteMark,
 }
 
 impl CursorIdentity {
-    pub fn fresh(dev: u64, ino: u64) -> Self {
-        Self {
-            offset: 0,
-            dev,
-            ino,
-            mark: RewriteMark::default(),
-        }
+    pub fn fresh() -> Self {
+        Self { offset: 0 }
     }
 }
 
-pub fn cursor_was_replaced(
-    path: &Path,
-    prior: &CursorIdentity,
-    len: u64,
-    now_dev: u64,
-    now_ino: u64,
-) -> bool {
-    if len < prior.offset {
-        return true;
-    }
-    if prior.offset == 0 {
-        return false;
-    }
-    if prior.dev != now_dev || prior.ino != now_ino {
-        return true;
-    }
-    region_changed(path, 0, &prior.mark.head)
-        || region_changed(
-            path,
-            prior
-                .offset
-                .saturating_sub(prior.mark.boundary.len() as u64),
-            &prior.mark.boundary,
-        )
-}
-
-fn region_changed(path: &Path, start: u64, expected: &[u8]) -> bool {
-    if expected.is_empty() {
-        return true;
-    }
-    let end = start.saturating_add(expected.len() as u64);
-    read_range(path, start, end).is_none_or(|got| got.as_slice() != expected)
+pub fn cursor_was_replaced(prior_offset: u64, len: u64) -> bool {
+    len < prior_offset
 }

@@ -188,6 +188,16 @@ enum Cached {
     Number(i64),
 }
 
+pub struct HeldDiscovery {
+    tx: std::sync::mpsc::Sender<Result<Cached, String>>,
+}
+
+impl HeldDiscovery {
+    pub fn deliver_ids(&self, ids: Vec<String>) {
+        let _ = self.tx.send(Ok(Cached::Strings(ids)));
+    }
+}
+
 struct Hung {
     timeout_ms: i64,
     started_now: i64,
@@ -214,6 +224,7 @@ pub struct SheetState {
     file_memo: HashMap<String, Memo>,
     pending_logs: Vec<String>,
     jobs: HashMap<String, std::sync::mpsc::Receiver<Result<Cached, String>>>,
+    job_hold: Option<std::sync::mpsc::Sender<HeldDiscovery>>,
 }
 
 impl SheetState {
@@ -231,6 +242,12 @@ impl SheetState {
 
     pub fn take_logs(&mut self) -> Vec<String> {
         std::mem::take(&mut self.pending_logs)
+    }
+
+    pub fn hold_background_jobs(&mut self) -> std::sync::mpsc::Receiver<HeldDiscovery> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.job_hold = Some(tx);
+        rx
     }
 }
 
@@ -1542,9 +1559,13 @@ where
     F: FnOnce() -> Result<Cached, String> + Send + 'static,
 {
     let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let _ = tx.send(work());
-    });
+    if let Some(hold) = state.job_hold.clone() {
+        let _ = hold.send(HeldDiscovery { tx });
+    } else {
+        std::thread::spawn(move || {
+            let _ = tx.send(work());
+        });
+    }
     state.jobs.insert(key.to_string(), rx);
 }
 
