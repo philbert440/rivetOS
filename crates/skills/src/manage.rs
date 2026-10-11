@@ -1,0 +1,724 @@
+use std::path::Path;
+use std::sync::Arc;
+
+use schemars::JsonSchema;
+use serde_json::Value;
+
+use crate::confine::{ensure_inside, mkdir_confined, rename_confined, write_confined};
+use crate::helpers::{
+    ALLOWED_SUBDIRS, SkillMeta, bump_version_in_content, check_dedup, current_iso_timestamp,
+    list_subdir, parse_patch_blocks, read_meta, read_node_text, scan_issues, title_case_hyphen,
+    write_meta,
+};
+use crate::manager::{Skill, SkillManager};
+use crate::text;
+use tools::{
+    CancellationToken, Tool, ToolContext, ToolSurface, js_replace_once, set_property_description,
+    set_property_enum, set_property_type,
+};
+
+const AGENT_DESCRIPTION: &str = "Create, edit, patch, or delete skills. Use to save reusable knowledge, workflows, or procedures.";
+
+const SIDECAR_DESCRIPTION: &str = "Create, edit, patch, delete, retire, read, or extend RivetOS skills. Use to save reusable knowledge, workflows, or procedures. Workspace and system skill dirs are both writable. Mirrors the in-process `skill_manage` tool exposed to local agents.";
+
+const ACTIONS: &[&str] = &[
+    "create",
+    "edit",
+    "patch",
+    "delete",
+    "retire",
+    "read",
+    "write_file",
+];
+
+const NAME_RE: &str = r"^[a-z0-9][a-z0-9-]{0,63}$";
+
+pub struct SkillManageTool {
+    manager: SkillManager,
+    skill_dirs: Vec<String>,
+    pending_gate: bool,
+    pending_dir: Option<String>,
+    rediscover_all: bool,
+    embed_endpoint: Option<String>,
+    embed_model: Option<String>,
+    http: Arc<dyn tools::HttpClient>,
+    surface: ToolSurface,
+}
+
+#[derive(JsonSchema)]
+struct SkillManageParams {
+    action: String,
+    name: String,
+    description: Option<String>,
+    content: Option<String>,
+    file_path: Option<String>,
+    file_content: Option<String>,
+    category: Option<String>,
+    tags: Option<String>,
+    level: Option<f64>,
+    force: Option<bool>,
+    reason: Option<String>,
+}
+
+impl SkillManageTool {
+    pub fn new(manager: SkillManager, skill_dirs: Vec<String>) -> Self {
+        Self {
+            manager,
+            skill_dirs,
+            pending_gate: false,
+            pending_dir: None,
+            rediscover_all: false,
+            embed_endpoint: None,
+            embed_model: None,
+            http: tools::default_http(),
+            surface: ToolSurface::Agent,
+        }
+    }
+
+    pub fn pending_gate(mut self, enabled: bool) -> Self {
+        self.pending_gate = enabled;
+        self
+    }
+
+    pub fn pending_dir(mut self, dir: impl Into<String>) -> Self {
+        self.pending_dir = Some(dir.into());
+        self
+    }
+
+    pub fn rediscover_all(mut self, enabled: bool) -> Self {
+        self.rediscover_all = enabled;
+        self
+    }
+
+    pub fn embed(mut self, endpoint: impl Into<String>, model: impl Into<String>) -> Self {
+        self.embed_endpoint = Some(endpoint.into());
+        self.embed_model = Some(model.into());
+        self
+    }
+
+    pub fn http(mut self, client: Arc<dyn tools::HttpClient>) -> Self {
+        self.http = client;
+        self
+    }
+
+    pub fn surface(mut self, surface: ToolSurface) -> Self {
+        self.surface = surface;
+        self
+    }
+
+    pub fn sidecar(manager: SkillManager, skill_dirs: Vec<String>) -> Self {
+        Self::new(manager, skill_dirs)
+            .rediscover_all(true)
+            .surface(ToolSurface::Sidecar)
+    }
+
+    fn target_dir(&self) -> Option<String> {
+        let first = self.skill_dirs.first()?;
+        if self.pending_gate {
+            Some(self.pending_dir.clone().unwrap_or_else(|| {
+                Path::new(first)
+                    .join("pending")
+                    .to_string_lossy()
+                    .into_owned()
+            }))
+        } else {
+            Some(first.clone())
+        }
+    }
+
+    fn allowed_roots(&self) -> Vec<String> {
+        let mut roots = self.skill_dirs.clone();
+        if !self.pending_gate {
+            return roots;
+        }
+        let Some(pending) = self.target_dir() else {
+            return roots;
+        };
+        if !roots.iter().any(|root| root == &pending) {
+            roots.push(pending);
+        }
+        roots
+    }
+}
+
+#[async_trait::async_trait]
+impl Tool for SkillManageTool {
+    fn name(&self) -> &'static str {
+        "skill_manage"
+    }
+
+    fn description(&self) -> &str {
+        match self.surface {
+            ToolSurface::Sidecar => SIDECAR_DESCRIPTION,
+            ToolSurface::Agent => AGENT_DESCRIPTION,
+        }
+    }
+
+    fn parameters(&self) -> Value {
+        tools::anchor_schema!(SkillManageParams {
+            action,
+            name,
+            description,
+            content,
+            file_path,
+            file_content,
+            category,
+            tags,
+            level,
+            force,
+            reason
+        });
+        let mut schema = tools::schema_of::<SkillManageParams>();
+        set_property_description(&mut schema, "action", "Action to perform");
+        set_property_enum(&mut schema, "action", ACTIONS);
+        set_property_description(
+            &mut schema,
+            "name",
+            "Skill name (lowercase, hyphens, letters, digits only, max 64 chars)",
+        );
+        set_property_description(
+            &mut schema,
+            "description",
+            "Skill description (required for create)",
+        );
+        set_property_description(
+            &mut schema,
+            "content",
+            "Full SKILL.md content for create/edit, or FIND/REPLACE blocks for patch",
+        );
+        set_property_description(
+            &mut schema,
+            "file_path",
+            "Relative path for write_file (e.g., references/api.md)",
+        );
+        set_property_description(&mut schema, "file_content", "Content for write_file");
+        set_property_description(
+            &mut schema,
+            "category",
+            "Optional category for organizing skills",
+        );
+        set_property_description(&mut schema, "tags", "Comma-separated tags");
+        set_property_description(
+            &mut schema,
+            "level",
+            "Read detail level: 1 = full SKILL.md + file list (default), 2 = + file contents",
+        );
+        set_property_description(
+            &mut schema,
+            "force",
+            "Force creation even if a similar skill exists (bypasses dedup check)",
+        );
+        set_property_description(
+            &mut schema,
+            "reason",
+            "Reason for the change (added to changelog in SKILL.md on edit/patch)",
+        );
+        if matches!(self.surface, ToolSurface::Sidecar) {
+            set_property_type(&mut schema, "level", "integer");
+        }
+        schema
+    }
+
+    async fn execute(
+        &self,
+        args: Value,
+        _cancellation: &CancellationToken,
+        _context: &ToolContext,
+    ) -> protocol::ToolResult {
+        let action = arg_str(&args, "action").unwrap_or("").to_string();
+        let name = arg_str(&args, "name").unwrap_or("").to_string();
+        let description = arg_str(&args, "description").map(str::to_string);
+        let content = arg_str(&args, "content").map(str::to_string);
+        let file_path = arg_str(&args, "file_path").map(str::to_string);
+        let file_content = arg_str(&args, "file_content").map(str::to_string);
+        let category = arg_str(&args, "category").map(str::to_string);
+        let tags = arg_str(&args, "tags").map(str::to_string);
+        let level = args.get("level").and_then(Value::as_f64).unwrap_or(1.0);
+        let force = args.get("force").is_some_and(protocol::js::js_boolean_json);
+        let reason = arg_str(&args, "reason").map(str::to_string);
+        let result = match action.as_str() {
+            "create" => {
+                self.handle_create(
+                    &name,
+                    description.as_deref(),
+                    content.as_deref(),
+                    category.as_deref(),
+                    tags.as_deref(),
+                    force,
+                )
+                .await
+            }
+            "edit" => {
+                self.handle_edit(&name, content.as_deref(), reason.as_deref())
+                    .await
+            }
+            "patch" => {
+                self.handle_patch(&name, content.as_deref(), reason.as_deref())
+                    .await
+            }
+            "delete" => self.handle_delete(&name).await,
+            "retire" => self.handle_retire(&name, reason.as_deref()).await,
+            "read" => self.handle_read(&name, level).await,
+            "write_file" => {
+                self.handle_write_file(&name, file_path.as_deref(), file_content.as_deref())
+                    .await
+            }
+            _ => format!(
+                "Unknown action: \"{action}\". Use: create, edit, patch, delete, retire, read, write_file"
+            ),
+        };
+        if self.rediscover_all && !action.is_empty() && action != "read" {
+            for dir in &self.skill_dirs {
+                self.manager.rediscover(dir).await;
+            }
+        }
+        text(result)
+    }
+}
+
+impl SkillManageTool {
+    async fn handle_create(
+        &self,
+        name: &str,
+        description: Option<&str>,
+        content: Option<&str>,
+        category: Option<&str>,
+        tags: Option<&str>,
+        force: bool,
+    ) -> String {
+        let Some(target_dir) = self.target_dir() else {
+            return "Error: no skill directory configured".to_string();
+        };
+        if !name_ok(name) {
+            return format!(
+                "Invalid skill name: \"{name}\". Must be lowercase letters, digits, hyphens only (1-64 chars, start with letter or digit)."
+            );
+        }
+        if let Some(existing) = self
+            .manager
+            .list()
+            .into_iter()
+            .find(|skill| skill.name.to_lowercase() == name.to_lowercase())
+        {
+            return format!("Skill \"{name}\" already exists at {}", existing.location);
+        }
+        if let (Some(endpoint), Some(model)) = (&self.embed_endpoint, &self.embed_model)
+            && !endpoint.is_empty()
+            && !model.is_empty()
+            && !force
+        {
+            let desc = description
+                .map(str::to_string)
+                .or_else(|| {
+                    content.map(|value| {
+                        protocol::js::js_substring(value, Some(0.0), Some(500.0))
+                            .to_utf8()
+                            .to_string()
+                    })
+                })
+                .unwrap_or_else(|| name.to_string());
+            let existing = self
+                .manager
+                .list()
+                .into_iter()
+                .map(|skill| (skill.name, skill.description))
+                .collect::<Vec<_>>();
+            if !existing.is_empty()
+                && let Some((dup_name, similarity)) =
+                    check_dedup(self.http.as_ref(), endpoint, &desc, &existing, model).await
+            {
+                return format!(
+                    "Possible duplicate: \"{dup_name}\" (similarity: {}). Use a different name, edit the existing skill, or pass force: true to create anyway.",
+                    protocol::js::to_fixed(similarity, 2.0)
+                        .unwrap_or_else(|_| protocol::js::number_to_string(similarity))
+                );
+            }
+        }
+        let skill_content = build_skill_content(name, description, content, category, tags);
+        if let Err(issues) = scan_issues(&skill_content) {
+            return format!("Security scan failed:\n{issues}");
+        }
+        let skill_dir = Path::new(&target_dir).join(name);
+        let roots = self.allowed_roots();
+        if let Err(err) = mkdir_confined(&skill_dir, &roots).await {
+            return err;
+        }
+        let skill_md = skill_dir.join("SKILL.md");
+        if let Err(err) = write_confined(&skill_md, &skill_content, &roots).await {
+            return err;
+        }
+        let meta = SkillMeta {
+            created_by: "agent".to_string(),
+            created_at: current_iso_timestamp(),
+            version: 1,
+            source: None,
+            last_modified_at: None,
+            last_modified_by: None,
+            retired_at: None,
+            retired_reason: None,
+        };
+        if let Err(err) = write_meta(&skill_dir, &meta, &roots).await {
+            return err;
+        }
+        self.manager.rediscover(&target_dir).await;
+        let shown = skill_dir.to_string_lossy();
+        tracing::info!("Created skill: {name} at {shown}");
+        format!("Skill \"{name}\" created at {shown}")
+    }
+
+    async fn handle_edit(&self, name: &str, content: Option<&str>, reason: Option<&str>) -> String {
+        let Some(content) = content.filter(|value| !value.is_empty()) else {
+            return "Edit requires \"content\" — the new full SKILL.md content.".to_string();
+        };
+        let Some(skill) = find_skill(&self.manager, name) else {
+            return not_found(&self.manager, name);
+        };
+        let skill_dir = std::path::PathBuf::from(protocol::js::posix_dirname(&skill.location));
+        let mut meta = read_meta(&skill_dir).await.unwrap_or_else(|| SkillMeta {
+            created_by: "unknown".to_string(),
+            created_at: current_iso_timestamp(),
+            version: 0,
+            source: None,
+            last_modified_at: None,
+            last_modified_by: None,
+            retired_at: None,
+            retired_reason: None,
+        });
+        meta.version += 1;
+        meta.last_modified_at = Some(current_iso_timestamp());
+        meta.last_modified_by = Some("agent".to_string());
+        let updated = bump_version_in_content(content, meta.version, reason);
+        if let Err(issues) = scan_issues(&updated) {
+            return format!("Security scan failed:\n{issues}");
+        }
+        let roots = self.allowed_roots();
+        if let Err(err) = write_confined(Path::new(&skill.location), &updated, &roots).await {
+            return err;
+        }
+        if let Err(err) = write_meta(&skill_dir, &meta, &roots).await {
+            return err;
+        }
+        let parent =
+            std::path::PathBuf::from(protocol::js::posix_dirname(&skill_dir.to_string_lossy()));
+        self.manager.rediscover(&parent.to_string_lossy()).await;
+        tracing::info!("Updated skill: {name} (version {})", meta.version);
+        format!("Skill \"{name}\" updated (version {})", meta.version)
+    }
+
+    async fn handle_patch(
+        &self,
+        name: &str,
+        content: Option<&str>,
+        reason: Option<&str>,
+    ) -> String {
+        let Some(content) = content.filter(|value| !value.is_empty()) else {
+            return "Patch requires \"content\" with FIND/REPLACE blocks.".to_string();
+        };
+        let Some(skill) = find_skill(&self.manager, name) else {
+            return not_found(&self.manager, name);
+        };
+        let blocks = parse_patch_blocks(content);
+        if blocks.is_empty() {
+            return "No valid FIND/REPLACE blocks found in content.".to_string();
+        }
+        let mut current = match read_node_text(Path::new(&skill.location)).await {
+            Ok(current) => current,
+            Err(err) => return format!("Error: {err}"),
+        };
+        for (find, replace) in &blocks {
+            if !current.contains(find) {
+                let preview = if protocol::js::utf16_len(find) > 50 {
+                    format!(
+                        "{}...",
+                        protocol::js::js_substring(find, Some(0.0), Some(50.0)).to_utf8()
+                    )
+                } else {
+                    find.clone()
+                };
+                return format!("Patch failed: text not found: \"{preview}\"");
+            }
+            current = js_replace_once(&current, find, replace);
+        }
+        let skill_dir = std::path::PathBuf::from(protocol::js::posix_dirname(&skill.location));
+        let mut meta = read_meta(&skill_dir).await.unwrap_or_else(|| SkillMeta {
+            created_by: "unknown".to_string(),
+            created_at: current_iso_timestamp(),
+            version: 0,
+            source: None,
+            last_modified_at: None,
+            last_modified_by: None,
+            retired_at: None,
+            retired_reason: None,
+        });
+        meta.version += 1;
+        meta.last_modified_at = Some(current_iso_timestamp());
+        meta.last_modified_by = Some("agent".to_string());
+        current = bump_version_in_content(&current, meta.version, reason);
+        if let Err(issues) = scan_issues(&current) {
+            return format!("Security scan failed after patching:\n{issues}");
+        }
+        let roots = self.allowed_roots();
+        if let Err(err) = write_confined(Path::new(&skill.location), &current, &roots).await {
+            return err;
+        }
+        if let Err(err) = write_meta(&skill_dir, &meta, &roots).await {
+            return err;
+        }
+        let parent =
+            std::path::PathBuf::from(protocol::js::posix_dirname(&skill_dir.to_string_lossy()));
+        self.manager.rediscover(&parent.to_string_lossy()).await;
+        tracing::info!("Patched skill: {name} ({} replacements)", blocks.len());
+        format!(
+            "Skill \"{name}\" patched ({} replacements, version {})",
+            blocks.len(),
+            meta.version
+        )
+    }
+
+    async fn handle_delete(&self, name: &str) -> String {
+        let Some(skill) = find_skill(&self.manager, name) else {
+            return not_found(&self.manager, name);
+        };
+        let skill_dir = std::path::PathBuf::from(protocol::js::posix_dirname(&skill.location));
+        let parent =
+            std::path::PathBuf::from(protocol::js::posix_dirname(&skill_dir.to_string_lossy()));
+        let trash_dir = parent.join(".trash");
+        let trash_name = format!(
+            "{name}-{}",
+            protocol::js::number_to_string(protocol::js::date_now())
+        );
+        let trash_path = trash_dir.join(&trash_name);
+        let roots = self.allowed_roots();
+        if let Err(err) = ensure_inside(&skill_dir, &roots).await {
+            return err;
+        }
+        if let Err(err) = ensure_inside(&trash_path, &roots).await {
+            return err;
+        }
+        if let Err(err) = mkdir_confined(&trash_dir, &roots).await {
+            return err;
+        }
+        if let Err(err) = rename_confined(&skill_dir, &trash_path, &roots).await {
+            return err;
+        }
+        self.manager.rediscover(&parent.to_string_lossy()).await;
+        tracing::info!("Deleted skill: {name} → .trash/{trash_name}");
+        format!("Skill \"{name}\" moved to trash (.trash/{trash_name})")
+    }
+
+    async fn handle_retire(&self, name: &str, reason: Option<&str>) -> String {
+        let Some(first) = self.skill_dirs.first() else {
+            return "Error: no skill directory configured".to_string();
+        };
+        let Some(skill) = find_skill(&self.manager, name) else {
+            return not_found(&self.manager, name);
+        };
+        let skill_dir = std::path::PathBuf::from(protocol::js::posix_dirname(&skill.location));
+        let parent =
+            std::path::PathBuf::from(protocol::js::posix_dirname(&skill_dir.to_string_lossy()));
+        let retired_dir = Path::new(first).join("retired");
+        let retired_path = retired_dir.join(name);
+        let roots = self.allowed_roots();
+        if let Err(err) = ensure_inside(&skill_dir, &roots).await {
+            return err;
+        }
+        if let Err(err) = ensure_inside(&retired_path, &roots).await {
+            return err;
+        }
+        if let Err(err) = mkdir_confined(&retired_dir, &roots).await {
+            return err;
+        }
+        let mut meta = read_meta(&skill_dir).await.unwrap_or_else(|| SkillMeta {
+            created_by: "unknown".to_string(),
+            created_at: current_iso_timestamp(),
+            version: 1,
+            source: None,
+            last_modified_at: None,
+            last_modified_by: None,
+            retired_at: None,
+            retired_reason: None,
+        });
+        meta.last_modified_at = Some(current_iso_timestamp());
+        meta.last_modified_by = Some("agent".to_string());
+        meta.retired_at = Some(current_iso_timestamp());
+        meta.retired_reason = Some(reason.unwrap_or("No longer useful").to_string());
+        if let Err(err) = write_meta(&skill_dir, &meta, &roots).await {
+            return err;
+        }
+        if let Err(err) = rename_confined(&skill_dir, &retired_path, &roots).await {
+            return err;
+        }
+        self.manager.rediscover(&parent.to_string_lossy()).await;
+        tracing::info!("Retired skill: {name} → retired/{name}");
+        let shown = retired_path.to_string_lossy();
+        match reason {
+            Some(reason) if !reason.is_empty() => {
+                format!("Skill \"{name}\" retired to {shown} (reason: {reason})")
+            }
+            _ => format!("Skill \"{name}\" retired to {shown}"),
+        }
+    }
+
+    async fn handle_read(&self, name: &str, level: f64) -> String {
+        let Some(skill) = find_skill(&self.manager, name) else {
+            return not_found(&self.manager, name);
+        };
+        let content = match read_node_text(Path::new(&skill.location)).await {
+            Ok(content) => content,
+            Err(err) => return format!("Error: {err}"),
+        };
+        let skill_dir = std::path::PathBuf::from(protocol::js::posix_dirname(&skill.location));
+        let mut files = Vec::new();
+        for subdir in ALLOWED_SUBDIRS {
+            files.extend(list_subdir(&skill_dir, subdir).await);
+        }
+        let mut result = format!("## {name}\n\n{content}");
+        if !files.is_empty() {
+            let listed = files
+                .iter()
+                .map(|file| format!("- {file}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            result.push_str(&format!("\n\n## Supporting Files\n{listed}"));
+        }
+        if let Some(meta) = read_meta(&skill_dir).await {
+            result.push_str(&format!(
+                "\n\n## Metadata\n- Version: {}\n- Created: {}\n- By: {}",
+                meta.version, meta.created_at, meta.created_by
+            ));
+            if let Some(modified) = meta
+                .last_modified_at
+                .as_deref()
+                .filter(|value| !value.is_empty())
+            {
+                result.push_str(&format!("\n- Modified: {modified}"));
+            }
+        }
+        if level >= 2.0 && !files.is_empty() {
+            result.push_str("\n\n## File Contents");
+            for file_path in &files {
+                match read_node_text(&skill_dir.join(file_path)).await {
+                    Ok(file_content) => {
+                        result.push_str(&format!("\n\n### {file_path}\n```\n{file_content}\n```"));
+                    }
+                    Err(_) => {
+                        result.push_str(&format!("\n\n### {file_path}\n*(unable to read)*"));
+                    }
+                }
+            }
+        }
+        result
+    }
+
+    async fn handle_write_file(
+        &self,
+        name: &str,
+        file_path: Option<&str>,
+        file_content: Option<&str>,
+    ) -> String {
+        let (Some(file_path), Some(file_content)) = (file_path, file_content) else {
+            return "write_file requires both \"file_path\" and \"file_content\".".to_string();
+        };
+        if file_path.is_empty() || file_content.is_empty() {
+            return "write_file requires both \"file_path\" and \"file_content\".".to_string();
+        }
+        let Some(skill) = find_skill(&self.manager, name) else {
+            return not_found(&self.manager, name);
+        };
+        let normalized = file_path.replace('\\', "/");
+        let first_segment = normalized.split('/').next().unwrap_or("");
+        if !ALLOWED_SUBDIRS.contains(&first_segment) {
+            return format!(
+                "Invalid file path: \"{file_path}\". Must be under: {}",
+                ALLOWED_SUBDIRS.join(", ")
+            );
+        }
+        if normalized.contains("..") {
+            return format!("Invalid file path: \"{file_path}\". Path traversal not allowed.");
+        }
+        if let Err(issues) = scan_issues(file_content) {
+            return format!("Security scan failed:\n{issues}");
+        }
+        let skill_dir = std::path::PathBuf::from(protocol::js::posix_dirname(&skill.location));
+        let full_path = skill_dir.join(&normalized);
+        let roots = self.allowed_roots();
+        if let Err(err) = write_confined(&full_path, file_content, &roots).await {
+            return err;
+        }
+        tracing::info!("Wrote file: {name}/{file_path}");
+        format!("File written: {name}/{file_path}")
+    }
+}
+
+fn build_skill_content(
+    name: &str,
+    description: Option<&str>,
+    content: Option<&str>,
+    category: Option<&str>,
+    tags: Option<&str>,
+) -> String {
+    if let Some(content) = content {
+        if content.starts_with("---") {
+            return content.to_string();
+        }
+        let mut lines = vec!["---".to_string(), format!("name: {name}")];
+        if let Some(description) = description {
+            lines.push(format!("description: {description}"));
+        }
+        if let Some(category) = category {
+            lines.push(format!("category: {category}"));
+        }
+        if let Some(tags) = tags {
+            lines.push(format!("tags: {tags}"));
+        }
+        lines.push("---".to_string());
+        lines.push(String::new());
+        return format!("{}{content}", lines.join("\n"));
+    }
+    let fallback = format!("Skill: {name}");
+    let desc = description.unwrap_or(fallback.as_str()).to_string();
+    let title = title_case_hyphen(name);
+    let mut lines = vec![
+        "---".to_string(),
+        format!("name: {name}"),
+        format!("description: {desc}"),
+    ];
+    if let Some(category) = category {
+        lines.push(format!("category: {category}"));
+    }
+    if let Some(tags) = tags {
+        lines.push(format!("tags: {tags}"));
+    }
+    lines.push("---".to_string());
+    lines.push(String::new());
+    lines.push(format!("# {title}"));
+    lines.push(String::new());
+    lines.push(desc);
+    lines.push(String::new());
+    lines.join("\n")
+}
+
+fn find_skill(manager: &SkillManager, name: &str) -> Option<Skill> {
+    manager.list().into_iter().find(|skill| skill.name == name)
+}
+
+fn not_found(manager: &SkillManager, name: &str) -> String {
+    let available = manager
+        .list()
+        .into_iter()
+        .map(|skill| skill.name)
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("Skill \"{name}\" not found. Available: {available}")
+}
+
+fn name_ok(name: &str) -> bool {
+    regress::Regex::new(NAME_RE)
+        .ok()
+        .and_then(|regex| regex.find(name))
+        .is_some_and(|found| found.start() == 0 && found.end() == name.len())
+}
+
+fn arg_str<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
+    args.get(key).and_then(Value::as_str)
+}

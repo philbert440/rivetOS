@@ -1,0 +1,17 @@
+## AGENT.md
+Be helpful
+
+## MEMORY.md
+Query memory first
+
+## USER.md (alice)
+Alice is a guest
+
+## Pinned: src/index.ts
+export default {}
+
+## Runtime
+Agent: opus | Time: 10/10/2026, 11:45:12 AM
+
+## Available skills
+- **weather**: Check current weather
