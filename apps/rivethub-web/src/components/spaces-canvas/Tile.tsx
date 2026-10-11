@@ -13,6 +13,7 @@ import type { ChatItem } from '../../lib/harness-chat.js'
 import { useChat } from '../../stores/chat.js'
 import { RenameInput, useSessionTitle } from '../session-rename.js'
 import { ThreadMini } from './ThreadMini.js'
+import { tileChip, type ModelNames } from './tile-label.js'
 import { tilePill, tileStatus, type TileStatus } from './tile-status.js'
 import type { Altitude } from './camera.js'
 
@@ -49,7 +50,8 @@ function sameTile(prev: TileProps, next: TileProps): boolean {
     prev.faded === next.faded &&
     prev.descriptors === next.descriptors &&
     prev.renderThread === next.renderThread &&
-    prev.fallbackTab === next.fallbackTab
+    prev.fallbackTab === next.fallbackTab &&
+    prev.modelNames === next.modelNames
   )
 }
 
@@ -61,6 +63,8 @@ export function tileHitTabIndex(altitude: Altitude, selected: boolean, fallback:
 }
 
 interface TileProps {
+  /** Model id → roster agent name, for the tile's leading label. */
+  modelNames: ModelNames
   item: ChatItem
   altitude: Altitude
   selected: boolean
@@ -99,8 +103,8 @@ export const Tile = memo(function Tile(props: TileProps): JSX.Element {
   useEffect(() => {
     tileCommitProbe?.(id)
   })
-  const chip =
-    props.item.agentName?.trim() || props.item.command || props.item.harnessId || 'session'
+  // Leads with the model (as its roster agent's name), not the harness.
+  const chip = tileChip(props.item, props.modelNames)
   const focused = props.altitude === 'thread' && props.selected
   const dimmed = props.altitude === 'thread' && !props.selected
   const outlined = props.selected && props.altitude !== 'thread'
