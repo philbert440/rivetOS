@@ -1,0 +1,295 @@
+{
+  "yaml": "2.9.0",
+  "cases": {
+    "strings": [
+      {
+        "input": "plain",
+        "output": "value: plain\n"
+      },
+      {
+        "input": "Phase 1: cutover",
+        "output": "value: \"Phase 1: cutover\"\n"
+      },
+      {
+        "input": "a: b",
+        "output": "value: \"a: b\"\n"
+      },
+      {
+        "input": "key:value",
+        "output": "value: key:value\n"
+      },
+      {
+        "input": "- dash",
+        "output": "value: \"- dash\"\n"
+      },
+      {
+        "input": "#hash",
+        "output": "value: \"#hash\"\n"
+      },
+      {
+        "input": "hash # mid",
+        "output": "value: \"hash # mid\"\n"
+      },
+      {
+        "input": "quote's",
+        "output": "value: quote's\n"
+      },
+      {
+        "input": "double\"quote",
+        "output": "value: double\"quote\n"
+      },
+      {
+        "input": "\"both' quotes",
+        "output": "value: \"\\\"both' quotes\"\n"
+      },
+      {
+        "input": "yes",
+        "output": "value: yes\n"
+      },
+      {
+        "input": "no",
+        "output": "value: no\n"
+      },
+      {
+        "input": "true",
+        "output": "value: \"true\"\n"
+      },
+      {
+        "input": "null",
+        "output": "value: \"null\"\n"
+      },
+      {
+        "input": "~",
+        "output": "value: \"~\"\n"
+      },
+      {
+        "input": "123",
+        "output": "value: \"123\"\n"
+      },
+      {
+        "input": "1.5",
+        "output": "value: \"1.5\"\n"
+      },
+      {
+        "input": "0x1F",
+        "output": "value: \"0x1F\"\n"
+      },
+      {
+        "input": "1e3",
+        "output": "value: \"1e3\"\n"
+      },
+      {
+        "input": "2026-10-10",
+        "output": "value: 2026-10-10\n"
+      },
+      {
+        "input": "2026-10-10T12:00:00Z",
+        "output": "value: 2026-10-10T12:00:00Z\n"
+      },
+      {
+        "input": " leading space",
+        "output": "value: \" leading space\"\n"
+      },
+      {
+        "input": "trailing space ",
+        "output": "value: \"trailing space \"\n"
+      },
+      {
+        "input": "line1\nline2",
+        "output": "value: |-\n  line1\n  line2\n"
+      },
+      {
+        "input": "line1\nline2\n",
+        "output": "value: |\n  line1\n  line2\n"
+      },
+      {
+        "input": "\ttab",
+        "output": "value: \"\\ttab\"\n"
+      },
+      {
+        "input": "unicode 😀 é",
+        "output": "value: unicode 😀 é\n"
+      },
+      {
+        "input": "",
+        "output": "value: \"\"\n"
+      },
+      {
+        "input": " ",
+        "output": "value: \" \"\n"
+      },
+      {
+        "input": "@at",
+        "output": "value: \"@at\"\n"
+      },
+      {
+        "input": "`backtick",
+        "output": "value: \"`backtick\"\n"
+      },
+      {
+        "input": "%percent",
+        "output": "value: \"%percent\"\n"
+      },
+      {
+        "input": "!bang",
+        "output": "value: \"!bang\"\n"
+      },
+      {
+        "input": "&anchor",
+        "output": "value: \"&anchor\"\n"
+      },
+      {
+        "input": "*star",
+        "output": "value: \"*star\"\n"
+      },
+      {
+        "input": "|pipe",
+        "output": "value: \"|pipe\"\n"
+      },
+      {
+        "input": ">gt",
+        "output": "value: \">gt\"\n"
+      },
+      {
+        "input": "[brackets]",
+        "output": "value: \"[brackets]\"\n"
+      },
+      {
+        "input": "{braces}",
+        "output": "value: \"{braces}\"\n"
+      },
+      {
+        "input": "comma, separated",
+        "output": "value: comma, separated\n"
+      },
+      {
+        "input": "colon at end:",
+        "output": "value: \"colon at end:\"\n"
+      },
+      {
+        "input": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "output": "value: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n"
+      },
+      {
+        "input": "long words long words long words long words long words long words long words long words long words long words long words long words",
+        "output": "value: long words long words long words long words long words long words long\n  words long words long words long words long words long words\n"
+      },
+      {
+        "input": "url https://example.com/a?b=c#d",
+        "output": "value: url https://example.com/a?b=c#d\n"
+      },
+      {
+        "input": "C:\\path\\x",
+        "output": "value: C:\\path\\x\n"
+      },
+      {
+        "input": "slash/path",
+        "output": "value: slash/path\n"
+      },
+      {
+        "input": "?question",
+        "output": "value: ?question\n"
+      },
+      {
+        "input": "a\u0007bell",
+        "output": "value: \"a\\abell\"\n"
+      }
+    ],
+    "arrays": [
+      {
+        "input": [],
+        "output": "list: []\n"
+      },
+      {
+        "input": [
+          "a"
+        ],
+        "output": "list:\n  - a\n"
+      },
+      {
+        "input": [
+          "a",
+          "b: c"
+        ],
+        "output": "list:\n  - a\n  - \"b: c\"\n"
+      },
+      {
+        "input": [
+          "line1\nline2"
+        ],
+        "output": "list:\n  - |-\n    line1\n    line2\n"
+      },
+      {
+        "input": [
+          1,
+          "two",
+          true,
+          null
+        ],
+        "output": "list:\n  - 1\n  - two\n  - true\n  - null\n"
+      }
+    ],
+    "nested": [
+      {
+        "input": {
+          "title": "T",
+          "aliases": [
+            "x",
+            "y"
+          ],
+          "sources": [
+            {
+              "kind": "summary",
+              "ids": [
+                "id1",
+                "id2"
+              ],
+              "conversationId": "c1",
+              "span": {
+                "from": "2026-10-01",
+                "to": "2026-10-02"
+              }
+            }
+          ],
+          "last_verified": "2026-10-10T00:00:00.000Z",
+          "tags": []
+        },
+        "output": "title: T\naliases:\n  - x\n  - y\nsources:\n  - kind: summary\n    ids:\n      - id1\n      - id2\n    conversationId: c1\n    span:\n      from: 2026-10-01\n      to: 2026-10-02\nlast_verified: 2026-10-10T00:00:00.000Z\ntags: []\n"
+      }
+    ],
+    "numbers": [
+      {
+        "input": "0",
+        "output": "n: 0\n"
+      },
+      {
+        "input": "0",
+        "output": "n: -0\n"
+      },
+      {
+        "input": "1",
+        "output": "n: 1\n"
+      },
+      {
+        "input": "1.5",
+        "output": "n: 1.5\n"
+      },
+      {
+        "input": "1e+21",
+        "output": "n: 1e+21\n"
+      },
+      {
+        "input": "123456789012345680000",
+        "output": "n: 123456789012345680000\n"
+      },
+      {
+        "input": "NaN",
+        "output": "n: .nan\n"
+      },
+      {
+        "input": "Infinity",
+        "output": "n: .inf\n"
+      }
+    ]
+  }
+}
