@@ -2,7 +2,6 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use regex::Regex;
 use serde_json::Value;
 
 use crate::fsutil::{self, birth_ms, mtime_ms};
@@ -11,7 +10,7 @@ use crate::nest::{DelegatedLink, apply_delegated_nesting, with_ancestors};
 use crate::roots::Roots;
 use crate::text::strip_pasted_content_wrapper;
 use crate::turn::SessionRow;
-use crate::value::{js_slice, jtrim};
+use crate::value::{jtrim, slice_text};
 
 struct ClaudeFile {
     id: String,
@@ -169,7 +168,7 @@ pub fn find_jsonl(roots: &Roots, id: &str, parent: Option<&str>) -> Option<PathB
         if best.is_some() {
             return best.map(|(path, _)| path);
         }
-        if uuid_re().is_some_and(|re| re.is_match(id)) {
+        if uuid_re().is_some_and(|re| crate::reutil::hits(re, id)) {
             return None;
         }
     }
@@ -178,7 +177,7 @@ pub fn find_jsonl(roots: &Roots, id: &str, parent: Option<&str>) -> Option<PathB
 
 pub fn projects_dir(roots: &Roots) -> PathBuf {
     let base = roots
-        .env_trim("CLAUDE_CONFIG_DIR")
+        .trimmed_var("CLAUDE_CONFIG_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| roots.join_home(&[".claude"]));
     base.join("projects")
@@ -247,7 +246,7 @@ fn agent_files(session_dir: &Path, session_id: &str) -> Vec<ClaudeFile> {
     let subagents = session_dir.join("subagents");
     if let Some(names) = fsutil::read_dir_names(&subagents) {
         for name in names {
-            if agent_re().is_some_and(|re| re.is_match(&name)) {
+            if agent_re().is_some_and(|re| crate::reutil::hits(re, &name)) {
                 push_agent(&mut out, &subagents.join(&name), session_id);
             }
         }
@@ -262,7 +261,7 @@ fn agent_files(session_dir: &Path, session_id: &str) -> Vec<ClaudeFile> {
                 continue;
             };
             for name in agents {
-                if agent_re().is_some_and(|re| re.is_match(&name)) {
+                if agent_re().is_some_and(|re| crate::reutil::hits(re, &name)) {
                     push_agent(&mut out, &run_dir.join(&name), session_id);
                 }
             }
@@ -270,7 +269,7 @@ fn agent_files(session_dir: &Path, session_id: &str) -> Vec<ClaudeFile> {
     }
     if let Some(direct) = fsutil::read_dir_names(session_dir) {
         for name in direct {
-            if agent_re().is_some_and(|re| re.is_match(&name)) {
+            if agent_re().is_some_and(|re| crate::reutil::hits(re, &name)) {
                 push_agent(&mut out, &session_dir.join(&name), session_id);
             }
         }
@@ -404,7 +403,7 @@ fn session_title(file: &Path) -> Option<String> {
         {
             let trimmed = jtrim(summary);
             if !trimmed.is_empty() {
-                return Some(js_slice(trimmed, 0, Some(120)));
+                return Some(slice_text(trimmed, 0, Some(120)));
             }
         }
         if kind == "user" {
@@ -416,7 +415,7 @@ fn session_title(file: &Path) -> Option<String> {
             let trimmed = jtrim(&txt);
             if !trimmed.is_empty() {
                 let stripped = strip_pasted_content_wrapper(trimmed);
-                return Some(js_slice(jtrim(&stripped), 0, Some(120)));
+                return Some(slice_text(jtrim(&stripped), 0, Some(120)));
             }
         }
     }
@@ -447,7 +446,7 @@ fn clip_label(value: Option<&Value>, max: isize) -> String {
     if trimmed.is_empty() {
         String::new()
     } else {
-        js_slice(trimmed, 0, Some(max))
+        slice_text(trimmed, 0, Some(max))
     }
 }
 
@@ -527,21 +526,22 @@ fn find_agent(root: &Path, id: &str, parent: Option<&str>) -> Option<(PathBuf, i
 }
 
 fn agent_id(name: &str) -> Option<String> {
-    let re = agent_re()?;
-    let caps = re.captures(name)?;
-    caps.get(1).map(|m| m.as_str().to_string())
+    crate::reutil::nth(agent_re()?, name, 1).map(str::to_string)
 }
 
-fn agent_re() -> Option<&'static Regex> {
-    static RE: OnceLock<Option<Regex>> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^agent-(.+)\.jsonl$").ok())
+fn agent_re() -> Option<&'static regress::Regex> {
+    static RE: OnceLock<Option<regress::Regex>> = OnceLock::new();
+    RE.get_or_init(|| crate::reutil::compile(r"^agent-(.+)\.jsonl$").ok())
         .as_ref()
 }
 
-fn uuid_re() -> Option<&'static Regex> {
-    static RE: OnceLock<Option<Regex>> = OnceLock::new();
+fn uuid_re() -> Option<&'static regress::Regex> {
+    static RE: OnceLock<Option<regress::Regex>> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r"(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$").ok()
+        crate::reutil::compile(
+            r"(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+        )
+        .ok()
     })
     .as_ref()
 }

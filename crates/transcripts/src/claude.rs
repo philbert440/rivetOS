@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-use regex::Regex;
 use serde_json::Value;
 
 use crate::text::{
@@ -298,7 +297,7 @@ fn prompt_result_text(block: &Obj, tool_use_result: Option<&Value>) -> String {
     let text = if let Some(text) = raw.as_str() {
         text.to_string()
     } else {
-        protocol::js::stringify(raw)
+        protocol::js::stringify(&protocol::js::from_serde(raw))
     };
     crate::turn::cap_result(&text)
 }
@@ -350,9 +349,9 @@ fn sidechain_included(lines: &[Obj], path: Option<&str>, truncated: bool) -> boo
 }
 
 fn is_agent_transcript(path: &str) -> bool {
-    static RE: OnceLock<Option<Regex>> = OnceLock::new();
-    let re = RE.get_or_init(|| Regex::new(r"(?:^|/)agent-[^/]+\.jsonl$").ok());
-    re.as_ref().is_some_and(|re| re.is_match(path))
+    static RE: OnceLock<Option<regress::Regex>> = OnceLock::new();
+    let re = RE.get_or_init(|| crate::reutil::compile(r"(?:^|/)agent-[^/]+\.jsonl$").ok());
+    re.as_ref().is_some_and(|re| crate::reutil::hits(re, path))
 }
 
 fn transcript_is_sidechain(lines: &[Obj]) -> bool {

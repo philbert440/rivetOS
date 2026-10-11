@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use std::sync::Mutex;
+use parking_lot::Mutex;
 
 use agent_client_protocol::schema::v1::{
     AgentCapabilities, AuthMethod, AuthMethodAgent, AuthenticateRequest, AuthenticateResponse,
@@ -249,12 +249,7 @@ pub fn spawn_fake(script: FakeScript) -> (Channel, JoinHandle<Result<(), AcpErro
                     let state_auth = Arc::clone(&state_for_task);
                     async move {
                         let state = locked(&state_auth);
-                        *state
-                            .script
-                            .seen_auth
-                            .lock()
-                            .unwrap_or_else(|poison| poison.into_inner()) =
-                            Some(request.method_id.to_string());
+                        *state.script.seen_auth.lock() = Some(request.method_id.to_string());
                         drop(state);
                         responder.respond(AuthenticateResponse::new())
                     }
@@ -411,8 +406,8 @@ fn send_usage(
     ))
 }
 
-fn locked(state: &Mutex<FakeState>) -> std::sync::MutexGuard<'_, FakeState> {
-    state.lock().unwrap_or_else(|poison| poison.into_inner())
+fn locked(state: &Mutex<FakeState>) -> parking_lot::MutexGuard<'_, FakeState> {
+    state.lock()
 }
 
 fn send_message(

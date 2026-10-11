@@ -511,7 +511,7 @@ async fn authenticate_if_needed(
     if cfg.harness_id != GROK_BUILD_HARNESS_ID {
         return Ok(());
     }
-    let key = cfg.env.get("XAI_API_KEY").unwrap_or_default();
+    let key = cfg.env.var("XAI_API_KEY").unwrap_or_default();
     let method = if !key.is_empty() && info.auth_methods.iter().any(|id| id == "xai.api_key") {
         Some("xai.api_key")
     } else if info.auth_methods.iter().any(|id| id == "cached_token") {

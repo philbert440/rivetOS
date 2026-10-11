@@ -1,10 +1,9 @@
 use std::sync::OnceLock;
 
-use regex::Regex;
 use serde_json::Value;
 
 use crate::turn::Usage;
-use crate::value::{Obj, finite, js_len, js_slice, jtrim};
+use crate::value::{Obj, finite, jtrim, slice_text, text_units};
 
 pub fn objects_from_lines(lines: &[String]) -> Vec<Obj> {
     let mut out = Vec::new();
@@ -39,8 +38,8 @@ pub fn summarize_turn_args(raw: &Value) -> Option<Obj> {
             break;
         }
         if let Some(text) = value.as_str() {
-            let stored = if js_len(text) > 200 {
-                format!("{}…", js_slice(text, 0, Some(200)))
+            let stored = if text_units(text) > 200 {
+                format!("{}…", slice_text(text, 0, Some(200)))
             } else {
                 text.to_string()
             };
@@ -248,74 +247,58 @@ fn split_lines(input: &str) -> Vec<&str> {
 }
 
 pub fn strip_ansi(text: &str) -> String {
-    let Some(csi) = csi_re() else {
+    let Some(stripped) = crate::reutil::erase("\u{001b}\\[[0-9;?]*[ -/]*[@-~]", "g", text) else {
         return text.to_string();
     };
-    let stripped = csi.replace_all(text, "");
-    match osc_re() {
-        Some(osc) => osc.replace_all(&stripped, "").into_owned(),
-        None => stripped.into_owned(),
-    }
+    crate::reutil::erase(
+        "\u{001b}\\][^\u{0007}\u{001b}]*(?:\u{0007}|\u{001b}\\\\)",
+        "g",
+        &stripped,
+    )
+    .unwrap_or(stripped)
 }
 
-fn csi_re() -> Option<&'static Regex> {
-    static RE: OnceLock<Option<Regex>> = OnceLock::new();
-    RE.get_or_init(|| Regex::new("\u{001b}\\[[0-9;?]*[ -/]*[@-~]").ok())
+fn header_re() -> Option<&'static regress::Regex> {
+    static RE: OnceLock<Option<regress::Regex>> = OnceLock::new();
+    RE.get_or_init(|| {
+        crate::reutil::compile(r"(?i)^[\s]*[┌╭][─━\s]*\b(Reasoning|Thought|Thinking)\b").ok()
+    })
+    .as_ref()
+}
+
+fn footer_re() -> Option<&'static regress::Regex> {
+    static RE: OnceLock<Option<regress::Regex>> = OnceLock::new();
+    RE.get_or_init(|| crate::reutil::compile(r"^[\s]*[└╰][─━\s]+[┘╯][\s]*$").ok())
         .as_ref()
 }
 
-fn osc_re() -> Option<&'static Regex> {
-    static RE: OnceLock<Option<Regex>> = OnceLock::new();
-    RE.get_or_init(|| Regex::new("\u{001b}\\][^\u{0007}\u{001b}]*(?:\u{0007}|\u{001b}\\\\)").ok())
-        .as_ref()
-}
-
-fn header_re() -> Option<&'static Regex> {
-    static RE: OnceLock<Option<Regex>> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"(?i)^[\s]*[┌╭][─━\s]*\b(Reasoning|Thought|Thinking)\b").ok())
-        .as_ref()
-}
-
-fn footer_re() -> Option<&'static Regex> {
-    static RE: OnceLock<Option<Regex>> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^[\s]*[└╰][─━\s]+[┘╯][\s]*$").ok())
-        .as_ref()
-}
-
-fn body_re() -> Option<&'static Regex> {
-    static RE: OnceLock<Option<Regex>> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^[\s]*[│┃├┤]").ok()).as_ref()
-}
-
-fn body_strip_re() -> Option<&'static Regex> {
-    static RE: OnceLock<Option<Regex>> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^[\s]*[│┃├┤]\s?").ok())
+fn body_re() -> Option<&'static regress::Regex> {
+    static RE: OnceLock<Option<regress::Regex>> = OnceLock::new();
+    RE.get_or_init(|| crate::reutil::compile(r"^[\s]*[│┃├┤]").ok())
         .as_ref()
 }
 
 fn header_matches(text: &str) -> bool {
-    header_re().is_some_and(|re| re.is_match(text))
+    header_re().is_some_and(|re| crate::reutil::hits(re, text))
 }
 
 fn footer_matches(text: &str) -> bool {
-    footer_re().is_some_and(|re| re.is_match(text))
+    footer_re().is_some_and(|re| crate::reutil::hits(re, text))
 }
 
 fn body_matches(text: &str) -> bool {
-    body_re().is_some_and(|re| re.is_match(text))
+    body_re().is_some_and(|re| crate::reutil::hits(re, text))
 }
 
 fn strip_body(text: &str) -> String {
-    match body_strip_re() {
-        Some(re) => re.replace(text, "").into_owned(),
-        None => text.to_string(),
-    }
+    crate::reutil::erase(r"^[\s]*[│┃├┤]\s?", "", text).unwrap_or_else(|| text.to_string())
 }
 
 pub fn is_bare_slash_command(text: &str) -> bool {
-    static RE: OnceLock<Option<Regex>> = OnceLock::new();
-    let re = RE.get_or_init(|| Regex::new(r"^/[A-Za-z][A-Za-z0-9_:-]*(?:[ \t][^\n]*)?$").ok());
-    re.as_ref().is_some_and(|re| re.is_match(text))
+    static RE: OnceLock<Option<regress::Regex>> = OnceLock::new();
+    let re = RE
+        .get_or_init(|| crate::reutil::compile(r"^/[A-Za-z][A-Za-z0-9_:-]*(?:[ \t][^\n]*)?$").ok());
+    re.as_ref().is_some_and(|re| crate::reutil::hits(re, text))
 }
 
 pub fn strip_pasted_content_wrapper(text: &str) -> String {

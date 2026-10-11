@@ -6,15 +6,16 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+parking_lot = { workspace = true }
 protocol = { path = "../protocol" }
-regex.workspace = true
-rusqlite = { version = "0.37", features = ["bundled"] }
-serde.workspace = true
-serde_json.workspace = true
-thiserror.workspace = true
+regress = { workspace = true }
+rusqlite = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
 
 [dev-dependencies]
-rusqlite = { version = "0.37", features = ["bundled"] }
+rusqlite = { workspace = true }
 
 [lints]
 workspace = true

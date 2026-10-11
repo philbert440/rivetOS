@@ -1,6 +1,9 @@
-use protocol::js::js_trim;
-use protocol::{TaskResult, TaskVerdict, parse_session_id_str, parse_task_result};
-use transcripts::value::{js_len, js_slice};
+use protocol::js::{JsValue, js_trim};
+use protocol::{
+    CriterionSelfReport, ParsedArtifact, ParsedCriterion, TaskArtifact, TaskResult, TaskVerdict,
+    parse_session_id_str, parse_task_result,
+};
+use transcripts::value::{slice_text, text_units};
 
 use crate::model::{AcceptanceCriterion, TaskSpec, UsageAcc, result_with_output};
 
@@ -123,10 +126,10 @@ pub fn render_resume_transcript(history: &[HistoryMessage]) -> String {
         if js_trim(content).is_empty() {
             continue;
         }
-        let body = if js_len(content) > RESUME_MESSAGE_MAX_CHARS as usize {
+        let body = if text_units(content) > RESUME_MESSAGE_MAX_CHARS as usize {
             format!(
                 "{}\n…[truncated]",
-                js_slice(content, 0, Some(RESUME_MESSAGE_MAX_CHARS))
+                slice_text(content, 0, Some(RESUME_MESSAGE_MAX_CHARS))
             )
         } else {
             content.to_string()
@@ -136,10 +139,10 @@ pub fn render_resume_transcript(history: &[HistoryMessage]) -> String {
     if lines.is_empty() {
         return String::new();
     }
-    let mut total = lines.iter().map(|line| js_len(line) + 2).sum::<usize>();
+    let mut total = lines.iter().map(|line| text_units(line) + 2).sum::<usize>();
     let mut start = 0;
     while total > RESUME_TRANSCRIPT_MAX_CHARS && start + 1 < lines.len() {
-        total -= js_len(&lines[start]) + 2;
+        total -= text_units(&lines[start]) + 2;
         start += 1;
     }
     let dropped = if start > 0 {
@@ -186,6 +189,37 @@ pub fn variant_for_effort(effort: Option<&str>) -> Option<String> {
     }
 }
 
+fn task_artifacts(parsed: &[ParsedArtifact]) -> Vec<TaskArtifact> {
+    parsed
+        .iter()
+        .filter_map(|item| {
+            Some(TaskArtifact {
+                kind: item.kind()?,
+                r#ref: item.r#ref()?.to_string(),
+                note: item.note().and_then(JsValue::as_str).map(str::to_string),
+            })
+        })
+        .collect()
+}
+
+fn task_criteria(parsed: Option<Vec<ParsedCriterion>>) -> Option<Vec<CriterionSelfReport>> {
+    parsed.map(|items| {
+        items
+            .iter()
+            .filter_map(|item| {
+                Some(CriterionSelfReport {
+                    id: item.id()?.to_string(),
+                    met: item.met()?,
+                    evidence: item
+                        .evidence()
+                        .and_then(JsValue::as_str)
+                        .map(str::to_string),
+                })
+            })
+            .collect()
+    })
+}
+
 pub fn finish_from_text(text: &str, usage: &UsageAcc) -> TaskResult {
     if let Some(parsed) = parse_task_result(text) {
         return result_with_output(
@@ -193,8 +227,8 @@ pub fn finish_from_text(text: &str, usage: &UsageAcc) -> TaskResult {
                 verdict: parsed.verdict,
                 summary: parsed.summary,
                 output: parsed.output.clone(),
-                artifacts: parsed.artifacts,
-                criteria_self_report: parsed.criteria_self_report,
+                artifacts: task_artifacts(&parsed.artifacts),
+                criteria_self_report: task_criteria(parsed.criteria_self_report),
                 usage: usage.to_usage(),
                 error: None,
             },

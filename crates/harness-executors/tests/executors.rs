@@ -216,12 +216,9 @@ fn assert_fence(result: &protocol::TaskResult) {
     assert_eq!(result.verdict, TaskVerdict::Completed);
     assert_eq!(result.summary, "Fixed the widget");
     assert_eq!(result.artifacts.len(), 1);
-    assert_eq!(result.artifacts[0].kind(), Some(ArtifactKind::Commit));
-    assert_eq!(result.artifacts[0].r#ref(), Some("abc123"));
-    assert_eq!(
-        result.artifacts[0].note().and_then(Value::as_str),
-        Some("the fix")
-    );
+    assert_eq!(result.artifacts[0].kind, ArtifactKind::Commit);
+    assert_eq!(result.artifacts[0].r#ref, "abc123");
+    assert_eq!(result.artifacts[0].note.as_deref(), Some("the fix"));
 }
 
 fn kimi_lines(text: &str, session: &str) -> Vec<Value> {
@@ -772,7 +769,7 @@ async fn kimi_fence_prose_and_failures() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn kimi_fence_keeps_extra_artifact_and_criterion_fields() {
+async fn kimi_fence_projects_typed_artifact_and_criterion_fields() {
     let raw = r#"{"verdict":"completed","summary":"Fixed the widget","artifacts":[{"kind":"commit","ref":"abc123","note":1,"checksum":"zz"}],"criteriaSelfReport":[{"id":"c1","met":true,"evidence":"ran tests","extra":"kept"}]}"#;
     let text = format!("Work complete.\n\n```TASK_RESULT\n{raw}\n```");
     let (fake, executor) = prepare_kimi(&kimi_lines(&text, KIMI_SESSION), false, None, 0, false);
@@ -782,19 +779,20 @@ async fn kimi_fence_keeps_extra_artifact_and_criterion_fields() {
         .await;
     assert_eq!(result.verdict, TaskVerdict::Completed);
     assert_eq!(result.summary, "Fixed the widget");
-    assert_eq!(result.artifacts[0].note().and_then(Value::as_i64), Some(1));
+    assert_eq!(result.artifacts[0].kind, ArtifactKind::Commit);
+    assert_eq!(result.artifacts[0].r#ref, "abc123");
+    assert_eq!(result.artifacts[0].note, None);
     let criteria = result.criteria_self_report.as_ref().unwrap();
-    assert_eq!(criteria[0].id(), Some("c1"));
-    assert_eq!(criteria[0].met(), Some(true));
-    assert_eq!(
-        criteria[0].evidence().and_then(Value::as_str),
-        Some("ran tests")
-    );
-    let bytes = serde_json::to_string(&result).unwrap();
-    assert!(bytes.contains(r#""note":1"#));
-    assert!(bytes.contains(r#""checksum":"zz""#));
-    assert!(bytes.contains(r#""evidence":"ran tests""#));
-    assert!(bytes.contains(r#""extra":"kept""#));
+    assert_eq!(criteria[0].id, "c1");
+    assert!(criteria[0].met);
+    assert_eq!(criteria[0].evidence.as_deref(), Some("ran tests"));
+    let artifacts = serde_json::to_string(&result.artifacts).unwrap();
+    let reported = serde_json::to_string(&result.criteria_self_report).unwrap();
+    assert!(artifacts.contains(r#""ref":"abc123""#));
+    assert!(!artifacts.contains("checksum"));
+    assert!(!artifacts.contains(r#""note""#));
+    assert!(reported.contains(r#""evidence":"ran tests""#));
+    assert!(!reported.contains("extra"));
 }
 
 #[tokio::test(flavor = "current_thread")]

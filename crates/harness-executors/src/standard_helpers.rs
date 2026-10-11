@@ -1,10 +1,9 @@
 use std::collections::BTreeMap;
-use std::time::{SystemTime, UNIX_EPOCH};
 
-use sha2::{Digest, Sha256};
+use protocol::host::Env as HostEnv;
 
 pub trait Env: Send + Sync {
-    fn get(&self, key: &str) -> Option<String>;
+    fn var(&self, name: &str) -> Option<String>;
     fn pairs(&self) -> Vec<(String, String)>;
 }
 
@@ -34,14 +33,14 @@ impl MapEnv {
 }
 
 impl Env for MapEnv {
-    fn get(&self, key: &str) -> Option<String> {
-        self.pairs.get(key).cloned()
+    fn var(&self, name: &str) -> Option<String> {
+        self.pairs.get(name).cloned()
     }
 
     fn pairs(&self) -> Vec<(String, String)> {
         self.pairs
             .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
+            .map(|(key, value)| (key.clone(), value.clone()))
             .collect()
     }
 }
@@ -50,8 +49,8 @@ impl Env for MapEnv {
 pub struct ProcessEnv;
 
 impl Env for ProcessEnv {
-    fn get(&self, key: &str) -> Option<String> {
-        std::env::var(key).ok()
+    fn var(&self, name: &str) -> Option<String> {
+        protocol::host::ProcessEnv.var(name)
     }
 
     fn pairs(&self) -> Vec<(String, String)> {
@@ -59,21 +58,22 @@ impl Env for ProcessEnv {
     }
 }
 
-pub fn now_ms() -> i64 {
-    match SystemTime::now().duration_since(UNIX_EPOCH) {
-        Ok(duration) => i64::try_from(duration.as_millis()).unwrap_or(i64::MAX),
-        Err(_) => 0,
+struct EnvLookup<'a>(&'a dyn Env);
+
+impl protocol::host::Env for EnvLookup<'_> {
+    fn var(&self, name: &str) -> Option<String> {
+        self.0.var(name)
     }
 }
 
-pub fn sha256_hex(bytes: &[u8]) -> String {
-    hex::encode(Sha256::digest(bytes))
+pub fn clock_ms() -> i64 {
+    protocol::js::date_now() as i64
 }
 
-pub fn home_dir() -> std::path::PathBuf {
-    match std::env::var("HOME") {
-        Ok(home) if !home.is_empty() => std::path::PathBuf::from(home),
-        _ => std::path::PathBuf::from("."),
+pub fn home_path(env: &dyn Env) -> std::path::PathBuf {
+    match protocol::host::home_dir(&EnvLookup(env)) {
+        Some(home) => std::path::PathBuf::from(home),
+        None => std::path::PathBuf::from("."),
     }
 }
 

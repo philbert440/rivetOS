@@ -6,6 +6,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use harness_executors::*;
+use parking_lot::Mutex;
+use protocol::digest::sha256_hex;
 use protocol::{HARNESS_IDS, TaskVerdict};
 use support::{Tmp, map_env, write_exe};
 
@@ -87,12 +89,11 @@ fn canonicalizes_claude_cli() {
 
 #[test]
 fn registry_resolves_legacy_target_and_warns_once() {
-    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen = Arc::new(Mutex::new(Vec::new()));
     let seen_cb = Arc::clone(&seen);
     let registry = create_executor_registry(Some(Arc::new(move |alias, canonical| {
         seen_cb
             .lock()
-            .unwrap()
             .push((alias.to_string(), canonical.to_string()));
     })));
     let executor = Arc::new(Named {
@@ -107,7 +108,7 @@ fn registry_resolves_legacy_target_and_warns_once() {
     for _ in 0..4 {
         let _ = registry.resolve("harness-session", Some("claude-cli"));
     }
-    assert_eq!(seen.lock().unwrap().len(), 1);
+    assert_eq!(seen.lock().len(), 1);
     registry.register(
         "harness-session",
         Arc::new(Named {
@@ -127,10 +128,10 @@ fn registry_resolves_legacy_target_and_warns_once() {
 
 #[test]
 fn non_harness_kinds_do_not_alias() {
-    let seen = Arc::new(std::sync::Mutex::new(0u32));
+    let seen = Arc::new(Mutex::new(0u32));
     let seen_cb = Arc::clone(&seen);
     let registry = create_executor_registry(Some(Arc::new(move |_, _| {
-        *seen_cb.lock().unwrap() += 1;
+        *seen_cb.lock() += 1;
     })));
     registry.register(
         "mesh",
@@ -139,7 +140,7 @@ fn non_harness_kinds_do_not_alias() {
     );
     assert!(registry.resolve("mesh", Some("claude-cli")).is_some());
     assert!(registry.resolve("mesh", Some("claude-code")).is_none());
-    assert_eq!(*seen.lock().unwrap(), 0);
+    assert_eq!(*seen.lock(), 0);
 }
 
 #[test]

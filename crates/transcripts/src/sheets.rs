@@ -2,7 +2,6 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::OnceLock;
 
-use regex::Regex;
 use serde::Serialize;
 use serde_json::{Map, Value};
 
@@ -111,14 +110,14 @@ where
 }
 
 pub trait ReadText {
-    fn read_text(&mut self, path: &str) -> Result<String, String>;
+    fn load(&mut self, path: &str) -> Result<String, String>;
 }
 
 impl<F> ReadText for F
 where
     F: FnMut(&str) -> Result<String, String>,
 {
-    fn read_text(&mut self, path: &str) -> Result<String, String> {
+    fn load(&mut self, path: &str) -> Result<String, String> {
         self(path)
     }
 }
@@ -255,10 +254,10 @@ pub fn model_token_ok(text: &str) -> bool {
 }
 
 pub fn effort_token_ok(text: &str) -> bool {
-    static RE: OnceLock<Option<Regex>> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^[A-Za-z0-9._\[\]:-]{1,64}$").ok())
+    static RE: OnceLock<Option<regress::Regex>> = OnceLock::new();
+    RE.get_or_init(|| crate::reutil::compile(r"^[A-Za-z0-9._\[\]:-]{1,64}$").ok())
         .as_ref()
-        .is_some_and(|re| re.is_match(text))
+        .is_some_and(|re| crate::reutil::hits(re, text))
 }
 
 pub fn resolve_models_mode(override_: Option<&SheetOverride>) -> &'static str {
@@ -390,10 +389,10 @@ pub fn apply_sheet_override(
 }
 
 pub fn claude_global_config_path(home: &str, env: Option<&HashMap<String, String>>) -> String {
-    if let Some(dir) = env_trimmed(env, "CLAUDE_CONFIG_DIR") {
-        return join_path(&dir, ".claude.json");
+    if let Some(dir) = nonempty_trimmed(env, "CLAUDE_CONFIG_DIR") {
+        return path_join(&dir, ".claude.json");
     }
-    join_path(home, ".claude.json")
+    path_join(home, ".claude.json")
 }
 
 pub fn claude_sheet(
@@ -431,7 +430,7 @@ pub fn claude_sheet(
 
 pub fn grok_sheet(read_json: &mut Option<&mut dyn ReadJson>, home: &str) -> ModelSheet {
     let fallback = grok_fallback();
-    let path = join_path(home, ".grok/models_cache.json");
+    let path = path_join(home, ".grok/models_cache.json");
     let Ok(raw) = call_json(read_json, &path) else {
         return fallback;
     };
@@ -553,9 +552,9 @@ pub fn parse_kimi_toml(text: &str) -> Vec<ModelOption> {
 
 pub fn kimi_sheet(read_text: &mut Option<&mut dyn ReadText>, home: &str) -> ModelSheet {
     let paths = [
-        join_path(home, ".kimi/config.toml"),
-        join_path(home, ".config/kimi/config.toml"),
-        join_path(home, ".kimi-code/config.toml"),
+        path_join(home, ".kimi/config.toml"),
+        path_join(home, ".config/kimi/config.toml"),
+        path_join(home, ".kimi-code/config.toml"),
     ];
     for path in paths {
         if let Ok(text) = call_text(read_text, &path) {
@@ -631,7 +630,7 @@ pub fn hermes_sheet(
     now: i64,
     log: &mut Option<&mut dyn FnMut(&str)>,
 ) -> ModelSheet {
-    let config = call_text(read_text, &join_path(home, ".hermes/config.yaml"))
+    let config = call_text(read_text, &path_join(home, ".hermes/config.yaml"))
         .map(|text| parse_hermes_model_config(&text))
         .unwrap_or_default();
     let mut ids = Vec::new();
@@ -673,7 +672,7 @@ pub fn hermes_sheet(
 }
 
 pub fn codex_home(home: &str, env: Option<&HashMap<String, String>>) -> String {
-    env_trimmed(env, "CODEX_HOME").unwrap_or_else(|| join_path(home, ".codex"))
+    nonempty_trimmed(env, "CODEX_HOME").unwrap_or_else(|| path_join(home, ".codex"))
 }
 
 pub fn parse_codex_catalog(raw: &Value) -> Vec<ModelOption> {
@@ -779,13 +778,13 @@ pub fn codex_sheet(state: &mut SheetState, deps: &mut CodexDeps<'_>) -> ModelShe
     if let Some(rows) = listed {
         push_unique(&mut models, rows);
     } else {
-        let path = join_path(&root, "models_cache.json");
+        let path = path_join(&root, "models_cache.json");
         push_unique(
             &mut models,
             file_rows(state, deps.read_json, &path, parse_codex_catalog),
         );
     }
-    let configured = call_text(deps.read_text, &join_path(&root, "config.toml"))
+    let configured = call_text(deps.read_text, &path_join(&root, "config.toml"))
         .ok()
         .and_then(|text| parse_codex_config_model(&text));
     if let Some(id) = configured.clone()
@@ -850,10 +849,10 @@ pub fn opencode_sheet(
     env: Option<&HashMap<String, String>>,
 ) -> ModelSheet {
     let config_root =
-        env_trimmed(env, "XDG_CONFIG_HOME").unwrap_or_else(|| join_path(home, ".config"));
+        nonempty_trimmed(env, "XDG_CONFIG_HOME").unwrap_or_else(|| path_join(home, ".config"));
     let paths = [
-        join_path(&config_root, "opencode/opencode.json"),
-        join_path(&config_root, "opencode/opencode.jsonc"),
+        path_join(&config_root, "opencode/opencode.json"),
+        path_join(&config_root, "opencode/opencode.jsonc"),
     ];
     for path in paths {
         if let Ok(raw) = call_json(read_json, &path) {
@@ -865,9 +864,9 @@ pub fn opencode_sheet(
 }
 
 pub fn pi_sheet(read_json: &mut Option<&mut dyn ReadJson>, home: &str) -> ModelSheet {
-    let agent = join_path(home, ".pi/agent");
+    let agent = path_join(home, ".pi/agent");
     let mut default_id = "deepseek/deepseek-v4-flash".to_string();
-    if let Ok(settings) = call_json(read_json, &join_path(&agent, "settings.json"))
+    if let Ok(settings) = call_json(read_json, &path_join(&agent, "settings.json"))
         && let Some(record) = settings.as_object()
     {
         let provider = record
@@ -886,7 +885,7 @@ pub fn pi_sheet(read_json: &mut Option<&mut dyn ReadJson>, home: &str) -> ModelS
             default_id = model;
         }
     }
-    let from_store = pi_models_from_store(read_json, &join_path(&agent, "models-store.json"));
+    let from_store = pi_models_from_store(read_json, &path_join(&agent, "models-store.json"));
     let discovered = !from_store.is_empty();
     let mut models = if from_store.is_empty() {
         if model_token_ok(&default_id) {
@@ -940,7 +939,7 @@ pub fn qwen_sheet(read_json: &mut Option<&mut dyn ReadJson>, home: &str) -> Mode
         effort_arg_values: None,
         effort_arg_prefix: None,
     };
-    let Ok(raw) = call_json(read_json, &join_path(home, ".qwen/settings.json")) else {
+    let Ok(raw) = call_json(read_json, &path_join(home, ".qwen/settings.json")) else {
         return empty;
     };
     let Some(record) = raw.as_object() else {
@@ -1134,7 +1133,8 @@ pub fn append_model_effort_argv(
         } else {
             "the harness takes no model flag".into()
         };
-        let shown = protocol::js::stringify(&Value::String(id.to_string()));
+        let shown =
+            protocol::js::stringify(&protocol::js::from_serde(&Value::String(id.to_string())));
         log(&format!(
             "[den-server] spawn: omitting model {shown}{where_} ({why})"
         ));
@@ -1150,7 +1150,8 @@ pub fn append_model_effort_argv(
     } else if let Some(id) = effort
         && let Some(log) = log.as_mut()
     {
-        let shown = protocol::js::stringify(&Value::String(id.to_string()));
+        let shown =
+            protocol::js::stringify(&protocol::js::from_serde(&Value::String(id.to_string())));
         log(&format!(
             "[den-server] spawn: omitting effort {shown}{where_} (unknown or no flag)"
         ));
@@ -2257,9 +2258,9 @@ fn call_json(read_json: &mut Option<&mut dyn ReadJson>, path: &str) -> Result<Va
 
 fn call_text(read_text: &mut Option<&mut dyn ReadText>, path: &str) -> Result<String, String> {
     if let Some(reader) = read_text.as_mut() {
-        reader.read_text(path)
+        reader.load(path)
     } else {
-        fsutil::read_lossy(Path::new(path)).ok_or_else(|| "unreadable".into())
+        protocol::host::read_text(Path::new(path)).map_err(|_| "unreadable".to_string())
     }
 }
 
@@ -2298,7 +2299,7 @@ fn read_json_file(path: &str) -> Result<Value, String> {
 
 fn discovery_env(env: Option<&HashMap<String, String>>, home: &str) -> HashMap<String, String> {
     let mut out = env.cloned().unwrap_or_else(process_env);
-    let local_bin = join_path(home, ".local/bin");
+    let local_bin = path_join(home, ".local/bin");
     let mut parts: Vec<String> = out
         .get("PATH")
         .map(|text| {
@@ -2326,33 +2327,28 @@ fn process_env() -> HashMap<String, String> {
     map
 }
 
-fn env_trimmed(env: Option<&HashMap<String, String>>, key: &str) -> Option<String> {
-    let raw = if let Some(env) = env {
-        env.get(key).cloned()
-    } else {
-        std::env::var(key).ok()
-    }?;
-    let trimmed = jtrim(&raw);
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
+struct SheetEnv<'a>(&'a HashMap<String, String>);
+
+impl protocol::host::Env for SheetEnv<'_> {
+    fn var(&self, name: &str) -> Option<String> {
+        self.0.get(name).cloned()
     }
 }
 
-fn join_path(base: &str, rest: &str) -> String {
-    if base.is_empty() {
-        return rest.to_string();
+fn nonempty_trimmed(env: Option<&HashMap<String, String>>, key: &str) -> Option<String> {
+    let trimmed = match env {
+        Some(map) => protocol::host::env_trimmed(&SheetEnv(map), key),
+        None => protocol::host::env_trimmed(&protocol::host::ProcessEnv, key),
+    }?;
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
     }
-    let mut path = base.trim_end_matches('/').to_string();
-    for part in rest.split('/') {
-        if part.is_empty() {
-            continue;
-        }
-        path.push('/');
-        path.push_str(part);
-    }
-    path
+}
+
+fn path_join(base: &str, rest: &str) -> String {
+    protocol::js::posix_join(&[base, rest])
 }
 
 fn memo_of(stamp: &FileStamp, models: Vec<ModelOption>) -> Memo {
@@ -2376,14 +2372,12 @@ fn kimi_default(line: &str) -> Option<String> {
 
 fn kimi_header(line: &str) -> Option<String> {
     let re = kimi_header_re()?;
-    let caps = re.captures(line)?;
-    let alias = caps
-        .get(2)
-        .or_else(|| caps.get(3))
-        .or_else(|| caps.get(4))
-        .map(|item| item.as_str().to_string())
-        .unwrap_or_default();
-    Some(jtrim(&alias).to_string())
+    let found = re.find(line)?;
+    let alias = [2usize, 3, 4]
+        .into_iter()
+        .find_map(|index| found.group(index).and_then(|range| line.get(range)))
+        .unwrap_or("");
+    Some(jtrim(alias).to_string())
 }
 
 fn kimi_display(line: &str) -> Option<String> {
@@ -2394,11 +2388,11 @@ fn codex_model_line(line: &str) -> Option<String> {
     capture(codex_model_re(), line, &[1])
 }
 
-fn capture(re: Option<&Regex>, line: &str, groups: &[usize]) -> Option<String> {
-    let caps = re?.captures(line)?;
+fn capture(re: Option<&regress::Regex>, line: &str, groups: &[usize]) -> Option<String> {
+    let found = re?.find(line)?;
     for group in groups {
-        if let Some(text) = caps.get(*group) {
-            return Some(jtrim(text.as_str()).to_string());
+        if let Some(text) = found.group(*group).and_then(|range| line.get(range)) {
+            return Some(jtrim(text).to_string());
         }
     }
     None
@@ -2426,68 +2420,75 @@ fn hash_comment(value: &str) -> Option<usize> {
 
 fn yaml_key(line: &str) -> Option<(&str, &str)> {
     let re = yaml_key_re()?;
-    let caps = re.captures(line)?;
-    Some((
-        caps.get(1)?.as_str(),
-        caps.get(2).map(|item| item.as_str()).unwrap_or(""),
-    ))
+    let found = re.find(line)?;
+    let key = line.get(found.group(1)?)?;
+    let value = found
+        .group(2)
+        .and_then(|range| line.get(range))
+        .unwrap_or("");
+    Some((key, value))
 }
 
 fn model_re_line(line: &str) -> bool {
-    static RE: OnceLock<Option<Regex>> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^model:").ok())
+    static RE: OnceLock<Option<regress::Regex>> = OnceLock::new();
+    RE.get_or_init(|| crate::reutil::compile(r"^model:").ok())
         .as_ref()
-        .is_some_and(|re| re.is_match(line))
+        .is_some_and(|re| crate::reutil::hits(re, line))
 }
 
 fn http_base(url: &str) -> bool {
-    static RE: OnceLock<Option<Regex>> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^https?://").ok())
+    static RE: OnceLock<Option<regress::Regex>> = OnceLock::new();
+    RE.get_or_init(|| crate::reutil::compile(r"^https?://").ok())
         .as_ref()
-        .is_some_and(|re| re.is_match(url))
+        .is_some_and(|re| crate::reutil::hits(re, url))
 }
 
 fn hermes_named(model: &str) -> Option<(String, String)> {
     let re = hermes_named_re()?;
-    let caps = re.captures(model)?;
     Some((
-        caps.get(1)?.as_str().to_string(),
-        caps.get(2)?.as_str().to_string(),
+        crate::reutil::nth(re, model, 1)?.to_string(),
+        crate::reutil::nth(re, model, 2)?.to_string(),
     ))
 }
 
-fn kimi_default_re() -> Option<&'static Regex> {
-    static RE: OnceLock<Option<Regex>> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r#"^default_model\s*=\s*(?:"([^"]+)"|'([^']+)'|(\S+))\s*$"#).ok())
+fn kimi_default_re() -> Option<&'static regress::Regex> {
+    static RE: OnceLock<Option<regress::Regex>> = OnceLock::new();
+    RE.get_or_init(|| {
+        crate::reutil::compile(r#"^default_model\s*=\s*(?:"([^"]+)"|'([^']+)'|(\S+))\s*$"#).ok()
+    })
+    .as_ref()
+}
+
+fn kimi_header_re() -> Option<&'static regress::Regex> {
+    static RE: OnceLock<Option<regress::Regex>> = OnceLock::new();
+    RE.get_or_init(|| {
+        crate::reutil::compile(r#"^\[models\.("([^"]+)"|'([^']+)'|([^.\]]+))\]$"#).ok()
+    })
+    .as_ref()
+}
+
+fn kimi_display_re() -> Option<&'static regress::Regex> {
+    static RE: OnceLock<Option<regress::Regex>> = OnceLock::new();
+    RE.get_or_init(|| {
+        crate::reutil::compile(r#"^display_name\s*=\s*(?:"([^"]*)"|'([^']*)')\s*$"#).ok()
+    })
+    .as_ref()
+}
+
+fn codex_model_re() -> Option<&'static regress::Regex> {
+    static RE: OnceLock<Option<regress::Regex>> = OnceLock::new();
+    RE.get_or_init(|| crate::reutil::compile(r#"^model\s*=\s*["']([^"']+)["']"#).ok())
         .as_ref()
 }
 
-fn kimi_header_re() -> Option<&'static Regex> {
-    static RE: OnceLock<Option<Regex>> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r#"^\[models\.("([^"]+)"|'([^']+)'|([^.\]]+))\]$"#).ok())
+fn yaml_key_re() -> Option<&'static regress::Regex> {
+    static RE: OnceLock<Option<regress::Regex>> = OnceLock::new();
+    RE.get_or_init(|| crate::reutil::compile(r"^\s*([A-Za-z_]+):(.*)$").ok())
         .as_ref()
 }
 
-fn kimi_display_re() -> Option<&'static Regex> {
-    static RE: OnceLock<Option<Regex>> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r#"^display_name\s*=\s*(?:"([^"]*)"|'([^']*)')\s*$"#).ok())
-        .as_ref()
-}
-
-fn codex_model_re() -> Option<&'static Regex> {
-    static RE: OnceLock<Option<Regex>> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r#"^model\s*=\s*["']([^"']+)["']"#).ok())
-        .as_ref()
-}
-
-fn yaml_key_re() -> Option<&'static Regex> {
-    static RE: OnceLock<Option<Regex>> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^\s*([A-Za-z_]+):(.*)$").ok())
-        .as_ref()
-}
-
-fn hermes_named_re() -> Option<&'static Regex> {
-    static RE: OnceLock<Option<Regex>> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^custom:([^:\s]+):(.+)$").ok())
+fn hermes_named_re() -> Option<&'static regress::Regex> {
+    static RE: OnceLock<Option<regress::Regex>> = OnceLock::new();
+    RE.get_or_init(|| crate::reutil::compile(r"^custom:([^:\s]+):(.+)$").ok())
         .as_ref()
 }

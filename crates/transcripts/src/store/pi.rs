@@ -1,7 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use regex::Regex;
 use serde_json::Value;
 
 use crate::fsutil::{self, birth_ms, mtime_ms};
@@ -9,7 +8,7 @@ use crate::jsonl::read_jsonl;
 use crate::pi::pi_turns_from_lines;
 use crate::roots::Roots;
 use crate::turn::SessionRow;
-use crate::value::{js_slice, jtrim};
+use crate::value::{jtrim, slice_text};
 
 pub fn list(roots: &Roots, limit: usize) -> Vec<SessionRow> {
     let mut newest: std::collections::HashMap<String, PiFile> = std::collections::HashMap::new();
@@ -192,7 +191,7 @@ fn title_from(path: &Path) -> String {
                 .unwrap_or("");
             let trimmed = jtrim(name);
             if !trimmed.is_empty() {
-                return js_slice(trimmed, 0, Some(120));
+                return slice_text(trimmed, 0, Some(120));
             }
         }
     }
@@ -200,7 +199,7 @@ fn title_from(path: &Path) -> String {
         if turn.role == crate::turn::Role::User {
             let trimmed = jtrim(&turn.text);
             if !trimmed.is_empty() {
-                return js_slice(trimmed, 0, Some(120));
+                return slice_text(trimmed, 0, Some(120));
             }
         }
     }
@@ -208,26 +207,28 @@ fn title_from(path: &Path) -> String {
 }
 
 fn native(id: &str) -> bool {
-    uuid_re().is_some_and(|re| re.is_match(id))
+    uuid_re().is_some_and(|re| crate::reutil::hits(re, id))
 }
 
 fn native_from_filename(name: &str) -> Option<String> {
-    let caps = file_re()?.captures(name)?;
-    caps.get(2).map(|item| item.as_str().to_string())
+    crate::reutil::nth(file_re()?, name, 2).map(str::to_string)
 }
 
-fn uuid_re() -> Option<&'static Regex> {
-    static RE: OnceLock<Option<Regex>> = OnceLock::new();
+fn uuid_re() -> Option<&'static regress::Regex> {
+    static RE: OnceLock<Option<regress::Regex>> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r"(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$").ok()
+        crate::reutil::compile(
+            r"(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+        )
+        .ok()
     })
     .as_ref()
 }
 
-fn file_re() -> Option<&'static Regex> {
-    static RE: OnceLock<Option<Regex>> = OnceLock::new();
+fn file_re() -> Option<&'static regress::Regex> {
+    static RE: OnceLock<Option<regress::Regex>> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(
+        crate::reutil::compile(
             r"(?i)^(.+)_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$",
         )
         .ok()

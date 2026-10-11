@@ -294,7 +294,7 @@ fn synthetic_skip(obj: &Obj) -> bool {
 fn result_text(content: Option<&Value>) -> String {
     match content {
         Some(Value::String(text)) => text.clone(),
-        Some(other) => protocol::js::stringify(other),
+        Some(other) => protocol::js::stringify(&protocol::js::from_serde(other)),
         None => String::new(),
     }
 }

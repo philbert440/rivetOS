@@ -20,7 +20,7 @@ use crate::registry::HarnessExecutor;
 use crate::spawn::{
     KILL_GRACE_MS, SpawnRequest, StdinMode, child_env, exit_label, spawn_child, stderr_tail,
 };
-use crate::standard_helpers::{Env, ProcessEnv, home_dir, json_str, num_value, object_str};
+use crate::standard_helpers::{Env, ProcessEnv, home_path, json_str, num_value, object_str};
 
 pub const OPENCODE_HARNESS_ID: &str = "opencode";
 
@@ -76,13 +76,13 @@ fn opencode_re() -> Option<&'static regress::Regex> {
 }
 
 pub fn opencode_home(env: &dyn Env) -> PathBuf {
-    if let Some(xdg) = env.get("XDG_DATA_HOME") {
+    if let Some(xdg) = env.var("XDG_DATA_HOME") {
         let trimmed = protocol::js::js_trim(&xdg);
         if !trimmed.is_empty() {
             return PathBuf::from(trimmed).join("opencode");
         }
     }
-    home_dir().join(".local").join("share").join("opencode")
+    home_path(env).join(".local").join("share").join("opencode")
 }
 
 pub fn opencode_db_path(home: &Path) -> PathBuf {

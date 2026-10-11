@@ -21,7 +21,7 @@ use crate::registry::HarnessExecutor;
 use crate::spawn::{
     KILL_GRACE_MS, SpawnRequest, StdinMode, child_env, exit_label, spawn_child, stderr_tail,
 };
-use crate::standard_helpers::{Env, ProcessEnv, home_dir, num_value, object_str};
+use crate::standard_helpers::{Env, ProcessEnv, home_path, num_value, object_str};
 
 pub const PI_HARNESS_ID: &str = "pi";
 
@@ -104,7 +104,7 @@ fn pi_re() -> Option<&'static regress::Regex> {
 }
 
 pub fn pi_home() -> PathBuf {
-    home_dir().join(".pi").join("agent")
+    home_path(&ProcessEnv).join(".pi").join("agent")
 }
 
 pub fn pi_sessions_root(home: &Path) -> PathBuf {

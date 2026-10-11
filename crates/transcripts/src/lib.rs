@@ -14,6 +14,7 @@ mod opencode;
 pub mod paths;
 mod pi;
 mod qwen;
+mod reutil;
 pub mod roots;
 pub mod sheets;
 pub mod tail;

@@ -8,7 +8,7 @@ use crate::prompt::{
     HistoryMessage, build_task_scaffold, build_turn_prompt, failed_text, finish_from_text,
     killed_result, render_resume_transcript,
 };
-use crate::standard_helpers::now_ms;
+use crate::standard_helpers::clock_ms;
 use protocol::TaskResult;
 
 use crate::model::TaskSpec;
@@ -102,7 +102,7 @@ where
         cwd,
         history,
     } = plan;
-    let started = now_ms();
+    let started = clock_ms();
     let mut usage = UsageAcc::new();
     let scaffold = match mode {
         ScaffoldMode::Inline | ScaffoldMode::Append => build_task_scaffold(&spec, None),
@@ -127,7 +127,7 @@ where
         }
         usage.turns += 1;
         parts.events.push(TaskEvent::TurnStart {
-            ts: now_ms(),
+            ts: clock_ms(),
             turn: usage.turns,
         });
         let inline = match mode {
@@ -186,9 +186,9 @@ where
         if let Some(cost) = outcome.cost_usd {
             usage.cost_usd = Some(usage.cost_usd.unwrap_or(0.0) + cost);
         }
-        usage.wall_clock_ms = now_ms().saturating_sub(started);
+        usage.wall_clock_ms = clock_ms().saturating_sub(started);
         parts.events.push(TaskEvent::TurnEnd {
-            ts: now_ms(),
+            ts: clock_ms(),
             turn: usage.turns,
             usage: usage.to_usage(),
             harness_session_id: crate::prompt::canonical_session_id(&prefix, native.as_deref()),
@@ -203,7 +203,7 @@ where
         transcript.clear();
         message = next_steer(&parts.steer_q);
     }
-    usage.wall_clock_ms = now_ms().saturating_sub(started);
+    usage.wall_clock_ms = clock_ms().saturating_sub(started);
     if parts.killed.load(Ordering::SeqCst) {
         return killed_result(parts.kill_reason.lock().as_deref(), &last_text, &usage);
     }

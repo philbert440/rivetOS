@@ -1,5 +1,5 @@
+use parking_lot::Mutex;
 use std::path::PathBuf;
-use std::sync::Mutex;
 
 use crate::claude::claude_turns_from_lines_sourced;
 use crate::codex::codex_turns_from_lines;
@@ -42,9 +42,7 @@ impl Store {
     }
 
     pub fn reset_grok(&self) {
-        if let Ok(mut index) = self.grok.lock() {
-            index.reset();
-        }
+        self.grok.lock().reset();
     }
 
     pub fn list(
@@ -57,9 +55,8 @@ impl Store {
         if commands.contains(&"claude") {
             all.extend(claude::list(&self.roots, limit, links));
         }
-        if commands.contains(&"grok")
-            && let Ok(mut index) = self.grok.lock()
-        {
+        if commands.contains(&"grok") {
+            let mut index = self.grok.lock();
             all.extend(grok::list(&self.roots, &mut index, limit));
         }
         if commands.contains(&"hermes") {
@@ -95,10 +92,8 @@ impl Store {
     }
 
     pub fn describe_grok(&self, id: &str) -> Option<SessionRow> {
-        self.grok
-            .lock()
-            .ok()
-            .and_then(|mut index| grok::describe(&self.roots, &mut index, id))
+        let mut index = self.grok.lock();
+        grok::describe(&self.roots, &mut index, id)
     }
 
     pub fn describe_hermes(&self, id: &str) -> Option<SessionRow> {

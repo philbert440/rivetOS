@@ -2,15 +2,13 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use regex::Regex;
-
 use crate::cursor::cursor_turns_from_objects;
 use crate::fsutil::{self, birth_ms, mtime_ms};
 use crate::jsonl::parse_object;
 use crate::paths::cursor_project_slug;
 use crate::roots::Roots;
 use crate::turn::{Role, SessionRow};
-use crate::value::{js_slice, jtrim, whitespace_collapse};
+use crate::value::{jtrim, slice_text, whitespace_collapse};
 
 pub fn list(roots: &Roots, limit: usize) -> Vec<SessionRow> {
     let mut newest: HashMap<String, CursorFile> = HashMap::new();
@@ -200,19 +198,22 @@ fn preview_title(file: &Path) -> String {
         if text.is_empty() {
             continue;
         }
-        return js_slice(&whitespace_collapse(text), 0, Some(120));
+        return slice_text(&whitespace_collapse(text), 0, Some(120));
     }
     String::new()
 }
 
 fn uuid(id: &str) -> bool {
-    uuid_re().is_some_and(|re| re.is_match(id))
+    uuid_re().is_some_and(|re| crate::reutil::hits(re, id))
 }
 
-fn uuid_re() -> Option<&'static Regex> {
-    static RE: OnceLock<Option<Regex>> = OnceLock::new();
+fn uuid_re() -> Option<&'static regress::Regex> {
+    static RE: OnceLock<Option<regress::Regex>> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r"(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$").ok()
+        crate::reutil::compile(
+            r"(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+        )
+        .ok()
     })
     .as_ref()
 }

@@ -16,7 +16,7 @@ use crate::registry::HarnessExecutor;
 use crate::spawn::{
     KILL_GRACE_MS, SpawnRequest, StdinMode, child_env, exit_label, spawn_child, stderr_tail,
 };
-use crate::standard_helpers::{Env, ProcessEnv, home_dir, num_value, sha256_hex};
+use crate::standard_helpers::{Env, ProcessEnv, home_path, num_value};
 
 pub const KIMI_HARNESS_ID: &str = "kimi-code";
 
@@ -75,17 +75,17 @@ fn kimi_re() -> Option<&'static regress::Regex> {
 }
 
 pub fn kimi_home(env: &dyn Env) -> PathBuf {
-    if let Some(explicit) = env.get("KIMI_CODE_HOME") {
+    if let Some(explicit) = env.var("KIMI_CODE_HOME") {
         let trimmed = protocol::js::js_trim(&explicit);
         if !trimmed.is_empty() {
             return PathBuf::from(trimmed);
         }
     }
-    home_dir().join(".kimi-code")
+    home_path(env).join(".kimi-code")
 }
 
 pub fn work_dir_hash(cwd: &str) -> String {
-    let hex = sha256_hex(cwd.as_bytes());
+    let hex = protocol::digest::sha256_hex(cwd.as_bytes());
     hex.get(..12).unwrap_or(&hex).to_string()
 }
 

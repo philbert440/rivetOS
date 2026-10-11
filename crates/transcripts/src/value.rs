@@ -66,29 +66,18 @@ pub fn field_is_nullish_empty(value: Option<&Value>) -> bool {
     }
 }
 
-pub fn js_slice(text: &str, start: isize, end: Option<isize>) -> String {
-    let units: Vec<u16> = text.encode_utf16().collect();
-    let len = units.len() as isize;
-    let from = if start < 0 {
-        (len + start).max(0)
-    } else {
-        start.min(len)
-    } as usize;
-    let to = match end {
-        Some(end) if end < 0 => (len + end).max(0) as usize,
-        Some(end) => (end as usize).min(units.len()),
-        None => units.len(),
-    };
-    let to = to.max(from).min(units.len());
-    String::from_utf16_lossy(&units[from..to])
+pub fn slice_text(text: &str, start: isize, end: Option<isize>) -> String {
+    protocol::js::js_slice(text, Some(start as f64), end.map(|value| value as f64))
+        .to_utf8()
+        .to_string()
 }
 
-pub fn js_len(text: &str) -> usize {
-    text.encode_utf16().count()
+pub fn text_units(text: &str) -> usize {
+    protocol::js::utf16_len(text)
 }
 
 pub fn clip(text: &str, max: usize) -> String {
-    js_slice(text, 0, Some(max as isize))
+    slice_text(text, 0, Some(max as isize))
 }
 
 pub fn arr<'a>(obj: &'a Obj, key: &str) -> Option<&'a Vec<Value>> {

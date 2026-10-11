@@ -1,7 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use regex::Regex;
 use serde_json::Value;
 
 use crate::claude::claude_turns_from_lines;
@@ -75,7 +74,7 @@ pub fn config_roots(roots: &Roots) -> Vec<PathBuf> {
         roots.join_home(&["Library", "Application Support", "Claude"]),
         roots.join_home(&[".config", "Claude"]),
     ];
-    if let Some(extra) = roots.env_trim("CLAUDE_CONFIG_DIR") {
+    if let Some(extra) = roots.trimmed_var("CLAUDE_CONFIG_DIR") {
         let path = PathBuf::from(extra);
         if !list.iter().any(|item| item == &path) {
             list.push(path);
@@ -132,7 +131,9 @@ fn walk_meta(dir: &Path, out: &mut Vec<PathBuf>, depth: usize) {
         let full = dir.join(&name);
         if fsutil::is_dir(&full) {
             walk_meta(&full, out, depth + 1);
-        } else if fsutil::is_file(&full) && meta_re().is_some_and(|re| re.is_match(&name)) {
+        } else if fsutil::is_file(&full)
+            && meta_re().is_some_and(|re| crate::reutil::hits(re, &name))
+        {
             out.push(full);
         }
     }
@@ -149,9 +150,10 @@ fn read_meta(path: &Path) -> Option<TaskMeta> {
     if id.is_empty() || id.contains('/') || id.contains("..") || id.contains('\\') {
         return None;
     }
-    let created = epoch_ms(row.get("createdAt")).or_else(|| epoch_ms(row.get("created_at")))?;
-    let updated = epoch_ms(row.get("lastActivityAt"))
-        .or_else(|| epoch_ms(row.get("updatedAt")))
+    let created =
+        recorded_at(row.get("createdAt")).or_else(|| recorded_at(row.get("created_at")))?;
+    let updated = recorded_at(row.get("lastActivityAt"))
+        .or_else(|| recorded_at(row.get("updatedAt")))
         .unwrap_or(created);
     let cwd = row
         .get("cwd")
@@ -256,7 +258,7 @@ fn walk_projects(dir: &Path, id: &str, depth: usize, best: &mut Option<(PathBuf,
     }
 }
 
-fn epoch_ms(value: Option<&Value>) -> Option<i64> {
+fn recorded_at(value: Option<&Value>) -> Option<i64> {
     match value {
         Some(Value::Number(number)) => number.as_f64().filter(|n| n.is_finite()).map(|n| n as i64),
         Some(Value::String(text)) => {
@@ -275,8 +277,8 @@ fn epoch_ms(value: Option<&Value>) -> Option<i64> {
     }
 }
 
-fn meta_re() -> Option<&'static Regex> {
-    static RE: OnceLock<Option<Regex>> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^local_.+\.json$").ok())
+fn meta_re() -> Option<&'static regress::Regex> {
+    static RE: OnceLock<Option<regress::Regex>> = OnceLock::new();
+    RE.get_or_init(|| crate::reutil::compile(r"^local_.+\.json$").ok())
         .as_ref()
 }

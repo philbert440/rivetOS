@@ -6,7 +6,7 @@ use protocol::{JsNumber, TaskBudget, TaskResult, TaskUsage, TaskVerdict};
 use serde_json::{Map, Value};
 use tokio::sync::{Notify, watch};
 
-use crate::standard_helpers::now_ms;
+use crate::standard_helpers::clock_ms;
 
 pub type KillHook = Arc<dyn Fn() + Send + Sync>;
 pub type KillSlot = Arc<Mutex<Option<KillHook>>>;
@@ -462,7 +462,7 @@ pub fn publish(parts: &HandleParts, result: TaskResult) {
 
 pub fn log_event(level: &str, message: impl Into<String>) -> TaskEvent {
     TaskEvent::Log {
-        ts: now_ms(),
+        ts: clock_ms(),
         level: level.to_string(),
         message: message.into(),
     }
@@ -470,14 +470,14 @@ pub fn log_event(level: &str, message: impl Into<String>) -> TaskEvent {
 
 pub fn den_message(text: impl Into<String>) -> TaskEvent {
     TaskEvent::Den {
-        ts: now_ms(),
+        ts: clock_ms(),
         body: DenBody::MessageAgent { text: text.into() },
     }
 }
 
 pub fn den_tool_start(tool: impl Into<String>) -> TaskEvent {
     TaskEvent::Den {
-        ts: now_ms(),
+        ts: clock_ms(),
         body: DenBody::ToolStart {
             tool: Some(tool.into()),
         },
@@ -486,14 +486,14 @@ pub fn den_tool_start(tool: impl Into<String>) -> TaskEvent {
 
 pub fn den_tool_end(tool: Option<String>) -> TaskEvent {
     TaskEvent::Den {
-        ts: now_ms(),
+        ts: clock_ms(),
         body: DenBody::ToolEnd { tool },
     }
 }
 
 pub fn den_thinking(text: impl Into<String>) -> TaskEvent {
     TaskEvent::Den {
-        ts: now_ms(),
+        ts: clock_ms(),
         body: DenBody::ThinkingDelta { text: text.into() },
     }
 }

@@ -1,7 +1,9 @@
 #[path = "support.rs"]
 mod support;
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
+use parking_lot::Mutex;
 use std::time::Duration;
 
 use acp::{
@@ -18,10 +20,10 @@ struct RecordPolicy {
 
 impl PermissionPolicy for RecordPolicy {
     fn decide(&self, options: &[PermissionChoice]) -> PermissionDecision {
-        *self.kinds.lock().unwrap() = options.iter().map(|option| option.kind.clone()).collect();
+        *self.kinds.lock() = options.iter().map(|option| option.kind.clone()).collect();
         let decision = AllowOncePolicy.decide(options);
         if let PermissionDecision::Selected(id) = &decision {
-            *self.chosen.lock().unwrap() = Some(id.clone());
+            *self.chosen.lock() = Some(id.clone());
         }
         decision
     }
@@ -260,10 +262,10 @@ async fn permission_allow_once_finishes_the_turn() {
     assert_eq!(result.verdict, TaskVerdict::Completed);
     assert_eq!(result.summary, "hello from the agent");
     assert_eq!(
-        policy.kinds.lock().unwrap().as_slice(),
+        policy.kinds.lock().as_slice(),
         ["reject_once", "allow_once"]
     );
-    assert_eq!(policy.chosen.lock().unwrap().as_deref(), Some("yes"));
+    assert_eq!(policy.chosen.lock().as_deref(), Some("yes"));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -287,10 +289,10 @@ async fn permission_allow_always_beats_a_leading_reject() {
         .await;
     assert_eq!(result.verdict, TaskVerdict::Completed);
     assert_eq!(
-        policy.kinds.lock().unwrap().as_slice(),
+        policy.kinds.lock().as_slice(),
         ["reject_once", "allow_always"]
     );
-    assert_eq!(policy.chosen.lock().unwrap().as_deref(), Some("keep"));
+    assert_eq!(policy.chosen.lock().as_deref(), Some("keep"));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -313,8 +315,8 @@ async fn permission_reject_only_cancels() {
         .result()
         .await;
     assert_eq!(result.verdict, TaskVerdict::Completed);
-    assert_eq!(policy.kinds.lock().unwrap().as_slice(), ["reject_once"]);
-    assert!(policy.chosen.lock().unwrap().is_none());
+    assert_eq!(policy.kinds.lock().as_slice(), ["reject_once"]);
+    assert!(policy.chosen.lock().is_none());
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -451,7 +453,7 @@ async fn grok_authenticates_with_an_api_key_when_advertised() {
         .result()
         .await;
     assert_eq!(result.verdict, TaskVerdict::Completed);
-    assert_eq!(seen.lock().unwrap().as_deref(), Some("xai.api_key"));
+    assert_eq!(seen.lock().as_deref(), Some("xai.api_key"));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -470,7 +472,7 @@ async fn grok_uses_cached_login_without_an_api_key() {
         .result()
         .await;
     assert_eq!(result.verdict, TaskVerdict::Completed);
-    assert_eq!(seen.lock().unwrap().as_deref(), Some("cached_token"));
+    assert_eq!(seen.lock().as_deref(), Some("cached_token"));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -490,7 +492,7 @@ async fn grok_skips_auth_when_neither_method_is_advertised() {
         .result()
         .await;
     assert_eq!(result.verdict, TaskVerdict::Completed);
-    assert!(seen.lock().unwrap().is_none());
+    assert!(seen.lock().is_none());
 }
 
 #[tokio::test(flavor = "current_thread")]

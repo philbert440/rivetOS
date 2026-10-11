@@ -71,4 +71,4 @@ pub use spawn::{
     KILL_GRACE_MS, STDERR_CAP, STDOUT_CAP, SpawnRequest, Spawned, StdinMode, child_env,
     probe_binary, spawn_child, stderr_tail,
 };
-pub use standard_helpers::{Env, MapEnv, ProcessEnv, home_dir, now_ms, sha256_hex};
+pub use standard_helpers::{Env, MapEnv, ProcessEnv};

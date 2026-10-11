@@ -1,5 +1,7 @@
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
+use parking_lot::Mutex;
 use std::time::Duration;
 
 use acp::{
@@ -14,10 +16,10 @@ struct RecordPolicy {
 
 impl PermissionPolicy for RecordPolicy {
     fn decide(&self, options: &[PermissionChoice]) -> PermissionDecision {
-        *self.kinds.lock().unwrap() = options.iter().map(|option| option.kind.clone()).collect();
+        *self.kinds.lock() = options.iter().map(|option| option.kind.clone()).collect();
         let decision = AllowOncePolicy.decide(options);
         if let PermissionDecision::Selected(id) = &decision {
-            *self.chosen.lock().unwrap() = Some(id.clone());
+            *self.chosen.lock() = Some(id.clone());
         }
         decision
     }
@@ -109,10 +111,10 @@ async fn permission_prefers_allow_once() {
     assert_eq!(output.stop_reason, "end_turn");
     assert_eq!(output.text, "hello from the agent");
     assert_eq!(
-        policy.kinds.lock().unwrap().as_slice(),
+        policy.kinds.lock().as_slice(),
         ["reject_once", "allow_once"]
     );
-    assert_eq!(policy.chosen.lock().unwrap().as_deref(), Some("yes"));
+    assert_eq!(policy.chosen.lock().as_deref(), Some("yes"));
     client.shutdown().await.unwrap();
     let _ = task.await;
 }
@@ -269,10 +271,10 @@ async fn permission_allow_always_is_chosen_after_reject() {
     let output = client.prompt(id, "hi".into()).await.unwrap();
     assert_eq!(output.stop_reason, "end_turn");
     assert_eq!(
-        policy.kinds.lock().unwrap().as_slice(),
+        policy.kinds.lock().as_slice(),
         ["reject_once", "allow_always"]
     );
-    assert_eq!(policy.chosen.lock().unwrap().as_deref(), Some("keep"));
+    assert_eq!(policy.chosen.lock().as_deref(), Some("keep"));
     client.shutdown().await.unwrap();
     let _ = task.await;
 }

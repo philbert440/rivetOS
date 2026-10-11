@@ -1,14 +1,13 @@
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use regex::Regex;
 use serde_json::Value;
 
 use crate::fsutil::{self, birth_ms, mtime_ms};
 use crate::jsonl::parse_object;
 use crate::roots::Roots;
 use crate::turn::SessionRow;
-use crate::value::{js_slice, jtrim, whitespace_collapse};
+use crate::value::{jtrim, slice_text, whitespace_collapse};
 
 pub fn list(roots: &Roots, limit: usize) -> Vec<SessionRow> {
     let mut found = rollouts(roots);
@@ -146,7 +145,7 @@ fn room_rollout(pid: &str, room: &str, prefix: &str) -> Option<PathBuf> {
         let text = path.to_string_lossy();
         if text.starts_with(prefix)
             && rollout_re().is_some_and(|re| {
-                re.is_match(path.file_name().and_then(|n| n.to_str()).unwrap_or(""))
+                crate::reutil::hits(re, path.file_name().and_then(|n| n.to_str()).unwrap_or(""))
             })
         {
             return Some(path);
@@ -161,7 +160,7 @@ pub fn sessions_dir(roots: &Roots) -> PathBuf {
 
 pub fn home(roots: &Roots) -> PathBuf {
     roots
-        .env_trim("CODEX_HOME")
+        .trimmed_var("CODEX_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| roots.join_home(&[".codex"]))
 }
@@ -231,7 +230,7 @@ fn session_row(path: &Path, id: &str, mtime: i64, birth: i64) -> SessionRow {
         title: if collapsed.is_empty() {
             id.to_string()
         } else {
-            js_slice(collapsed, 0, Some(120))
+            slice_text(collapsed, 0, Some(120))
         },
         updated_at: mtime,
         created_at: Some(birth),
@@ -274,7 +273,7 @@ fn rollout_title(file: &Path) -> String {
         {
             continue;
         }
-        return js_slice(trimmed, 0, Some(120));
+        return slice_text(trimmed, 0, Some(120));
     }
     String::new()
 }
@@ -305,26 +304,28 @@ fn date_dir(name: &str, width: usize) -> bool {
 }
 
 fn native(id: &str) -> bool {
-    uuid_re().is_some_and(|re| re.is_match(id))
+    uuid_re().is_some_and(|re| crate::reutil::hits(re, id))
 }
 
 fn uuid_from_name(name: &str) -> Option<String> {
-    let caps = rollout_re()?.captures(name)?;
-    caps.get(1).map(|item| item.as_str().to_string())
+    crate::reutil::nth(rollout_re()?, name, 1).map(str::to_string)
 }
 
-fn uuid_re() -> Option<&'static Regex> {
-    static RE: OnceLock<Option<Regex>> = OnceLock::new();
+fn uuid_re() -> Option<&'static regress::Regex> {
+    static RE: OnceLock<Option<regress::Regex>> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r"(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$").ok()
+        crate::reutil::compile(
+            r"(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+        )
+        .ok()
     })
     .as_ref()
 }
 
-fn rollout_re() -> Option<&'static Regex> {
-    static RE: OnceLock<Option<Regex>> = OnceLock::new();
+fn rollout_re() -> Option<&'static regress::Regex> {
+    static RE: OnceLock<Option<regress::Regex>> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r"(?i)^rollout-.+-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$").ok()
+        crate::reutil::compile(r"(?i)^rollout-.+-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$").ok()
     })
     .as_ref()
 }

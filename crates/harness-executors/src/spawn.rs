@@ -8,7 +8,7 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, watch};
 
-use crate::standard_helpers::{Env, now_ms};
+use crate::standard_helpers::{Env, clock_ms};
 
 pub const KILL_GRACE_MS: u64 = 10_000;
 pub const STDERR_CAP: usize = 64 * 1024;
@@ -137,7 +137,7 @@ pub async fn spawn_child(request: SpawnRequest<'_>) -> Result<Spawned, std::io::
     }
     command.stdout(std::process::Stdio::piped());
     command.stderr(std::process::Stdio::piped());
-    let started_at_ms = now_ms();
+    let started_at_ms = clock_ms();
     let mut child = command.spawn()?;
     if matches!(request.stdin, StdinMode::PipeEof) {
         drop(child.stdin.take());
@@ -286,7 +286,7 @@ pub fn exit_label(code: Option<i32>) -> String {
 }
 
 pub fn stderr_tail(text: &str) -> String {
-    transcripts::value::js_slice(text, 0, Some(500))
+    transcripts::value::slice_text(text, 0, Some(500))
 }
 
 pub async fn probe_binary(binary: &str, base: &dyn Env, scrub: &[&str]) -> bool {

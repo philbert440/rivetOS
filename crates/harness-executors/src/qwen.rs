@@ -21,7 +21,7 @@ use crate::registry::HarnessExecutor;
 use crate::spawn::{
     KILL_GRACE_MS, SpawnRequest, StdinMode, child_env, exit_label, spawn_child, stderr_tail,
 };
-use crate::standard_helpers::{Env, ProcessEnv, home_dir, num_value, object_str};
+use crate::standard_helpers::{Env, ProcessEnv, home_path, num_value, object_str};
 
 pub const QWEN_CODE_HARNESS_ID: &str = "qwen-code";
 
@@ -99,11 +99,11 @@ fn qwen_re() -> Option<&'static regress::Regex> {
 }
 
 pub fn qwen_home() -> PathBuf {
-    home_dir().join(".qwen")
+    home_path(&ProcessEnv).join(".qwen")
 }
 
 pub fn default_workspace_dir() -> PathBuf {
-    home_dir().join(".rivetos").join("workspace")
+    home_path(&ProcessEnv).join(".rivetos").join("workspace")
 }
 
 pub fn encode_qwen_bucket(cwd: &str) -> String {

@@ -625,7 +625,7 @@ fn kimi_diffs_thinking_past_the_display_cap() {
             .count(),
         1 + cap
     );
-    let tail = transcripts::value::js_slice(&raw_c, -(cap as isize), None);
+    let tail = transcripts::value::slice_text(&raw_c, -(cap as isize), None);
     assert_eq!(c[1].thinking.as_deref(), Some(format!("…{tail}").as_str()));
     assert!(kimi_deltas_from_turns(None, &a).is_empty());
     let d1 = kimi_deltas_from_turns(Some(&a), &b);

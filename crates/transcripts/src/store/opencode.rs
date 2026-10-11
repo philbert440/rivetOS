@@ -9,7 +9,7 @@ use crate::opencode::opencode_turns_from_messages;
 use crate::roots::Roots;
 use crate::timeutil::{opencode_epoch_number, parse_date_ms};
 use crate::turn::{SessionRow, Turn};
-use crate::value::{Obj, js_slice, jtrim, whitespace_collapse};
+use crate::value::{Obj, jtrim, slice_text, whitespace_collapse};
 
 pub fn list(roots: &Roots, limit: usize) -> Vec<SessionRow> {
     let Some(conn) = db::open_readonly(&db_path(roots)) else {
@@ -122,7 +122,7 @@ pub fn turns(roots: &Roots, id: &str) -> Vec<Turn> {
 
 pub fn data_dir(roots: &Roots) -> PathBuf {
     let base = roots
-        .env_trim("XDG_DATA_HOME")
+        .trimmed_var("XDG_DATA_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| roots.join_home(&[".local", "share"]));
     base.join("opencode")
@@ -148,7 +148,7 @@ fn row_to_session(row: &Obj) -> SessionRow {
     let title = if collapsed.is_empty() {
         id.clone()
     } else {
-        js_slice(collapsed, 0, Some(120))
+        slice_text(collapsed, 0, Some(120))
     };
     let created = epoch_of(row.get("time_created"));
     let updated = epoch_of(row.get("time_updated"));

@@ -1,7 +1,6 @@
 use std::sync::OnceLock;
 
 use protocol::{HARNESS_IDS, parse_session_id_str};
-use regex::Regex;
 
 pub const TRANSCRIPT_PROBE: &[&str] = &[
     "claude", "grok", "codex", "hermes", "kimi", "opencode", "pi", "qwen", "cursor", "cowork",
@@ -42,7 +41,7 @@ pub fn store_command(harness_id: &str) -> Option<&'static str> {
 }
 
 pub fn is_bare_native_uuid(value: &str) -> bool {
-    uuid_re().is_some_and(|re| re.is_match(value))
+    uuid_re().is_some_and(|re| crate::reutil::hits(re, value))
 }
 
 pub fn codex_native_id(value: &str) -> bool {
@@ -50,11 +49,11 @@ pub fn codex_native_id(value: &str) -> bool {
 }
 
 pub fn opencode_native_id(value: &str) -> bool {
-    opencode_re().is_some_and(|re| re.is_match(value))
+    opencode_re().is_some_and(|re| crate::reutil::hits(re, value))
 }
 
 pub fn hermes_timestamp_id(value: &str) -> bool {
-    hermes_shape_re().is_some_and(|re| re.is_match(value))
+    hermes_shape_re().is_some_and(|re| crate::reutil::hits(re, value))
 }
 
 pub fn hermes_announced_id(value: &str) -> bool {
@@ -62,7 +61,7 @@ pub fn hermes_announced_id(value: &str) -> bool {
 }
 
 pub fn kimi_session_id(value: &str) -> bool {
-    kimi_re().is_some_and(|re| re.is_match(value))
+    kimi_re().is_some_and(|re| crate::reutil::hits(re, value))
 }
 
 pub fn collapse_path_fallback(id: &str) -> String {
@@ -123,31 +122,36 @@ fn normalize_session_id(raw: &str) -> Result<Normalized, ()> {
     })
 }
 
-fn uuid_re() -> Option<&'static Regex> {
-    static RE: OnceLock<Option<Regex>> = OnceLock::new();
+fn uuid_re() -> Option<&'static regress::Regex> {
+    static RE: OnceLock<Option<regress::Regex>> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r"(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$").ok()
+        crate::reutil::compile(
+            r"(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+        )
+        .ok()
     })
     .as_ref()
 }
 
-fn opencode_re() -> Option<&'static Regex> {
-    static RE: OnceLock<Option<Regex>> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^ses_[A-Za-z0-9]{20,}$").ok())
+fn opencode_re() -> Option<&'static regress::Regex> {
+    static RE: OnceLock<Option<regress::Regex>> = OnceLock::new();
+    RE.get_or_init(|| crate::reutil::compile(r"^ses_[A-Za-z0-9]{20,}$").ok())
         .as_ref()
 }
 
-fn hermes_shape_re() -> Option<&'static Regex> {
-    static RE: OnceLock<Option<Regex>> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^\d{8}_\d{6}_[0-9a-fA-F]{6}$").ok())
+fn hermes_shape_re() -> Option<&'static regress::Regex> {
+    static RE: OnceLock<Option<regress::Regex>> = OnceLock::new();
+    RE.get_or_init(|| crate::reutil::compile(r"^\d{8}_\d{6}_[0-9a-fA-F]{6}$").ok())
         .as_ref()
 }
 
-fn kimi_re() -> Option<&'static Regex> {
-    static RE: OnceLock<Option<Regex>> = OnceLock::new();
+fn kimi_re() -> Option<&'static regress::Regex> {
+    static RE: OnceLock<Option<regress::Regex>> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r"(?i)^session_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
-            .ok()
+        crate::reutil::compile(
+            r"(?i)^session_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+        )
+        .ok()
     })
     .as_ref()
 }
