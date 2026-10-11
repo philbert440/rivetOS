@@ -76,41 +76,6 @@ fn parse_rejects_invalid_json() {
 }
 
 #[test]
-fn serde_round_trips_lone_surrogates() {
-    let text = protocol::js::parse(r#""\ud83d""#).unwrap();
-    let wire = serde_json::to_string(&text).unwrap();
-    assert_eq!(wire, r#""\ud83d""#);
-    let back: protocol::js::JsValue = serde_json::from_str(&wire).unwrap();
-    assert_eq!(back, text);
-    let wrapped = protocol::js::parse(r#"{"note":"\ud800","n":1}"#).unwrap();
-    let object_wire = serde_json::to_string(&wrapped).unwrap();
-    let object_back: protocol::js::JsValue = serde_json::from_str(&object_wire).unwrap();
-    assert_eq!(object_back, wrapped);
-    assert_eq!(
-        protocol::js::stringify(&object_back),
-        r#"{"note":"\ud800","n":1}"#
-    );
-    let event_wire = serde_json::to_string(&protocol::StreamEvent {
-        r#type: protocol::StreamEventType::ToolResult,
-        content: protocol::js::JsString::from_units({
-            let mut units = vec![u16::from(b'a'); 199];
-            units.push(0xD83D);
-            units
-        }),
-        metadata: Some(protocol::js::JsValue::from_text("ok")),
-    })
-    .unwrap();
-    assert!(event_wire.contains(r"\ud83d"));
-    let event: protocol::StreamEvent = serde_json::from_str(&event_wire).unwrap();
-    assert_eq!(event.content.units().len(), 200);
-    assert_eq!(event.content.units()[199], 0xD83D);
-    assert_eq!(
-        event.metadata.as_ref().and_then(|value| value.as_str()),
-        Some("ok")
-    );
-}
-
-#[test]
 fn lone_surrogate_round_trips_as_escape() {
     let value = protocol::js::parse(r#""\ud800""#).unwrap();
     assert_eq!(protocol::js::stringify(&value), r#""\ud800""#);

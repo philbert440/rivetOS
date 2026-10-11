@@ -1,4 +1,3 @@
-mod js_format;
 mod js_number;
 mod wire_enum;
 
