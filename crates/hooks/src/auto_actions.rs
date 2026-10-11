@@ -8,7 +8,7 @@ use thiserror::Error;
 
 use crate::context::HookContext;
 use crate::handler::{HookErrorMode, HookFailure, HookHandler, HookSignal};
-use crate::js_text::{js_replace_all, js_string, js_truthy};
+use crate::js_text::{js_string, js_truthy};
 use crate::pipeline::HookRegistration;
 use crate::regex_util::{JsRegExp, compile_static, compile_user_pattern, is_match};
 use crate::shell::{ShellError, ShellExecutor, ShellOutput};
@@ -131,7 +131,7 @@ pub fn create_custom_action_hook(
                 return Box::pin(async { Ok(HookSignal::Continue) });
             }
             let replacement = selected.as_ref().map(js_string).unwrap_or_default();
-            let command = js_replace_all(&action.command, "{{file}}", &replacement);
+            let command = substitute_file(&action.command, &replacement);
             let action_id = action.id.clone();
             let soft_fail = action.soft_fail;
             let config = config.clone();
@@ -224,7 +224,10 @@ async fn run_format(
     if !pattern_matches(format_pattern(), &file_path) {
         return Ok(HookSignal::Continue);
     }
-    let command = format!("npx prettier --write \"{file_path}\" 2>/dev/null");
+    let command = format!(
+        "npx prettier --write {} 2>/dev/null",
+        posix_shell_quote(&file_path)
+    );
     match exec_shell(config, &command).await {
         Ok(result) if result.exit_code == 0 => {
             ctx.metadata.insert_json(
@@ -260,7 +263,10 @@ async fn run_lint(
     if !pattern_matches(lint_pattern(), &file_path) {
         return Ok(HookSignal::Continue);
     }
-    let command = format!("npx eslint --fix \"{file_path}\" 2>/dev/null");
+    let command = format!(
+        "npx eslint --fix {} 2>/dev/null",
+        posix_shell_quote(&file_path)
+    );
     match exec_shell(config, &command).await {
         Ok(result) if result.exit_code == 0 => {
             ctx.metadata.insert_json(
@@ -310,8 +316,10 @@ async fn run_test(
     {
         return Ok(HookSignal::Continue);
     }
-    let command =
-        format!("npx vitest run --related \"{file_path}\" --reporter=verbose 2>&1 | tail -20");
+    let command = format!(
+        "npx vitest run --related {} --reporter=verbose 2>&1 | tail -20",
+        posix_shell_quote(&file_path)
+    );
     match exec_shell(config, &command).await {
         Ok(result) => {
             let status = if result.exit_code == 0 {
@@ -513,4 +521,22 @@ fn source_pattern() -> Option<&'static Regex> {
 fn test_file_pattern() -> Option<&'static Regex> {
     static CELL: OnceLock<Option<Regex>> = OnceLock::new();
     compile_static(&CELL, r"\.(test|spec)\.(ts|tsx|js|jsx)$", "i")
+}
+
+fn substitute_file(command: &str, path: &str) -> String {
+    command.replace("{{file}}", &posix_shell_quote(path))
+}
+
+fn posix_shell_quote(value: &str) -> String {
+    let mut quoted = String::with_capacity(value.len() + 2);
+    quoted.push('\'');
+    for ch in value.chars() {
+        if ch == '\'' {
+            quoted.push_str("'\\''");
+        } else {
+            quoted.push(ch);
+        }
+    }
+    quoted.push('\'');
+    quoted
 }

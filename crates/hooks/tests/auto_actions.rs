@@ -1,9 +1,10 @@
+use std::path::Path;
 use std::sync::Arc;
 
 use super::common::{ScriptShell, tool_after};
 use hooks::{
-    AutoAction, AutoActionConfig, AutoActionsConfig, HookPipeline, ShellExecutor, ShellOutput,
-    create_auto_action_hooks, create_auto_format_hook, create_auto_git_check_hook,
+    AutoAction, AutoActionConfig, AutoActionsConfig, HookPipeline, ProcessShell, ShellExecutor,
+    ShellOutput, create_auto_action_hooks, create_auto_format_hook, create_auto_git_check_hook,
     create_auto_lint_hook, create_auto_test_hook, create_custom_action_hook,
 };
 use protocol::js::JsValue;
@@ -41,7 +42,7 @@ async fn auto_format_matches_prettier_commands_and_soft_fail() {
     pipeline.run(&mut ctx).await;
     assert_eq!(
         shell.calls()[0].0,
-        "npx prettier --write \"/opt/rivetos/src/index.ts\" 2>/dev/null"
+        "npx prettier --write '/opt/rivetos/src/index.ts' 2>/dev/null"
     );
     assert_eq!(shell.calls()[0].1, None);
     assert!(same_json(
@@ -116,7 +117,7 @@ async fn auto_lint_reports_issues_and_skips_css() {
     pipeline.run(&mut ctx).await;
     assert_eq!(
         shell.calls()[0].0,
-        "npx eslint --fix \"/src/index.ts\" 2>/dev/null"
+        "npx eslint --fix '/src/index.ts' 2>/dev/null"
     );
     assert!(same_json(
         ctx.metadata.get("autoLint"),
@@ -158,7 +159,7 @@ async fn auto_test_runs_related_tests_and_skips_specs() {
     pipeline.run(&mut ctx).await;
     assert_eq!(
         shell.calls()[0].0,
-        "npx vitest run --related \"/opt/rivetos/packages/core/src/domain/hooks.ts\" --reporter=verbose 2>&1 | tail -20"
+        "npx vitest run --related '/opt/rivetos/packages/core/src/domain/hooks.ts' --reporter=verbose 2>&1 | tail -20"
     );
     assert!(same_json(
         ctx.metadata
@@ -259,7 +260,7 @@ async fn custom_actions_interpolate_filter_and_soft_fail() {
     );
     let mut ctx = tool_after("file_write", json!({"path": "/test.ts"}), false);
     pipeline.run(&mut ctx).await;
-    assert_eq!(shell.calls()[0].0, "echo /test.ts");
+    assert_eq!(shell.calls()[0].0, "echo '/test.ts'");
     assert!(same_json(
         ctx.metadata
             .get("auto:my-action")
@@ -525,4 +526,187 @@ async fn action_output_tail_keeps_a_split_surrogate() {
     let wire = protocol::js::stringify(&protocol::js::JsValue::String(text.clone()));
     let parsed = protocol::js::parse(&wire).expect("parse");
     assert_eq!(parsed, protocol::js::JsValue::String(text.clone()));
+}
+
+#[tokio::test]
+async fn hostile_filenames_stay_quoted_and_do_not_execute() {
+    let hostile = r#"/src/o's.$(touch dollar).`touch tick`."; touch quote; ".ts"#;
+    let quoted = r#"'/src/o'\''s.$(touch dollar).`touch tick`."; touch quote; ".ts'"#;
+    let newline = "/tmp/o's.$(touch nl)\n`touch nl2`\n\"; touch quote;\"";
+    let newline_quoted = "'/tmp/o'\\''s.$(touch nl)\n`touch nl2`\n\"; touch quote;\"'";
+
+    let shell = ScriptShell::ok(0, "", "");
+    let pipeline = HookPipeline::new();
+    pipeline.register(create_auto_format_hook(config(shell.clone())));
+    let mut ctx = tool_after("file_write", json!({"path": hostile}), false);
+    pipeline.run(&mut ctx).await;
+    assert_eq!(
+        shell.calls()[0].0,
+        format!("npx prettier --write {quoted} 2>/dev/null")
+    );
+
+    let shell = ScriptShell::ok(0, "", "");
+    let pipeline = HookPipeline::new();
+    pipeline.register(create_auto_lint_hook(config(shell.clone())));
+    let mut ctx = tool_after("file_edit", json!({"file": hostile}), false);
+    pipeline.run(&mut ctx).await;
+    assert_eq!(
+        shell.calls()[0].0,
+        format!("npx eslint --fix {quoted} 2>/dev/null")
+    );
+
+    let shell = ScriptShell::ok(0, "", "");
+    let pipeline = HookPipeline::new();
+    pipeline.register(create_auto_test_hook(config(shell.clone())));
+    let mut ctx = tool_after("file_write", json!({"filename": hostile}), false);
+    pipeline.run(&mut ctx).await;
+    assert_eq!(
+        shell.calls()[0].0,
+        format!("npx vitest run --related {quoted} --reporter=verbose 2>&1 | tail -20")
+    );
+
+    let git = "git commit\n$(touch dollar)`touch tick`\"; touch quote; \"o's";
+    let shell = ScriptShell::ok(0, "", "");
+    let pipeline = HookPipeline::new();
+    pipeline.register(create_auto_git_check_hook(config(shell.clone())));
+    let mut ctx = tool_after("shell", json!({"command": git}), false);
+    pipeline.run(&mut ctx).await;
+    assert_eq!(shell.calls()[0].0, "npx tsc --noEmit 2>&1 | tail -10");
+    assert_eq!(shell.calls().len(), 1);
+
+    let shell = ScriptShell::ok(0, "", "");
+    let pipeline = HookPipeline::new();
+    pipeline.register(
+        create_custom_action_hook(
+            AutoAction {
+                id: "copy".to_string(),
+                description: "two substitutions".to_string(),
+                tools: None,
+                file_pattern: None,
+                file_pattern_flags: None,
+                command: "cp {{file}} {{file}}.bak".to_string(),
+                timeout_ms: None,
+                soft_fail: true,
+            },
+            config(shell.clone()),
+        )
+        .expect("hook"),
+    );
+    let mut ctx = tool_after("file_write", json!({"path": "/test.ts"}), false);
+    pipeline.run(&mut ctx).await;
+    assert_eq!(shell.calls()[0].0, "cp '/test.ts' '/test.ts'.bak");
+
+    let shell = ScriptShell::ok(0, "", "");
+    let pipeline = HookPipeline::new();
+    pipeline.register(
+        create_custom_action_hook(
+            AutoAction {
+                id: "dollar".to_string(),
+                description: "literal dollar patterns".to_string(),
+                tools: None,
+                file_pattern: None,
+                file_pattern_flags: None,
+                command: "echo {{file}}".to_string(),
+                timeout_ms: None,
+                soft_fail: true,
+            },
+            config(shell.clone()),
+        )
+        .expect("hook"),
+    );
+    let mut ctx = tool_after("file_write", json!({"path": "/tmp/$&"}), false);
+    pipeline.run(&mut ctx).await;
+    assert_eq!(shell.calls()[0].0, "echo '/tmp/$&'");
+
+    let shell = ScriptShell::ok(0, "", "");
+    let pipeline = HookPipeline::new();
+    pipeline.register(
+        create_custom_action_hook(
+            AutoAction {
+                id: "quoted".to_string(),
+                description: "hostile substitution".to_string(),
+                tools: None,
+                file_pattern: None,
+                file_pattern_flags: None,
+                command: "printf '%s' {{file}}".to_string(),
+                timeout_ms: None,
+                soft_fail: true,
+            },
+            config(shell.clone()),
+        )
+        .expect("hook"),
+    );
+    let mut ctx = tool_after("file_write", json!({"path": hostile}), false);
+    pipeline.run(&mut ctx).await;
+    assert_eq!(shell.calls()[0].0, format!("printf '%s' {quoted}"));
+
+    let shell = ScriptShell::ok(0, "", "");
+    let pipeline = HookPipeline::new();
+    pipeline.register(
+        create_custom_action_hook(
+            AutoAction {
+                id: "newline".to_string(),
+                description: "newline substitution".to_string(),
+                tools: None,
+                file_pattern: None,
+                file_pattern_flags: None,
+                command: "printf '%s' {{file}}".to_string(),
+                timeout_ms: None,
+                soft_fail: true,
+            },
+            config(shell.clone()),
+        )
+        .expect("hook"),
+    );
+    let mut ctx = tool_after("file_write", json!({"path": newline}), false);
+    pipeline.run(&mut ctx).await;
+    assert_eq!(shell.calls()[0].0, format!("printf '%s' {newline_quoted}"));
+
+    let dir = super::common::make_temp().await;
+    let cwd = dir.to_str().expect("temp dir is utf-8");
+    prove_inert(&dir, &format!("printf '%s' {quoted}"), hostile).await;
+    prove_inert(&dir, &format!("printf '%s' {newline_quoted}"), newline).await;
+    let live = Arc::new(ProcessShell::new(&dir));
+    let pipeline = HookPipeline::new();
+    pipeline.register(
+        create_custom_action_hook(
+            AutoAction {
+                id: "capture".to_string(),
+                description: "capture the filename".to_string(),
+                tools: None,
+                file_pattern: None,
+                file_pattern_flags: None,
+                command: "printf '%s' {{file}} > got.txt".to_string(),
+                timeout_ms: None,
+                soft_fail: true,
+            },
+            AutoActionConfig {
+                shell: live.clone() as Arc<dyn ShellExecutor>,
+                cwd: Some(cwd.to_string()),
+            },
+        )
+        .expect("hook"),
+    );
+    let mut ctx = tool_after("file_write", json!({"path": hostile}), false);
+    pipeline.run(&mut ctx).await;
+    let got = tokio::fs::read_to_string(dir.join("got.txt"))
+        .await
+        .expect("captured filename");
+    assert_eq!(got, hostile);
+    for marker in ["dollar", "tick", "quote", "nl", "nl2"] {
+        assert!(
+            !dir.join(marker).exists(),
+            "{marker} was executed from a filename"
+        );
+    }
+}
+
+async fn prove_inert(dir: &Path, command: &str, hostile: &str) {
+    let shell = ProcessShell::new(dir);
+    let ran = shell
+        .exec(command, Some(dir.to_str().expect("utf-8")))
+        .await;
+    let ran = ran.expect("shell");
+    assert_eq!(ran.exit_code, 0, "{}", ran.stderr);
+    assert_eq!(ran.stdout, hostile);
 }
