@@ -1,0 +1,1 @@
+{"v":1,"session":"s1","type":"message.agent","text":"Fixed — all 42 tests pass.","usage":{"promptTokens":100,"completionTokens":20,"cachedTokens":80},"model":"claude-opus-4-8","durationMs":1500,"ts":16}

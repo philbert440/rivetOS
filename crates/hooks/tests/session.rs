@@ -1,0 +1,567 @@
+use std::path::Path;
+use std::sync::Arc;
+use std::time::Duration;
+
+use super::common::ScriptFiles;
+use hooks::{
+    HookContext, HookPipeline, ProcessShell, SessionHooksConfig, SessionHooksContext,
+    SessionTokenTotals, ShellError, ShellExecutor, create_auto_commit_hook,
+    create_post_compact_hook, create_pre_compact_hook, create_session_hooks,
+    create_session_start_hook, create_session_summary_hook,
+};
+use protocol::js::JsValue;
+use serde_json::{Value, json};
+
+fn same_json(value: Option<&JsValue>, expected: Value) -> bool {
+    value.is_some_and(|got| *got == protocol::js::from_serde(&expected))
+}
+
+fn files_with_read(note: Result<Option<String>, hooks::FileError>) -> Arc<ScriptFiles> {
+    let files = ScriptFiles::new();
+    files.reads.lock().push(note);
+    files
+}
+
+fn context(
+    shell: Option<Arc<dyn ShellExecutor>>,
+    files: Option<Arc<ScriptFiles>>,
+    workspace: Option<&str>,
+) -> SessionHooksContext {
+    SessionHooksContext {
+        shell,
+        file_writer: files.map(|files| files as Arc<dyn hooks::FileWriter>),
+        workspace_dir: workspace.map(str::to_string),
+        utc_day: None,
+    }
+}
+
+fn end_ctx() -> HookContext {
+    let mut ctx = HookContext::session_end().with_agent("opus");
+    ctx.turn_count = Some(5);
+    ctx.total_tokens = Some(SessionTokenTotals {
+        prompt: 1000,
+        completion: 500,
+    });
+    ctx
+}
+
+#[tokio::test]
+async fn session_start_records_metadata_and_daily_context() {
+    let files = files_with_read(Ok(None));
+    let pipeline = HookPipeline::new();
+    pipeline.register(create_session_start_hook(context(
+        None,
+        Some(files),
+        Some("/home/user/workspace"),
+    )));
+    let mut ctx = HookContext::session_start();
+    ctx.platform = Some("telegram".to_string());
+    ctx.user_id = Some("user-1".to_string());
+    ctx.timestamp = 1_700_000_000_000;
+    pipeline.run(&mut ctx).await;
+    assert!(same_json(
+        ctx.metadata.get("sessionStartTime"),
+        json!(1_700_000_000_000_i64)
+    ));
+    assert!(same_json(ctx.metadata.get("platform"), json!("telegram")));
+    assert!(same_json(ctx.metadata.get("userId"), json!("user-1")));
+    assert!(ctx.metadata.get("dailyContext").is_none());
+
+    let files = files_with_read(Ok(Some("# Today\n- Worked on hooks".to_string())));
+    let pipeline = HookPipeline::new();
+    pipeline.register(create_session_start_hook(context(
+        None,
+        Some(Arc::clone(&files)),
+        Some("/home/user/workspace"),
+    )));
+    let mut ctx = HookContext::session_start();
+    pipeline.run(&mut ctx).await;
+    assert!(
+        ctx.metadata
+            .get("dailyContext")
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+            .contains("Worked on hooks")
+    );
+
+    let files = files_with_read(Err(hooks::FileError::new("missing")));
+    let pipeline = HookPipeline::new();
+    pipeline.register(create_session_start_hook(context(
+        None,
+        Some(files),
+        Some("/home/user/workspace"),
+    )));
+    let mut ctx = HookContext::session_start();
+    pipeline.run(&mut ctx).await;
+    assert!(ctx.metadata.get("dailyContext").is_none());
+
+    let files = files_with_read(Err(hooks::FileError::read_timed_out()));
+    let pipeline = HookPipeline::new();
+    pipeline.register(create_session_start_hook(context(
+        None,
+        Some(files),
+        Some("/home/user/workspace"),
+    )));
+    let mut ctx = HookContext::session_start();
+    let result = pipeline.run(&mut ctx).await;
+    assert!(!result.aborted);
+    assert!(result.errors.is_empty());
+    assert!(ctx.metadata.get("dailyContext").is_none());
+
+    let long = "é".repeat(2001);
+    let files = files_with_read(Ok(Some(long)));
+    let pipeline = HookPipeline::new();
+    pipeline.register(create_session_start_hook(context(
+        None,
+        Some(files),
+        Some("/workspace"),
+    )));
+    let mut ctx = HookContext::session_start();
+    pipeline.run(&mut ctx).await;
+    let daily = ctx
+        .metadata
+        .get("dailyContext")
+        .and_then(|value| value.as_str())
+        .expect("daily");
+    assert_eq!(protocol::js::utf16_len(daily), 2000);
+
+    let split = format!("{}😀", "a".repeat(1999));
+    let files = files_with_read(Ok(Some(split)));
+    let pipeline = HookPipeline::new();
+    pipeline.register(create_session_start_hook(context(
+        None,
+        Some(files),
+        Some("/workspace"),
+    )));
+    let mut ctx = HookContext::session_start();
+    pipeline.run(&mut ctx).await;
+    let stored = ctx.metadata.get("dailyContext").expect("daily");
+    let protocol::js::JsValue::String(text) = stored else {
+        panic!("daily context is a string");
+    };
+    assert_eq!(text.units().len(), 2000);
+    assert_eq!(text.units()[1999], 0xD83D);
+    let wire = protocol::js::stringify(&protocol::js::JsValue::String(text.clone()));
+    assert!(wire.contains(r"\ud83d"));
+    assert!(!wire.contains(r"\ude00"));
+    let parsed = protocol::js::parse(&wire).expect("parse");
+    assert_eq!(parsed, protocol::js::JsValue::String(text.clone()));
+}
+
+#[tokio::test]
+async fn session_summary_writes_the_daily_note_shape() {
+    let files = ScriptFiles::new();
+    let pipeline = HookPipeline::new();
+    pipeline.register(create_session_summary_hook(context(
+        None,
+        Some(Arc::clone(&files)),
+        Some("/home/user/workspace"),
+    )));
+    let mut ctx = end_ctx();
+    pipeline.run(&mut ctx).await;
+    assert!(same_json(ctx.metadata.get("summaryWritten"), json!(true)));
+    let appended = files.appends();
+    assert_eq!(appended.len(), 1);
+    assert!(appended[0].0.contains("/memory/"));
+    assert!(appended[0].0.ends_with(".md"));
+    assert!(appended[0].1.contains("Session ended"));
+    assert!(appended[0].1.contains("Agent: opus"));
+    assert!(appended[0].1.contains("Turns: 5"));
+    assert!(appended[0].1.contains("Tokens: 1,500 (1,000 in / 500 out)"));
+
+    let files = ScriptFiles::new();
+    *files.fail_append.lock() = Some("disk full".to_string());
+    let pipeline = HookPipeline::new();
+    pipeline.register(create_session_summary_hook(context(
+        None,
+        Some(files),
+        Some("/home/user/workspace"),
+    )));
+    let mut ctx = end_ctx();
+    pipeline.run(&mut ctx).await;
+    assert!(same_json(ctx.metadata.get("summaryWritten"), json!(false)));
+
+    let pipeline = HookPipeline::new();
+    pipeline.register(create_session_summary_hook(context(
+        None,
+        None,
+        Some("/test"),
+    )));
+    let mut ctx = end_ctx();
+    pipeline.run(&mut ctx).await;
+    assert!(ctx.metadata.get("summaryWritten").is_none());
+
+    let files = ScriptFiles::new();
+    let pipeline = HookPipeline::new();
+    pipeline.register(create_session_summary_hook(context(
+        None,
+        Some(files.clone()),
+        Some("/home/user/workspace"),
+    )));
+    let mut ctx = HookContext::session_end();
+    ctx.turn_count = Some(0);
+    pipeline.run(&mut ctx).await;
+    let text = files.appends()[0].1.clone();
+    assert!(text.contains("Agent: unknown"));
+    assert!(!text.contains("Turns:"));
+    assert!(!text.contains("Tokens:"));
+}
+
+#[tokio::test]
+async fn auto_commit_uses_the_typescript_git_commands() {
+    let shell = super::common::ScriptShell::sequence(vec![
+        Ok(hooks::ShellOutput {
+            stdout: " M file.ts\n".to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+        }),
+        Ok(hooks::ShellOutput {
+            stdout: String::new(),
+            stderr: String::new(),
+            exit_code: 0,
+        }),
+        Ok(hooks::ShellOutput {
+            stdout: "[main abc123] auto commit".to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+        }),
+    ]);
+    let pipeline = HookPipeline::new();
+    pipeline.register(create_auto_commit_hook(context(
+        Some(shell.clone()),
+        None,
+        Some("/home/user/workspace"),
+    )));
+    let mut ctx = end_ctx();
+    pipeline.run(&mut ctx).await;
+    assert_eq!(shell.calls().len(), 3);
+    assert_eq!(shell.calls()[0].command, "git status --porcelain");
+    assert_eq!(
+        shell.calls()[0].cwd.as_deref(),
+        Some("/home/user/workspace")
+    );
+    assert_eq!(shell.calls()[1].command, "git add -A");
+    assert!(shell.calls()[0].env.is_empty());
+    assert!(shell.calls()[1].env.is_empty());
+    assert_eq!(
+        shell.calls()[2].command,
+        "git commit -m \"auto: session end (${RIVET_AGENT_ID}, 5 turns)\""
+    );
+    assert_eq!(
+        shell.calls()[2].env,
+        vec![("RIVET_AGENT_ID".to_string(), "opus".to_string())]
+    );
+    assert!(same_json(
+        ctx.metadata
+            .get("autoCommit")
+            .and_then(|value| value.get("status")),
+        json!("committed")
+    ));
+
+    let shell = super::common::ScriptShell::sequence(vec![
+        Ok(hooks::ShellOutput {
+            stdout: " M file.ts\n".to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+        }),
+        Ok(hooks::ShellOutput {
+            stdout: String::new(),
+            stderr: String::new(),
+            exit_code: 0,
+        }),
+        Ok(hooks::ShellOutput {
+            stdout: String::new(),
+            stderr: String::new(),
+            exit_code: 0,
+        }),
+    ]);
+    let pipeline = HookPipeline::new();
+    pipeline.register(create_auto_commit_hook(context(
+        Some(shell.clone()),
+        None,
+        Some("/home/user/workspace"),
+    )));
+    let mut ctx = HookContext::session_end();
+    pipeline.run(&mut ctx).await;
+    assert_eq!(
+        shell.calls()[2].command,
+        "git commit -m \"auto: session end (${RIVET_AGENT_ID}, 0 turns)\""
+    );
+    assert_eq!(
+        shell.calls()[2].env,
+        vec![("RIVET_AGENT_ID".to_string(), "unknown".to_string())]
+    );
+
+    let shell = super::common::ScriptShell::ok(0, "   \n", "");
+    let pipeline = HookPipeline::new();
+    pipeline.register(create_auto_commit_hook(context(
+        Some(shell),
+        None,
+        Some("/home/user/workspace"),
+    )));
+    let mut ctx = end_ctx();
+    pipeline.run(&mut ctx).await;
+    assert!(same_json(
+        ctx.metadata.get("autoCommit"),
+        json!({"status": "clean", "message": "No uncommitted changes"})
+    ));
+
+    let shell = super::common::ScriptShell::sequence(vec![
+        Ok(hooks::ShellOutput {
+            stdout: " M file.ts\n".to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+        }),
+        Ok(hooks::ShellOutput {
+            stdout: String::new(),
+            stderr: String::new(),
+            exit_code: 0,
+        }),
+        Ok(hooks::ShellOutput {
+            stdout: String::new(),
+            stderr: "error".to_string(),
+            exit_code: 1,
+        }),
+    ]);
+    let pipeline = HookPipeline::new();
+    pipeline.register(create_auto_commit_hook(context(
+        Some(shell),
+        None,
+        Some("/home/user/workspace"),
+    )));
+    let mut ctx = end_ctx();
+    pipeline.run(&mut ctx).await;
+    assert!(same_json(
+        ctx.metadata
+            .get("autoCommit")
+            .and_then(|value| value.get("status")),
+        json!("failed")
+    ));
+
+    let shell = super::common::ScriptShell::fail("git missing");
+    let pipeline = HookPipeline::new();
+    pipeline.register(create_auto_commit_hook(context(
+        Some(shell),
+        None,
+        Some("/home/user/workspace"),
+    )));
+    let mut ctx = end_ctx();
+    pipeline.run(&mut ctx).await;
+    assert!(same_json(
+        ctx.metadata.get("autoCommit"),
+        json!({"status": "error", "message": "git missing"})
+    ));
+    let _ = ShellError::new("git missing");
+}
+
+#[tokio::test]
+async fn compaction_hooks_carry_the_snapshot_and_ratio() {
+    let pipeline = HookPipeline::new();
+    pipeline.register(create_pre_compact_hook());
+    let mut ctx = HookContext::compact_before(150);
+    ctx.timestamp = 99;
+    pipeline.run(&mut ctx).await;
+    assert!(same_json(
+        ctx.metadata.get("preCompactSnapshot"),
+        json!({"messageCount": 150, "timestamp": 99})
+    ));
+
+    let files = ScriptFiles::new();
+    let pipeline = HookPipeline::new();
+    pipeline.register(create_post_compact_hook(context(
+        None,
+        Some(files.clone()),
+        Some("/home/user/workspace"),
+    )));
+    let mut ctx = HookContext::compact_after(10);
+    ctx.summary = Some("Session discussed hooks and testing.".to_string());
+    ctx.metadata.insert(
+        "preCompactSnapshot",
+        protocol::js::from_serde(&json!({"messageCount": 100, "timestamp": 1})),
+    );
+    pipeline.run(&mut ctx).await;
+    assert!(same_json(
+        ctx.metadata.get("compactionResult"),
+        json!({
+            "originalMessages": 100,
+            "remainingMessages": 10,
+            "summaryGenerated": true,
+            "compressionRatio": "90.0%"
+        })
+    ));
+    let logged = files.appends()[0].1.clone();
+    assert!(logged.contains("Compaction"));
+    assert!(logged.contains("100"));
+    assert!(logged.contains('→'));
+    assert!(logged.contains("10"));
+    assert!(logged.contains("Summary: yes"));
+
+    let pipeline = HookPipeline::new();
+    pipeline.register(create_post_compact_hook(context(
+        None,
+        Some(ScriptFiles::new()),
+        Some("/home/user/workspace"),
+    )));
+    let mut ctx = HookContext::compact_after(10);
+    ctx.summary = Some("Session discussed hooks and testing.".to_string());
+    pipeline.run(&mut ctx).await;
+    assert!(same_json(
+        ctx.metadata
+            .get("compactionResult")
+            .and_then(|value| value.get("originalMessages")),
+        json!("unknown")
+    ));
+
+    let files = ScriptFiles::new();
+    let pipeline = HookPipeline::new();
+    pipeline.register(create_pre_compact_hook());
+    pipeline.register(create_post_compact_hook(context(
+        None,
+        Some(files),
+        Some("/home/user/workspace"),
+    )));
+    let mut before = HookContext::compact_before(200);
+    pipeline.run(&mut before).await;
+    let mut after = HookContext::compact_after(15);
+    after.summary = Some("kept".to_string());
+    after.metadata = before.metadata.clone();
+    pipeline.run(&mut after).await;
+    assert!(same_json(
+        after.metadata.get("compactionResult"),
+        json!({
+            "originalMessages": 200,
+            "remainingMessages": 15,
+            "summaryGenerated": true,
+            "compressionRatio": "92.5%"
+        })
+    ));
+
+    let pipeline = HookPipeline::new();
+    pipeline.register(create_post_compact_hook(context(None, None, None)));
+    let mut ctx = HookContext::compact_after(15);
+    ctx.metadata.insert(
+        "preCompactSnapshot",
+        protocol::js::from_serde(&json!({"messageCount": 16, "timestamp": 1})),
+    );
+    pipeline.run(&mut ctx).await;
+    assert!(
+        same_json(
+            ctx.metadata
+                .get("compactionResult")
+                .and_then(|value| value.get("compressionRatio")),
+            json!("6.3%")
+        ),
+        "15 of 16 is exactly 6.25 percent and toFixed(1) is 6.3"
+    );
+}
+
+#[test]
+fn create_session_hooks_defaults_and_flags() {
+    let hooks = create_session_hooks(SessionHooksConfig {
+        context: context(None, None, Some("/workspace")),
+        session_start: None,
+        session_summary: None,
+        auto_commit: false,
+        pre_compact: None,
+        post_compact: None,
+    });
+    assert_eq!(hooks.len(), 4);
+    let ids: Vec<_> = hooks.iter().map(|hook| hook.id.as_str()).collect();
+    assert_eq!(
+        ids,
+        vec![
+            "session:start-context",
+            "session:end-summary",
+            "compact:preserve-context",
+            "compact:verify-context"
+        ]
+    );
+    let enabled = create_session_hooks(SessionHooksConfig {
+        context: context(None, None, None),
+        session_start: None,
+        session_summary: None,
+        auto_commit: true,
+        pre_compact: None,
+        post_compact: None,
+    });
+    assert_eq!(enabled.len(), 5);
+    assert!(
+        enabled
+            .iter()
+            .any(|hook| hook.id == "session:end-autocommit")
+    );
+    let none = create_session_hooks(SessionHooksConfig {
+        context: context(None, None, None),
+        session_start: Some(false),
+        session_summary: Some(false),
+        auto_commit: false,
+        pre_compact: Some(false),
+        post_compact: Some(false),
+    });
+    assert!(none.is_empty());
+}
+
+#[tokio::test]
+async fn auto_commit_keeps_a_hostile_agent_id_out_of_shell_source() {
+    let dir = super::common::make_temp().await;
+    let cwd = dir.to_str().expect("utf-8").to_string();
+    let hooks = dir.join("empty-hooks");
+    tokio::fs::create_dir(&hooks).await.expect("hooks dir");
+    git_ok(&dir, "git init").await;
+    git_ok(&dir, "git config user.email dev@example.com").await;
+    git_ok(&dir, "git config user.name dev").await;
+    git_ok(&dir, "git config commit.gpgsign false").await;
+    git_ok(
+        &dir,
+        &format!("git config core.hooksPath {}", hooks.display()),
+    )
+    .await;
+    tokio::fs::write(dir.join("note.txt"), "hello\n")
+        .await
+        .expect("note");
+    let agent =
+        "opus $(touch${IFS}injected) `touch${IFS}tick` \";touch${IFS}quote;\n$(touch${IFS}nl)";
+    let shell: Arc<dyn ShellExecutor> =
+        Arc::new(ProcessShell::new(&dir).with_timeout(Duration::from_secs(5)));
+    let pipeline = HookPipeline::new();
+    pipeline.register(create_auto_commit_hook(context(
+        Some(shell),
+        None,
+        Some(&cwd),
+    )));
+    let mut ctx = HookContext::session_end().with_agent(agent);
+    ctx.turn_count = Some(5);
+    pipeline.run(&mut ctx).await;
+    assert_no_commit_markers(&dir);
+    assert!(same_json(
+        ctx.metadata
+            .get("autoCommit")
+            .and_then(|value| value.get("status")),
+        json!("committed")
+    ));
+    let message = git_out(&dir, "git --no-pager log -1 --format=%B").await;
+    let expected = format!("auto: session end ({agent}, 5 turns)");
+    assert!(message.starts_with(&expected), "{message:?}");
+    assert_no_commit_markers(&dir);
+}
+
+async fn git_ok(dir: &Path, command: &str) {
+    git_out(dir, command).await;
+}
+
+async fn git_out(dir: &Path, command: &str) -> String {
+    let shell = ProcessShell::new(dir);
+    let cwd = dir.to_str().expect("utf-8");
+    let out = shell.exec(command, Some(cwd)).await.expect("git");
+    assert_eq!(out.exit_code, 0, "{command}\n{}{}", out.stdout, out.stderr);
+    out.stdout
+}
+
+fn assert_no_commit_markers(dir: &Path) {
+    for marker in ["injected", "tick", "quote", "nl"] {
+        assert!(
+            !dir.join(marker).exists(),
+            "{marker} was executed from an agent id"
+        );
+    }
+}

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/protocol", "crates/config", "crates/wiki"]
+members = ["crates/protocol", "crates/config", "crates/wiki", "crates/workflows", "crates/hooks", "crates/workspace", "crates/session-events"]
 
 [workspace.package]
 edition = "2024"
@@ -16,6 +16,7 @@ bytes = "1"
 chrono = { version = "0.4.42", default-features = false, features = ["clock", "std"] }
 chrono-tz = "0.10.4"
 clap = { version = "4", features = ["derive"] }
+command-fds = "0.3.3"
 fd-lock = "4"
 futures = "0.3"
 futures-util = "0.3"
