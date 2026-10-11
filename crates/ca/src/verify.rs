@@ -1,7 +1,9 @@
 use std::fs;
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use rustls_pki_types::{CertificateDer, SignatureVerificationAlgorithm, UnixTime};
+use webpki::{EndEntityCert, ExtendedKeyUsageValidator, KeyPurposeIdIter};
 use x509_parser::certificate::X509Certificate;
 use x509_parser::extensions::{GeneralName, NameConstraints};
 use x509_parser::oid_registry::{OID_PKCS1_SHA256WITHRSA, OID_PKCS9_EMAIL_ADDRESS};
@@ -113,6 +115,9 @@ pub fn verify_cert(chain_pem: &Path, crl_pem: &Path, cert_path: &Path) -> Verify
     if let Some(output) = check_times(&chain, cert_path, now) {
         return output;
     }
+    if let Some(output) = webpki_blocks(&chain, cert_path, now) {
+        return output;
+    }
     let signer = if chain.len() == 1 {
         &chain[0]
     } else {
@@ -145,15 +150,7 @@ fn build_chain(leaf: &Anchor, trusted: &[Anchor]) -> Result<Vec<Anchor>, ChainFa
     for _ in 0..16 {
         let depth = chain.len() - 1;
         let current = chain[depth].clone();
-        if current.subject == current.issuer {
-            if !signature_ok(&current, &current) {
-                return Err(fail_chain(
-                    &current,
-                    depth,
-                    7,
-                    "certificate signature failure",
-                ));
-            }
+        if current.subject == current.issuer && signature_ok(&current, &current) {
             return Ok(chain);
         }
         let named: Vec<&Anchor> = trusted
@@ -227,7 +224,10 @@ fn check_ca_constraints(chain: &[Anchor], cert_path: &Path) -> Option<VerifyOutp
                 "key usage does not include certificate signing",
             ));
         }
-        let cas_below = chain[1..depth].iter().filter(|item| item.is_ca).count();
+        let cas_below = chain[1..depth]
+            .iter()
+            .filter(|item| item.subject != item.issuer)
+            .count();
         if let Some(limit) = cert.path_len
             && cas_below > usize::try_from(limit).unwrap_or(usize::MAX)
         {
@@ -369,10 +369,13 @@ fn check_critical(chain: &[Anchor], cert_path: &Path) -> Option<VerifyOutput> {
             return Some(unhandled(anchor, cert_path, depth));
         };
         for ext in certificate.extensions() {
+            let oid = ext.oid.to_id_string();
+            if oid == "2.5.29.30" && subtree_minmax(ext.value) {
+                continue;
+            }
             if !ext.critical {
                 continue;
             }
-            let oid = ext.oid.to_id_string();
             if !processed_extension(&oid) {
                 return Some(unhandled(anchor, cert_path, depth));
             }
@@ -472,6 +475,7 @@ fn constraint_message(code: i32) -> &'static str {
     match code {
         47 => "permitted subtree violation",
         48 => "excluded subtree violation",
+        49 => "name constraints minimum and maximum not supported",
         51 => "unsupported name constraint type",
         52 => "unsupported or invalid name constraint syntax",
         _ => "unsupported or invalid name syntax",
@@ -481,9 +485,13 @@ fn constraint_message(code: i32) -> &'static str {
 fn constrain_pair(subject: &Anchor, depth: usize, issuer: &Anchor) -> Result<(), i32> {
     let subject_cert = load_cert(subject).map_err(|_| 34)?;
     let issuer_cert = load_cert(issuer).map_err(|_| 34)?;
+    if raw_name_constraints(&issuer_cert).is_some_and(subtree_minmax) {
+        return Err(49);
+    }
     let Some(constraints) = name_constraints_of(&issuer_cert)? else {
         return Ok(());
     };
+    check_directory(subject_cert.subject(), constraints)?;
     if let Some(san) = subject_cert.subject_alternative_name().map_err(|_| 34)? {
         for name in &san.value.general_names {
             check_general_name(name, constraints)?;
@@ -610,7 +618,7 @@ fn check_uri(uri: &str, constraints: &NameConstraints<'_>) -> Result<(), i32> {
     let host = uri_host(uri)?;
     excluded_then_permitted(constraints, |base| match base {
         GeneralName::URI(constraint) => {
-            Some(uri_base(constraint).map(|base| dns_match(host, base)))
+            Some(uri_base(constraint).map(|base| host_constraint(host, base)))
         }
         _ => None,
     })
@@ -678,28 +686,53 @@ fn eq_ascii(left: &[u8], right: &[u8]) -> bool {
 }
 
 fn email_match(mail: &str, base: &str) -> Result<bool, i32> {
-    if !mail.contains('@') {
+    let Some((local, host)) = mail.split_once('@') else {
+        return Err(53);
+    };
+    if local.is_empty() || host.is_empty() || host.contains('@') {
         return Err(53);
     }
     if base.is_empty() {
         return Ok(true);
     }
-    if !base.contains('@') && base.starts_with('.') {
-        if mail.len() > base.len() {
-            let start = mail.len() - base.len();
-            return Ok(eq_ascii(&mail.as_bytes()[start..], base.as_bytes()));
+    if let Some(base_host) = base.strip_prefix('.') {
+        if base_host.is_empty() {
+            return Ok(false);
         }
-        return Ok(false);
+        return Ok(mail.len() > base.len()
+            && eq_ascii(&mail.as_bytes()[mail.len() - base.len()..], base.as_bytes()));
     }
-    if base.contains('@') {
-        return Ok(mail.len() == base.len() && eq_ascii(mail.as_bytes(), base.as_bytes()));
+    if let Some((base_local, base_host)) = base.split_once('@') {
+        if base_host.is_empty() {
+            return Err(52);
+        }
+        if base_local.is_empty() {
+            return Ok(eq_ascii(host.as_bytes(), base_host.as_bytes()));
+        }
+        return Ok(local.as_bytes() == base_local.as_bytes()
+            && eq_ascii(host.as_bytes(), base_host.as_bytes()));
     }
-    let host = mail.split_once('@').map(|(_, host)| host).ok_or(53)?;
-    Ok(dns_match(host, base))
+    Ok(eq_ascii(host.as_bytes(), base.as_bytes()))
+}
+
+fn host_constraint(host: &str, base: &str) -> bool {
+    if base.is_empty() {
+        return true;
+    }
+    if let Some(suffix) = base.strip_prefix('.') {
+        if suffix.is_empty() {
+            return false;
+        }
+        return host.len() > base.len()
+            && eq_ascii(&host.as_bytes()[host.len() - base.len()..], base.as_bytes());
+    }
+    eq_ascii(host.as_bytes(), base.as_bytes())
 }
 
 fn uri_host(uri: &str) -> Result<&str, i32> {
-    let after_scheme = uri.split_once("://").map_or(uri, |(_, rest)| rest);
+    let Some((_, after_scheme)) = uri.split_once("://") else {
+        return Err(53);
+    };
     let no_path = after_scheme
         .split(['/', '?', '#'])
         .next()
@@ -732,15 +765,38 @@ fn ip_match(addr: &[u8], base: &[u8]) -> Result<bool, i32> {
     if addr.len() != 4 && addr.len() != 16 {
         return Err(53);
     }
+    let other_family = if addr.len() == 4 { 32 } else { 8 };
+    if base.len() == other_family {
+        return Ok(false);
+    }
     if base.len() != addr.len() * 2 {
         return Err(52);
     }
     let (network, mask) = base.split_at(addr.len());
+    if !prefix_mask(mask) {
+        return Err(52);
+    }
     Ok(addr
         .iter()
         .zip(network)
         .zip(mask)
         .all(|((addr, network), mask)| addr & mask == network & mask))
+}
+
+fn prefix_mask(mask: &[u8]) -> bool {
+    let mut seen_zero = false;
+    for &byte in mask {
+        if seen_zero && byte != 0 {
+            return false;
+        }
+        if byte.leading_ones() + byte.trailing_zeros() != 8 {
+            return false;
+        }
+        if byte != 0xff {
+            seen_zero = true;
+        }
+    }
+    true
 }
 
 fn directory_match(name: &X509Name<'_>, base: &X509Name<'_>) -> bool {
@@ -767,6 +823,263 @@ fn directory_match(name: &X509Name<'_>, base: &X509Name<'_>) -> bool {
         }
     }
     true
+}
+
+fn raw_name_constraints<'a>(certificate: &'a X509Certificate<'a>) -> Option<&'a [u8]> {
+    certificate.extensions().iter().find_map(|ext| {
+        if ext.oid.to_id_string() == "2.5.29.30" {
+            Some(ext.value)
+        } else {
+            None
+        }
+    })
+}
+
+struct DerCursor<'a> {
+    rest: &'a [u8],
+}
+
+impl<'a> DerCursor<'a> {
+    fn new(bytes: &'a [u8]) -> Self {
+        Self { rest: bytes }
+    }
+
+    fn done(&self) -> bool {
+        self.rest.is_empty()
+    }
+
+    fn tlv(&mut self) -> Option<(u8, &'a [u8])> {
+        let tag = *self.rest.first()?;
+        let (len, header) = der_length(self.rest.get(1..)?)?;
+        let rest = self.rest.get(1 + header..)?;
+        if rest.len() < len {
+            return None;
+        }
+        let (body, tail) = rest.split_at(len);
+        self.rest = tail;
+        Some((tag, body))
+    }
+
+    fn sequence(&mut self) -> Option<&'a [u8]> {
+        let (tag, body) = self.tlv()?;
+        if tag == 0x30 { Some(body) } else { None }
+    }
+}
+
+fn der_length(bytes: &[u8]) -> Option<(usize, usize)> {
+    let first = *bytes.first()?;
+    if first < 0x80 {
+        return Some((usize::from(first), 1));
+    }
+    let octets = usize::from(first & 0x7f);
+    if octets == 0 || octets > 3 || bytes.len() < 1 + octets {
+        return None;
+    }
+    let mut len = 0usize;
+    for &byte in &bytes[1..1 + octets] {
+        len = len.checked_shl(8)?.checked_add(usize::from(byte))?;
+    }
+    Some((len, 1 + octets))
+}
+
+fn subtree_minmax(der: &[u8]) -> bool {
+    let mut outer = DerCursor::new(der);
+    let Some(body) = outer.sequence() else {
+        return false;
+    };
+    if !outer.done() {
+        return false;
+    }
+    let mut fields = DerCursor::new(body);
+    while !fields.done() {
+        let Some((tag, content)) = fields.tlv() else {
+            return false;
+        };
+        if tag != 0xa0 && tag != 0xa1 {
+            return false;
+        }
+        if field_has_minmax(content) {
+            return true;
+        }
+    }
+    false
+}
+
+fn field_has_minmax(content: &[u8]) -> bool {
+    if let Some(found) = subtrees_have_extra(content) {
+        return found;
+    }
+    let mut wrapped = DerCursor::new(content);
+    let Some(list) = wrapped.sequence() else {
+        return false;
+    };
+    if !wrapped.done() {
+        return false;
+    }
+    subtrees_have_extra(list).unwrap_or(false)
+}
+
+fn subtrees_have_extra(list: &[u8]) -> Option<bool> {
+    let mut items = DerCursor::new(list);
+    let mut extra = false;
+    if items.done() {
+        return Some(false);
+    }
+    while !items.done() {
+        let subtree = items.sequence()?;
+        let mut parts = DerCursor::new(subtree);
+        let (tag, _) = parts.tlv()?;
+        if tag == 0x30 {
+            return None;
+        }
+        if !parts.done() {
+            extra = true;
+        }
+    }
+    Some(extra)
+}
+
+const EKU_SERVER: &[usize] = &[1, 3, 6, 1, 5, 5, 7, 3, 1];
+const EKU_CLIENT: &[usize] = &[1, 3, 6, 1, 5, 5, 7, 3, 2];
+const EKU_ANY: &[usize] = &[2, 5, 29, 37, 0];
+
+struct ClientOrServerAuth;
+
+impl ExtendedKeyUsageValidator for ClientOrServerAuth {
+    fn validate(&self, iter: KeyPurposeIdIter<'_, '_>) -> Result<(), webpki::Error> {
+        let mut empty = true;
+        let mut present = Vec::new();
+        for id in iter {
+            empty = false;
+            let id = id?;
+            let decoded = id.to_decoded_oid();
+            if decoded.as_slice() == EKU_SERVER
+                || decoded.as_slice() == EKU_CLIENT
+                || decoded.as_slice() == EKU_ANY
+            {
+                return Ok(());
+            }
+            present.push(decoded);
+        }
+        if empty {
+            return Ok(());
+        }
+        Err(webpki::Error::RequiredEkuNotFoundContext(
+            webpki::RequiredEkuNotFoundContext {
+                required: webpki::KeyUsage::client_auth(),
+                present,
+            },
+        ))
+    }
+}
+
+fn webpki_blocks(chain: &[Anchor], cert_path: &Path, now: i64) -> Option<VerifyOutput> {
+    let now = u64::try_from(now).unwrap_or(0);
+    match webpki_verify(chain, now) {
+        Ok(()) => None,
+        Err(err) if webpki_gap(chain, &err) => None,
+        Err(err) => Some(webpki_failure(chain, cert_path, &err)),
+    }
+}
+
+fn webpki_verify(chain: &[Anchor], now: u64) -> Result<(), webpki::Error> {
+    let leaf_der = CertificateDer::from(chain[0].der.as_slice());
+    let end = EndEntityCert::try_from(&leaf_der)?;
+    let anchor_der = CertificateDer::from(chain[chain.len() - 1].der.as_slice());
+    let anchor = webpki::anchor_from_trusted_cert(&anchor_der)?;
+    let anchors = [anchor];
+    let mut mids = Vec::new();
+    if chain.len() > 2 {
+        for cert in &chain[1..chain.len() - 1] {
+            mids.push(CertificateDer::from(cert.der.as_slice()));
+        }
+    }
+    let algs: &[&dyn SignatureVerificationAlgorithm] = &[
+        webpki::ring::RSA_PKCS1_2048_8192_SHA256,
+        webpki::ring::RSA_PKCS1_2048_8192_SHA256_ABSENT_PARAMS,
+    ];
+    let time = UnixTime::since_unix_epoch(Duration::from_secs(now));
+    end.verify_for_usage(algs, &anchors, &mids, time, ClientOrServerAuth, None, None)
+        .map(|_| ())
+}
+
+fn webpki_gap(chain: &[Anchor], err: &webpki::Error) -> bool {
+    match err {
+        webpki::Error::PathLenConstraintViolated
+        | webpki::Error::UnsupportedCriticalExtension
+        | webpki::Error::CaUsedAsEndEntity => true,
+        webpki::Error::InvalidSignatureForPublicKey => chain_has_self_issued(chain),
+        webpki::Error::NameConstraintViolation => chain_has_name_webpki_skips(chain),
+        _ => false,
+    }
+}
+
+fn chain_has_self_issued(chain: &[Anchor]) -> bool {
+    chain
+        .iter()
+        .any(|cert| cert.subject == cert.issuer && !signature_ok(cert, cert))
+}
+
+fn chain_has_name_webpki_skips(chain: &[Anchor]) -> bool {
+    chain.iter().any(|anchor| {
+        let Ok(certificate) = load_cert(anchor) else {
+            return true;
+        };
+        match certificate.name_constraints() {
+            Ok(Some(ext)) => constraints_webpki_skips(ext.value),
+            Ok(None) => false,
+            Err(_) => true,
+        }
+    })
+}
+
+fn constraints_webpki_skips(constraints: &NameConstraints<'_>) -> bool {
+    constraints
+        .permitted_subtrees
+        .iter()
+        .flatten()
+        .chain(constraints.excluded_subtrees.iter().flatten())
+        .any(|subtree| {
+            matches!(
+                &subtree.base,
+                GeneralName::DirectoryName(_) | GeneralName::RFC822Name(_) | GeneralName::URI(_)
+            )
+        })
+}
+
+fn webpki_failure(chain: &[Anchor], cert_path: &Path, err: &webpki::Error) -> VerifyOutput {
+    let (code, message) = match err {
+        webpki::Error::InvalidSignatureForPublicKey => (7, "certificate signature failure"),
+        webpki::Error::CertExpired { .. } => (10, "certificate has expired"),
+        webpki::Error::CertNotValidYet { .. } => (9, "certificate is not yet valid"),
+        webpki::Error::RequiredEkuNotFoundContext(_) => (26, "unsuitable certificate purpose"),
+        webpki::Error::EmptyEkuExtension => (26, "unsuitable certificate purpose"),
+        webpki::Error::EndEntityUsedAsCa | webpki::Error::CaUsedAsEndEntity => {
+            (24, "invalid CA certificate")
+        }
+        webpki::Error::UnknownIssuer => {
+            if chain.len() > 1 {
+                let depth = chain.len() - 1;
+                return fail_parsed(
+                    &chain[depth].dn,
+                    cert_path,
+                    depth,
+                    2,
+                    "unable to get issuer certificate",
+                );
+            }
+            (20, "unable to get local issuer certificate")
+        }
+        webpki::Error::InvalidNetworkMaskConstraint | webpki::Error::MalformedNameConstraint => {
+            (52, "unsupported or invalid name constraint syntax")
+        }
+        webpki::Error::MalformedDnsIdentifier => (53, "unsupported or invalid name syntax"),
+        webpki::Error::NameConstraintViolation => (47, "permitted subtree violation"),
+        webpki::Error::PathLenConstraintViolated => (25, "path length constraint exceeded"),
+        webpki::Error::UnsupportedCriticalExtension => (34, "unhandled critical extension"),
+        _ => (34, "unhandled critical extension"),
+    };
+    fail_parsed(&chain[0].dn, cert_path, 0, code, message)
 }
 
 fn fail_load(path: &Path, message: &str) -> VerifyOutput {

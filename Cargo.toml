@@ -42,6 +42,8 @@ rsa = { version = "0.9.10", features = ["pem", "sha2"] }
 rusqlite = "0.37.0"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-pemfile = "2"
+rustls-pki-types = "1.12"
+rustls-webpki = { version = "0.103.15", features = ["ring"] }
 ryu = "1.0.23"
 schemars = "0.8.22"
 serde = { version = "1", features = ["derive"] }

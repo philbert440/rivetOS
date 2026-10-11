@@ -1701,3 +1701,519 @@ fn extension_hex(text: &str, header: &str) -> String {
     }
     panic!("missing {header}\n{text}");
 }
+
+#[test]
+fn verify_matches_openssl_on_dirname_email_uri_ip_path_and_subtree() {
+    if !have_openssl() {
+        return;
+    }
+    let paths = scratch("verify-round4");
+    fs::create_dir_all(&paths.root_dir).unwrap();
+    fs::create_dir_all(paths.int_dir()).unwrap();
+    let work = paths.root_dir.clone();
+    let key = |name: &str| {
+        let path = work.join(name);
+        openssl(&["genrsa", "-out", &path.display().to_string(), "2048"]);
+        path
+    };
+    let root_key = key("root.key");
+    let int_key = key("int.key");
+    let path_key = key("path.key");
+    let self_key = key("self.key");
+    let leaf_key = key("leaf.key");
+    let root_cnf = work.join("root.cnf");
+    fs::write(
+        &root_cnf,
+        "[ req ]\ndistinguished_name = req_dn\nprompt = no\nx509_extensions = v3\n[ req_dn ]\nO = Rivet Collective\nCN = Rivet Root CA\n[ v3 ]\nbasicConstraints = critical, CA:TRUE\nkeyUsage = critical, keyCertSign, cRLSign\nsubjectKeyIdentifier = hash\n",
+    )
+    .unwrap();
+    let root_crt = work.join("root.crt");
+    openssl(&[
+        "req",
+        "-new",
+        "-x509",
+        "-sha256",
+        "-days",
+        "3650",
+        "-key",
+        &root_key.display().to_string(),
+        "-out",
+        &root_crt.display().to_string(),
+        "-config",
+        &root_cnf.display().to_string(),
+    ]);
+    let root_srl = work.join("root.srl");
+    let int_srl = work.join("int.srl");
+    let path_srl = work.join("path.srl");
+    let self_srl = work.join("self.srl");
+    fs::write(&root_srl, "1000\n").unwrap();
+    fs::write(&int_srl, "1000\n").unwrap();
+    fs::write(&path_srl, "1000\n").unwrap();
+    fs::write(&self_srl, "1000\n").unwrap();
+    let sign =
+        |key: &Path, name: &str, subj: &str, ext: &str, ca: &Path, cakey: &Path, srl: &Path| {
+            let csr = work.join(format!("{name}.csr"));
+            let crt = work.join(format!("{name}.crt"));
+            let extfile = work.join(format!("{name}.ext"));
+            openssl(&[
+                "req",
+                "-new",
+                "-sha256",
+                "-key",
+                &key.display().to_string(),
+                "-out",
+                &csr.display().to_string(),
+                "-subj",
+                subj,
+            ]);
+            fs::write(&extfile, ext).unwrap();
+            openssl(&[
+                "x509",
+                "-req",
+                "-sha256",
+                "-days",
+                "365",
+                "-in",
+                &csr.display().to_string(),
+                "-CA",
+                &ca.display().to_string(),
+                "-CAkey",
+                &cakey.display().to_string(),
+                "-CAserial",
+                &srl.display().to_string(),
+                "-out",
+                &crt.display().to_string(),
+                "-extfile",
+                &extfile.display().to_string(),
+            ]);
+            crt
+        };
+    let crl_for = |crt: &Path, key: &Path, name: &str| {
+        let index = work.join(format!("{name}-index.txt"));
+        let number = work.join(format!("{name}-crlnumber"));
+        let cnf = work.join(format!("{name}.cnf"));
+        let out = work.join(format!("{name}.crl"));
+        fs::write(&index, "").unwrap();
+        fs::write(&number, "1000\n").unwrap();
+        fs::write(
+            &cnf,
+            format!(
+                "[ca]\ndefault_ca=CA_default\n[CA_default]\ncertificate={}\nprivate_key={}\ndatabase={}\ncrlnumber={}\ndefault_md=sha256\ndefault_crl_days=30\n",
+                crt.display(),
+                key.display(),
+                index.display(),
+                number.display(),
+            ),
+        )
+        .unwrap();
+        openssl(&[
+            "ca",
+            "-batch",
+            "-gencrl",
+            "-config",
+            &cnf.display().to_string(),
+            "-out",
+            &out.display().to_string(),
+        ]);
+        out
+    };
+    let ca = |nc: &str| {
+        format!(
+            "basicConstraints=critical,CA:TRUE\nkeyUsage=critical,keyCertSign,cRLSign\nnameConstraints=critical,{nc}\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid:always\n"
+        )
+    };
+    let leaf_ext = |san: &str| {
+        if san.is_empty() {
+            "basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=clientAuth\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid\n".to_string()
+        } else {
+            format!(
+                "basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=clientAuth\nsubjectAltName={san}\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid\n"
+            )
+        }
+    };
+    let issue_ca = |name: &str, cn: &str, ext: &str| {
+        sign(
+            &int_key,
+            name,
+            &format!("/O=Rivet Collective/CN={cn}"),
+            ext,
+            &root_crt,
+            &root_key,
+            &root_srl,
+        )
+    };
+    let issue_leaf = |name: &str, subj: &str, san: &str, ca_crt: &Path| {
+        sign(
+            &leaf_key,
+            name,
+            subj,
+            &leaf_ext(san),
+            ca_crt,
+            &int_key,
+            &int_srl,
+        )
+    };
+    let dir_permit = issue_ca(
+        "dir-permit",
+        "Directory Permit",
+        &format!(
+            "{}[allowed]\nO=Allowed Org\n",
+            ca("permitted;dirName:allowed")
+        ),
+    );
+    let dir_exclude = issue_ca(
+        "dir-exclude",
+        "Directory Exclude",
+        &format!("{}[denied]\nO=Denied Org\n", ca("excluded;dirName:denied")),
+    );
+    let email_host = issue_ca(
+        "email-host",
+        "Email Host",
+        &ca("permitted;email:example.test"),
+    );
+    let email_dot = issue_ca(
+        "email-dot",
+        "Email Dot",
+        &ca("permitted;email:.example.test"),
+    );
+    let email_box = issue_ca(
+        "email-box",
+        "Email Box",
+        &ca("permitted;email:Dev@example.test"),
+    );
+    let email_ex = issue_ca(
+        "email-ex",
+        "Email Exclude",
+        &ca("excluded;email:example.test"),
+    );
+    let uri_host = issue_ca("uri-host", "URI Host", &ca("permitted;URI:example.test"));
+    let uri_dot = issue_ca("uri-dot", "URI Dot", &ca("permitted;URI:.example.test"));
+    let ip_v4_v6 = issue_ca(
+        "ip-v4-v6",
+        "IP v4 then v6",
+        &ca("permitted;IP:192.0.2.0/255.255.255.0,permitted;IP:2001:db8::/ffff:ffff::"),
+    );
+    let ip_v6_v4 = issue_ca(
+        "ip-v6-v4",
+        "IP v6 then v4",
+        &ca("permitted;IP:2001:db8::/ffff:ffff::,permitted;IP:192.0.2.0/255.255.255.0"),
+    );
+    let ip_ex = issue_ca(
+        "ip-ex",
+        "IP Exclude v6",
+        &ca("excluded;IP:2001:db8::/ffff:ffff::"),
+    );
+    let max_der = "3015a0133011820c6578616d706c652e74657374810100";
+    let min_der = "3015a0133011820c6578616d706c652e74657374800101";
+    let subtree_max = issue_ca(
+        "subtree-max",
+        "Subtree Maximum",
+        &ca(&format!("DER:{max_der}")),
+    );
+    let subtree_min = issue_ca(
+        "subtree-min",
+        "Subtree Minimum",
+        &ca(&format!("DER:{min_der}")),
+    );
+    let path_ca = sign(
+        &path_key,
+        "path-ca",
+        "/O=Rivet Collective/CN=Path CA",
+        "basicConstraints=critical,CA:TRUE,pathlen:0\nkeyUsage=critical,keyCertSign,cRLSign\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid:always\n",
+        &root_crt,
+        &root_key,
+        &root_srl,
+    );
+    let self_ca = sign(
+        &self_key,
+        "self-ca",
+        "/O=Rivet Collective/CN=Path CA",
+        "basicConstraints=critical,CA:TRUE\nkeyUsage=critical,keyCertSign,cRLSign\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid:always\n",
+        &path_ca,
+        &path_key,
+        &path_srl,
+    );
+    let outside = issue_leaf(
+        "dir-outside",
+        "/O=Other Org/CN=leaf.example",
+        "DNS:leaf.example",
+        &dir_permit,
+    );
+    let inside = issue_leaf(
+        "dir-inside",
+        "/O=Allowed Org/CN=inside.example",
+        "DNS:inside.example",
+        &dir_permit,
+    );
+    let no_san = issue_leaf("dir-nosan", "/O=Outside/CN=device:test", "", &dir_permit);
+    let denied = issue_leaf(
+        "dir-denied",
+        "/O=Denied Org/CN=denied.example",
+        "DNS:denied.example",
+        &dir_exclude,
+    );
+    let dir_ok = issue_leaf(
+        "dir-ok",
+        "/O=Other Org/CN=ok.example",
+        "DNS:ok.example",
+        &dir_exclude,
+    );
+    let email_sub = issue_leaf(
+        "email-sub",
+        "/O=Rivet Collective/CN=email-sub.example",
+        "email:dev@extra.example.test",
+        &email_host,
+    );
+    let email_exact = issue_leaf(
+        "email-exact",
+        "/O=Rivet Collective/CN=email-exact.example",
+        "email:dev@example.test",
+        &email_host,
+    );
+    let email_dot_sub = issue_leaf(
+        "email-dot-sub",
+        "/O=Rivet Collective/CN=email-dot-sub.example",
+        "email:dev@extra.example.test",
+        &email_dot,
+    );
+    let email_dot_apex = issue_leaf(
+        "email-dot-apex",
+        "/O=Rivet Collective/CN=email-dot-apex.example",
+        "email:dev@example.test",
+        &email_dot,
+    );
+    let email_case = issue_leaf(
+        "email-case",
+        "/O=Rivet Collective/CN=email-case.example",
+        "email:dev@example.test",
+        &email_box,
+    );
+    let email_box_ok = issue_leaf(
+        "email-box-ok",
+        "/O=Rivet Collective/CN=email-box.example",
+        "email:Dev@Example.test",
+        &email_box,
+    );
+    let email_ex_sub = issue_leaf(
+        "email-ex-sub",
+        "/O=Rivet Collective/CN=email-ex-sub.example",
+        "email:dev@extra.example.test",
+        &email_ex,
+    );
+    let email_ex_exact = issue_leaf(
+        "email-ex-exact",
+        "/O=Rivet Collective/CN=email-ex-exact.example",
+        "email:dev@example.test",
+        &email_ex,
+    );
+    let uri_sub = issue_leaf(
+        "uri-sub",
+        "/O=Rivet Collective/CN=uri-sub.example",
+        "URI:https://extra.example.test/a",
+        &uri_host,
+    );
+    let uri_exact = issue_leaf(
+        "uri-exact",
+        "/O=Rivet Collective/CN=uri-exact.example",
+        "URI:https://example.test/a",
+        &uri_host,
+    );
+    let uri_dot_sub = issue_leaf(
+        "uri-dot-sub",
+        "/O=Rivet Collective/CN=uri-dot-sub.example",
+        "URI:https://extra.example.test/a",
+        &uri_dot,
+    );
+    let uri_dot_apex = issue_leaf(
+        "uri-dot-apex",
+        "/O=Rivet Collective/CN=uri-dot-apex.example",
+        "URI:https://example.test/a",
+        &uri_dot,
+    );
+    let ip_v6 = issue_leaf(
+        "ip-v6",
+        "/O=Rivet Collective/CN=ip-v6.example",
+        "IP:2001:db8::1",
+        &ip_v4_v6,
+    );
+    let ip_v4 = issue_leaf(
+        "ip-v4",
+        "/O=Rivet Collective/CN=ip-v4.example",
+        "IP:192.0.2.1",
+        &ip_v6_v4,
+    );
+    let ip_v6_rev = issue_leaf(
+        "ip-v6-rev",
+        "/O=Rivet Collective/CN=ip-v6-rev.example",
+        "IP:2001:db8::1",
+        &ip_v6_v4,
+    );
+    let ip_v4_rev = issue_leaf(
+        "ip-v4-rev",
+        "/O=Rivet Collective/CN=ip-v4-rev.example",
+        "IP:192.0.2.1",
+        &ip_v4_v6,
+    );
+    let ip_miss = issue_leaf(
+        "ip-miss",
+        "/O=Rivet Collective/CN=ip-miss.example",
+        "IP:198.51.100.1",
+        &ip_v4_v6,
+    );
+    let ip_ex_v6 = issue_leaf(
+        "ip-ex-v6",
+        "/O=Rivet Collective/CN=ip-ex-v6.example",
+        "IP:2001:db8::1",
+        &ip_ex,
+    );
+    let ip_ex_v4 = issue_leaf(
+        "ip-ex-v4",
+        "/O=Rivet Collective/CN=ip-ex-v4.example",
+        "IP:192.0.2.1",
+        &ip_ex,
+    );
+    let max_leaf = issue_leaf(
+        "max-leaf",
+        "/O=Rivet Collective/CN=max.example",
+        "DNS:max.example",
+        &subtree_max,
+    );
+    let min_leaf = issue_leaf(
+        "min-leaf",
+        "/O=Rivet Collective/CN=min.example",
+        "DNS:min.example",
+        &subtree_min,
+    );
+    let self_leaf = sign(
+        &leaf_key,
+        "self-leaf",
+        "/O=Rivet Collective/CN=self.example",
+        &leaf_ext("DNS:self.example"),
+        &self_ca,
+        &self_key,
+        &self_srl,
+    );
+    let crl = |crt: &Path, name: &str| crl_for(crt, &int_key, name);
+    let join = |parts: &[&Path]| {
+        let mut bytes = Vec::new();
+        for part in parts {
+            bytes.extend(fs::read(part).unwrap());
+        }
+        bytes
+    };
+    let check = |chain: &[u8], crl_path: &Path, cert: &Path| {
+        fs::write(paths.chain_path(), chain).unwrap();
+        fs::write(paths.crl_path(), fs::read(crl_path).unwrap()).unwrap();
+        compare_verify(&paths, cert);
+    };
+    let with_root = |ca_crt: &Path| join(&[ca_crt, &root_crt]);
+    check(
+        &with_root(&dir_permit),
+        &crl(&dir_permit, "dir-permit"),
+        &outside,
+    );
+    check(
+        &with_root(&dir_permit),
+        &crl(&dir_permit, "dir-permit"),
+        &inside,
+    );
+    check(
+        &with_root(&dir_permit),
+        &crl(&dir_permit, "dir-permit"),
+        &no_san,
+    );
+    check(
+        &with_root(&dir_exclude),
+        &crl(&dir_exclude, "dir-exclude"),
+        &denied,
+    );
+    check(
+        &with_root(&dir_exclude),
+        &crl(&dir_exclude, "dir-exclude"),
+        &dir_ok,
+    );
+    check(
+        &with_root(&email_host),
+        &crl(&email_host, "email-host"),
+        &email_sub,
+    );
+    check(
+        &with_root(&email_host),
+        &crl(&email_host, "email-host"),
+        &email_exact,
+    );
+    check(
+        &with_root(&email_dot),
+        &crl(&email_dot, "email-dot"),
+        &email_dot_sub,
+    );
+    check(
+        &with_root(&email_dot),
+        &crl(&email_dot, "email-dot"),
+        &email_dot_apex,
+    );
+    check(
+        &with_root(&email_box),
+        &crl(&email_box, "email-box"),
+        &email_case,
+    );
+    check(
+        &with_root(&email_box),
+        &crl(&email_box, "email-box"),
+        &email_box_ok,
+    );
+    check(
+        &with_root(&email_ex),
+        &crl(&email_ex, "email-ex"),
+        &email_ex_sub,
+    );
+    check(
+        &with_root(&email_ex),
+        &crl(&email_ex, "email-ex"),
+        &email_ex_exact,
+    );
+    check(&with_root(&uri_host), &crl(&uri_host, "uri-host"), &uri_sub);
+    check(
+        &with_root(&uri_host),
+        &crl(&uri_host, "uri-host"),
+        &uri_exact,
+    );
+    check(
+        &with_root(&uri_dot),
+        &crl(&uri_dot, "uri-dot"),
+        &uri_dot_sub,
+    );
+    check(
+        &with_root(&uri_dot),
+        &crl(&uri_dot, "uri-dot"),
+        &uri_dot_apex,
+    );
+    check(&with_root(&ip_v4_v6), &crl(&ip_v4_v6, "ip-v4-v6"), &ip_v6);
+    check(
+        &with_root(&ip_v4_v6),
+        &crl(&ip_v4_v6, "ip-v4-v6"),
+        &ip_v4_rev,
+    );
+    check(&with_root(&ip_v4_v6), &crl(&ip_v4_v6, "ip-v4-v6"), &ip_miss);
+    check(&with_root(&ip_v6_v4), &crl(&ip_v6_v4, "ip-v6-v4"), &ip_v4);
+    check(
+        &with_root(&ip_v6_v4),
+        &crl(&ip_v6_v4, "ip-v6-v4"),
+        &ip_v6_rev,
+    );
+    check(&with_root(&ip_ex), &crl(&ip_ex, "ip-ex"), &ip_ex_v6);
+    check(&with_root(&ip_ex), &crl(&ip_ex, "ip-ex"), &ip_ex_v4);
+    check(
+        &with_root(&subtree_max),
+        &crl(&subtree_max, "subtree-max"),
+        &max_leaf,
+    );
+    check(
+        &with_root(&subtree_min),
+        &crl(&subtree_min, "subtree-min"),
+        &min_leaf,
+    );
+    let self_chain = join(&[&self_ca, &path_ca, &root_crt]);
+    let self_crl = crl_for(&self_ca, &self_key, "self-ca");
+    check(&self_chain, &self_crl, &self_leaf);
+}

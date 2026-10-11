@@ -21,6 +21,8 @@ getrandom = { workspace = true }
 p12-keystore = { workspace = true }
 protocol = { path = "../protocol" }
 rsa = { workspace = true }
+rustls-pki-types = { workspace = true }
+rustls-webpki = { workspace = true }
 signature = { workspace = true }
 thiserror.workspace = true
 tracing = { workspace = true }
