@@ -391,7 +391,7 @@ function AgentEditor({
       }}
     >
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-50 bg-bg/70" />
+        <Dialog.Overlay className="fixed inset-0 z-50 bg-black/40 classic:bg-bg/70" />
         {discardDialog.element}
         <Dialog.Content
           aria-label={agent ? 'Edit agent' : duplicate ? 'Copy agent' : 'New agent'}
@@ -400,7 +400,7 @@ function AgentEditor({
           // autoFocus is where typing should start.
           onOpenAutoFocus={(e) => e.preventDefault()}
           aria-describedby={undefined}
-          className="fixed left-1/2 top-1/2 z-50 flex max-h-[85vh] w-96 -translate-x-1/2 -translate-y-1/2 flex-col gap-3 overflow-y-auto rounded-md border border-line bg-panel p-4 shadow-lg outline-none"
+          className="fixed left-1/2 top-1/2 z-50 flex max-h-[85vh] w-96 -translate-x-1/2 -translate-y-1/2 flex-col gap-3 overflow-y-auto rounded-md border border-line bg-panel p-4 shadow-pop outline-none"
           asChild
         >
           <form ref={formRef} onSubmit={handleSubmit}>
@@ -434,7 +434,7 @@ function AgentEditor({
                 required
                 autoFocus
                 disabled={disabled}
-                className="rounded border border-line bg-panel-2 px-2 py-1.5 text-xs text-ink outline-none focus:border-em disabled:opacity-50"
+                className="rounded-lg border border-line bg-panel-2 px-2 py-1.5 text-xs text-ink outline-none focus:border-em disabled:opacity-50"
               />
               {catalogClash && (
                 <p className="text-xs text-ink-dim" role="status">
@@ -460,7 +460,7 @@ function AgentEditor({
                   onChange={(e) => setColor(e.target.value)}
                   placeholder="#3b82f6"
                   disabled={disabled}
-                  className="flex-1 rounded border border-line bg-panel-2 px-2 py-1.5 font-mono text-xs text-ink outline-none focus:border-em disabled:opacity-50"
+                  className="flex-1 rounded-lg border border-line bg-panel-2 px-2 py-1.5 font-mono text-xs text-ink outline-none focus:border-em disabled:opacity-50"
                 />
               </div>
             </div>
@@ -489,7 +489,7 @@ function AgentEditor({
                 placeholder={agentDirectoryPlaceholder(directoryRoot, name)}
                 disabled={disabled}
                 spellCheck={false}
-                className="rounded border border-line bg-panel-2 px-2 py-1.5 font-mono text-xs text-ink outline-none focus:border-em disabled:opacity-50"
+                className="rounded-lg border border-line bg-panel-2 px-2 py-1.5 font-mono text-xs text-ink outline-none focus:border-em disabled:opacity-50"
               />
             </div>
 
@@ -548,7 +548,7 @@ function AgentEditor({
                         })
                       }
                       disabled={disabled}
-                      className="self-start rounded border border-line px-3 py-1.5 text-xs text-ink-dim hover:border-em hover:text-em disabled:opacity-50"
+                      className="self-start rounded-pill border border-line px-3 py-1.5 text-xs text-ink-dim hover:bg-ink/6 hover:text-em disabled:opacity-50 classic:hover:bg-transparent classic:hover:border-em"
                     >
                       Copy to another node…
                     </button>
@@ -616,7 +616,7 @@ function AgentEditor({
                 placeholder="Custom system prompt..."
                 rows={4}
                 disabled={disabled}
-                className="resize-y rounded border border-line bg-panel-2 px-2 py-1.5 text-xs text-ink outline-none focus:border-em disabled:opacity-50"
+                className="resize-y rounded-lg border border-line bg-panel-2 px-2 py-1.5 text-xs text-ink outline-none focus:border-em disabled:opacity-50"
               />
             </div>
 
@@ -636,7 +636,7 @@ function AgentEditor({
                   (color.trim() !== '' &&
                     !/^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(color.trim()))
                 }
-                className="flex-1 rounded bg-em px-3 py-1.5 text-xs font-semibold text-bg hover:opacity-90 disabled:opacity-50"
+                className="flex-1 rounded-pill bg-em px-3 py-1.5 text-xs font-medium text-on-em hover:bg-em-dim disabled:opacity-50 classic:font-semibold classic:text-bg"
               >
                 {agent ? 'Update' : duplicate ? 'Create copy' : 'Create'}
               </button>
@@ -649,7 +649,7 @@ function AgentEditor({
                   })()
                 }}
                 disabled={disabled}
-                className="rounded border border-line px-3 py-1.5 text-xs text-ink-dim hover:border-em hover:text-em disabled:opacity-50"
+                className="rounded-pill border border-line px-3 py-1.5 text-xs text-ink-dim hover:bg-ink/6 hover:text-em disabled:opacity-50 classic:hover:bg-transparent classic:hover:border-em"
               >
                 Cancel
               </button>
@@ -671,9 +671,10 @@ function agentAccent(agent: Pick<RosterAgent, 'color' | 'harnessId' | 'model'>):
 
 /**
  * Agent letter tile, Waybar-workspace style: the agent's initials on its
- * accent, so same-harness agents stay apart. The current agent gets a ring in
- * its own accent. Without `initials` it is a plain square marker (the folded
- * rail's badge over the Bot icon, too small for letters).
+ * accent, so same-harness agents stay apart — a square tile in classic, a
+ * round avatar in material. The current agent gets a ring in its own accent.
+ * Without `initials` it is a plain marker (the folded rail's badge over the
+ * Bot icon, too small for letters).
  */
 function AgentTile(props: {
   accent: string
@@ -686,20 +687,20 @@ function AgentTile(props: {
   return (
     <span
       className={cn(
-        'inline-flex shrink-0 items-center justify-center font-mono font-extrabold leading-none select-none',
+        'inline-flex shrink-0 items-center justify-center rounded-pill font-sans font-semibold leading-none tracking-tight select-none classic:font-extrabold classic:tracking-normal',
         props.initials === undefined
-          ? 'size-2'
+          ? 'size-2.5 classic:size-2'
           : props.compact
-            ? 'size-5 text-[10px]'
-            : 'size-4 text-[9px]',
+            ? 'size-7 text-[11px] classic:size-5 classic:text-[10px]'
+            : 'size-6 text-[10px] classic:size-5',
       )}
       style={{
         background: props.accent,
         color: inkOn(props.accent),
         ...(props.current
-          ? { boxShadow: `0 0 0 2px var(--color-panel-2), 0 0 0 3.5px ${props.accent}` }
+          ? { boxShadow: `0 0 0 2px var(--color-em-container), 0 0 0 3.5px ${props.accent}` }
           : props.halo
-            ? { boxShadow: '0 0 0 1.5px var(--color-panel)' }
+            ? { boxShadow: '0 0 0 1.5px var(--color-bg)' }
             : {}),
       }}
       aria-hidden
@@ -840,8 +841,8 @@ function AgentRow({
           aria-label={agent.name}
           aria-current={current ? 'true' : undefined}
           className={cn(
-            'flex w-full items-center justify-center rounded py-1.5 hover:bg-panel-2 disabled:opacity-50',
-            current && 'bg-panel-2',
+            'flex w-full items-center justify-center rounded-pill py-1.5 hover:bg-ink/8 disabled:opacity-50 classic:hover:bg-panel-2',
+            current && 'bg-em-container classic:bg-panel-2',
           )}
         >
           {tile}
@@ -853,13 +854,13 @@ function AgentRow({
   return (
     <div
       className={cn(
-        'group relative flex items-center gap-2 rounded px-2 py-1.5 hover:bg-panel-2',
-        current && 'bg-panel-2',
+        'group relative flex items-center gap-2 rounded-pill py-1 pl-2 pr-3 transition-colors classic:hover:bg-panel-2 classic:px-2 classic:py-1.5',
+        current ? 'bg-em-container classic:bg-panel-2' : 'hover:bg-ink/8',
       )}
     >
       {current && (
         <span
-          className="absolute inset-y-1 left-0 w-0.5 rounded-full"
+          className="absolute inset-y-1 left-0 w-0.5 rounded-full material:hidden"
           style={{ background: accent }}
           aria-hidden
         />
@@ -870,16 +871,21 @@ function AgentRow({
         disabled={!nodeKnown}
         aria-current={current ? 'true' : undefined}
         aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
-        className="flex min-w-0 flex-1 items-center gap-2 text-left disabled:opacity-50"
+        className="flex min-w-0 flex-1 items-center gap-2.5 text-left disabled:opacity-50 classic:gap-2"
         title={current ? `${rowTitle} (current)` : rowTitle}
       >
         {tile}
         <span
-          className={cn('min-w-0 truncate text-xs', current ? 'font-medium text-em' : 'text-ink')}
+          className={cn(
+            'min-w-0 truncate text-[13px] classic:text-xs',
+            current ? 'font-medium text-on-em-container classic:text-em' : 'text-ink',
+          )}
         >
           {agent.name}
         </span>
-        {harness && <span className="shrink-0 font-mono text-[10px] text-ink-dim">{harness}</span>}
+        {harness && (
+          <span className="shrink-0 text-[11px] text-ink-dim classic:text-[10px]">{harness}</span>
+        )}
         {activityLabel && (
           <span
             className={`size-1.5 shrink-0 rounded-full ${

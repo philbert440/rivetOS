@@ -116,10 +116,10 @@ export function AskUserCard(props: {
     <div
       role="group"
       aria-label="Rivet is asking"
-      className="mb-2 rounded-xl border border-em-dim/50 bg-panel shadow-lg shadow-bg/40"
+      className="mb-2 rounded-xl border border-em-dim/50 bg-panel shadow-pop shadow-bg/40"
     >
       <div className="flex items-center justify-between border-b border-line/60 px-3 py-1.5">
-        <span className="font-mono text-[11px] text-em">
+        <span className="text-xs text-em classic:text-[11px]">
           {screen
             ? `Question ${String(screen.current + 1)} of ${String(screen.total)}`
             : 'Rivet is asking'}
@@ -157,7 +157,7 @@ export function AskUserCard(props: {
           cardMode === 'answer' &&
           screen.total > 1 &&
           screen.current < screen.total - 1 && (
-            <div className="font-mono text-[10px] text-ink-dim">
+            <div className="text-[11px] text-ink-dim classic:text-[10px]">
               answering here moves the terminal to the next question
             </div>
           )}
@@ -174,18 +174,18 @@ export function AskUserCard(props: {
                 </div>
               )}
               {q.multiSelect && qMode === 'answer' && (
-                <div id={hintId} className="mb-1 font-mono text-[10px] text-ink-dim">
+                <div id={hintId} className="mb-1 text-[11px] text-ink-dim classic:text-[10px]">
                   select all that apply
                 </div>
               )}
               {qMode === 'no-options' ? (
-                <div className="font-mono text-[11px] text-ink-dim">
+                <div className="text-xs text-ink-dim classic:text-[11px]">
                   options not visible — answer in the terminal
                 </div>
               ) : (
                 <>
                   {qMode === 'terminal-only' && (
-                    <div className="mb-1 font-mono text-[11px] text-ink-dim">
+                    <div className="mb-1 text-xs text-ink-dim classic:text-[11px]">
                       answer this one in the terminal
                     </div>
                   )}

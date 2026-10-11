@@ -400,7 +400,7 @@ export function Composer(props: {
 
   return (
     <div
-      className="border-t border-line bg-panel/60 px-4 py-3"
+      className="px-4 pb-4 pt-2 md:px-5 classic:bg-panel/60 classic:border-line classic:border-t classic:py-3"
       onDragOver={(e) => {
         if (e.dataTransfer.types.includes('Files')) e.preventDefault()
       }}
@@ -410,7 +410,7 @@ export function Composer(props: {
         addFiles(e.dataTransfer.files)
       }}
     >
-      {error && <div className="mb-2 font-mono text-xs text-red">✗ {error}</div>}
+      {error && <div className="mb-2 text-xs text-red">✗ {error}</div>}
       {/* Ask card — pops from the top of the input when the agent asked a
           question. Picking an option sends it as the next user turn; typing a
           freeform reply below works too (the send retires the card). */}
@@ -434,12 +434,12 @@ export function Composer(props: {
             <span
               key={a.id}
               className={cn(
-                'flex items-center gap-1.5 rounded-full border px-2 py-0.5 font-mono text-[11px]',
+                'flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs classic:px-2 classic:py-0.5 classic:text-[11px]',
                 a.status === 'failed'
                   ? 'border-red/60 text-red'
                   : a.status === 'uploading'
                     ? 'animate-pulse border-line text-ink-dim'
-                    : 'border-em-dim/60 text-ink',
+                    : 'border-transparent bg-panel-2 text-ink classic:bg-transparent classic:border-em-dim/60',
               )}
               title={a.status === 'failed' ? `${a.name} — upload failed` : a.name}
             >
@@ -460,8 +460,8 @@ export function Composer(props: {
       )}
       <div
         className={cn(
-          'flex flex-col gap-2 rounded-xl border border-line bg-panel p-2 transition-shadow',
-          'focus-within:border-em/60 focus-within:ring-1 focus-within:ring-em/30',
+          'flex flex-col gap-2 rounded-3xl border border-transparent bg-panel-2 px-2.5 pb-2.5 pt-3 transition-colors classic:bg-panel classic:border-line classic:p-2',
+          'focus-within:border-em/50 classic:focus-within:border-em/60 classic:focus-within:ring-1 classic:focus-within:ring-em/30',
           !connected && 'opacity-70',
         )}
       >
@@ -487,7 +487,7 @@ export function Composer(props: {
             connected ? 'Message Rivet… (Enter to send, Shift+Enter for newline)' : 'reconnecting…'
           }
           disabled={!connected || sending}
-          className="px-2 pt-1"
+          className="px-2.5 classic:pt-1 classic:px-2"
         />
         {/* Picker row (node · model · effort) + attach/mic/speak + send —
             Claude-app style, in the input shell, persisted per-conversation.
@@ -633,11 +633,13 @@ export function Composer(props: {
               aria-label="send"
               title="send"
               className={cn(
-                'flex size-8 items-center justify-center rounded-full transition-colors',
-                canSend ? 'bg-em-dim text-bg hover:bg-em' : 'bg-panel-2 text-ink-dim',
+                'ml-1 flex size-10 items-center justify-center rounded-2xl transition-colors classic:size-8',
+                canSend
+                  ? 'bg-em text-on-em hover:bg-em-dim classic:bg-em-dim classic:hover:bg-em classic:text-bg'
+                  : 'bg-ink/8 text-ink-dim classic:bg-panel-2',
               )}
             >
-              <ArrowUp className="size-4" />
+              <ArrowUp className="size-5 classic:size-4" />
             </button>
           </div>
         </div>

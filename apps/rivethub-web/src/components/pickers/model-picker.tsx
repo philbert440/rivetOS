@@ -75,8 +75,10 @@ export function ModelPicker(props: {
                   setOpen(false)
                 }}
                 className={cn(
-                  'flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm transition-colors',
-                  active ? 'bg-panel text-ink' : 'text-ink-dim hover:bg-panel hover:text-ink',
+                  'flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm transition-colors classic:px-2.5',
+                  active
+                    ? 'bg-em-container text-on-em-container classic:bg-panel classic:text-ink'
+                    : 'text-ink-dim hover:bg-ink/8 hover:text-ink classic:hover:bg-panel',
                 )}
               >
                 <span className="min-w-0 flex-1 truncate">{o.label}</span>

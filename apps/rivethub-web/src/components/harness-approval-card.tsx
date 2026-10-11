@@ -54,13 +54,13 @@ export function HarnessApprovalCard(props: {
     <div
       role="group"
       aria-label="harness approval request"
-      className="mb-2 rounded-xl border border-em-dim/50 bg-panel px-3 py-2 shadow-lg shadow-bg/40"
+      className="mb-2 rounded-xl border border-em-dim/50 bg-panel px-3 py-2 shadow-pop shadow-bg/40"
     >
       <div className="flex items-center gap-2 text-xs text-ink">
         <ShieldQuestion className="size-3.5 shrink-0 text-em" aria-hidden />
         <span className="min-w-0 truncate">{pendingToolTitle(request.name, args)}</span>
         {props.pending.length > 1 && (
-          <span className="shrink-0 font-mono text-[10px] text-ink-dim">
+          <span className="shrink-0 text-[11px] text-ink-dim classic:text-[10px]">
             +{props.pending.length - 1} waiting
           </span>
         )}
@@ -72,7 +72,7 @@ export function HarnessApprovalCard(props: {
         </pre>
       )}
       {scrapedOptions.length > 0 && (
-        <ul className="mt-1 list-inside list-disc font-mono text-[10px] text-ink-dim">
+        <ul className="mt-1 list-inside list-disc text-[11px] text-ink-dim classic:text-[10px]">
           {scrapedOptions.map((o) => (
             <li key={o}>{o}</li>
           ))}
@@ -84,7 +84,7 @@ export function HarnessApprovalCard(props: {
             key={c.decision}
             disabled={props.disabled}
             onClick={() => props.onDecide(request.requestId, c.decision)}
-            className={`rounded border px-2 py-1 font-mono text-[11px] disabled:opacity-50 ${
+            className={`rounded border px-2 py-1 text-xs disabled:opacity-50 ${
               c.accent
                 ? 'border-em text-em hover:bg-em/10'
                 : 'border-line text-ink-dim hover:border-em hover:text-em'

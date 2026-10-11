@@ -75,7 +75,7 @@ export function UpdatesSection(): JSX.Element | null {
 
   return (
     <>
-      <h2 className="mt-10 mb-3 border-t border-line pt-6 font-mono text-sm font-semibold text-em">
+      <h2 className="mt-10 mb-3 border-t border-line/60 pt-6 text-base font-semibold text-ink classic:border-line classic:text-em classic:text-sm">
         Updates
       </h2>
       <p className="mb-3 text-xs text-ink-dim">
@@ -87,19 +87,19 @@ export function UpdatesSection(): JSX.Element | null {
         <button
           onClick={() => void check()}
           disabled={state.kind === 'checking' || state.kind === 'installing'}
-          className="rounded bg-em-dim px-4 py-2 text-sm font-medium text-bg hover:bg-em disabled:opacity-50"
+          className="rounded-pill bg-em px-4 py-2 text-sm font-medium text-on-em hover:bg-em-dim disabled:opacity-50 classic:bg-em-dim classic:hover:bg-em classic:text-bg"
         >
           Check for updates
         </button>
         {state.kind === 'available' && (
           <button
             onClick={() => void install(state.version)}
-            className="rounded bg-em px-4 py-2 text-sm font-medium text-bg hover:bg-em-dim"
+            className="rounded-pill bg-em px-4 py-2 text-sm font-medium text-on-em hover:bg-em-dim classic:text-bg"
           >
             Install v{state.version}
           </button>
         )}
-        <span className="font-mono text-sm">
+        <span className="text-sm">
           {state.kind === 'checking' && <span className="text-ink-dim">checking…</span>}
           {state.kind === 'current' && (
             <span className="text-em">✓ up to date (v{state.version})</span>
@@ -117,7 +117,7 @@ export function UpdatesSection(): JSX.Element | null {
         </span>
       </div>
       {appVersion && (
-        <div className="mt-2 font-mono text-[11px] text-ink-dim">shell v{appVersion}</div>
+        <div className="mt-2 text-xs text-ink-dim classic:text-[11px]">shell v{appVersion}</div>
       )}
       {dialog.element}
     </>

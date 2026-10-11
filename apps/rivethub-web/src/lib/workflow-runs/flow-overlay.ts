@@ -6,7 +6,7 @@
 import type { GraphNode } from './graph-project.js'
 import { FLOW_START_ID, type FlowAuthorGraph } from './flow-graph.js'
 import type { GraphNodeStatus } from './status.js'
-import type { ResolvedTheme } from '../theme.js'
+import type { ResolvedTheme, UiStyle } from '../theme.js'
 
 /** Every literal the flows canvas paints with, for one resolved theme. */
 export interface CanvasSceneColors {
@@ -53,6 +53,32 @@ const CANVAS_SCENE_DARK: CanvasSceneColors = {
     pending: 'rgba(139, 152, 169, 0.35)',
   },
 }
+/** Material dark (theme.css html[data-style='material']). */
+const MATERIAL_SCENE_DARK: CanvasSceneColors = {
+  bg: '#181e1b',
+  gridDot: 'rgba(108, 219, 172, 0.2)',
+  selection: '#dee4df',
+  connect: '#6cdbac',
+  failed: '#ffb4ab',
+  dimStroke: 'rgba(255,255,255,0.35)',
+  portRing: '#ffffff',
+  label: '#ffffff',
+  sublabel: 'rgba(255,255,255,0.7)',
+  statusStroke: {
+    pending: '#353d39',
+    running: '#6cdbac',
+    done: '#4fc497',
+    failed: '#ffb4ab',
+    'gate-open': '#6cdbac',
+    'gate-resolved': '#4fc497',
+  },
+  statusEdge: {
+    active: '#6cdbac',
+    done: 'rgba(79, 196, 151, 0.85)',
+    failed: 'rgba(255, 180, 171, 0.9)',
+    pending: 'rgba(167, 178, 171, 0.35)',
+  },
+}
 
 /** Paper surfaces, dark ink, emerald one step darker (theme.css light set). */
 const CANVAS_SCENE_LIGHT: CanvasSceneColors = {
@@ -80,8 +106,38 @@ const CANVAS_SCENE_LIGHT: CanvasSceneColors = {
     pending: 'rgba(91, 104, 121, 0.45)',
   },
 }
+/** Green-tinted white surface, dark ink, deep emerald (theme.css light set). */
+const MATERIAL_SCENE_LIGHT: CanvasSceneColors = {
+  bg: '#fbfdfb',
+  gridDot: 'rgba(0, 108, 76, 0.22)',
+  selection: '#171d1a',
+  connect: '#006c4c',
+  failed: '#ba1a1a',
+  dimStroke: 'rgba(23, 29, 26, 0.35)',
+  portRing: '#ffffff',
+  label: '#ffffff',
+  sublabel: 'rgba(255,255,255,0.75)',
+  statusStroke: {
+    pending: '#c6d0c9',
+    running: '#006c4c',
+    done: '#1a8a63',
+    failed: '#ba1a1a',
+    'gate-open': '#006c4c',
+    'gate-resolved': '#1a8a63',
+  },
+  statusEdge: {
+    active: '#006c4c',
+    done: 'rgba(26, 138, 99, 0.9)',
+    failed: 'rgba(186, 26, 26, 0.9)',
+    pending: 'rgba(86, 97, 91, 0.45)',
+  },
+}
 
-export function canvasSceneColors(theme: ResolvedTheme): CanvasSceneColors {
+export function canvasSceneColors(
+  theme: ResolvedTheme,
+  style: UiStyle = 'classic',
+): CanvasSceneColors {
+  if (style === 'material') return theme === 'light' ? MATERIAL_SCENE_LIGHT : MATERIAL_SCENE_DARK
   return theme === 'light' ? CANVAS_SCENE_LIGHT : CANVAS_SCENE_DARK
 }
 

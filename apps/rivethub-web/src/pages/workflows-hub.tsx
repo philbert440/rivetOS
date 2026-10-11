@@ -88,7 +88,9 @@ export function WorkflowsHubPage(): JSX.Element {
   return (
     <div className="mx-auto max-w-4xl px-4 py-8 md:px-6">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <h1 className="font-mono text-lg font-semibold text-em">Workflows</h1>
+        <h1 className="text-[22px] font-semibold text-ink classic:text-em classic:text-lg">
+          Workflows
+        </h1>
       </div>
 
       <p className="mb-6 max-w-2xl text-sm text-ink-dim">
@@ -97,12 +99,10 @@ export function WorkflowsHubPage(): JSX.Element {
       </p>
 
       <section className="mb-10">
-        <h2 className="mb-3 font-mono text-xs font-semibold uppercase tracking-wide text-ink-dim">
+        <h2 className="mb-3 text-xs font-medium uppercase tracking-wider text-ink-dim classic:font-semibold classic:tracking-wide">
           Definitions
         </h2>
-        {defs.isError && (
-          <div className="mb-2 font-mono text-sm text-red">{defs.error.message}</div>
-        )}
+        {defs.isError && <div className="mb-2 text-sm text-red">{defs.error.message}</div>}
         {defs.isLoading && <p className="text-sm text-ink-dim">loading…</p>}
         <ul className="flex flex-col gap-2">
           {defs.data?.workflows.map((w) => (
@@ -112,11 +112,11 @@ export function WorkflowsHubPage(): JSX.Element {
                 onClick={() =>
                   void navigate({ to: '/workflows/$workflowId', params: { workflowId: w.id } })
                 }
-                className="flex w-full items-center justify-between gap-4 rounded border border-line bg-panel px-4 py-3 text-left hover:border-em"
+                className="flex w-full items-center justify-between gap-4 rounded-2xl border border-transparent bg-panel-2 px-4 py-3 text-left hover:bg-line/60 classic:bg-panel classic:border-line classic:hover:border-em"
               >
                 <span className="min-w-0">
                   <span className="block truncate text-sm font-medium">{w.name}</span>
-                  <span className="mt-0.5 block font-mono text-[11px] text-ink-dim">
+                  <span className="mt-0.5 block text-xs text-ink-dim classic:text-[11px]">
                     {w.id} · v{w.version}
                     {w.input.length > 0 ? ` · ${String(w.input.length)} input fields` : ''}
                   </span>
@@ -126,7 +126,7 @@ export function WorkflowsHubPage(): JSX.Element {
                     </span>
                   )}
                 </span>
-                <span className="shrink-0 font-mono text-[11px] text-em">run →</span>
+                <span className="shrink-0 text-xs text-em classic:text-[11px]">run →</span>
               </button>
             </li>
           ))}
@@ -139,12 +139,10 @@ export function WorkflowsHubPage(): JSX.Element {
       </section>
 
       <section>
-        <h2 className="mb-3 font-mono text-xs font-semibold uppercase tracking-wide text-ink-dim">
+        <h2 className="mb-3 text-xs font-medium uppercase tracking-wider text-ink-dim classic:font-semibold classic:tracking-wide">
           Recent runs
         </h2>
-        {runs.isError && (
-          <div className="mb-2 font-mono text-sm text-red">{runs.error.message}</div>
-        )}
+        {runs.isError && <div className="mb-2 text-sm text-red">{runs.error.message}</div>}
         <ul className="flex flex-col gap-2">
           {runs.data?.runs.map((r) => (
             <li key={r.id}>
@@ -170,11 +168,11 @@ function RunListRow(props: { run: WorkflowRunSummary; onClick: () => void }): JS
     <button
       type="button"
       onClick={onClick}
-      className="flex w-full items-center justify-between gap-4 rounded border border-line bg-panel px-4 py-3 text-left hover:border-em"
+      className="flex w-full items-center justify-between gap-4 rounded-2xl border border-transparent bg-panel-2 px-4 py-3 text-left hover:bg-line/60 classic:bg-panel classic:border-line classic:hover:border-em"
     >
       <span className="min-w-0">
         <span className="block truncate font-mono text-sm">{run.workflowId}</span>
-        <span className="mt-0.5 block font-mono text-[11px] text-ink-dim">
+        <span className="mt-0.5 block text-xs text-ink-dim classic:text-[11px]">
           {run.id}
           {run.current ? ` · ${run.current}` : ''}
           {run.startedAt ? ` · ${new Date(run.startedAt).toLocaleString()}` : ''}
@@ -192,7 +190,7 @@ function StatusChip(props: { status: string }): JSX.Element {
     (RUN_STATUS_COLORS as Partial<Record<WorkflowRunStatus, string>>)[status] ?? 'text-ink-dim'
   const label =
     (RUN_STATUS_LABELS as Partial<Record<WorkflowRunStatus, string>>)[status] ?? props.status
-  return <span className={`shrink-0 font-mono text-xs ${color}`}>{label}</span>
+  return <span className={`shrink-0 text-xs ${color}`}>{label}</span>
 }
 
 // ---------------------------------------------------------------------------
@@ -318,7 +316,7 @@ export function WorkflowTriggerPage(): JSX.Element {
               router blocker asks about unsaved edits for every route change. */}
           <Link
             to="/workflows"
-            className="font-mono text-[11px] text-ink-dim hover:text-em hover:underline"
+            className="text-xs text-ink-dim hover:text-em hover:underline classic:text-[11px]"
           >
             ← workflows
           </Link>
@@ -343,13 +341,15 @@ export function WorkflowTriggerPage(): JSX.Element {
         </div>
       )}
 
-      {def.isError && <div className="font-mono text-sm text-red">{def.error.message}</div>}
+      {def.isError && <div className="text-sm text-red">{def.error.message}</div>}
       {def.isLoading && <p className="text-sm text-ink-dim">loading definition…</p>}
 
       {def.data && pageMode === 'edit' && editPath && (
         <>
-          <h1 className="mb-1 font-mono text-lg font-semibold text-em">{def.data.workflow.name}</h1>
-          <p className="mb-4 font-mono text-[11px] text-ink-dim">
+          <h1 className="mb-1 text-[22px] font-semibold text-ink classic:text-em classic:text-lg">
+            {def.data.workflow.name}
+          </h1>
+          <p className="mb-4 text-xs text-ink-dim classic:text-[11px]">
             {def.data.workflow.id} · v{def.data.workflow.version}
           </p>
           {/* key: remount per def — router param navigation reuses this component,
@@ -401,7 +401,7 @@ export function WorkflowTriggerPage(): JSX.Element {
             toolbarLeft={
               <Link
                 to="/workflows"
-                className="font-mono text-[11px] text-ink-dim hover:text-em hover:underline"
+                className="text-xs text-ink-dim hover:text-em hover:underline classic:text-[11px]"
               >
                 ← workflows
               </Link>
@@ -426,7 +426,7 @@ export function WorkflowTriggerPage(): JSX.Element {
             }
             inspectorExtra={
               <>
-                <p className="mb-3 font-mono text-[11px] text-ink-dim">
+                <p className="mb-3 text-xs text-ink-dim classic:text-[11px]">
                   {def.data.workflow.id} · v{def.data.workflow.version}
                 </p>
                 {def.data.workflow.description && (
@@ -447,11 +447,11 @@ export function WorkflowTriggerPage(): JSX.Element {
                     onChange={onChange}
                     idPrefix="trigger"
                   />
-                  {formError && <p className="font-mono text-sm text-red">{formError}</p>}
+                  {formError && <p className="text-sm text-red">{formError}</p>}
                   <button
                     type="submit"
                     disabled={submitting}
-                    className="rounded bg-em-dim px-4 py-2 text-sm font-medium text-bg hover:bg-em disabled:opacity-40"
+                    className="rounded-pill bg-em px-4 py-2 text-sm font-medium text-on-em hover:bg-em-dim disabled:opacity-40 classic:bg-em-dim classic:hover:bg-em classic:text-bg"
                   >
                     {submitting ? 'Starting…' : 'Start run'}
                   </button>
@@ -464,8 +464,10 @@ export function WorkflowTriggerPage(): JSX.Element {
 
       {def.data && pageMode === 'run' && !runWithCanvas && (
         <>
-          <h1 className="font-mono text-lg font-semibold text-em">{def.data.workflow.name}</h1>
-          <p className="mt-1 font-mono text-[11px] text-ink-dim">
+          <h1 className="text-[22px] font-semibold text-ink classic:text-em classic:text-lg">
+            {def.data.workflow.name}
+          </h1>
+          <p className="mt-1 text-xs text-ink-dim classic:text-[11px]">
             {def.data.workflow.id} · v{def.data.workflow.version}
           </p>
           {def.data.workflow.description && (
@@ -487,12 +489,12 @@ export function WorkflowTriggerPage(): JSX.Element {
               onChange={onChange}
               idPrefix="trigger"
             />
-            {formError && <p className="font-mono text-sm text-red">{formError}</p>}
+            {formError && <p className="text-sm text-red">{formError}</p>}
             <div className="flex gap-2">
               <button
                 type="submit"
                 disabled={submitting}
-                className="rounded bg-em-dim px-4 py-2 text-sm font-medium text-bg hover:bg-em disabled:opacity-40"
+                className="rounded-pill bg-em px-4 py-2 text-sm font-medium text-on-em hover:bg-em-dim disabled:opacity-40 classic:bg-em-dim classic:hover:bg-em classic:text-bg"
               >
                 {submitting ? 'Starting…' : 'Start run'}
               </button>
@@ -500,7 +502,7 @@ export function WorkflowTriggerPage(): JSX.Element {
                 type="button"
                 disabled={submitting}
                 onClick={() => void navigate({ to: '/workflows' })}
-                className="rounded border border-line px-4 py-2 text-sm text-ink-dim hover:border-em hover:text-ink"
+                className="rounded-pill border border-line px-4 py-2 text-sm text-ink-dim hover:bg-ink/6 hover:text-ink classic:hover:bg-transparent classic:hover:border-em"
               >
                 Cancel
               </button>
@@ -643,7 +645,7 @@ export function WorkflowRunDetailPage(): JSX.Element {
       <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
         <Link
           to="/workflows"
-          className="font-mono text-[11px] text-ink-dim hover:text-em hover:underline"
+          className="text-xs text-ink-dim hover:text-em hover:underline classic:text-[11px]"
         >
           ← workflows
         </Link>
@@ -652,27 +654,29 @@ export function WorkflowRunDetailPage(): JSX.Element {
             type="button"
             disabled={killing}
             onClick={() => void onKill()}
-            className="rounded border border-red/50 px-3 py-1 font-mono text-xs text-red hover:bg-red/10 disabled:opacity-40"
+            className="rounded-pill border border-red/50 px-3 py-1 text-xs text-red hover:bg-red/10 disabled:opacity-40"
           >
             {killing ? 'Killing…' : 'Kill run'}
           </button>
         )}
       </div>
 
-      {detail.isError && <div className="font-mono text-sm text-red">{detail.error.message}</div>}
+      {detail.isError && <div className="text-sm text-red">{detail.error.message}</div>}
       {detail.isLoading && <p className="text-sm text-ink-dim">loading run…</p>}
-      {actionError && <p className="mb-3 font-mono text-sm text-red">{actionError}</p>}
+      {actionError && <p className="mb-3 text-sm text-red">{actionError}</p>}
 
       {run && (
         <>
           <header className="mb-6 flex flex-wrap items-start justify-between gap-3 border-b border-line pb-4">
             <div className="min-w-0">
-              <h1 className="truncate font-mono text-lg font-semibold text-em">{run.workflowId}</h1>
+              <h1 className="truncate text-[22px] font-semibold text-ink classic:text-em classic:text-lg">
+                {run.workflowId}
+              </h1>
               <p className="mt-1 font-mono text-[11px] text-ink-dim">{run.id}</p>
               {run.current && (
                 <p className="mt-1 font-mono text-xs text-ink">current: {run.current}</p>
               )}
-              {run.error && <p className="mt-2 font-mono text-xs text-red">{run.error}</p>}
+              {run.error && <p className="mt-2 text-xs text-red">{run.error}</p>}
             </div>
             <StatusChip status={run.status} />
           </header>
@@ -693,7 +697,7 @@ export function WorkflowRunDetailPage(): JSX.Element {
             // Crash window: the gate was answered but the run never continued
             // (paused_human with no open gate). resumeRun recovers this state.
             <section className="mb-6 rounded border border-line bg-panel p-4">
-              <p className="mb-3 font-mono text-xs text-ink">
+              <p className="mb-3 text-xs text-ink">
                 This run is paused but its gate is already answered — it likely crashed mid-resume
                 and can be recovered.
               </p>
@@ -722,7 +726,7 @@ export function WorkflowRunDetailPage(): JSX.Element {
                     // off paused — a second detached resume would race the first.
                   })()
                 }}
-                className="rounded border border-em/50 px-3 py-1 font-mono text-xs text-em hover:bg-em/10 disabled:opacity-40"
+                className="rounded border border-em/50 px-3 py-1 text-xs text-em hover:bg-em/10 disabled:opacity-40"
               >
                 {recovering ? 'Recovering…' : 'Recover run'}
               </button>
@@ -731,7 +735,7 @@ export function WorkflowRunDetailPage(): JSX.Element {
 
           {payload.children.length > 0 && (
             <section className="mb-6">
-              <h2 className="mb-2 font-mono text-xs font-semibold uppercase tracking-wide text-ink-dim">
+              <h2 className="mb-2 text-xs font-medium uppercase tracking-wider text-ink-dim classic:font-semibold classic:tracking-wide">
                 Child runs
               </h2>
               <ul className="flex flex-col gap-1">
@@ -745,9 +749,9 @@ export function WorkflowRunDetailPage(): JSX.Element {
                           params: { runId: c.id },
                         })
                       }
-                      className="flex w-full items-center justify-between gap-3 rounded border border-line bg-panel px-3 py-2 text-left hover:border-em"
+                      className="flex w-full items-center justify-between gap-3 rounded-2xl border border-transparent bg-panel-2 px-3 py-2 text-left hover:bg-line/60 classic:bg-panel classic:border-line classic:hover:border-em"
                     >
-                      <span className="min-w-0 truncate font-mono text-xs">
+                      <span className="min-w-0 truncate text-xs">
                         {c.workflowId} · {c.id}
                       </span>
                       <StatusChip status={c.status} />
@@ -760,7 +764,7 @@ export function WorkflowRunDetailPage(): JSX.Element {
 
           {run.output && Object.keys(run.output).length > 0 && (
             <section className="mb-6">
-              <h2 className="mb-2 font-mono text-xs font-semibold uppercase tracking-wide text-ink-dim">
+              <h2 className="mb-2 text-xs font-medium uppercase tracking-wider text-ink-dim classic:font-semibold classic:tracking-wide">
                 Output
               </h2>
               <pre className="overflow-x-auto rounded border border-line bg-panel-2 p-3 font-mono text-[11px] text-ink">
@@ -771,7 +775,7 @@ export function WorkflowRunDetailPage(): JSX.Element {
 
           <section>
             <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-              <h2 className="font-mono text-xs font-semibold uppercase tracking-wide text-ink-dim">
+              <h2 className="text-xs font-medium uppercase tracking-wider text-ink-dim classic:font-semibold classic:tracking-wide">
                 {detailView === 'timeline' ? 'Journal' : 'Graph'}
                 {isLiveRunStatus(run.status) && (
                   <span className="ml-2 font-normal normal-case text-ink-dim/70">
@@ -806,7 +810,7 @@ export function WorkflowRunDetailPage(): JSX.Element {
                       }`}
                     />
                     <div className="flex flex-wrap items-baseline gap-2">
-                      <span className="font-mono text-[10px] text-ink-dim">
+                      <span className="text-[11px] text-ink-dim classic:text-[10px]">
                         {line.ts ? new Date(line.ts).toLocaleTimeString() : '—'}
                       </span>
                       <span
@@ -932,9 +936,9 @@ function GateCard(props: {
   }
 
   return (
-    <section className="mb-6 rounded-lg border border-em/40 bg-panel px-4 py-3 shadow-lg shadow-bg/20">
+    <section className="mb-6 rounded-lg border border-em/40 bg-panel px-4 py-3 shadow-pop shadow-bg/20">
       <div className="mb-2 flex items-center justify-between gap-2">
-        <h2 className="font-mono text-xs font-semibold text-em">Human gate · {props.gate.label}</h2>
+        <h2 className="text-xs font-semibold text-em">Human gate · {props.gate.label}</h2>
         <span className="font-mono text-[10px] text-ink-dim">{props.gate.stepId}</span>
       </div>
       {props.gate.prompt && <p className="mb-3 text-sm text-ink">{props.gate.prompt}</p>}
@@ -953,11 +957,11 @@ function GateCard(props: {
           onChange={onChange}
           idPrefix="gate"
         />
-        {error && <p className="font-mono text-sm text-red">{error}</p>}
+        {error && <p className="text-sm text-red">{error}</p>}
         <button
           type="submit"
           disabled={submitting || accepted}
-          className="self-start rounded bg-em-dim px-4 py-2 text-sm font-medium text-bg hover:bg-em disabled:opacity-40"
+          className="self-start rounded-pill bg-em px-4 py-2 text-sm font-medium text-on-em hover:bg-em-dim disabled:opacity-40 classic:bg-em-dim classic:hover:bg-em classic:text-bg"
         >
           {accepted ? 'Resumed — continuing…' : submitting ? 'Resuming…' : 'Resume'}
         </button>

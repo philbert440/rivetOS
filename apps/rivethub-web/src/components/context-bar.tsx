@@ -66,7 +66,7 @@ export const ContextBar = memo(function ContextBar(props: {
   }${est ? ' (estimated from transcript — harness did not report usage)' : ''}`
 
   const label = (
-    <span className="font-mono text-[10px] text-ink-dim">
+    <span className="text-[11px] text-ink-dim classic:text-[10px]">
       <span className={cn(props.hairline ? 'hidden' : 'hidden sm:inline')}>
         {est ? '~' : ''}
         {compactTokens(tokens)}/{compactTokens(windowTokens)} ·{' '}
@@ -126,13 +126,13 @@ export const ContextBar = memo(function ContextBar(props: {
   return (
     <Popover>
       <PopoverTrigger
-        className="shrink-0 border border-line px-2 py-1 hover:border-em data-[state=open]:border-em"
+        className="rounded-pill shrink-0 border border-line px-2 py-1 hover:bg-ink/6 data-[state=open]:border-em classic:hover:bg-transparent classic:hover:border-em"
         aria-label={`Context ${String(pct)}% — session details`}
         title={title}
       >
         {meter}
       </PopoverTrigger>
-      <PopoverContent align="end" className="w-72 p-0 font-mono text-xs">
+      <PopoverContent align="end" className="w-72 p-0 text-xs">
         <ContextDetailsPanel
           tokens={tokens}
           windowTokens={windowTokens}

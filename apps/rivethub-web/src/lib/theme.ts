@@ -59,3 +59,20 @@ export function resolveTheme(
   if (pref === 'omarchy') return omarchyMode ?? (systemDark ? 'dark' : 'light')
   return pref === 'system' ? (systemDark ? 'dark' : 'light') : pref
 }
+
+/** The UI style a preference renders in. An explicit Light or Dark choice
+ *  gets the rounded Material style; System and Omarchy (and the unset
+ *  default, which resolves to one of them) keep the square, mono classic
+ *  style. Applied as html[data-style] (theme.css). */
+export type UiStyle = 'material' | 'classic'
+
+export function uiStyleFor(pref: ThemePreference): UiStyle {
+  return pref === 'light' || pref === 'dark' ? 'material' : 'classic'
+}
+
+/** meta theme-color per style and resolved theme — literals in lockstep with
+ *  theme.css --color-bg (meta takes a literal, read before first paint). */
+export function canvasColorFor(style: UiStyle, resolved: ResolvedTheme): string {
+  if (style === 'material') return resolved === 'dark' ? '#0f1512' : '#e9f0eb'
+  return resolved === 'dark' ? '#0d1117' : '#f6f4ee'
+}
