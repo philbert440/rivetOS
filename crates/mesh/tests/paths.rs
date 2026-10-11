@@ -103,17 +103,19 @@ fn live_dir_functions_agree_with_the_join_helpers() {
 
 #[test]
 fn mesh_file_paths_follow_the_den_search_order() {
-    let home = protocol::host::home_dir(&protocol::host::ProcessEnv);
-    let mut expected = vec![path_join("/gateway/shared", &["mesh.json"])];
-    if let Some(home) = home.as_deref() {
-        expected.push(path_join(home, &[".rivetos", "mesh.json"]));
-    }
-    assert_eq!(mesh_file_paths("", Some("/gateway/shared")), expected);
+    let home = protocol::host::home_dir(&protocol::host::ProcessEnv).expect("home");
     assert_eq!(
-        mesh_file_paths("/x/mesh.json", Some("/ignored")),
+        mesh_file_paths("", Some("/gateway/shared")).unwrap(),
+        vec![
+            path_join("/gateway/shared", &["mesh.json"]),
+            path_join(&home, &[".rivetos", "mesh.json"]),
+        ]
+    );
+    assert_eq!(
+        mesh_file_paths("/x/mesh.json", Some("/ignored")).unwrap(),
         vec!["/x/mesh.json".to_string()]
     );
-    let live = mesh_file_paths("", None);
+    let live = mesh_file_paths("", None).unwrap();
     assert_eq!(
         live[0],
         path_join(
@@ -121,10 +123,7 @@ fn mesh_file_paths_follow_the_den_search_order() {
             &["mesh.json"]
         )
     );
-    match home.as_deref() {
-        Some(home) => assert_eq!(live[1], path_join(home, &[".rivetos", "mesh.json"])),
-        None => assert_eq!(live.len(), 1),
-    }
+    assert_eq!(live[1], path_join(&home, &[".rivetos", "mesh.json"]));
 }
 
 #[test]
@@ -302,6 +301,47 @@ fn load_mesh_file_skips_invalid_json_and_throws_on_a_flat_array() {
     let err = load_mesh_file_blocking(&[flat.display().to_string()], MeshParseOptions::default())
         .unwrap_err();
     assert!(err.to_string().contains("pre-capabilities flat-array"));
+}
+
+#[test]
+fn load_mesh_file_keeps_a_node_when_a_quoted_value_is_not_utf8() {
+    let scratch = Scratch::new();
+    let file = scratch.path().join("mesh.json");
+    let mut bytes = br#"{"version":1,"updatedAt":4,"nodes":{"keep":{"id":"keep","name":"Keep","host":"h","port":1,"notes":"caf"#.to_vec();
+    bytes.push(0xE9);
+    bytes.extend_from_slice(br#""}}}"#);
+    std::fs::write(&file, &bytes).unwrap();
+    let loaded = load_mesh_file_blocking(
+        &[file.display().to_string()],
+        MeshParseOptions {
+            on_invalid_node: OnInvalidNode::Skip,
+        },
+    )
+    .unwrap()
+    .unwrap();
+    let node = loaded.file.get("keep").unwrap();
+    assert_eq!(
+        node.extra
+            .get("notes")
+            .and_then(protocol::js::JsValue::as_str),
+        Some("caf\u{FFFD}")
+    );
+}
+
+#[test]
+fn load_mesh_file_skips_an_unreadable_candidate() {
+    let scratch = Scratch::new();
+    let blocked = scratch.path().join("blocked.json");
+    std::fs::create_dir(&blocked).unwrap();
+    let good = scratch.path().join("good.json");
+    std::fs::write(&good, r#"{"version":1,"updatedAt":7,"nodes":{}}"#).unwrap();
+    let loaded = load_mesh_file_blocking(
+        &[blocked.display().to_string(), good.display().to_string()],
+        MeshParseOptions::default(),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(loaded.file.updated_at.as_f64(), 7.0);
 }
 
 #[test]

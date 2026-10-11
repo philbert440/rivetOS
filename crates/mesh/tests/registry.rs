@@ -676,3 +676,60 @@ fn empty_storage_dir_uses_the_shared_dir_at_construction() {
             .join(MESH_FILE_NAME)
     );
 }
+
+#[tokio::test]
+async fn registration_keeps_a_roster_node_when_another_value_is_not_utf8() {
+    let scratch = Scratch::new();
+    let mesh_path = scratch.path().join(MESH_FILE_NAME);
+    let mut bytes = br#"{"version":1,"updatedAt":1,"nodes":{"keep":{"id":"keep","name":"Keep","host":"192.0.2.8","port":3100,"agents":[],"providers":[],"models":[],"capabilities":[],"status":"online","lastSeen":1,"registeredAt":1,"version":"1","notes":"caf"#.to_vec();
+    bytes.push(0xE9);
+    bytes.extend_from_slice(br#""}}}"#);
+    std::fs::write(&mesh_path, &bytes).unwrap();
+    let registry = registry(scratch.path());
+    let added = sample("added", &["opus"], "192.0.2.9");
+    registry.register(added.clone()).await.unwrap();
+    let kept = registry.get_node("keep").await.unwrap().unwrap();
+    assert_eq!(kept.name, "Keep");
+    assert_eq!(kept.host, "192.0.2.8");
+    assert_eq!(
+        kept.extra
+            .get("notes")
+            .and_then(protocol::js::JsValue::as_str),
+        Some("caf\u{FFFD}")
+    );
+    assert_eq!(
+        registry.get_node(&added.id).await.unwrap().unwrap().host,
+        "192.0.2.9"
+    );
+    assert_eq!(registry.get_nodes().await.unwrap().len(), 2);
+    let saved = protocol::host::read_text(&mesh_path).unwrap();
+    let parsed = protocol::js::parse(&saved).unwrap();
+    let nodes = parsed
+        .get("nodes")
+        .and_then(protocol::js::JsValue::as_object);
+    let nodes = nodes.unwrap();
+    assert!(nodes.get("keep").is_some());
+    assert!(nodes.get(&added.id).is_some());
+}
+
+#[tokio::test]
+async fn a_read_error_does_not_replace_the_roster() {
+    let scratch = Scratch::new();
+    let mesh_path = scratch.path().join(MESH_FILE_NAME);
+    std::fs::create_dir(&mesh_path).unwrap();
+    std::fs::write(mesh_path.join("keep"), b"still-here").unwrap();
+    let registry = registry(scratch.path());
+    let err = registry
+        .register(sample("added", &["opus"], "192.0.2.9"))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "EISDIR: illegal operation on a directory, read"
+    );
+    assert!(mesh_path.is_dir());
+    assert_eq!(
+        std::fs::read(mesh_path.join("keep")).unwrap(),
+        b"still-here"
+    );
+}

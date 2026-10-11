@@ -529,12 +529,13 @@ impl Inner {
     }
 
     fn load_locked(&self) -> Result<MeshFile, MeshError> {
-        let raw = match std::fs::read_to_string(&self.file_path) {
+        let raw = match protocol::host::read_text(&self.file_path) {
             Ok(raw) => raw,
-            Err(_) => {
+            Err(err) if err.code == "ENOENT" => {
                 self.warnings.lock().clear();
                 return Ok(MeshFile::empty());
             }
+            Err(err) => return Err(MeshError::message(err.to_string())),
         };
         let path = self.file_path.display().to_string();
         match parse_mesh_file(
@@ -621,7 +622,7 @@ pub fn load_mesh_file_blocking(
     options: MeshParseOptions,
 ) -> Result<Option<ParseOutcome>, MeshError> {
     for path in paths {
-        let raw = match std::fs::read_to_string(path) {
+        let raw = match protocol::host::read_text(Path::new(path)) {
             Ok(raw) => raw,
             Err(_) => continue,
         };

@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use protocol::host::{Env, ProcessEnv};
+use protocol::host::{Env, FsError, ProcessEnv};
 use protocol::js::posix_join;
 
 pub const DEFAULT_SHARED_DIR: &str = "/rivet-shared";
@@ -33,27 +33,42 @@ pub fn path_join(root: &str, segments: &[&str]) -> String {
     posix_join(&parts)
 }
 
-pub fn mesh_file_paths(mesh_file: &str, shared_root: Option<&str>) -> Vec<String> {
+pub fn mesh_file_paths(mesh_file: &str, shared_root: Option<&str>) -> Result<Vec<String>, FsError> {
     mesh_file_paths_in(mesh_file, shared_root, &ProcessEnv)
 }
 
-fn mesh_file_paths_in(mesh_file: &str, shared_root: Option<&str>, env: &dyn Env) -> Vec<String> {
+fn mesh_file_paths_in(
+    mesh_file: &str,
+    shared_root: Option<&str>,
+    env: &dyn Env,
+) -> Result<Vec<String>, FsError> {
     if !mesh_file.is_empty() {
-        return vec![mesh_file.to_string()];
+        return Ok(vec![mesh_file.to_string()]);
     }
     let shared = match shared_root {
         Some(root) => root.to_string(),
         None => config::paths::shared_dir(env),
     };
     let mut paths = vec![path_join(&shared, &["mesh.json"])];
-    push_instance_mesh(&mut paths, protocol::host::home_dir(env).as_deref());
-    paths
+    push_instance_mesh(&mut paths, protocol::host::home_dir(env).as_deref())?;
+    Ok(paths)
 }
 
-fn push_instance_mesh(paths: &mut Vec<String>, home: Option<&str>) {
-    if let Some(home) = home {
-        paths.push(path_join(home, &[".rivetos", "mesh.json"]));
-    }
+fn push_instance_mesh(paths: &mut Vec<String>, home: Option<&str>) -> Result<(), FsError> {
+    let Some(home) = home else {
+        return Err(homedir_failure());
+    };
+    paths.push(path_join(home, &[".rivetos", "mesh.json"]));
+    Ok(())
+}
+
+fn homedir_failure() -> FsError {
+    protocol::host::fs_error(
+        "uv_os_homedir",
+        None,
+        None,
+        &std::io::Error::from_raw_os_error(2),
+    )
 }
 
 pub fn cli_mesh_paths(root: Option<&str>) -> Vec<String> {
@@ -119,11 +134,24 @@ mod posix_join_table {
     }
 
     #[test]
-    fn missing_home_does_not_join_a_relative_path() {
+    fn failed_home_lookup_is_the_node_homedir_error() {
         let mut paths = vec![path_join("/rivet-shared", &["mesh.json"])];
-        push_instance_mesh(&mut paths, None);
+        let err = push_instance_mesh(&mut paths, None).unwrap_err();
+        assert_eq!(err.code, "ENOENT");
+        assert_eq!(err.errno, -2);
+        assert_eq!(err.syscall, "uv_os_homedir");
+        assert_eq!(err.path, None);
+        assert_eq!(err.dest, None);
+        assert_eq!(
+            err.to_string(),
+            "ENOENT: no such file or directory, uv_os_homedir"
+        );
+        assert_eq!(
+            err.node_string(),
+            "Error: ENOENT: no such file or directory, uv_os_homedir"
+        );
         assert_eq!(paths, vec!["/rivet-shared/mesh.json".to_string()]);
-        push_instance_mesh(&mut paths, Some("/home/example"));
+        push_instance_mesh(&mut paths, Some("/home/example")).unwrap();
         assert_eq!(
             paths,
             vec![
@@ -134,12 +162,27 @@ mod posix_join_table {
     }
 
     #[test]
+    fn unset_home_uses_the_passwd_entry() {
+        let mut env = MapEnv::new();
+        env.set("RIVETOS_SHARED_DIR", "/data/shared");
+        let home = protocol::host::home_dir(&env).expect("passwd home");
+        assert!(home.starts_with('/'));
+        assert_eq!(
+            mesh_file_paths_in("", None, &env).unwrap(),
+            vec![
+                "/data/shared/mesh.json".to_string(),
+                path_join(&home, &[".rivetos", "mesh.json"]),
+            ]
+        );
+    }
+
+    #[test]
     fn supplied_home_is_the_instance_candidate() {
         let mut env = MapEnv::new();
         env.set("HOME", "/home/example");
         env.set("RIVETOS_SHARED_DIR", "/data/shared");
         assert_eq!(
-            mesh_file_paths_in("", None, &env),
+            mesh_file_paths_in("", None, &env).unwrap(),
             vec![
                 "/data/shared/mesh.json".to_string(),
                 "/home/example/.rivetos/mesh.json".to_string(),
@@ -147,11 +190,15 @@ mod posix_join_table {
         );
         env.set("HOME", "");
         assert_eq!(
-            mesh_file_paths_in("", Some("/gateway/shared"), &env),
+            mesh_file_paths_in("", Some("/gateway/shared"), &env).unwrap(),
             vec![
                 "/gateway/shared/mesh.json".to_string(),
                 ".rivetos/mesh.json".to_string(),
             ]
+        );
+        assert_eq!(
+            mesh_file_paths_in("/x/mesh.json", None, &env).unwrap(),
+            vec!["/x/mesh.json".to_string()]
         );
     }
 }
