@@ -327,7 +327,7 @@ fn native_ca_matches_openssl() {
         "-noout",
         "-text",
     ]);
-    assert!(node_text.contains("Subject: O = Rivet Collective, CN = node-a.mesh"));
+    assert!(node_text.contains("Subject: CN = node-a.mesh, O = Rivet Collective"));
     assert_critical_and_linked(&node_text, &int_text);
     assert!(node_text.contains("Issuer: O = Rivet Collective, CN = Rivet Intermediate CA"));
     assert!(node_text.contains("(2048 bit)"));
@@ -372,7 +372,7 @@ fn native_ca_matches_openssl() {
         "-noout",
         "-text",
     ]);
-    assert!(agent_text.contains("Subject: O = Rivet Collective, CN = opus@node-a"));
+    assert!(agent_text.contains("Subject: CN = opus@node-a, O = Rivet Collective"));
     assert!(!agent_text.contains("OU ="));
     assert!(!agent_text.contains("Subject Alternative Name"));
     assert!(agent_text.contains("TLS Web Client Authentication"));
@@ -429,7 +429,7 @@ fn native_ca_matches_openssl() {
         "-text",
     ]);
     assert!(
-        client_text.contains("Subject: O = Rivet Collective, OU = client, CN = device:pixel-owner")
+        client_text.contains("Subject: CN = device:pixel-owner, O = Rivet Collective, OU = client")
     );
     assert!(!client_text.contains("Subject Alternative Name"));
     assert_eq!(
@@ -477,12 +477,12 @@ fn native_ca_matches_openssl() {
         "serial=1003"
     );
     let index = fs::read_to_string(int_dir.join("index.txt")).unwrap();
-    assert!(index.contains("\t1000\tunknown\t/O=Rivet Collective/CN=node-a.mesh\n"));
-    assert!(index.contains("\t1001\tunknown\t/O=Rivet Collective/CN=opus@node-a\n"));
+    assert!(index.contains("\t1000\tunknown\t/CN=node-a.mesh/O=Rivet Collective\n"));
+    assert!(index.contains("\t1001\tunknown\t/CN=opus@node-a/O=Rivet Collective\n"));
     assert!(
-        index.contains("\t1002\tunknown\t/O=Rivet Collective/OU=client/CN=device:pixel-owner\n")
+        index.contains("\t1002\tunknown\t/CN=device:pixel-owner/O=Rivet Collective/OU=client\n")
     );
-    assert!(index.contains("\t1003\tunknown\t/O=Rivet Collective/CN=node-a.mesh\n"));
+    assert!(index.contains("\t1003\tunknown\t/CN=node-a.mesh/O=Rivet Collective\n"));
     assert_eq!(
         index.lines().filter(|line| line.starts_with("V\t")).count(),
         4
@@ -661,6 +661,151 @@ fn native_ca_matches_openssl() {
     assert!(index.contains("\t010000\t"), "{index}");
     let revoked_wide = run(&paths, &["revoke", "wider.mesh"]);
     assert_ok(&revoked_wide);
+
+    let srl_path = int_dir.join("int.srl");
+    let index_path = int_dir.join("index.txt");
+    let srl_before_bad = fs::read_to_string(&srl_path).unwrap();
+    let index_before_bad = fs::read_to_string(&index_path).unwrap();
+    let bad_san = run(&paths, &["issue-node", "node-a", "IP:999.1.1.1"]);
+    assert_eq!(bad_san.0, 1, "{}", bad_san.2);
+    assert_eq!(
+        bad_san.2,
+        format!(
+            "rivet-ca: WARN: {} exists — renewing (key reused if present)\nrivet-ca: invalid SAN IP: IP:999.1.1.1\n",
+            node_crt.display()
+        )
+    );
+    assert_eq!(fs::read_to_string(&srl_path).unwrap(), srl_before_bad);
+    assert_eq!(fs::read_to_string(&index_path).unwrap(), index_before_bad);
+
+    let before_recover = fs::read_to_string(&index_path).unwrap();
+    let used_before = index_serial_values(&before_recover);
+    assert_eq!(
+        used_before.iter().filter(|value| **value == 0x1000).count(),
+        1
+    );
+    fs::write(&srl_path, "1000\n").unwrap();
+    let recovered = run(&paths, &["issue-node", "recovered"]);
+    assert_ok(&recovered);
+    let recovered_crt = paths.issued_dir().join("recovered.crt");
+    let recovered_serial = cert_serial(&recovered_crt);
+    let max_before = used_before.iter().copied().max().unwrap();
+    assert_eq!(recovered_serial, max_before + 1);
+    let after_recover = fs::read_to_string(&index_path).unwrap();
+    let used_after = index_serial_values(&after_recover);
+    assert_eq!(
+        used_after.iter().filter(|value| **value == 0x1000).count(),
+        1
+    );
+    assert_eq!(
+        used_after
+            .iter()
+            .filter(|value| **value == recovered_serial)
+            .count(),
+        1
+    );
+    let mut unique = used_after.clone();
+    unique.sort_unstable();
+    unique.dedup();
+    assert_eq!(unique.len(), used_after.len(), "{after_recover}");
+
+    let dup_snapshot = fs::read_to_string(&index_path).unwrap();
+    let srl_snapshot = fs::read_to_string(&srl_path).unwrap();
+    let mut duplicated = dup_snapshot.clone();
+    duplicated.push_str(dup_snapshot.lines().next().unwrap());
+    duplicated.push('\n');
+    fs::write(&index_path, &duplicated).unwrap();
+    let dup_issue = run(&paths, &["issue-node", "dup-node"]);
+    assert_eq!(dup_issue.0, 1, "{}", dup_issue.2);
+    assert!(dup_issue.2.contains("duplicate serial"), "{}", dup_issue.2);
+    assert!(!paths.issued_dir().join("dup-node.key").exists());
+    assert_eq!(fs::read_to_string(&srl_path).unwrap(), srl_snapshot);
+    fs::write(&index_path, &dup_snapshot).unwrap();
+
+    let attr_old = int_dir.join("index.txt.attr.old");
+    let attr_old_bytes = fs::read(&attr_old).unwrap();
+    fs::remove_file(&attr_old).unwrap();
+    symlink("missing-attr-old", &attr_old).unwrap();
+    let crl_before = fs::read(paths.crl_path()).unwrap();
+    let broken = run(&paths, &["revoke", "opus@node-a"]);
+    assert_eq!(broken.0, 1, "{}", broken.2);
+    assert_eq!(
+        broken.2,
+        format!(
+            "rivet-ca: revoking {}\nrivet-ca: refusing symlink {}\n",
+            agent_crt.display(),
+            attr_old.display()
+        )
+    );
+    let revoked_index = fs::read_to_string(&index_path).unwrap();
+    assert!(
+        revoked_index
+            .lines()
+            .any(|line| line.starts_with("R\t") && line.contains("\t1001\t")),
+        "{revoked_index}"
+    );
+    assert_ne!(fs::read(paths.crl_path()).unwrap(), crl_before);
+    compare_verify(&paths, &agent_crt);
+    fs::remove_file(&attr_old).unwrap();
+    fs::write(&attr_old, &attr_old_bytes).unwrap();
+    let rebuilt = run(&paths, &["crl"]);
+    assert_ok(&rebuilt);
+    let rebuilt_crl = openssl_stdout(&[
+        "crl",
+        "-in",
+        &paths.crl_path().display().to_string(),
+        "-noout",
+        "-text",
+    ]);
+    assert!(
+        rebuilt_crl.contains("Serial Number: 1001") || rebuilt_crl.contains("Serial Number: 4097"),
+        "{rebuilt_crl}"
+    );
+    assert!(
+        fs::read_to_string(&index_path)
+            .unwrap()
+            .lines()
+            .any(|line| line.starts_with("R\t") && line.contains("\t1001\t"))
+    );
+    compare_verify(&paths, &agent_crt);
+
+    let index_bytes = fs::read(&index_path).unwrap();
+    let wider_crt = paths.issued_dir().join("wider.crt");
+    fs::remove_file(&index_path).unwrap();
+    fs::create_dir(&index_path).unwrap();
+    let unreadable = run(&paths, &["revoke", "wider.mesh"]);
+    assert_eq!(unreadable.0, 1, "{}", unreadable.2);
+    assert_eq!(
+        unreadable.2,
+        format!(
+            "rivet-ca: revoking {}\nrivet-ca: io: Is a directory (os error 21)\n",
+            wider_crt.display()
+        )
+    );
+    fs::remove_dir(&index_path).unwrap();
+    fs::write(&index_path, &index_bytes).unwrap();
+}
+
+fn index_serial_values(text: &str) -> Vec<u128> {
+    text.lines()
+        .filter(|line| !line.is_empty())
+        .map(|line| {
+            let serial = line.split('\t').nth(3).unwrap();
+            u128::from_str_radix(serial, 16).unwrap()
+        })
+        .collect()
+}
+
+fn cert_serial(path: &Path) -> u128 {
+    let text = openssl_stdout(&[
+        "x509",
+        "-in",
+        &path.display().to_string(),
+        "-noout",
+        "-serial",
+    ]);
+    let hex = text.trim().trim_start_matches("serial=");
+    u128::from_str_radix(hex, 16).unwrap()
 }
 
 fn compare_verify(paths: &CaPaths, cert: &Path) {
@@ -846,7 +991,7 @@ fn openssl_tree_then_native_leaf() {
         "-noout",
         "-text",
     ]);
-    assert!(text.contains("Subject: O = Rivet Collective, CN = foreign.mesh"));
+    assert!(text.contains("Subject: CN = foreign.mesh, O = Rivet Collective"));
     assert!(text.contains("Issuer: O = Rivet Collective, CN = Rivet Intermediate CA"));
     assert_eq!(
         fs::read_to_string(paths.int_dir().join("int.srl")).unwrap(),
@@ -923,26 +1068,112 @@ fn script_and_native_cross_verify() {
         script_text.contains("Subject: CN = scripted@native-node, O = Rivet Collective"),
         "{script_text}"
     );
+    let native_text = openssl_stdout(&[
+        "x509",
+        "-in",
+        &native_crt.display().to_string(),
+        "-noout",
+        "-text",
+    ]);
+    assert!(
+        native_text.contains("Subject: CN = native-node.mesh, O = Rivet Collective"),
+        "{native_text}"
+    );
+    let int_text = openssl_stdout(&[
+        "x509",
+        "-in",
+        &from_rust.int_dir().join("int.crt").display().to_string(),
+        "-noout",
+        "-text",
+    ]);
+    assert_leaf_aki_matches_issuer(&script_text, &int_text);
+    assert_leaf_aki_matches_issuer(&native_text, &int_text);
     let index = fs::read_to_string(from_rust.int_dir().join("index.txt")).unwrap();
     assert!(
-        index.contains("/O=Rivet Collective/CN=native-node.mesh"),
+        index.contains("/CN=native-node.mesh/O=Rivet Collective"),
         "{index}"
     );
     assert!(
         index.contains("/CN=scripted@native-node/O=Rivet Collective"),
         "{index}"
     );
+    assert_lists_match(&script, &from_rust);
 
     let from_script = scratch("cross-script");
     let init = run_script(&script, &from_script, &["init"]);
     assert_eq!(init.0, 0, "{}", init.2);
     let intermediate = run_script(&script, &from_script, &["issue-intermediate"]);
     assert_eq!(intermediate.0, 0, "{}", intermediate.2);
+    assert_eq!(
+        fs::read_to_string(from_script.root_dir.join("ca.srl")).unwrap(),
+        "1001\n"
+    );
+    assert_eq!(
+        openssl_stdout(&[
+            "x509",
+            "-in",
+            &from_script.int_dir().join("int.crt").display().to_string(),
+            "-noout",
+            "-serial",
+        ])
+        .trim(),
+        "serial=1001"
+    );
+    let script_root = openssl_stdout(&[
+        "x509",
+        "-in",
+        &from_script.root_dir.join("ca.crt").display().to_string(),
+        "-noout",
+        "-text",
+    ]);
+    let script_int = openssl_stdout(&[
+        "x509",
+        "-in",
+        &from_script.int_dir().join("int.crt").display().to_string(),
+        "-noout",
+        "-text",
+    ]);
+    assert!(!aki_has_dirname(&script_root), "{script_root}");
+    assert_leaf_aki_matches_issuer(&script_int, &script_root);
     let phone = run_script(&script, &from_script, &["issue-client", "phone"]);
     assert_eq!(phone.0, 0, "{}", phone.2);
     assert_ok(&run(&from_script, &["issue-node", "from-rust"]));
     let phone_crt = from_script.issued_dir().join("device-phone.crt");
     let rust_crt = from_script.issued_dir().join("from-rust.crt");
+    let phone_text = openssl_stdout(&[
+        "x509",
+        "-in",
+        &phone_crt.display().to_string(),
+        "-noout",
+        "-text",
+    ]);
+    let rust_text = openssl_stdout(&[
+        "x509",
+        "-in",
+        &rust_crt.display().to_string(),
+        "-noout",
+        "-text",
+    ]);
+    assert!(
+        phone_text.contains("Subject: CN = device:phone, O = Rivet Collective, OU = client"),
+        "{phone_text}"
+    );
+    assert!(
+        rust_text.contains("Subject: CN = from-rust.mesh, O = Rivet Collective"),
+        "{rust_text}"
+    );
+    assert_leaf_aki_matches_issuer(&phone_text, &script_int);
+    assert_leaf_aki_matches_issuer(&rust_text, &script_int);
+    let script_index = fs::read_to_string(from_script.int_dir().join("index.txt")).unwrap();
+    assert!(
+        script_index.contains("/CN=device:phone/O=Rivet Collective/OU=client"),
+        "{script_index}"
+    );
+    assert!(
+        script_index.contains("/CN=from-rust.mesh/O=Rivet Collective"),
+        "{script_index}"
+    );
+    assert_lists_match(&script, &from_script);
     compare_verify(&from_script, &phone_crt);
     compare_verify(&from_script, &rust_crt);
     let first = run_script(&script, &from_script, &["revoke", "device:phone"]);
@@ -1032,6 +1263,27 @@ fn days_from_civil(year: i32, month: u32, day: u32) -> i64 {
     let day_of_year = (153 * month_prime + 2) / 5 + day - 1;
     let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
     i64::from(era) * 146_097 + i64::from(day_of_era) - 719_468
+}
+
+fn assert_lists_match(script: &Path, paths: &CaPaths) {
+    let script_list = run_script(script, paths, &["list"]);
+    let rust_list = run(paths, &["list"]);
+    assert_eq!(script_list.0, 0, "{}", script_list.2);
+    assert_eq!(rust_list.0, 0, "{}", rust_list.2);
+    assert_eq!(
+        rust_list.1, script_list.1,
+        "rust stderr {}\nscript stderr {}",
+        rust_list.2, script_list.2
+    );
+}
+
+fn assert_leaf_aki_matches_issuer(leaf_text: &str, issuer_text: &str) {
+    assert!(!aki_has_dirname(leaf_text), "{leaf_text}");
+    assert_eq!(
+        extension_hex(leaf_text, "Authority Key Identifier"),
+        extension_hex(issuer_text, "Subject Key Identifier"),
+        "{leaf_text}\n{issuer_text}"
+    );
 }
 
 fn assert_critical_and_linked(text: &str, issuer_text: &str) {

@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
@@ -15,7 +16,9 @@ use crate::certs::{
 use crate::error::{Error, wrap};
 use crate::fsutil;
 use crate::index::{self, IndexRow};
-use crate::namefmt::{cn_matches, oneline, openssl_subject_line, org_ou_then_cn, org_then_cn};
+use crate::namefmt::{
+    cn_matches, cn_org_ou, cn_then_org, oneline, openssl_subject_line, org_then_cn,
+};
 use crate::paths::CaPaths;
 use crate::pemutil;
 use crate::serial::{self, hex_from_raw, random_serial};
@@ -222,6 +225,42 @@ fn restore_or(saved: &[SavedFile], err: Error) -> Result<(), Error> {
     }
 }
 
+fn index_serials(rows: &[IndexRow]) -> Result<BTreeSet<u128>, Error> {
+    let mut seen = BTreeSet::new();
+    for row in rows {
+        let value = serial::parse_hex_u128(&row.serial)
+            .map_err(|err| Error::msg(format!("bad serial {} in index: {err}", row.serial)))?;
+        if !seen.insert(value) {
+            return Err(Error::msg(format!(
+                "duplicate serial {} in index",
+                serial::hex_u128(value)
+            )));
+        }
+    }
+    Ok(seen)
+}
+
+fn reserve_serial(counter: u128, used: &BTreeSet<u128>) -> Result<u128, Error> {
+    if !used.contains(&counter) {
+        return Ok(counter);
+    }
+    let max = used
+        .iter()
+        .next_back()
+        .copied()
+        .ok_or_else(|| Error::msg("serial overflow"))?;
+    let candidate = max
+        .checked_add(1)
+        .ok_or_else(|| Error::msg("serial overflow"))?;
+    if used.contains(&candidate) {
+        return Err(Error::msg(format!(
+            "serial {} already present in db",
+            serial::hex_u128(candidate)
+        )));
+    }
+    Ok(candidate)
+}
+
 struct LeafFiles {
     enddate: String,
 }
@@ -246,13 +285,17 @@ fn issue_leaf(
     let leaf_crt_path = paths.issued_dir().join(format!("{stem}.crt"));
     fsutil::reject_symlink(&leaf_key_path)?;
     fsutil::reject_symlink(&leaf_crt_path)?;
-    let leaf_key = load_or_create_key(&leaf_key_path, 2048)?;
     let serial_path = paths.int_dir().join("int.srl");
-    let serial_value = serial::read_counter(&serial_path)?;
+    let index_path = paths.int_dir().join("index.txt");
+    let mut rows = index::read_index(&index_path)?;
+    let used = index_serials(&rows)?;
+    let counter = serial::read_counter(&serial_path)?;
+    let serial_value = reserve_serial(counter, &used)?;
     let next = serial_value
         .checked_add(1)
         .ok_or_else(|| Error::msg("serial overflow"))?;
     let serial_hex = serial::hex_u128(serial_value);
+    let leaf_key = load_or_create_key(&leaf_key_path, 2048)?;
     let now = unix_now();
     let not_before = timeutil::time_at(now)?;
     let not_after = timeutil::time_at(now + DAYS_LEAF * 86400)?;
@@ -288,8 +331,6 @@ fn issue_leaf(
         file: "unknown".to_string(),
         subject: oneline(certificate.subject()),
     };
-    let index_path = paths.int_dir().join("index.txt");
-    let mut rows = index::read_index(&index_path)?;
     rows.push(row);
     let mut index_text = String::new();
     for item in &rows {
@@ -297,7 +338,6 @@ fn issue_leaf(
     }
     let archive_path = paths.int_dir().join(format!("{serial_hex}.pem"));
     let mut saved = Vec::new();
-    commit_file(&index_path, index_text.as_bytes(), 0o644, true, &mut saved)?;
     commit_file(
         &serial_path,
         format!("{}\n", serial::hex_u128(next)).as_bytes(),
@@ -305,6 +345,7 @@ fn issue_leaf(
         true,
         &mut saved,
     )?;
+    commit_file(&index_path, index_text.as_bytes(), 0o644, true, &mut saved)?;
     commit_file(
         &leaf_crt_path,
         issued.pem.as_bytes(),
@@ -365,20 +406,24 @@ fn init_locked(paths: &CaPaths) -> Result<CommandOutput, Error> {
         "generating root key + self-signed cert ({DAYS_ROOT} days) at {}",
         paths.root_dir.display()
     )];
-    let subject = org_then_cn(ORG, ROOT_CN)?;
-    let key = generate_rsa(4096)?;
-    fsutil::create_secret(&key_path, private_pkcs8_pem(&key)?.as_bytes())
-        .map_err(|err| err.with_lines(&lines))?;
+    let subject = org_then_cn(ORG, ROOT_CN).map_err(|err| err.with_lines(&lines))?;
+    let key = generate_rsa(4096).map_err(|err| err.with_lines(&lines))?;
+    let pem = private_pkcs8_pem(&key).map_err(|err| err.with_lines(&lines))?;
+    fsutil::create_secret(&key_path, pem.as_bytes()).map_err(|err| err.with_lines(&lines))?;
     let now = unix_now();
+    let not_before = timeutil::time_at(now).map_err(|err| err.with_lines(&lines))?;
+    let not_after =
+        timeutil::time_at(now + DAYS_ROOT * 86400).map_err(|err| err.with_lines(&lines))?;
+    let serial = random_serial().map_err(|err| err.with_lines(&lines))?;
     let issued = sign_certificate(
         &key,
         &key,
         CertSpec {
             issuer: subject.clone(),
             subject,
-            serial: random_serial()?,
-            not_before: timeutil::time_at(now)?,
-            not_after: timeutil::time_at(now + DAYS_ROOT * 86400)?,
+            serial,
+            not_before,
+            not_after,
             basic: ca_constraints(None),
             usage: ca_usage(),
             eku: None,
@@ -435,10 +480,11 @@ fn issue_intermediate_locked(paths: &CaPaths) -> Result<CommandOutput, Error> {
     let mut lines = vec![format!(
         "generating intermediate key + CSR ({DAYS_INT} days)"
     )];
-    let issuer = issuer_name_from_pem(&root_pem)?;
-    let subject = org_then_cn(ORG, INT_CN)?;
-    let key = generate_rsa(4096)?;
-    fsutil::create_secret(&int_key_path, private_pkcs8_pem(&key)?.as_bytes())
+    let issuer = issuer_name_from_pem(&root_pem).map_err(|err| err.with_lines(&lines))?;
+    let subject = org_then_cn(ORG, INT_CN).map_err(|err| err.with_lines(&lines))?;
+    let key = generate_rsa(4096).map_err(|err| err.with_lines(&lines))?;
+    let key_pem = private_pkcs8_pem(&key).map_err(|err| err.with_lines(&lines))?;
+    fsutil::create_secret(&int_key_path, key_pem.as_bytes())
         .map_err(|err| err.with_lines(&lines))?;
     lines.push("signing intermediate with root".to_string());
     let serial_path = paths.root_dir.join("ca.srl");
@@ -448,15 +494,19 @@ fn issue_intermediate_locked(paths: &CaPaths) -> Result<CommandOutput, Error> {
         .ok_or_else(|| Error::msg("serial overflow"))
         .map_err(|err| err.with_lines(&lines))?;
     let now = unix_now();
+    let serial = serial::serial_from_u128(serial_value).map_err(|err| err.with_lines(&lines))?;
+    let not_before = timeutil::time_at(now).map_err(|err| err.with_lines(&lines))?;
+    let not_after =
+        timeutil::time_at(now + DAYS_INT * 86400).map_err(|err| err.with_lines(&lines))?;
     let issued = sign_certificate(
         &key,
         &root_key,
         CertSpec {
             issuer,
             subject,
-            serial: serial::serial_from_u128(serial_value)?,
-            not_before: timeutil::time_at(now)?,
-            not_after: timeutil::time_at(now + DAYS_INT * 86400)?,
+            serial,
+            not_before,
+            not_after,
             basic: ca_constraints(Some(0)),
             usage: ca_usage(),
             eku: None,
@@ -469,12 +519,14 @@ fn issue_intermediate_locked(paths: &CaPaths) -> Result<CommandOutput, Error> {
     let int_crt = paths.int_dir().join("int.crt");
     fsutil::atomic_write(&int_crt, issued.pem.as_bytes(), 0o644, false)
         .map_err(|err| err.with_lines(&lines))?;
-    fsutil::remove_file(&paths.int_dir().join("int.csr"))?;
-    let mut chain = fsutil::read_optional(&int_crt)?
+    fsutil::remove_file(&paths.int_dir().join("int.csr")).map_err(|err| err.with_lines(&lines))?;
+    let mut chain = fsutil::read_optional(&int_crt)
+        .map_err(|err| err.with_lines(&lines))?
         .ok_or_else(|| Error::msg("intermediate cert missing after write"))
         .map_err(|err| err.with_lines(&lines))?;
     chain.extend(
-        fsutil::read_optional(&root_crt_path)?
+        fsutil::read_optional(&root_crt_path)
+            .map_err(|err| err.with_lines(&lines))?
             .ok_or_else(|| Error::msg("root cert missing"))
             .map_err(|err| err.with_lines(&lines))?,
     );
@@ -551,8 +603,9 @@ fn issue_node_locked(
     }
     let sans = node_sans(node_id, extras);
     let subject =
-        org_then_cn(ORG, &format!("{node_id}.mesh")).map_err(|err| err.with_lines(&lines))?;
-    let leaf = issue_leaf(paths, node_id, subject, Some(parse_san_list(&sans)?), true)
+        cn_then_org(ORG, &format!("{node_id}.mesh")).map_err(|err| err.with_lines(&lines))?;
+    let san = parse_san_list(&sans).map_err(|err| err.with_lines(&lines))?;
+    let leaf = issue_leaf(paths, node_id, subject, Some(san), true)
         .map_err(|err| err.with_lines(&lines))?;
     lines.push(format!("issued node cert: {}", crt.display()));
     lines.push(format!("  SANs: {sans}"));
@@ -583,7 +636,7 @@ fn issue_agent_locked(
 ) -> Result<CommandOutput, Error> {
     let cn = format!("{agent_id}@{node_id}");
     let crt = paths.issued_dir().join(format!("{cn}.crt"));
-    let subject = org_then_cn(ORG, &cn)?;
+    let subject = cn_then_org(ORG, &cn)?;
     let leaf = issue_leaf(paths, &cn, subject, None, false)?;
     Ok(logged(&[
         format!("issued agent cert: {}  (CN={cn})", crt.display()),
@@ -620,7 +673,7 @@ fn issue_client_locked(paths: &CaPaths, device_id: &str) -> Result<CommandOutput
     let cn = format!("device:{device_id}");
     let stem = format!("device-{device_id}");
     let crt = paths.issued_dir().join(format!("{stem}.crt"));
-    let subject = org_ou_then_cn(ORG, "client", &cn)?;
+    let subject = cn_org_ou(ORG, "client", &cn)?;
     let leaf = issue_leaf(paths, &stem, subject, None, false)?;
     Ok(logged(&[
         format!(
@@ -683,8 +736,10 @@ fn revoke_locked(paths: &CaPaths, cn: &str) -> Result<CommandOutput, Error> {
     let Some((path, serial_hex)) = target else {
         return Err(Error::msg(format!("no issued cert with CN={cn}")));
     };
+    let prefix = vec![format!("revoking {}", path.display())];
     let index_path = paths.int_dir().join("index.txt");
-    let mut rows = index::read_index(&index_path)?;
+    let mut rows = index::read_index(&index_path).map_err(|err| err.with_lines(&prefix))?;
+    index_serials(&rows).map_err(|err| err.with_lines(&prefix))?;
     let mut found = false;
     for row in &mut rows {
         if serial::same_serial(&row.serial, &serial_hex) {
@@ -695,7 +750,7 @@ fn revoke_locked(paths: &CaPaths, cn: &str) -> Result<CommandOutput, Error> {
                 ));
             }
             row.status = "R".to_string();
-            let now = timeutil::time_at(unix_now())?;
+            let now = timeutil::time_at(unix_now()).map_err(|err| err.with_lines(&prefix))?;
             row.revoked = format_index_time(now);
             found = true;
             break;
@@ -712,21 +767,11 @@ fn revoke_locked(paths: &CaPaths, cn: &str) -> Result<CommandOutput, Error> {
     for row in &rows {
         index_text.push_str(&row.format_line());
     }
-    commit_file(&index_path, index_text.as_bytes(), 0o644, true, &mut saved)?;
-    let crl_out = match crl_locked(paths) {
-        Ok(output) => output,
-        Err(err) => {
-            let rollback = restore(&saved);
-            if let Err(rollback_err) = rollback {
-                return Err(Error::msg(format!(
-                    "{err}; rollback failed: {rollback_err}"
-                )));
-            }
-            return Err(err.with_lines(&[format!("revoking {}", path.display())]));
-        }
-    };
-    index::ensure_attr(&paths.int_dir())?;
-    let mut stderr = logged(&[format!("revoking {}", path.display())]).stderr;
+    commit_file(&index_path, index_text.as_bytes(), 0o644, true, &mut saved)
+        .map_err(|err| err.with_lines(&prefix))?;
+    let crl_out = crl_locked(paths).map_err(|err| err.with_lines(&prefix))?;
+    index::ensure_attr(&paths.int_dir()).map_err(|err| err.with_lines(&prefix))?;
+    let mut stderr = logged(&prefix).stderr;
     stderr.push_str(&crl_out.stderr);
     Ok(CommandOutput {
         stdout: String::new(),
@@ -821,7 +866,21 @@ pub fn list_issued(paths: &CaPaths) -> Result<CommandOutput, Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::valid_path_component;
+    use std::collections::BTreeSet;
+
+    use super::{index_serials, reserve_serial, valid_path_component};
+    use crate::index::IndexRow;
+
+    fn row(serial: &str) -> IndexRow {
+        IndexRow {
+            status: "V".to_string(),
+            expires: "270101000000Z".to_string(),
+            revoked: String::new(),
+            serial: serial.to_string(),
+            file: "unknown".to_string(),
+            subject: "/CN=node".to_string(),
+        }
+    }
 
     #[test]
     fn path_component_rejects_traversal() {
@@ -834,5 +893,22 @@ mod tests {
         assert!(!valid_path_component("."));
         assert!(!valid_path_component(".."));
         assert!(!valid_path_component(""));
+    }
+
+    #[test]
+    fn reserve_skips_a_serial_already_recorded() {
+        let mut used = BTreeSet::new();
+        used.insert(0x1000);
+        assert_eq!(reserve_serial(0x1000, &used).unwrap(), 0x1001);
+        used.insert(0x1005);
+        assert_eq!(reserve_serial(0x1000, &used).unwrap(), 0x1006);
+        assert_eq!(reserve_serial(0x1002, &used).unwrap(), 0x1002);
+    }
+
+    #[test]
+    fn duplicate_serials_fail_closed() {
+        let err = index_serials(&[row("1000"), row("01000")]).unwrap_err();
+        assert_eq!(err.to_string(), "duplicate serial 1000 in index");
+        assert!(index_serials(&[row("1000"), row("1001")]).is_ok());
     }
 }
