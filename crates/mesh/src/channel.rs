@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use http_body_util::{BodyExt, Full, Limited};
+use http_body_util::{BodyExt, Full};
 use hyper::body::{Bytes, Incoming};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
@@ -22,10 +22,13 @@ use protocol::JsNumber;
 use protocol::events::InboundMessage;
 
 use crate::error::MeshError;
-use crate::model::{MeshNode, fill_random, mesh_node_from_value, now_ms, now_ms_u64};
+use crate::model::{
+    JoinNodeError, MeshNode, fill_random, mesh_node_from_join, mesh_nodes_json, now_ms, now_ms_u64,
+};
 use crate::tls::{TlsMaterial, client_config, server_config};
 
-const BODY_LIMIT: usize = 8 * 1024 * 1024;
+const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+const BODY_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub type MessageFuture = Pin<Box<dyn Future<Output = Result<(), String>> + Send>>;
 pub type MessageHandler = Arc<dyn Fn(InboundMessage) -> MessageFuture + Send + Sync>;
@@ -48,6 +51,7 @@ pub struct AgentChannelConfig {
     pub secret: Option<String>,
     pub peers: Vec<(String, PeerConfig)>,
     pub tls: Option<TlsMaterial>,
+    pub tls_rejected: Option<String>,
     pub get_mesh_nodes: Option<MeshNodesFn>,
     pub on_mesh_join: Option<MeshJoinFn>,
 }
@@ -61,6 +65,7 @@ impl AgentChannelConfig {
             secret: None,
             peers: Vec::new(),
             tls: None,
+            tls_rejected: None,
             get_mesh_nodes: None,
             on_mesh_join: None,
         }
@@ -78,6 +83,7 @@ struct Inner {
     pending: Arc<Mutex<HashMap<String, oneshot::Sender<String>>>>,
     bound_port: AtomicU16,
     server: Mutex<Option<ServerHandle>>,
+    connections: Arc<Mutex<Vec<JoinHandle<()>>>>,
 }
 
 #[derive(Clone)]
@@ -94,6 +100,7 @@ impl AgentChannel {
                 pending: Arc::new(Mutex::new(HashMap::new())),
                 bound_port: AtomicU16::new(0),
                 server: Mutex::new(None),
+                connections: Arc::new(Mutex::new(Vec::new())),
             }),
         }
     }
@@ -131,6 +138,17 @@ impl AgentChannel {
 
     pub async fn start(&self) -> Result<(), MeshError> {
         self.stop().await;
+        if let Some(message) = &self.inner.config.tls_rejected {
+            return Err(MeshError::message(message.clone()));
+        }
+        let acceptor = if let Some(material) = &self.inner.config.tls {
+            let config = server_config(material).map_err(|err| {
+                MeshError::message(format!("agent channel TLS setup failed: {err}"))
+            })?;
+            Some(TlsAcceptor::from(config))
+        } else {
+            None
+        };
         let addr = format!("{}:{}", self.inner.config.host, self.inner.config.port);
         let listener = match TcpListener::bind(&addr).await {
             Ok(listener) => listener,
@@ -147,8 +165,8 @@ impl AgentChannel {
         let (tx, rx) = oneshot::channel();
         let inner = Arc::clone(&self.inner);
         let task = tokio::spawn(async move {
-            if inner.config.tls.is_some() {
-                run_tls(inner, listener, rx).await;
+            if let Some(acceptor) = acceptor {
+                run_tls(inner, listener, acceptor, rx).await;
             } else {
                 run_axum(inner, listener, rx).await;
             }
@@ -164,6 +182,7 @@ impl AgentChannel {
         self.resolve_pending("[channel shutting down]");
         let server = lock(&self.inner.server).take();
         if let Some(mut server) = server {
+            abort_connections(&self.inner.connections);
             if let Some(tx) = server.shutdown.take() {
                 let _ = tx.send(());
             }
@@ -174,6 +193,7 @@ impl AgentChannel {
                     let _ = server.task.await;
                 }
             }
+            finish_connections(&self.inner.connections).await;
         }
     }
 
@@ -266,7 +286,12 @@ impl AgentMessageTool {
     }
 
     pub async fn execute(&self, args: &Value) -> String {
-        let to_agent = args.get("to_agent").and_then(Value::as_str).unwrap_or("");
+        let to_agent = match args.get("to_agent") {
+            None => "undefined".to_string(),
+            Some(Value::String(text)) => text.clone(),
+            Some(Value::Null) => "null".to_string(),
+            Some(other) => other.to_string(),
+        };
         let message = args.get("message").and_then(Value::as_str).unwrap_or("");
         let wait = wait_flag(args.get("wait_for_response"));
         let timeout_ms = finite_timeout(args.get("timeout_ms").unwrap_or(&Value::Null));
@@ -276,7 +301,7 @@ impl AgentMessageTool {
             .config
             .peers
             .iter()
-            .find(|(name, _)| name == to_agent)
+            .find(|(name, _)| name == &to_agent)
         else {
             let available = peer_names(&self.channel.inner.config.peers);
             return format!(
@@ -289,7 +314,11 @@ impl AgentMessageTool {
             Value::String(self.channel.inner.config.agent_id.clone()),
         );
         body.insert("message".to_string(), Value::String(message.to_string()));
-        body.insert("waitForResponse".to_string(), Value::Bool(wait));
+        let wait_value = match args.get("wait_for_response") {
+            None | Some(Value::Null) => Value::Bool(true),
+            Some(other) => other.clone(),
+        };
+        body.insert("waitForResponse".to_string(), wait_value);
         if let Some(ms) = timeout_ms {
             body.insert(
                 "timeoutMs".to_string(),
@@ -375,72 +404,81 @@ pub fn agent_channel_from_plugin_config(cfg: &Value) -> AgentChannel {
                 .push((name.clone(), PeerConfig { url, secret }));
         }
     }
-    if let Some(tls) = object
-        .and_then(|map| map.get("tls"))
-        .and_then(Value::as_object)
-        && let (Some(ca), Some(cert), Some(key)) = (
-            pem_bytes(tls.get("ca")),
-            pem_bytes(tls.get("cert")),
-            pem_bytes(tls.get("key")),
-        )
-    {
-        config.tls = Some(TlsMaterial {
-            ca_pem: ca,
-            cert_pem: cert,
-            key_pem: key,
-        });
+    if let Some(tls) = object.and_then(|map| map.get("tls")) {
+        match tls_from_config(tls) {
+            Ok(Some(material)) => config.tls = Some(material),
+            Ok(None) => {}
+            Err(message) => config.tls_rejected = Some(message),
+        }
     }
     AgentChannel::new(config)
 }
 
-struct Reply {
-    status: StatusCode,
-    body: Vec<u8>,
+enum BodyReadError {
+    Timeout,
+    Failed,
 }
 
 impl Inner {
     async fn handle_hyper(&self, req: Request<Incoming>) -> Response<Full<Bytes>> {
         let (parts, body) = req.into_parts();
-        if parts.headers.contains_key("origin") {
-            return to_hyper(json_reply(
-                StatusCode::FORBIDDEN,
-                &error_body("browser requests are not accepted"),
-            ));
-        }
-        let path = request_path(&parts.uri);
-        if needs_body(&parts.method, &path) {
-            match read_incoming(body).await {
-                Ok(bytes) => to_hyper(
-                    self.route(&parts.method, &path, &parts.headers, Some(&bytes))
-                        .await,
-                ),
-                Err(()) => to_hyper(invalid_json()),
-            }
-        } else {
-            to_hyper(self.route(&parts.method, &path, &parts.headers, None).await)
-        }
+        let body_fut = read_incoming(body);
+        to_hyper(
+            self.finish(&parts.method, &parts.uri, &parts.headers, body_fut)
+                .await,
+        )
     }
 
     async fn handle_axum(&self, req: axum::extract::Request) -> axum::response::Response {
         let (parts, body) = req.into_parts();
-        if parts.headers.contains_key("origin") {
-            return to_axum(json_reply(
+        let body_fut = read_axum_body(body);
+        to_axum(
+            self.finish(&parts.method, &parts.uri, &parts.headers, body_fut)
+                .await,
+        )
+    }
+
+    async fn finish(
+        &self,
+        method: &hyper::Method,
+        uri: &hyper::Uri,
+        headers: &hyper::HeaderMap,
+        body_fut: impl Future<Output = Result<Vec<u8>, BodyReadError>>,
+    ) -> Reply {
+        if headers.contains_key("origin") {
+            return json_reply(
                 StatusCode::FORBIDDEN,
                 &error_body("browser requests are not accepted"),
-            ));
+            );
         }
-        let path = request_path(&parts.uri);
-        if needs_body(&parts.method, &path) {
-            match read_axum_body(body).await {
-                Ok(bytes) => to_axum(
-                    self.route(&parts.method, &path, &parts.headers, Some(&bytes))
-                        .await,
-                ),
-                Err(()) => to_axum(invalid_json()),
+        let path = request_path(uri);
+        if is_join(method, &path)
+            && let Some(reply) = self.join_precheck(headers)
+        {
+            return reply;
+        }
+        if needs_body(method, &path) {
+            match body_fut.await {
+                Ok(bytes) => self.route(method, &path, headers, Some(&bytes)).await,
+                Err(BodyReadError::Timeout) => body_timeout(),
+                Err(BodyReadError::Failed) => invalid_json(),
             }
         } else {
-            to_axum(self.route(&parts.method, &path, &parts.headers, None).await)
+            self.route(method, &path, headers, None).await
         }
+    }
+
+    fn join_precheck(&self, headers: &hyper::HeaderMap) -> Option<Reply> {
+        if let Some(reply) = self.check_auth(headers) {
+            return Some(reply);
+        }
+        if self.config.on_mesh_join.is_none() {
+            return Some(json_reply(
+                StatusCode::NOT_IMPLEMENTED,
+                &error_body("Mesh not enabled on this node"),
+            ));
+        }
+        None
     }
 
     async fn route(
@@ -560,10 +598,7 @@ impl Inner {
             );
         };
         match getter().await {
-            Ok(nodes) => {
-                let values = nodes.into_iter().map(|node| node.to_value()).collect();
-                json_reply(StatusCode::OK, &Value::Array(values))
-            }
+            Ok(nodes) => text_reply(StatusCode::OK, mesh_nodes_json(&nodes)),
             Err(msg) => json_reply(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 &error_body(&format!("Failed to get mesh nodes: {msg}")),
@@ -581,19 +616,22 @@ impl Inner {
                 &error_body("Mesh not enabled on this node"),
             );
         };
-        let body = match serde_json::from_slice::<Value>(bytes) {
-            Ok(body) => body,
+        let text = match std::str::from_utf8(bytes) {
+            Ok(text) => text,
             Err(_) => return invalid_json(),
         };
-        let Some((id, name, host)) = required_join_fields(&body) else {
-            return json_reply(
-                StatusCode::BAD_REQUEST,
-                &error_body("Missing required fields: id, name, host"),
-            );
+        let parsed = match protocol::js::parse(text) {
+            Ok(value) => value,
+            Err(_) => return invalid_json(),
         };
-        let node = match mesh_node_from_value(id, &body, "join") {
+        let node = match mesh_node_from_join(&parsed) {
             Ok(node) => node,
-            Err(_) => minimal_node(id, name, host),
+            Err(JoinNodeError::MissingFields) => {
+                return json_reply(
+                    StatusCode::BAD_REQUEST,
+                    &error_body("Missing required fields: id, name, host"),
+                );
+            }
         };
         if let Err(msg) = join(node).await {
             return json_reply(
@@ -614,13 +652,13 @@ impl Inner {
         } else {
             Vec::new()
         };
-        let mut response = Map::new();
-        response.insert("status".to_string(), Value::String("joined".to_string()));
-        response.insert(
-            "nodes".to_string(),
-            Value::Array(nodes.into_iter().map(|node| node.to_value()).collect()),
-        );
-        json_reply(StatusCode::OK, &Value::Object(response))
+        text_reply(
+            StatusCode::OK,
+            format!(
+                "{{\"status\":\"joined\",\"nodes\":{}}}",
+                mesh_nodes_json(&nodes)
+            ),
+        )
     }
 
     fn check_auth(&self, headers: &hyper::HeaderMap) -> Option<Reply> {
@@ -689,18 +727,12 @@ async fn axum_entry(
     inner.handle_axum(req).await
 }
 
-async fn run_tls(inner: Arc<Inner>, listener: TcpListener, mut shutdown: oneshot::Receiver<()>) {
-    let Some(material) = inner.config.tls.clone() else {
-        return;
-    };
-    let acceptor = match server_config(&material) {
-        Ok(config) => TlsAcceptor::from(config),
-        Err(err) => {
-            tracing::error!("agent channel TLS setup failed: {err}");
-            return;
-        }
-    };
-    let mut tasks = Vec::new();
+async fn run_tls(
+    inner: Arc<Inner>,
+    listener: TcpListener,
+    acceptor: TlsAcceptor,
+    mut shutdown: oneshot::Receiver<()>,
+) {
     loop {
         tokio::select! {
             _ = &mut shutdown => break,
@@ -708,18 +740,17 @@ async fn run_tls(inner: Arc<Inner>, listener: TcpListener, mut shutdown: oneshot
                 let Ok((stream, _)) = accepted else {
                     break;
                 };
+                lock(&inner.connections).retain(|task| !task.is_finished());
                 let acceptor = acceptor.clone();
-                let inner = Arc::clone(&inner);
-                tasks.push(tokio::spawn(async move {
-                    if let Err(err) = serve_tls(inner, acceptor, stream).await {
+                let task_inner = Arc::clone(&inner);
+                let task = tokio::spawn(async move {
+                    if let Err(err) = serve_tls(task_inner, acceptor, stream).await {
                         tracing::debug!("agent channel connection closed: {err}");
                     }
-                }));
+                });
+                lock(&inner.connections).push(task);
             }
         }
-    }
-    for task in tasks {
-        let _ = task.await;
     }
 }
 
@@ -728,10 +759,11 @@ async fn serve_tls(
     acceptor: TlsAcceptor,
     stream: TcpStream,
 ) -> Result<(), String> {
-    let tls = acceptor
-        .accept(stream)
-        .await
-        .map_err(|err| err.to_string())?;
+    let tls = match tokio::time::timeout(TLS_HANDSHAKE_TIMEOUT, acceptor.accept(stream)).await {
+        Ok(Ok(tls)) => tls,
+        Ok(Err(err)) => return Err(err.to_string()),
+        Err(_) => return Err("TLS handshake timed out".to_string()),
+    };
     let io = TokioIo::new(tls);
     let service = service_fn(move |req| {
         let inner = Arc::clone(&inner);
@@ -746,26 +778,49 @@ async fn serve_tls(
         .map_err(|err| err.to_string())
 }
 
-async fn read_incoming(body: Incoming) -> Result<Vec<u8>, ()> {
-    collect_limited(Limited::new(body, BODY_LIMIT)).await
+fn abort_connections(connections: &Mutex<Vec<JoinHandle<()>>>) {
+    let tasks = lock(connections);
+    for task in tasks.iter() {
+        task.abort();
+    }
 }
 
-async fn read_axum_body(body: axum::body::Body) -> Result<Vec<u8>, ()> {
-    collect_limited(Limited::new(body, BODY_LIMIT)).await
+async fn finish_connections(connections: &Mutex<Vec<JoinHandle<()>>>) {
+    abort_connections(connections);
+    loop {
+        let task = lock(connections).pop();
+        let Some(task) = task else {
+            break;
+        };
+        let _ = task.await;
+    }
 }
 
-async fn collect_limited<B>(body: Limited<B>) -> Result<Vec<u8>, ()>
+async fn read_incoming(body: Incoming) -> Result<Vec<u8>, BodyReadError> {
+    read_collected(body).await
+}
+
+async fn read_axum_body(body: axum::body::Body) -> Result<Vec<u8>, BodyReadError> {
+    read_collected(body).await
+}
+
+async fn read_collected<B>(body: B) -> Result<Vec<u8>, BodyReadError>
 where
-    Limited<B>: BodyExt,
+    B: BodyExt,
 {
-    match body.collect().await {
-        Ok(collected) => Ok(collected.to_bytes().to_vec()),
-        Err(_) => Err(()),
+    match tokio::time::timeout(BODY_READ_TIMEOUT, body.collect()).await {
+        Ok(Ok(collected)) => Ok(collected.to_bytes().to_vec()),
+        Ok(Err(_)) => Err(BodyReadError::Failed),
+        Err(_) => Err(BodyReadError::Timeout),
     }
 }
 
 fn needs_body(method: &hyper::Method, path: &str) -> bool {
     method == hyper::Method::POST && (path == "/api/message" || path == "/api/mesh/join")
+}
+
+fn is_join(method: &hyper::Method, path: &str) -> bool {
+    method == hyper::Method::POST && path == "/api/mesh/join"
 }
 
 fn request_path(uri: &hyper::Uri) -> String {
@@ -794,6 +849,11 @@ fn to_axum(reply: Reply) -> axum::response::Response {
     response
 }
 
+struct Reply {
+    status: StatusCode,
+    body: Vec<u8>,
+}
+
 fn json_reply(status: StatusCode, value: &Value) -> Reply {
     Reply {
         status,
@@ -801,8 +861,22 @@ fn json_reply(status: StatusCode, value: &Value) -> Reply {
     }
 }
 
+fn text_reply(status: StatusCode, body: impl Into<String>) -> Reply {
+    Reply {
+        status,
+        body: body.into().into_bytes(),
+    }
+}
+
 fn invalid_json() -> Reply {
     json_reply(StatusCode::BAD_REQUEST, &error_body("Invalid JSON body"))
+}
+
+fn body_timeout() -> Reply {
+    json_reply(
+        StatusCode::REQUEST_TIMEOUT,
+        &error_body("Request body timed out"),
+    )
 }
 
 fn error_body(message: &str) -> Value {
@@ -854,6 +928,11 @@ fn wait_flag(value: Option<&Value>) -> bool {
     match value {
         None | Some(Value::Null) => true,
         Some(Value::Bool(flag)) => *flag,
+        Some(Value::Number(number)) => match number.as_f64() {
+            Some(number) => number != 0.0 && !number.is_nan(),
+            None => true,
+        },
+        Some(Value::String(text)) => !text.is_empty(),
         Some(_) => true,
     }
 }
@@ -876,33 +955,39 @@ fn pem_bytes(value: Option<&Value>) -> Option<Vec<u8>> {
         .map(|text| text.as_bytes().to_vec())
 }
 
-fn required_join_fields(value: &Value) -> Option<(&str, &str, &str)> {
-    let id = truthy_string(value, "id")?;
-    let name = truthy_string(value, "name")?;
-    let host = truthy_string(value, "host")?;
-    Some((id, name, host))
+fn tls_from_config(value: &Value) -> Result<Option<TlsMaterial>, String> {
+    if tls_is_plaintext(value) {
+        return Ok(None);
+    }
+    let Some(object) = value.as_object() else {
+        return Err("agent channel TLS configuration is unusable".to_string());
+    };
+    match (
+        pem_bytes(object.get("ca")),
+        pem_bytes(object.get("cert")),
+        pem_bytes(object.get("key")),
+    ) {
+        (Some(ca), Some(cert), Some(key)) => Ok(Some(TlsMaterial {
+            ca_pem: ca,
+            cert_pem: cert,
+            key_pem: key,
+        })),
+        _ => Err(
+            "agent channel TLS configuration is incomplete: ca, cert, and key PEM values are required"
+                .to_string(),
+        ),
+    }
 }
 
-fn minimal_node(id: &str, name: &str, host: &str) -> MeshNode {
-    MeshNode {
-        id: id.to_string(),
-        name: name.to_string(),
-        role: None,
-        agents: Vec::new(),
-        host: host.to_string(),
-        port: JsNumber::from(0_u32),
-        providers: Vec::new(),
-        models: Vec::new(),
-        capabilities: Vec::new(),
-        status: "offline".to_string(),
-        last_seen: JsNumber::from(0_u32),
-        registered_at: JsNumber::from(0_u32),
-        version: String::new(),
-        metadata: None,
-        ssh_user: None,
-        install_root: None,
-        platform: None,
-        extra: Map::new(),
+fn tls_is_plaintext(value: &Value) -> bool {
+    match value {
+        Value::Null | Value::Bool(false) => true,
+        Value::String(text) if text.is_empty() => true,
+        Value::Number(number) => match number.as_f64() {
+            Some(number) => number == 0.0 || number.is_nan(),
+            None => false,
+        },
+        _ => false,
     }
 }
 

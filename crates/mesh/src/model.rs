@@ -3,6 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::{Map, Value};
 
 use protocol::JsNumber;
+use protocol::js::{JsObject, JsValue};
 
 use crate::error::{MeshParseError, MeshParseErrorCode};
 use crate::paths::shared_path;
@@ -32,6 +33,49 @@ const KNOWN_NODE_KEYS: &[&str] = &[
     "metadata",
 ];
 
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct JsEntries {
+    entries: Vec<(String, JsValue)>,
+}
+
+impl JsEntries {
+    pub fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+        }
+    }
+
+    pub fn get(&self, key: &str) -> Option<&JsValue> {
+        self.entries
+            .iter()
+            .find(|(existing, _)| existing == key)
+            .map(|(_, value)| value)
+    }
+
+    pub fn insert(&mut self, key: impl Into<String>, value: JsValue) {
+        let key = key.into();
+        if let Some(slot) = self
+            .entries
+            .iter_mut()
+            .find(|(existing, _)| *existing == key)
+        {
+            slot.1 = value;
+        } else {
+            self.entries.push((key, value));
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &JsValue)> {
+        self.entries
+            .iter()
+            .map(|(key, value)| (key.as_str(), value))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct MeshNode {
     pub id: String,
@@ -47,11 +91,11 @@ pub struct MeshNode {
     pub last_seen: JsNumber,
     pub registered_at: JsNumber,
     pub version: String,
-    pub metadata: Option<Map<String, Value>>,
+    pub metadata: Option<JsValue>,
     pub ssh_user: Option<String>,
     pub install_root: Option<String>,
     pub platform: Option<String>,
-    pub extra: Map<String, Value>,
+    pub extra: JsEntries,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -59,7 +103,7 @@ pub struct MeshFile {
     pub version: JsNumber,
     pub nodes: Vec<(String, MeshNode)>,
     pub updated_at: JsNumber,
-    pub extra: Map<String, Value>,
+    pub extra: JsEntries,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -106,6 +150,11 @@ pub struct DenUrl {
     pub warning: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JoinNodeError {
+    MissingFields,
+}
+
 pub fn now_ms() -> JsNumber {
     let millis = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -125,7 +174,7 @@ impl MeshFile {
             version: JsNumber::from(1_u32),
             nodes: Vec::new(),
             updated_at: now_ms(),
-            extra: Map::new(),
+            extra: JsEntries::new(),
         }
     }
 
@@ -158,83 +207,28 @@ impl MeshFile {
 
 impl MeshNode {
     pub fn to_value(&self) -> Value {
-        let mut map = Map::new();
-        map.insert("id".to_string(), Value::String(self.id.clone()));
-        map.insert("name".to_string(), Value::String(self.name.clone()));
-        if let Some(role) = &self.role {
-            map.insert("role".to_string(), Value::String(role.clone()));
-        }
-        map.insert(
-            "agents".to_string(),
-            Value::Array(self.agents.iter().cloned().map(Value::String).collect()),
-        );
-        map.insert("host".to_string(), Value::String(self.host.clone()));
-        map.insert("port".to_string(), js_value(self.port));
-        map.insert(
-            "providers".to_string(),
-            Value::Array(self.providers.iter().cloned().map(Value::String).collect()),
-        );
-        map.insert(
-            "models".to_string(),
-            Value::Array(self.models.iter().cloned().map(Value::String).collect()),
-        );
-        map.insert(
-            "capabilities".to_string(),
-            Value::Array(
-                self.capabilities
-                    .iter()
-                    .cloned()
-                    .map(Value::String)
-                    .collect(),
-            ),
-        );
-        if let Some(metadata) = &self.metadata {
-            map.insert("metadata".to_string(), Value::Object(metadata.clone()));
-        }
-        map.insert("status".to_string(), Value::String(self.status.clone()));
-        map.insert("lastSeen".to_string(), js_value(self.last_seen));
-        map.insert("registeredAt".to_string(), js_value(self.registered_at));
-        map.insert("version".to_string(), Value::String(self.version.clone()));
-        if let Some(ssh_user) = &self.ssh_user {
-            map.insert("sshUser".to_string(), Value::String(ssh_user.clone()));
-        }
-        if let Some(install_root) = &self.install_root {
-            map.insert(
-                "installRoot".to_string(),
-                Value::String(install_root.clone()),
-            );
-        }
-        if let Some(platform) = &self.platform {
-            map.insert("platform".to_string(), Value::String(platform.clone()));
-        }
-        for (key, value) in &self.extra {
-            map.insert(key.clone(), value.clone());
-        }
-        Value::Object(map)
+        serde_json::from_str(&node_compact(self)).unwrap_or(Value::Null)
     }
 }
 
 pub fn mesh_file_to_value(file: &MeshFile) -> Value {
-    let mut map = Map::new();
-    map.insert("version".to_string(), js_value(file.version));
-    let mut nodes = Map::new();
-    for (key, node) in &file.nodes {
-        nodes.insert(key.clone(), node.to_value());
-    }
-    map.insert("nodes".to_string(), Value::Object(nodes));
-    map.insert("updatedAt".to_string(), js_value(file.updated_at));
-    for (key, value) in &file.extra {
-        map.insert(key.clone(), value.clone());
-    }
-    Value::Object(map)
+    serde_json::from_str(&file_compact(file)).unwrap_or(Value::Null)
 }
 
-pub fn mesh_file_to_pretty(file: &MeshFile) -> Result<String, serde_json::Error> {
-    serde_json::to_string_pretty(&mesh_file_to_value(file))
+pub fn mesh_file_to_pretty(file: &MeshFile) -> String {
+    pretty_json(&file_compact(file))
 }
 
-fn js_value(number: JsNumber) -> Value {
-    serde_json::to_value(number).unwrap_or(Value::Null)
+pub fn mesh_nodes_json(nodes: &[MeshNode]) -> String {
+    let mut out = String::from("[");
+    for (index, node) in nodes.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        out.push_str(&node_compact(node));
+    }
+    out.push(']');
+    canonical_json(&out)
 }
 
 pub fn inherit_operator_fields(incoming: MeshNode, existing: Option<&MeshNode>) -> MeshNode {
@@ -289,7 +283,7 @@ pub fn parse_mesh_file(
     path: &str,
     options: MeshParseOptions,
 ) -> Result<ParseOutcome, MeshParseError> {
-    let parsed = match serde_json::from_str::<Value>(raw) {
+    let parsed = match protocol::js::parse(raw) {
         Ok(value) => value,
         Err(err) => {
             return Err(MeshParseError::new(
@@ -305,7 +299,7 @@ pub fn parse_mesh_file(
 }
 
 pub fn assert_record_mesh_file(
-    parsed: &Value,
+    parsed: &JsValue,
     path: &str,
     options: MeshParseOptions,
 ) -> Result<ParseOutcome, MeshParseError> {
@@ -318,35 +312,36 @@ pub fn assert_record_mesh_file(
             None,
         ));
     };
-    if root.get("nodes").is_some_and(Value::is_array) {
-        return Err(MeshParseError::new(
-            MeshParseErrorCode::FlatArray,
-            flat_array_message(path),
-            path,
-            Map::new(),
-            None,
-        ));
-    }
-    if let Some(nodes) = root.get("nodes")
-        && !nodes.is_object()
-    {
-        return Err(MeshParseError::new(
-            MeshParseErrorCode::InvalidShape,
-            format!("mesh.json at {path}: nodes must be an object keyed by node id"),
-            path,
-            Map::new(),
-            None,
-        ));
+    if let Some(nodes) = root.get("nodes") {
+        if nodes.as_array().is_some() {
+            return Err(MeshParseError::new(
+                MeshParseErrorCode::FlatArray,
+                flat_array_message(path),
+                path,
+                Map::new(),
+                None,
+            ));
+        }
+        if nodes.as_object().is_none() {
+            return Err(MeshParseError::new(
+                MeshParseErrorCode::InvalidShape,
+                format!("mesh.json at {path}: nodes must be an object keyed by node id"),
+                path,
+                Map::new(),
+                None,
+            ));
+        }
     }
     let mut warnings = Vec::new();
     let mut nodes = Vec::new();
-    if let Some(nodes_in) = root.get("nodes").and_then(Value::as_object) {
-        for (key, value) in nodes_in {
+    if let Some(nodes_in) = root.get("nodes").and_then(JsValue::as_object) {
+        for (key, value) in nodes_in.iter() {
+            let key = key.to_utf8().to_string();
             if value.is_null() {
                 continue;
             }
-            match parse_mesh_node(key, value, path) {
-                Ok(node) => nodes.push((key.clone(), node)),
+            match parse_mesh_node(&key, value, path) {
+                Ok(node) => nodes.push((key, node)),
                 Err(err) => {
                     if options.on_invalid_node == OnInvalidNode::Skip
                         && err.code() == MeshParseErrorCode::NodeInvalid
@@ -361,22 +356,19 @@ pub fn assert_record_mesh_file(
             }
         }
     }
-    let version = root
-        .get("version")
-        .and_then(finite_number)
+    let version = finite_js(root.get("version"))
         .map(JsNumber::from)
         .unwrap_or_else(|| JsNumber::from(1_u32));
-    let updated_at = root
-        .get("updatedAt")
-        .and_then(finite_number)
+    let updated_at = finite_js(root.get("updatedAt"))
         .map(JsNumber::from)
         .unwrap_or_else(|| JsNumber::from(0_u32));
-    let mut extra = Map::new();
-    for (key, value) in root {
+    let mut extra = JsEntries::new();
+    for (key, value) in root.iter() {
+        let key = key.to_utf8();
         if key == "version" || key == "nodes" || key == "updatedAt" {
             continue;
         }
-        extra.insert(key.clone(), value.clone());
+        extra.insert(key, value.clone());
     }
     Ok(ParseOutcome {
         file: MeshFile {
@@ -398,13 +390,26 @@ fn flat_array_message(path: &str) -> String {
 
 pub fn mesh_node_from_value(
     key: &str,
-    value: &Value,
+    value: &JsValue,
     path: &str,
 ) -> Result<MeshNode, MeshParseError> {
     parse_mesh_node(key, value, path)
 }
 
-fn parse_mesh_node(key: &str, raw: &Value, path: &str) -> Result<MeshNode, MeshParseError> {
+pub fn mesh_node_from_join(value: &JsValue) -> Result<MeshNode, JoinNodeError> {
+    let Some(object) = value.as_object() else {
+        return Err(JoinNodeError::MissingFields);
+    };
+    if truthy_string(object.get("id")).is_none()
+        || truthy_string(object.get("name")).is_none()
+        || truthy_string(object.get("host")).is_none()
+    {
+        return Err(JoinNodeError::MissingFields);
+    }
+    Ok(assemble_node(object, ""))
+}
+
+fn parse_mesh_node(key: &str, raw: &JsValue, path: &str) -> Result<MeshNode, MeshParseError> {
     let Some(object) = raw.as_object() else {
         let mut context = Map::new();
         context.insert("nodeId".to_string(), Value::String(key.to_string()));
@@ -433,79 +438,62 @@ fn parse_mesh_node(key: &str, raw: &Value, path: &str) -> Result<MeshNode, MeshP
     check_string_array(object, path, key, "models")?;
     check_string_array(object, path, key, "capabilities")?;
     if let Some(metadata) = object.get("metadata")
-        && !metadata.is_object()
+        && metadata.as_object().is_none()
     {
         return Err(node_field_error(path, key, "metadata", "must be an object"));
     }
-    let id = non_empty_string(object.get("id")).unwrap_or_else(|| key.to_string());
-    let name = non_empty_string(object.get("name")).unwrap_or_else(|| id.clone());
-    let status = object
-        .get("status")
-        .and_then(Value::as_str)
-        .unwrap_or("offline")
-        .to_string();
-    let mut extra = Map::new();
-    for (field, value) in object {
-        if !KNOWN_NODE_KEYS.contains(&field.as_str()) {
-            extra.insert(field.clone(), value.clone());
+    Ok(assemble_node(object, key))
+}
+
+fn assemble_node(object: &JsObject, record_key: &str) -> MeshNode {
+    let id = truthy_string(object.get("id")).unwrap_or_else(|| record_key.to_string());
+    let name = truthy_string(object.get("name")).unwrap_or_else(|| id.clone());
+    let mut extra = JsEntries::new();
+    for (key, value) in object.iter() {
+        let key = key.to_utf8();
+        if !KNOWN_NODE_KEYS.contains(&key) {
+            extra.insert(key, value.clone());
         }
     }
-    Ok(MeshNode {
+    MeshNode {
         id,
         name,
-        role: object
-            .get("role")
-            .and_then(Value::as_str)
-            .map(str::to_string),
+        role: optional_string(object, "role"),
         agents: string_array(object.get("agents")),
         host: object
             .get("host")
-            .and_then(Value::as_str)
+            .and_then(JsValue::as_str)
             .unwrap_or("")
             .to_string(),
-        port: object
-            .get("port")
-            .and_then(finite_number)
-            .map(JsNumber::from)
-            .unwrap_or_else(|| JsNumber::from(0_u32)),
+        port: finite_or_zero(object, "port"),
         providers: string_array(object.get("providers")),
         models: string_array(object.get("models")),
         capabilities: string_array(object.get("capabilities")),
-        status,
-        last_seen: object
-            .get("lastSeen")
-            .and_then(finite_number)
-            .map(JsNumber::from)
-            .unwrap_or_else(|| JsNumber::from(0_u32)),
-        registered_at: object
-            .get("registeredAt")
-            .and_then(finite_number)
-            .map(JsNumber::from)
-            .unwrap_or_else(|| JsNumber::from(0_u32)),
+        status: object
+            .get("status")
+            .and_then(JsValue::as_str)
+            .unwrap_or("offline")
+            .to_string(),
+        last_seen: finite_or_zero(object, "lastSeen"),
+        registered_at: finite_or_zero(object, "registeredAt"),
         version: object
             .get("version")
-            .and_then(Value::as_str)
+            .and_then(JsValue::as_str)
             .unwrap_or("")
             .to_string(),
-        metadata: object.get("metadata").and_then(Value::as_object).cloned(),
-        ssh_user: object
-            .get("sshUser")
-            .and_then(Value::as_str)
-            .map(str::to_string),
-        install_root: object
-            .get("installRoot")
-            .and_then(Value::as_str)
-            .map(str::to_string),
-        platform: object
-            .get("platform")
-            .and_then(Value::as_str)
-            .map(str::to_string),
+        metadata: object
+            .get("metadata")
+            .filter(|value| value.as_object().is_some())
+            .cloned(),
+        ssh_user: optional_string(object, "sshUser"),
+        install_root: optional_string(object, "installRoot"),
+        platform: optional_string(object, "platform"),
         extra,
-    })
+    }
 }
 
 fn check_string(
-    object: &Map<String, Value>,
+    object: &JsObject,
     path: &str,
     key: &str,
     field: &str,
@@ -519,13 +507,13 @@ fn check_string(
 }
 
 fn check_finite(
-    object: &Map<String, Value>,
+    object: &JsObject,
     path: &str,
     key: &str,
     field: &str,
 ) -> Result<(), MeshParseError> {
     if let Some(value) = object.get(field)
-        && finite_number(value).is_none()
+        && finite_js(Some(value)).is_none()
     {
         return Err(node_field_error(
             path,
@@ -538,7 +526,7 @@ fn check_finite(
 }
 
 fn check_string_array(
-    object: &Map<String, Value>,
+    object: &JsObject,
     path: &str,
     key: &str,
     field: &str,
@@ -564,39 +552,236 @@ fn node_field_error(path: &str, key: &str, field: &str, detail: &str) -> MeshPar
     )
 }
 
-fn finite_number(value: &Value) -> Option<f64> {
-    let number = value.as_f64()?;
-    if number.is_finite() {
-        Some(number)
-    } else {
-        None
+fn finite_js(value: Option<&JsValue>) -> Option<f64> {
+    match value {
+        Some(JsValue::Number(number)) if number.is_finite() => Some(*number),
+        _ => None,
     }
 }
 
-fn is_string_array(value: &Value) -> bool {
-    value
-        .as_array()
-        .is_some_and(|items| items.iter().all(Value::is_string))
+fn finite_or_zero(object: &JsObject, key: &str) -> JsNumber {
+    finite_js(object.get(key))
+        .map(JsNumber::from)
+        .unwrap_or_else(|| JsNumber::from(0_u32))
 }
 
-fn string_array(value: Option<&Value>) -> Vec<String> {
+fn is_string_array(value: &JsValue) -> bool {
     value
-        .and_then(Value::as_array)
+        .as_array()
+        .is_some_and(|items| items.iter().all(JsValue::is_string))
+}
+
+fn string_array(value: Option<&JsValue>) -> Vec<String> {
+    value
+        .and_then(JsValue::as_array)
+        .filter(|items| items.iter().all(JsValue::is_string))
         .map(|items| {
             items
                 .iter()
-                .filter_map(Value::as_str)
+                .filter_map(JsValue::as_str)
                 .map(str::to_string)
                 .collect()
         })
         .unwrap_or_default()
 }
 
-fn non_empty_string(value: Option<&Value>) -> Option<String> {
+fn optional_string(object: &JsObject, key: &str) -> Option<String> {
+    object
+        .get(key)
+        .and_then(JsValue::as_str)
+        .map(str::to_string)
+}
+
+fn truthy_string(value: Option<&JsValue>) -> Option<String> {
     value
-        .and_then(Value::as_str)
+        .and_then(JsValue::as_str)
         .filter(|text| !text.is_empty())
         .map(str::to_string)
+}
+
+struct JsonObject {
+    parts: Vec<(String, String)>,
+}
+
+impl JsonObject {
+    fn new() -> Self {
+        Self { parts: Vec::new() }
+    }
+
+    fn field(&mut self, key: &str, value: impl AsRef<str>) {
+        self.parts
+            .push((js_string_literal(key), value.as_ref().to_string()));
+    }
+
+    fn finish(self) -> String {
+        let mut out = String::from("{");
+        for (index, (key, value)) in self.parts.iter().enumerate() {
+            if index > 0 {
+                out.push(',');
+            }
+            out.push_str(key);
+            out.push(':');
+            out.push_str(value);
+        }
+        out.push('}');
+        canonical_json(&out)
+    }
+}
+
+fn node_compact(node: &MeshNode) -> String {
+    let mut object = JsonObject::new();
+    object.field("id", js_string_literal(&node.id));
+    object.field("name", js_string_literal(&node.name));
+    object.field("host", js_string_literal(&node.host));
+    object.field("port", js_number_literal(node.port));
+    object.field("agents", js_string_array(&node.agents));
+    object.field("providers", js_string_array(&node.providers));
+    object.field("models", js_string_array(&node.models));
+    object.field("capabilities", js_string_array(&node.capabilities));
+    object.field("status", js_string_literal(&node.status));
+    object.field("lastSeen", js_number_literal(node.last_seen));
+    object.field("registeredAt", js_number_literal(node.registered_at));
+    object.field("version", js_string_literal(&node.version));
+    if let Some(role) = &node.role {
+        object.field("role", js_string_literal(role));
+    }
+    if let Some(metadata) = &node.metadata {
+        object.field("metadata", protocol::js::stringify(metadata));
+    }
+    if let Some(ssh_user) = &node.ssh_user {
+        object.field("sshUser", js_string_literal(ssh_user));
+    }
+    if let Some(install_root) = &node.install_root {
+        object.field("installRoot", js_string_literal(install_root));
+    }
+    if let Some(platform) = &node.platform {
+        object.field("platform", js_string_literal(platform));
+    }
+    for (key, value) in node.extra.iter() {
+        object.field(key, protocol::js::stringify(value));
+    }
+    object.finish()
+}
+
+fn file_compact(file: &MeshFile) -> String {
+    let mut nodes = JsonObject::new();
+    for (key, node) in &file.nodes {
+        nodes.field(key, node_compact(node));
+    }
+    let nodes_json = nodes.finish();
+    let mut object = JsonObject::new();
+    object.field("version", js_number_literal(file.version));
+    object.field("nodes", nodes_json);
+    object.field("updatedAt", js_number_literal(file.updated_at));
+    for (key, value) in file.extra.iter() {
+        object.field(key, protocol::js::stringify(value));
+    }
+    object.finish()
+}
+
+fn canonical_json(compact: &str) -> String {
+    match protocol::js::parse(compact) {
+        Ok(value) => protocol::js::stringify(&value),
+        Err(_) => compact.to_string(),
+    }
+}
+
+fn js_string_literal(text: &str) -> String {
+    protocol::js::stringify(&JsValue::from_text(text))
+}
+
+fn js_number_literal(number: JsNumber) -> String {
+    if number.as_f64().is_finite() {
+        number.to_string()
+    } else {
+        "null".to_string()
+    }
+}
+
+fn js_string_array(items: &[String]) -> String {
+    let mut out = String::from("[");
+    for (index, item) in items.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        out.push_str(&js_string_literal(item));
+    }
+    out.push(']');
+    out
+}
+
+fn pretty_json(compact: &str) -> String {
+    let bytes = compact.as_bytes();
+    let mut index = 0;
+    let mut depth = 0_usize;
+    let mut out = String::new();
+    while index < bytes.len() {
+        match bytes[index] {
+            b'"' => {
+                let start = index;
+                index += 1;
+                while index < bytes.len() {
+                    match bytes[index] {
+                        b'\\' => {
+                            index += 1;
+                            if index < bytes.len() {
+                                index += 1;
+                            }
+                        }
+                        b'"' => {
+                            index += 1;
+                            break;
+                        }
+                        _ => index += 1,
+                    }
+                }
+                out.push_str(&compact[start..index]);
+            }
+            b'{' | b'[' => {
+                let close = if bytes[index] == b'{' { b'}' } else { b']' };
+                if bytes.get(index + 1) == Some(&close) {
+                    out.push(bytes[index] as char);
+                    out.push(close as char);
+                    index += 2;
+                } else {
+                    out.push(bytes[index] as char);
+                    out.push('\n');
+                    depth += 1;
+                    push_indent(&mut out, depth);
+                    index += 1;
+                }
+            }
+            b'}' | b']' => {
+                out.push('\n');
+                depth = depth.saturating_sub(1);
+                push_indent(&mut out, depth);
+                out.push(bytes[index] as char);
+                index += 1;
+            }
+            b',' => {
+                out.push(',');
+                out.push('\n');
+                push_indent(&mut out, depth);
+                index += 1;
+            }
+            b':' => {
+                out.push(':');
+                out.push(' ');
+                index += 1;
+            }
+            byte => {
+                out.push(byte as char);
+                index += 1;
+            }
+        }
+    }
+    out
+}
+
+fn push_indent(out: &mut String, depth: usize) {
+    for _ in 0..depth {
+        out.push_str("  ");
+    }
 }
 
 pub fn local_mesh_identity(
@@ -643,7 +828,9 @@ pub fn local_mesh_identity(
 
 pub fn den_url_for(id: &str, node: &MeshNode) -> DenUrl {
     let metadata = node.metadata.as_ref();
-    if let Some(Value::String(raw_url)) = metadata.and_then(|meta| meta.get("denUrl"))
+    if let Some(raw_url) = metadata
+        .and_then(|meta| meta.get("denUrl"))
+        .and_then(JsValue::as_str)
         && !raw_url.is_empty()
     {
         let scheme = url::Url::parse(raw_url)
@@ -690,10 +877,10 @@ pub fn den_url_for(id: &str, node: &MeshNode) -> DenUrl {
     }
 }
 
-fn js_port(value: &Value) -> Option<u16> {
+fn js_port(value: &JsValue) -> Option<u16> {
     let number = match value {
-        Value::Number(number) => number.as_f64()?,
-        Value::String(text) => text.parse::<f64>().ok()?,
+        JsValue::Number(number) => *number,
+        JsValue::String(text) => text.to_utf8().parse::<f64>().ok()?,
         _ => return None,
     };
     if !number.is_finite() || number.fract() != 0.0 {
@@ -726,7 +913,7 @@ pub fn mesh_den_origins(file: &MeshFile) -> Vec<String> {
             .metadata
             .as_ref()
             .and_then(|meta| meta.get("denUrl"))
-            .is_some_and(Value::is_string);
+            .is_some_and(JsValue::is_string);
         if !explicit {
             let mut flipped = url;
             let scheme = if flipped.scheme() == "http" {
@@ -762,7 +949,7 @@ pub struct BuildLocalNodeArgs {
     pub providers: Vec<String>,
     pub models: Vec<String>,
     pub capabilities: Option<Vec<String>>,
-    pub metadata: Option<Map<String, Value>>,
+    pub metadata: Option<JsValue>,
     pub version: String,
 }
 
@@ -786,7 +973,7 @@ pub fn build_local_node(args: BuildLocalNodeArgs) -> MeshNode {
         ssh_user: None,
         install_root: None,
         platform: None,
-        extra: Map::new(),
+        extra: JsEntries::new(),
     }
 }
 

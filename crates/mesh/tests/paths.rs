@@ -6,7 +6,7 @@ use mesh::{
     install_root, install_root_from, load_mesh_file_blocking, local_mesh_identity,
     mesh_den_origins, mesh_file_paths, path_join, shared_dir, shared_dir_from, shared_path,
 };
-use serde_json::{Map, json};
+use serde_json::json;
 
 #[test]
 fn shared_dir_from_matches_the_typescript_rules() {
@@ -82,8 +82,8 @@ fn mesh_file_paths_follow_the_den_search_order() {
     assert_eq!(
         mesh_file_paths("", Some("/gateway/shared")),
         vec![
-            "/gateway/shared/mesh.json".to_string(),
-            format!("{home}/.rivetos/mesh.json"),
+            path_join("/gateway/shared", &["mesh.json"]),
+            path_join(&home, &[".rivetos", "mesh.json"]),
         ]
     );
     assert_eq!(
@@ -92,7 +92,7 @@ fn mesh_file_paths_follow_the_den_search_order() {
     );
     let live = mesh_file_paths("", None);
     assert_eq!(live[0], path_join(&shared_dir(), &["mesh.json"]));
-    assert_eq!(live[1], format!("{home}/.rivetos/mesh.json"));
+    assert_eq!(live[1], path_join(&home, &[".rivetos", "mesh.json"]));
 }
 
 #[test]
@@ -155,9 +155,7 @@ fn den_url_for_covers_explicit_port_capability_and_rejects_non_http() {
     );
 
     let mut port = named("port", "192.0.2.20");
-    let mut metadata = Map::new();
-    metadata.insert("denPort".to_string(), json!(5175));
-    port.metadata = Some(metadata);
+    port.metadata = Some(protocol::js::parse(r#"{"denPort":5175}"#).unwrap());
     assert_eq!(
         den_url_for("port", &port).url.as_deref(),
         Some("http://192.0.2.20:5175")
@@ -179,9 +177,7 @@ fn mesh_den_origins_lists_every_den_origin() {
     let mut tls = named("tls", "tls.example");
     tls.metadata = Some(meta_url("https://tls.example:5174/"));
     let mut port = named("port", "192.0.2.20");
-    let mut metadata = Map::new();
-    metadata.insert("denPort".to_string(), json!("5175"));
-    port.metadata = Some(metadata);
+    port.metadata = Some(protocol::js::parse(r#"{"denPort":"5175"}"#).unwrap());
     let mut tagged = named("tag", "192.0.2.30");
     tagged.capabilities = vec!["den".to_string()];
     let plain = named("plain", "192.0.2.40");
@@ -194,7 +190,7 @@ fn mesh_den_origins_lists_every_den_origin() {
             ("tag".to_string(), tagged),
         ],
         updated_at: mesh::JsNumber::from(1_u32),
-        extra: Map::new(),
+        extra: mesh::JsEntries::new(),
     };
     let mut origins = mesh_den_origins(&file);
     origins.sort();
@@ -357,8 +353,7 @@ fn named(id: &str, host: &str) -> MeshNode {
     node
 }
 
-fn meta_url(url: &str) -> Map<String, serde_json::Value> {
-    let mut metadata = Map::new();
-    metadata.insert("denUrl".to_string(), json!(url));
-    metadata
+fn meta_url(url: &str) -> protocol::js::JsValue {
+    let encoded = serde_json::to_string(url).unwrap();
+    protocol::js::parse(&format!(r#"{{"denUrl":{encoded}}}"#)).unwrap()
 }

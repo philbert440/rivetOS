@@ -1,6 +1,6 @@
 use protocol::js::js_trim;
 
-use crate::paths::{install_root, shared_path};
+use crate::paths::{install_root, path_join, shared_path};
 
 pub const SSH_CONNECT_TIMEOUT_SECS: u64 = 5;
 pub const SSH_QUIET_TIMEOUT_MS: u64 = 10_000;
@@ -293,15 +293,7 @@ pub fn remote_mesh_hosts_script(root: Option<&str>) -> String {
         .filter(|text| !text.is_empty())
         .map(str::to_string)
         .unwrap_or_else(install_root);
-    install_path_from(&base, &["infra", "scripts", "setup-mesh-hosts.sh"])
-}
-
-fn install_path_from(root: &str, segments: &[&str]) -> String {
-    let mut path = std::path::PathBuf::from(root);
-    for segment in segments {
-        path.push(segment);
-    }
-    path.to_string_lossy().into_owned()
+    path_join(&base, &["infra", "scripts", "setup-mesh-hosts.sh"])
 }
 
 pub fn is_process_root() -> bool {
@@ -316,12 +308,15 @@ pub fn is_process_root() -> bool {
     }
 }
 
-pub fn build_local_mesh_hosts_command(script_path: &str, mesh_file: Option<&str>) -> String {
+pub fn build_local_mesh_hosts_command(
+    script_path: &str,
+    mesh_file: Option<&str>,
+    process_is_root: bool,
+) -> String {
     let mesh_file = mesh_file
         .map(str::to_string)
         .unwrap_or_else(default_mesh_file);
-    let prefix = if is_process_root() { "" } else { "sudo -n " };
-    format!("{prefix}{script_path} {mesh_file} --quiet")
+    build_local_mesh_hosts_command_as(script_path, &mesh_file, process_is_root)
 }
 
 pub fn build_local_mesh_hosts_command_as(

@@ -177,19 +177,29 @@ async fn rejects_missing_fields_invalid_json_and_a_missing_handler() {
 #[tokio::test]
 async fn fire_and_forget_returns_accepted_without_waiting() {
     let channel = started("opus").await;
-    channel.on_message(|_| async {
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        Ok(())
+    let (gate_tx, gate_rx) = tokio::sync::watch::channel(false);
+    channel.on_message(move |_| {
+        let mut gate_rx = gate_rx.clone();
+        async move {
+            let _ = gate_rx.wait_for(|open| *open).await;
+            Ok(())
+        }
     });
-    let started_at = std::time::Instant::now();
-    let (status, body, _) = exchange(
-        channel.bound_port(),
-        "POST",
-        "/api/message",
-        Some(r#"{"fromAgent":"grok","message":"fire and forget","waitForResponse":false}"#),
-        &[],
-    )
-    .await;
+    let port = channel.bound_port();
+    let send = tokio::spawn(async move {
+        exchange(
+            port,
+            "POST",
+            "/api/message",
+            Some(r#"{"fromAgent":"grok","message":"fire and forget","waitForResponse":false}"#),
+            &[],
+        )
+        .await
+    });
+    let (status, body, _) = tokio::time::timeout(Duration::from_secs(2), send)
+        .await
+        .expect("accepted before the handler was released")
+        .unwrap();
     assert_eq!(status, 202);
     assert_eq!(body["status"], json!("accepted"));
     assert!(
@@ -198,7 +208,7 @@ async fn fire_and_forget_returns_accepted_without_waiting() {
             .unwrap()
             .starts_with("agent-msg-")
     );
-    assert!(started_at.elapsed() < Duration::from_millis(500));
+    gate_tx.send(true).unwrap();
     let (status, _, _) = exchange(
         channel.bound_port(),
         "POST",
@@ -462,6 +472,18 @@ async fn agent_message_tool_schema_peers_and_texts() {
         unknown,
         "Error: Unknown peer agent \"unknown\". Available peers: none"
     );
+    let missing = tool.execute(&json!({ "message": "hi" })).await;
+    assert_eq!(
+        missing,
+        "Error: Unknown peer agent \"undefined\". Available peers: none"
+    );
+    let null_peer = tool
+        .execute(&json!({ "to_agent": Value::Null, "message": "hi" }))
+        .await;
+    assert_eq!(
+        null_peer,
+        "Error: Unknown peer agent \"null\". Available peers: none"
+    );
     let receiver = started("grok").await;
     let echo = receiver.clone();
     receiver.on_message(move |message| {
@@ -619,7 +641,7 @@ async fn mtls_requires_a_client_certificate_from_the_configured_ca() {
 }
 
 #[tokio::test]
-async fn plugin_config_reads_snake_case_peers_and_ignores_partial_tls() {
+async fn plugin_config_reads_snake_case_peers_and_rejects_partial_tls() {
     let channel = agent_channel_from_plugin_config(&json!({
         "agent_id": "grok",
         "port": 0,
@@ -633,14 +655,176 @@ async fn plugin_config_reads_snake_case_peers_and_ignores_partial_tls() {
     }));
     assert_eq!(channel.id(), "agent-grok");
     assert_eq!(channel.platform(), "agent");
-    channel.start().await.unwrap();
-    let (status, _, _) = exchange(channel.bound_port(), "GET", "/health", None, &[]).await;
-    assert_eq!(status, 200);
+    let err = channel.start().await.unwrap_err();
+    assert!(err.to_string().contains("TLS"));
     let tool = channel.create_message_tool();
     let listed = tool
         .execute(&json!({ "to_agent": "missing", "message": "hi" }))
         .await;
     assert!(listed.contains("Available peers: opus, local"));
+}
+
+#[tokio::test]
+async fn configured_tls_fails_closed_before_bind() {
+    let garbage = agent_channel_from_plugin_config(&json!({
+        "agent_id": "grok",
+        "port": 0,
+        "host": "127.0.0.1",
+        "tls": { "ca": "not-a-cert", "cert": "nope", "key": "nope" }
+    }));
+    let err = garbage.start().await.unwrap_err().to_string();
+    assert!(err.starts_with("agent channel TLS setup failed:"));
+    assert_eq!(garbage.bound_port(), 0);
+
+    let truthy = agent_channel_from_plugin_config(&json!({
+        "agent_id": "grok",
+        "tls": true
+    }));
+    assert_eq!(
+        truthy.start().await.unwrap_err().to_string(),
+        "agent channel TLS configuration is unusable"
+    );
+
+    let material = test_certs();
+    let mut mismatch = AgentChannelConfig::new("opus");
+    mismatch.port = 0;
+    mismatch.host = "127.0.0.1".to_string();
+    mismatch.tls = Some(TlsMaterial {
+        ca_pem: material.server.ca_pem.clone(),
+        cert_pem: material.server.cert_pem.clone(),
+        key_pem: material.wrong_key.as_bytes().to_vec(),
+    });
+    let err = AgentChannel::new(mismatch)
+        .start()
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.starts_with("agent channel TLS setup failed:"));
+
+    let plain_tls = agent_channel_from_plugin_config(&json!({
+        "agent_id": "grok",
+        "port": 0,
+        "host": "127.0.0.1",
+        "tls": false
+    }));
+    plain_tls.start().await.unwrap();
+    let (status, _, _) = exchange(plain_tls.bound_port(), "GET", "/health", None, &[]).await;
+    assert_eq!(status, 200);
+    plain_tls.stop().await;
+}
+
+#[tokio::test]
+async fn join_keeps_typed_fields_and_omits_null_operators() {
+    let seen = Arc::new(Mutex::new(None));
+    let seen_cb = Arc::clone(&seen);
+    let mut config = plain("opus");
+    config.get_mesh_nodes = Some(Arc::new(|| Box::pin(async { Ok(Vec::new()) })));
+    config.on_mesh_join = Some(Arc::new(move |node| {
+        let seen_cb = Arc::clone(&seen_cb);
+        Box::pin(async move {
+            *seen_cb.lock().unwrap() = Some(node);
+            Ok(())
+        })
+    }));
+    let channel = AgentChannel::new(config);
+    channel.start().await.unwrap();
+    let (status, body, _) = exchange(
+        channel.bound_port(),
+        "POST",
+        "/api/mesh/join",
+        Some(
+            r#"{"id":"n1","name":"N","host":"10.0.0.9","port":3100,"sshUser":null,"agents":["opus"],"status":"online","metadata":{"k":"v"},"custom":true}"#,
+        ),
+        &[("authorization", "Bearer test-secret-123")],
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(body["status"], json!("joined"));
+    let node = seen.lock().unwrap().clone().unwrap();
+    assert!(node.ssh_user.is_none());
+    assert_eq!(node.port.as_f64(), 3100.0);
+    assert_eq!(node.agents, vec!["opus".to_string()]);
+    assert_eq!(node.status, "online");
+    assert_eq!(
+        node.metadata
+            .unwrap()
+            .get("k")
+            .and_then(protocol::js::JsValue::as_str),
+        Some("v")
+    );
+    assert_eq!(
+        node.extra
+            .get("custom")
+            .and_then(protocol::js::JsValue::as_bool),
+        Some(true)
+    );
+    let (numeric, numeric_body, _) = exchange(
+        channel.bound_port(),
+        "POST",
+        "/api/mesh/join",
+        Some(r#"{"id":1,"name":"N","host":"10.0.0.9"}"#),
+        &[("authorization", "Bearer test-secret-123")],
+    )
+    .await;
+    assert_eq!(numeric, 400);
+    assert_eq!(
+        numeric_body["error"],
+        json!("Missing required fields: id, name, host")
+    );
+    channel.stop().await;
+}
+
+#[tokio::test]
+async fn zero_wait_is_fire_and_forget_and_the_server_still_waits() {
+    let (port, seen) = serve_capture(202, r#"{"requestId":"abc"}"#).await;
+    let mut config = AgentChannelConfig::new("opus");
+    config.peers = vec![peer("grok", port)];
+    let tool = AgentChannel::new(config).create_message_tool();
+    let result = tool
+        .execute(&json!({ "to_agent": "grok", "message": "x", "wait_for_response": 0 }))
+        .await;
+    assert!(result.contains("async — no response expected"));
+    assert!(result.contains("Request ID: abc"));
+    let captured = seen.lock().unwrap().clone();
+    assert!(captured.contains("\"waitForResponse\":0"));
+
+    let channel = started("opus").await;
+    channel.on_message(|_| async { Ok(()) });
+    let (status, body, _) = exchange(
+        channel.bound_port(),
+        "POST",
+        "/api/message",
+        Some(r#"{"fromAgent":"grok","message":"wait","waitForResponse":0,"timeoutMs":50}"#),
+        &[],
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        body["response"],
+        json!("[timeout — agent did not respond in time]")
+    );
+    channel.stop().await;
+}
+
+#[tokio::test]
+async fn join_auth_answers_before_the_body_is_read() {
+    let mut config = plain("opus");
+    config.on_mesh_join = Some(Arc::new(|_| Box::pin(async { Ok(()) })));
+    let channel = AgentChannel::new(config);
+    channel.start().await.unwrap();
+    let status = raw_exchange(
+        channel.bound_port(),
+        "POST /api/mesh/join HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 100000000\r\n\r\n",
+    )
+    .await;
+    assert_eq!(status, 401);
+
+    let disabled = AgentChannel::new(plain("opus"));
+    disabled.start().await.unwrap();
+    let request = "POST /api/mesh/join HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer test-secret-123\r\nContent-Length: 100000000\r\n\r\n";
+    let status = raw_exchange(disabled.bound_port(), request).await;
+    assert_eq!(status, 501);
+    disabled.stop().await;
     channel.stop().await;
 }
 
@@ -668,6 +852,63 @@ fn peer(name: &str, port: u16) -> (String, PeerConfig) {
             secret: None,
         },
     )
+}
+
+async fn raw_exchange(port: u16, request: &str) -> u16 {
+    let mut sock = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .unwrap();
+    sock.write_all(request.as_bytes()).await.unwrap();
+    let mut buf = vec![0_u8; 512];
+    let read = tokio::time::timeout(Duration::from_secs(2), sock.read(&mut buf))
+        .await
+        .expect("response before the body arrived")
+        .unwrap();
+    let text = String::from_utf8_lossy(&buf[..read]);
+    text.split_whitespace().nth(1).unwrap().parse().unwrap()
+}
+
+async fn serve_capture(status: u16, body: &'static str) -> (u16, Arc<Mutex<String>>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let seen = Arc::new(Mutex::new(String::new()));
+    let seen_task = Arc::clone(&seen);
+    tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.unwrap();
+        let raw = read_http(&mut sock).await;
+        *seen_task.lock().unwrap() = raw;
+        let response = format!(
+            "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = sock.write_all(response.as_bytes()).await;
+    });
+    (port, seen)
+}
+
+async fn read_http(sock: &mut tokio::net::TcpStream) -> String {
+    let mut buf = Vec::new();
+    let mut tmp = [0_u8; 1024];
+    loop {
+        let read = sock.read(&mut tmp).await.unwrap_or(0);
+        if read == 0 {
+            break;
+        }
+        buf.extend_from_slice(&tmp[..read]);
+        if let Some(header_end) = buf.windows(4).position(|window| window == b"\r\n\r\n") {
+            let headers = String::from_utf8_lossy(&buf[..header_end]);
+            let length = headers
+                .lines()
+                .find(|line| line.to_ascii_lowercase().starts_with("content-length:"))
+                .and_then(|line| line.split_once(':'))
+                .and_then(|(_, value)| value.trim().parse::<usize>().ok())
+                .unwrap_or(0);
+            if buf.len() >= header_end + 4 + length {
+                break;
+            }
+        }
+    }
+    String::from_utf8_lossy(&buf).into_owned()
 }
 
 async fn serve_json(status: u16, body: &'static str) -> u16 {

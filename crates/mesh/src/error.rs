@@ -119,6 +119,10 @@ impl MeshParseError {
         if let Some(cause) = &self.inner.cause {
             map.insert("cause".to_string(), Value::String(cause.clone()));
         }
+        map.insert(
+            "stack".to_string(),
+            Value::String(format!("MeshParseError: {}", self.inner.message)),
+        );
         Value::Object(map)
     }
 }

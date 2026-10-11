@@ -7,7 +7,7 @@ use mesh::{
     BuildLocalNodeArgs, FileMeshRegistry, JsNumber, MESH_FILE_NAME, MeshNode, MeshNodeEvent,
     RegistryConfig, inherit_operator_fields, operator_host_warning, shared_dir,
 };
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 
 struct Scratch(PathBuf);
 
@@ -142,15 +142,18 @@ async fn finds_nodes_by_agent_provider_and_capability() {
 
     let mut den = sample("den-node", &["opus"], "192.168.1.101");
     den.capabilities = vec!["den".to_string()];
-    let mut metadata = Map::new();
-    metadata.insert("denPort".to_string(), json!(5199));
-    den.metadata = Some(metadata);
+    den.metadata = Some(protocol::js::parse(r#"{"denPort":5199}"#).unwrap());
     registry.register(den).await.unwrap();
     let found = registry.find_by_capability("den").await.unwrap();
     assert_eq!(found.len(), 1);
     assert_eq!(
-        found[0].metadata.as_ref().unwrap().get("denPort"),
-        Some(&json!(5199))
+        found[0]
+            .metadata
+            .as_ref()
+            .unwrap()
+            .get("denPort")
+            .and_then(protocol::js::JsValue::as_i64),
+        Some(5199)
     );
 }
 
@@ -237,16 +240,19 @@ async fn build_local_node_matches_the_typescript_defaults() {
         providers: Vec::new(),
         models: Vec::new(),
         capabilities: Some(vec!["den".to_string()]),
-        metadata: Some({
-            let mut metadata = Map::new();
-            metadata.insert("denPort".to_string(), json!(5174));
-            metadata
-        }),
+        metadata: Some(protocol::js::parse(r#"{"denPort":5174}"#).unwrap()),
         version: "0.7.0".to_string(),
     });
     assert_eq!(fixed.id, "my-fixed-id");
     assert_eq!(fixed.capabilities, vec!["den".to_string()]);
-    assert_eq!(fixed.metadata.unwrap().get("denPort"), Some(&json!(5174)));
+    assert_eq!(
+        fixed
+            .metadata
+            .unwrap()
+            .get("denPort")
+            .and_then(protocol::js::JsValue::as_i64),
+        Some(5174)
+    );
     let value = generated.to_value();
     assert!(value.get("metadata").is_none());
     assert!(value.get("platform").is_none());

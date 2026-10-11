@@ -4,8 +4,6 @@ use mesh::{
     newest_online_node, parse_agent_pin, resolve_affinity, resolve_delegation_route,
     resolve_runtime_agent, should_take_remote, sync_target,
 };
-use serde_json::Map;
-
 fn node(name: &str, agents: &[&str], status: &str, last_seen: u64) -> MeshNode {
     MeshNode {
         id: name.to_string(),
@@ -25,7 +23,7 @@ fn node(name: &str, agents: &[&str], status: &str, last_seen: u64) -> MeshNode {
         ssh_user: None,
         install_root: None,
         platform: None,
-        extra: Map::new(),
+        extra: mesh::JsEntries::new(),
     }
 }
 
@@ -73,16 +71,19 @@ fn delegation_route_is_local_first_then_newest_remote() {
         node("node-f", &["opus"], "online", 5),
         node("node-c", &["opus"], "online", 9),
     ];
-    let local = resolve_delegation_route("opus", &["opus"], &nodes).unwrap();
+    let local = resolve_delegation_route("opus", &["opus"], &["opus"], &nodes).unwrap();
     assert_eq!(local.kind, RouteKind::Local);
     assert_eq!(local.node.id, "local");
     assert_eq!(local.node.name, "local");
     assert_eq!(local.node.host, "localhost");
     assert_eq!(local.node.port.as_f64(), 0.0);
-    let remote = resolve_delegation_route("opus", &["local"], &nodes).unwrap();
+    let remote = resolve_delegation_route("opus", &["local"], &["opus"], &nodes).unwrap();
     assert_eq!(remote.kind, RouteKind::Remote);
     assert_eq!(remote.node.name, "node-c");
-    assert!(resolve_delegation_route("missing", &[], &nodes).is_none());
+    let fallthrough = resolve_delegation_route("opus", &["opus"], &["other"], &nodes).unwrap();
+    assert_eq!(fallthrough.kind, RouteKind::Remote);
+    assert_eq!(fallthrough.node.name, "node-c");
+    assert!(resolve_delegation_route("missing", &[], &[], &nodes).is_none());
 }
 
 #[test]

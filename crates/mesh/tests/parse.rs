@@ -52,8 +52,20 @@ fn accepts_a_valid_record_format_file() {
 fn preserves_unknown_fields_on_the_root_and_on_nodes() {
     let outcome = parse(&valid_doc().to_string()).unwrap();
     let node = outcome.file.get("a").unwrap();
-    assert_eq!(outcome.file.extra.get("extraRoot"), Some(&json!(true)));
-    assert_eq!(node.extra.get("unknownNodeField"), Some(&json!("ok")));
+    assert_eq!(
+        outcome
+            .file
+            .extra
+            .get("extraRoot")
+            .and_then(protocol::js::JsValue::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        node.extra
+            .get("unknownNodeField")
+            .and_then(protocol::js::JsValue::as_str),
+        Some("ok")
+    );
     assert_eq!(node.id, "a");
 }
 
@@ -266,8 +278,9 @@ fn assert_record_mesh_file_accepts_an_already_parsed_object() {
             }
         }
     });
+    let parsed = protocol::js::parse(&value.to_string()).unwrap();
     let outcome =
-        assert_record_mesh_file(&value, "/tmp/test-mesh.json", MeshParseOptions::default())
+        assert_record_mesh_file(&parsed, "/tmp/test-mesh.json", MeshParseOptions::default())
             .unwrap();
     let node = outcome.file.get("a").unwrap();
     assert_eq!(node.name, "a");
@@ -277,11 +290,29 @@ fn assert_record_mesh_file_accepts_an_already_parsed_object() {
 }
 
 #[test]
-fn to_json_omits_stack_and_names_the_error() {
+fn to_json_names_the_error_and_sets_a_deterministic_stack() {
     let err = parse("{nope").unwrap_err();
     let value = err.to_json();
     let object = value.as_object().unwrap();
-    assert!(object.get("stack").is_none());
+    let keys: Vec<_> = object.keys().cloned().collect();
+    assert_eq!(
+        keys,
+        vec![
+            "name".to_string(),
+            "code".to_string(),
+            "message".to_string(),
+            "severity".to_string(),
+            "retryable".to_string(),
+            "timestamp".to_string(),
+            "context".to_string(),
+            "cause".to_string(),
+            "stack".to_string(),
+        ]
+    );
+    assert_eq!(
+        object.get("stack").and_then(Value::as_str),
+        Some(format!("MeshParseError: {}", err.message()).as_str())
+    );
     assert_eq!(
         object.get("name").and_then(Value::as_str),
         Some("MeshParseError")
@@ -314,10 +345,44 @@ fn pretty_mesh_has_no_trailing_newline_and_omits_absent_operator_fields() {
         .to_string(),
     )
     .unwrap();
-    let pretty = mesh_file_to_pretty(&outcome.file).unwrap();
+    let pretty = mesh_file_to_pretty(&outcome.file);
     assert!(!pretty.ends_with('\n'));
     assert!(!pretty.contains("sshUser"));
     assert!(!pretty.contains("installRoot"));
     assert!(!pretty.contains("platform"));
     assert!(!pretty.contains("metadata"));
+}
+
+#[test]
+fn file_null_operator_is_still_invalid() {
+    let err =
+        parse(r#"{"version":1,"nodes":{"a":{"id":"a","name":"a","host":"h","sshUser":null}}}"#)
+            .unwrap_err();
+    assert_eq!(err.code(), MeshParseErrorCode::NodeInvalid);
+    assert!(err.message().contains("sshUser"));
+}
+
+#[test]
+fn saved_key_order_lifts_index_keys_and_passes_js_values_through() {
+    let raw = concat!(
+        r#"{"version":1,"0":"rootidx","extraRoot":true,"updatedAt":7,"nodes":{"a":{"#,
+        r#""9":"idx","unknown":"u","platform":"linux","sshUser":"user","metadata":{"denPort":1.0,"huge":1e400},"#,
+        r#""role":"edge","version":"1","registeredAt":3,"lastSeen":2,"status":"online","capabilities":[],"#,
+        r#""models":[],"providers":[],"agents":["opus"],"port":3100,"host":"h","name":"a","id":"a","sur":"\ud800"}}}"#
+    );
+    let outcome = parse(raw).unwrap();
+    let pretty = mesh_file_to_pretty(&outcome.file);
+    assert!(!pretty.ends_with('\n'));
+    assert!(pretty.contains(r"\ud800"));
+    let compact = protocol::js::stringify(&protocol::js::parse(&pretty).unwrap());
+    let node = concat!(
+        r#"{"9":"idx","id":"a","name":"a","host":"h","port":3100,"agents":["opus"],"providers":[],"#,
+        r#""models":[],"capabilities":[],"status":"online","lastSeen":2,"registeredAt":3,"version":"1","#,
+        r#""role":"edge","metadata":{"denPort":1,"huge":null},"sshUser":"user","platform":"linux","#,
+        r#""unknown":"u","sur":"\ud800"}"#
+    );
+    let expected = format!(
+        r#"{{"0":"rootidx","version":1,"nodes":{{"a":{node}}},"updatedAt":7,"extraRoot":true}}"#
+    );
+    assert_eq!(compact, expected);
 }

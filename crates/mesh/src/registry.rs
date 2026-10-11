@@ -1,9 +1,9 @@
 use std::fs::OpenOptions;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use serde_json::Value;
 use tokio::task::JoinHandle;
 
 use crate::error::{MeshError, MeshParseErrorCode};
@@ -97,7 +97,7 @@ impl FileMeshRegistry {
 
     pub async fn register(&self, node: MeshNode) -> Result<(), MeshError> {
         let inner = Arc::clone(&self.inner);
-        let events = blocking(move || inner.register_blocking(node)).await?;
+        let events = blocking(move |deadline| inner.register_blocking(node, deadline)).await?;
         self.emit_all(events);
         Ok(())
     }
@@ -105,7 +105,8 @@ impl FileMeshRegistry {
     pub async fn deregister(&self, node_id: &str) -> Result<(), MeshError> {
         let inner = Arc::clone(&self.inner);
         let node_id = node_id.to_string();
-        let events = blocking(move || inner.deregister_blocking(&node_id)).await?;
+        let events =
+            blocking(move |deadline| inner.deregister_blocking(&node_id, deadline)).await?;
         self.emit_all(events);
         Ok(())
     }
@@ -114,9 +115,10 @@ impl FileMeshRegistry {
         let inner = Arc::clone(&self.inner);
         let node_id_owned = node_id.to_string();
         let status_owned = status.map(str::to_string);
-        let missing =
-            blocking(move || inner.heartbeat_blocking(&node_id_owned, status_owned.as_deref()))
-                .await?;
+        let missing = blocking(move |deadline| {
+            inner.heartbeat_blocking(&node_id_owned, status_owned.as_deref(), deadline)
+        })
+        .await?;
         if missing {
             let local = self
                 .inner
@@ -140,13 +142,16 @@ impl FileMeshRegistry {
 
     pub async fn get_nodes(&self) -> Result<Vec<MeshNode>, MeshError> {
         let inner = Arc::clone(&self.inner);
-        blocking(move || inner.read_blocking(|file| Ok(file.values()))).await
+        blocking(move |deadline| inner.read_blocking(deadline, |file| Ok(file.values()))).await
     }
 
     pub async fn get_node(&self, node_id: &str) -> Result<Option<MeshNode>, MeshError> {
         let inner = Arc::clone(&self.inner);
         let node_id = node_id.to_string();
-        blocking(move || inner.read_blocking(|file| Ok(file.get(&node_id).cloned()))).await
+        blocking(move |deadline| {
+            inner.read_blocking(deadline, |file| Ok(file.get(&node_id).cloned()))
+        })
+        .await
     }
 
     pub async fn find_by_agent(&self, agent_id: &str) -> Result<Vec<MeshNode>, MeshError> {
@@ -189,7 +194,8 @@ impl FileMeshRegistry {
 
     pub async fn prune(&self, stale_threshold_ms: Option<u64>) -> Result<Vec<MeshNode>, MeshError> {
         let inner = Arc::clone(&self.inner);
-        let (pruned, events) = blocking(move || inner.prune_blocking(stale_threshold_ms)).await?;
+        let (pruned, events) =
+            blocking(move |deadline| inner.prune_blocking(stale_threshold_ms, deadline)).await?;
         self.emit_all(events);
         Ok(pruned)
     }
@@ -298,7 +304,7 @@ impl FileMeshRegistry {
             }
         };
         let inner = Arc::clone(&self.inner);
-        match blocking(move || inner.merge_remote_blocking(nodes)).await {
+        match blocking(move |deadline| inner.merge_remote_blocking(nodes, deadline)).await {
             Ok(0) => {}
             Ok(merged) => tracing::info!("Synced {merged} nodes from seed {host}:{port}"),
             Err(err) => tracing::warn!("Seed sync failed ({host}:{port}): {err}"),
@@ -315,8 +321,12 @@ impl FileMeshRegistry {
 }
 
 impl Inner {
-    fn register_blocking(&self, node: MeshNode) -> Result<Vec<MeshNodeEvent>, MeshError> {
-        self.with_lock(|| {
+    fn register_blocking(
+        &self,
+        node: MeshNode,
+        deadline: Instant,
+    ) -> Result<Vec<MeshNodeEvent>, MeshError> {
+        self.with_lock(deadline, || {
             let mut data = self.load_locked()?;
             let existing = data.get(&node.id).cloned();
             if let Some(existing) = &existing {
@@ -352,13 +362,17 @@ impl Inner {
             let id = merged.id.clone();
             data.insert(id, merged);
             data.updated_at = now;
-            self.save_locked(&data)?;
+            self.save_locked(&data, deadline)?;
             Ok(vec![event])
         })
     }
 
-    fn deregister_blocking(&self, node_id: &str) -> Result<Vec<MeshNodeEvent>, MeshError> {
-        self.with_lock(|| {
+    fn deregister_blocking(
+        &self,
+        node_id: &str,
+        deadline: Instant,
+    ) -> Result<Vec<MeshNodeEvent>, MeshError> {
+        self.with_lock(deadline, || {
             let mut data = self.load_locked()?;
             let Some(mut node) = data.get(node_id).cloned() else {
                 return Ok(Vec::new());
@@ -367,7 +381,7 @@ impl Inner {
             let now = now_ms();
             data.insert(node_id.to_string(), node.clone());
             data.updated_at = now;
-            self.save_locked(&data)?;
+            self.save_locked(&data, deadline)?;
             tracing::info!("Node deregistered: {} ({node_id})", node.name);
             Ok(vec![MeshNodeEvent {
                 event_type: "node:left".to_string(),
@@ -377,8 +391,13 @@ impl Inner {
         })
     }
 
-    fn heartbeat_blocking(&self, node_id: &str, status: Option<&str>) -> Result<bool, MeshError> {
-        self.with_lock(|| {
+    fn heartbeat_blocking(
+        &self,
+        node_id: &str,
+        status: Option<&str>,
+        deadline: Instant,
+    ) -> Result<bool, MeshError> {
+        self.with_lock(deadline, || {
             let mut data = self.load_locked()?;
             let Some(node) = data.get_mut(node_id) else {
                 return Ok(true);
@@ -389,7 +408,7 @@ impl Inner {
                 node.status = status.to_string();
             }
             data.updated_at = now;
-            self.save_locked(&data)?;
+            self.save_locked(&data, deadline)?;
             Ok(false)
         })
     }
@@ -397,6 +416,7 @@ impl Inner {
     fn prune_blocking(
         &self,
         stale_threshold_ms: Option<u64>,
+        deadline: Instant,
     ) -> Result<(Vec<MeshNode>, Vec<MeshNodeEvent>), MeshError> {
         let threshold = stale_threshold_ms
             .or(self.stale_threshold_ms)
@@ -406,7 +426,7 @@ impl Inner {
             .lock()
             .unwrap_or_else(|err| err.into_inner())
             .clone();
-        self.with_lock(|| {
+        self.with_lock(deadline, || {
             let mut data = self.load_locked()?;
             let now = now_ms();
             let now_f = now.as_f64();
@@ -434,14 +454,18 @@ impl Inner {
             }
             if !pruned.is_empty() {
                 data.updated_at = now;
-                self.save_locked(&data)?;
+                self.save_locked(&data, deadline)?;
             }
             Ok((pruned, events))
         })
     }
 
-    fn merge_remote_blocking(&self, remotes: Vec<MeshNode>) -> Result<usize, MeshError> {
-        self.with_lock(|| {
+    fn merge_remote_blocking(
+        &self,
+        remotes: Vec<MeshNode>,
+        deadline: Instant,
+    ) -> Result<usize, MeshError> {
+        self.with_lock(deadline, || {
             let mut data = self.load_locked()?;
             let mut merged = 0_usize;
             for remote in remotes {
@@ -462,7 +486,7 @@ impl Inner {
             }
             if merged > 0 {
                 data.updated_at = now_ms();
-                self.save_locked(&data)?;
+                self.save_locked(&data, deadline)?;
             }
             Ok(merged)
         })
@@ -470,17 +494,28 @@ impl Inner {
 
     fn read_blocking<T>(
         &self,
+        deadline: Instant,
         read: impl FnOnce(&MeshFile) -> Result<T, MeshError>,
     ) -> Result<T, MeshError> {
-        self.with_lock(|| {
+        self.with_lock(deadline, || {
             let data = self.load_locked()?;
             read(&data)
         })
     }
 
-    fn with_lock<T>(&self, body: impl FnOnce() -> Result<T, MeshError>) -> Result<T, MeshError> {
+    fn with_lock<T>(
+        &self,
+        deadline: Instant,
+        body: impl FnOnce() -> Result<T, MeshError>,
+    ) -> Result<T, MeshError> {
+        if deadline_passed(deadline) {
+            return Err(file_timeout());
+        }
         if let Some(parent) = self.file_path.parent() {
             std::fs::create_dir_all(parent)?;
+        }
+        if deadline_passed(deadline) {
+            return Err(file_timeout());
         }
         let file = OpenOptions::new()
             .create(true)
@@ -489,8 +524,7 @@ impl Inner {
             .truncate(false)
             .open(&self.lock_path)?;
         let mut flock = fd_lock::RwLock::new(file);
-        let _guard = flock.write()?;
-        body()
+        lock_write_until(&mut flock, deadline, body)
     }
 
     fn load_locked(&self) -> Result<MeshFile, MeshError> {
@@ -533,7 +567,10 @@ impl Inner {
         }
     }
 
-    fn save_locked(&self, file: &MeshFile) -> Result<(), MeshError> {
+    fn save_locked(&self, file: &MeshFile, deadline: Instant) -> Result<(), MeshError> {
+        if deadline_passed(deadline) {
+            return Err(file_timeout());
+        }
         if let Some(message) = self
             .fail_next_save
             .lock()
@@ -545,12 +582,18 @@ impl Inner {
         if let Some(parent) = self.file_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let pretty =
-            mesh_file_to_pretty(file).map_err(|err| MeshError::message(err.to_string()))?;
+        if deadline_passed(deadline) {
+            return Err(file_timeout());
+        }
+        let pretty = mesh_file_to_pretty(file);
         let tmp = format!("{}.tmp-{}", self.file_path.display(), std::process::id());
         if let Err(err) = std::fs::write(&tmp, &pretty) {
             let _ = std::fs::remove_file(&tmp);
             return Err(err.into());
+        }
+        if deadline_passed(deadline) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(file_timeout());
         }
         if let Err(err) = std::fs::rename(&tmp, &self.file_path) {
             let _ = std::fs::remove_file(&tmp);
@@ -588,7 +631,7 @@ pub async fn load_mesh_file(
     options: MeshParseOptions,
 ) -> Result<Option<ParseOutcome>, MeshError> {
     let paths = paths.to_vec();
-    blocking(move || load_mesh_file_blocking(&paths, options)).await
+    blocking(move |_deadline| load_mesh_file_blocking(&paths, options)).await
 }
 
 async fn fetch_seed(url: &str, tls: Option<&TlsMaterial>) -> Result<Vec<MeshNode>, MeshError> {
@@ -610,26 +653,41 @@ async fn fetch_seed(url: &str, tls: Option<&TlsMaterial>) -> Result<Vec<MeshNode
         .send()
         .await?;
     let status = response.status();
+    let text = response.text().await.unwrap_or_default();
     if !status.is_success() {
-        let text = response.text().await.unwrap_or_default();
-        return Err(MeshError::message(format!(
-            "Seed responded {status}: {text}"
+        return Err(MeshError::message(seed_failure_text(
+            status.as_u16(),
+            &text,
         )));
     }
-    let value: Value = response.json().await?;
-    let Some(items) = value.as_array() else {
+    seed_nodes_from_text(&text, url)
+}
+
+fn seed_failure_text(status: u16, text: &str) -> String {
+    format!("Seed responded {status}: {text}")
+}
+
+fn seed_nodes_from_text(text: &str, url: &str) -> Result<Vec<MeshNode>, MeshError> {
+    let parsed = protocol::js::parse(text).map_err(|err| {
+        MeshError::message(format!("seed mesh response is not valid JSON: {err}"))
+    })?;
+    let Some(items) = parsed.as_array() else {
         return Err(MeshError::message("seed mesh response is not an array"));
     };
     let mut nodes = Vec::new();
     for (index, item) in items.iter().enumerate() {
+        if item.as_object().is_none() {
+            tracing::warn!("skipping non-object seed node at index {index}");
+            continue;
+        }
         let key = item
             .get("id")
-            .and_then(Value::as_str)
-            .unwrap_or("remote")
-            .to_string();
-        let node = mesh_node_from_value(&key, item, url)
-            .map_err(|err| MeshError::message(format!("seed node {index}: {err}")))?;
-        nodes.push(node);
+            .and_then(protocol::js::JsValue::as_str)
+            .unwrap_or("remote");
+        match mesh_node_from_value(key, item, url) {
+            Ok(node) => nodes.push(node),
+            Err(err) => tracing::warn!("skipping bad seed node: {err}"),
+        }
     }
     Ok(nodes)
 }
@@ -642,16 +700,122 @@ fn ensure_runtime() -> Result<(), MeshError> {
     }
 }
 
-async fn blocking<T: Send + 'static>(
-    work: impl FnOnce() -> Result<T, MeshError> + Send + 'static,
+fn file_timeout() -> MeshError {
+    MeshError::message("mesh file operation timed out after 30s")
+}
+
+fn deadline_passed(deadline: Instant) -> bool {
+    Instant::now() >= deadline
+}
+
+fn lock_is_contended(err: &std::io::Error) -> bool {
+    err.kind() == ErrorKind::WouldBlock || err.kind() == ErrorKind::AlreadyExists
+}
+
+fn lock_write_until<T>(
+    flock: &mut fd_lock::RwLock<std::fs::File>,
+    deadline: Instant,
+    body: impl FnOnce() -> Result<T, MeshError>,
 ) -> Result<T, MeshError> {
+    loop {
+        if deadline_passed(deadline) {
+            return Err(file_timeout());
+        }
+        match flock.try_write() {
+            Ok(_guard) => {
+                if deadline_passed(deadline) {
+                    return Err(file_timeout());
+                }
+                return body();
+            }
+            Err(err) if lock_is_contended(&err) => {
+                let left = deadline.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    return Err(file_timeout());
+                }
+                std::thread::sleep(left.min(Duration::from_millis(25)));
+            }
+            Err(err) => return Err(err.into()),
+        }
+    }
+}
+
+async fn blocking<T: Send + 'static>(
+    body: impl FnOnce(Instant) -> Result<T, MeshError> + Send + 'static,
+) -> Result<T, MeshError> {
+    let deadline = Instant::now() + FILE_OP_TIMEOUT;
     let handle = tokio::runtime::Handle::try_current()
         .map_err(|_| MeshError::message("mesh registry needs a tokio runtime"))?;
-    let joined = tokio::time::timeout(FILE_OP_TIMEOUT, handle.spawn_blocking(work))
-        .await
-        .map_err(|_| MeshError::message("mesh file operation timed out after 30s"))?;
-    match joined {
+    let joined = handle.spawn_blocking(move || body(deadline));
+    match joined.await {
         Ok(result) => result,
-        Err(_) => Err(MeshError::message("mesh file task panicked")),
+        Err(err) if err.is_panic() => Err(MeshError::message("mesh file task panicked")),
+        Err(err) => Err(MeshError::message(err.to_string())),
+    }
+}
+
+#[cfg(test)]
+mod deadline_and_seed {
+    use std::time::SystemTime;
+    use std::time::UNIX_EPOCH;
+
+    use super::FileMeshRegistry;
+    use super::RegistryConfig;
+    use super::file_timeout;
+    use super::seed_failure_text;
+    use super::seed_nodes_from_text;
+    use crate::model::MeshFile;
+
+    #[test]
+    fn past_deadline_does_not_create_mesh_json() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0);
+        let dir =
+            std::env::temp_dir().join(format!("rr7m-deadline-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let registry = FileMeshRegistry::new(RegistryConfig {
+            storage_dir: dir.display().to_string(),
+            heartbeat_interval_ms: None,
+            stale_threshold_ms: None,
+            discovery: None,
+            on_event: None,
+            tls: None,
+        });
+        let parsed = protocol::js::parse(r#"{"id":"n","name":"n","host":"h"}"#).unwrap();
+        let node = crate::model::mesh_node_from_value("n", &parsed, "test").unwrap();
+        let err = registry
+            .inner
+            .register_blocking(
+                node,
+                std::time::Instant::now() - std::time::Duration::from_secs(1),
+            )
+            .unwrap_err();
+        assert_eq!(err.to_string(), file_timeout().to_string());
+        let late = registry
+            .inner
+            .save_locked(
+                &MeshFile::empty(),
+                std::time::Instant::now() - std::time::Duration::from_secs(1),
+            )
+            .unwrap_err();
+        assert_eq!(late.to_string(), file_timeout().to_string());
+        assert!(!registry.inner.file_path.exists());
+        assert!(!registry.inner.lock_path.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn seed_status_text_uses_the_numeric_code() {
+        assert_eq!(seed_failure_text(403, "no"), "Seed responded 403: no");
+    }
+
+    #[test]
+    fn seed_keeps_good_rows_when_one_element_is_bad() {
+        let text = r#"[{"id":"a","name":"a","host":"h","port":1},{"id":"b","name":"b","host":"h","port":"x"},"skip",{"id":"c","name":"c","host":"h"}]"#;
+        let nodes = seed_nodes_from_text(text, "http://seed").unwrap();
+        let ids: Vec<_> = nodes.iter().map(|node| node.id.as_str()).collect();
+        assert_eq!(ids, vec!["a", "c"]);
     }
 }

@@ -104,9 +104,10 @@ pub fn newest_online_node<'a>(
 pub fn resolve_delegation_route(
     agent_id: &str,
     local_agents: &[&str],
+    router_agents: &[&str],
     nodes: &[MeshNode],
 ) -> Option<ResolvedRoute> {
-    if local_agents.contains(&agent_id) {
+    if local_agents.contains(&agent_id) && router_agents.contains(&agent_id) {
         return Some(ResolvedRoute {
             agent_id: agent_id.to_string(),
             kind: RouteKind::Local,
@@ -139,7 +140,7 @@ fn local_placeholder() -> MeshNode {
         ssh_user: None,
         install_root: None,
         platform: None,
-        extra: serde_json::Map::new(),
+        extra: crate::model::JsEntries::new(),
     }
 }
 

@@ -268,7 +268,7 @@ fn mesh_hosts_commands_follow_root_and_the_live_paths() {
         build_local_mesh_hosts_command_as(script, &mesh_file, false),
         format!("sudo -n {script} {mesh_file} --quiet")
     );
-    let live = build_local_mesh_hosts_command(script, None);
+    let live = build_local_mesh_hosts_command(script, None, is_process_root());
     if is_process_root() {
         assert_eq!(live, format!("{script} {mesh_file} --quiet"));
     } else {
