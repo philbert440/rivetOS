@@ -1,0 +1,36 @@
+name: Rust
+
+on:
+  push:
+    branches: [rust/v2]
+    paths: [Cargo.toml, Cargo.lock, "crates/**", rust-toolchain.toml, rustfmt.toml, clippy.toml, scripts/rust-gate.py, .github/workflows/rust.yml]
+  pull_request:
+    branches: [rust/v2, "rr/**"]
+    paths: [Cargo.toml, Cargo.lock, "crates/**", rust-toolchain.toml, rustfmt.toml, clippy.toml, scripts/rust-gate.py, .github/workflows/rust.yml]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install "$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)" --profile minimal --component rustfmt,clippy
+      - name: Gate
+        run: python3 scripts/rust-gate.py .
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --workspace
+      - name: Build
+        run: cargo build --workspace
