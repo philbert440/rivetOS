@@ -13,11 +13,10 @@ mod supervisor;
 pub mod cli;
 
 pub use config_resolve::{
-    DEFAULT_DATA_DIR, DEFAULT_MAX_CONNECTIONS, DEFAULT_PORT, EmbeddedEnv, EmbeddedPgEnv,
-    ResolvedEmbeddedPg, apply_embedded_pg_url, assert_embedded_port, embedded_pg_env,
-    embedded_pg_url, process_embedded_env, read_embedded_config, read_embedded_config_with,
-    require_listen_port, require_max_connections, resolve_embedded_pg,
-    resolve_embedded_pg_from_env,
+    DEFAULT_DATA_DIR, DEFAULT_MAX_CONNECTIONS, DEFAULT_PORT, EmbeddedPgEnv, ResolvedEmbeddedPg,
+    apply_embedded_pg_url, assert_embedded_port, embedded_pg_env, embedded_pg_url,
+    read_embedded_config, read_embedded_config_with, require_listen_port, require_max_connections,
+    resolve_embedded_pg, resolve_embedded_pg_from_env,
 };
 pub use engine::{
     ATTACH_BACKUP_ERROR, BACKUP_TIMEOUT, EMBEDDED_NOT_CONFIGURED, EmbeddedPg, SETUP_TIMEOUT,

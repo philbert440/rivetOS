@@ -1,6 +1,6 @@
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use protocol::host::Env;
 use serde_json::{Map, Number, Value};
 
 use crate::error::{LocalDbError, Result};
@@ -27,39 +27,6 @@ pub struct ResolvedEmbeddedPg {
     pub engine_data_dir: PathBuf,
     pub installation_dir: PathBuf,
     pub home: PathBuf,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct EmbeddedEnv {
-    values: BTreeMap<String, String>,
-}
-
-impl EmbeddedEnv {
-    pub fn new() -> Self {
-        Self {
-            values: BTreeMap::new(),
-        }
-    }
-
-    pub fn insert(&mut self, key: impl Into<String>, value: impl Into<String>) {
-        self.values.insert(key.into(), value.into());
-    }
-
-    pub fn get(&self, key: &str) -> Option<&str> {
-        self.values.get(key).map(String::as_str)
-    }
-
-    pub fn lookup(&self, key: &str) -> Option<String> {
-        self.get(key).map(str::to_string)
-    }
-}
-
-pub fn process_embedded_env() -> EmbeddedEnv {
-    let mut env = EmbeddedEnv::new();
-    for (key, value) in std::env::vars() {
-        env.insert(key, value);
-    }
-    env
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -139,9 +106,10 @@ pub fn resolve_embedded_pg(
 pub fn resolve_embedded_pg_from_env(
     config: &Value,
     home: &Path,
-    env: &EmbeddedEnv,
+    env: &dyn Env,
 ) -> Option<ResolvedEmbeddedPg> {
-    resolve_embedded_pg(config, home, env.get("RIVETOS_EMBED_URL"))
+    let embed = env.var("RIVETOS_EMBED_URL");
+    resolve_embedded_pg(config, home, embed.as_deref())
 }
 
 pub fn assert_embedded_port(config: &Value) -> Result<()> {
@@ -163,13 +131,13 @@ pub fn read_embedded_config(
     path: &Path,
     home: &Path,
 ) -> Result<Option<(Value, ResolvedEmbeddedPg)>> {
-    read_embedded_config_with(path, home, &process_embedded_env())
+    read_embedded_config_with(path, home, &protocol::host::ProcessEnv)
 }
 
 pub fn read_embedded_config_with(
     path: &Path,
     home: &Path,
-    env: &EmbeddedEnv,
+    env: &dyn Env,
 ) -> Result<Option<(Value, ResolvedEmbeddedPg)>> {
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
@@ -182,10 +150,10 @@ pub fn read_embedded_config_with(
     if !parsed.is_object() {
         return Ok(None);
     }
-    let resolved_doc = config::resolve_env_vars_with(&parsed, |name| env.lookup(name));
+    let resolved_doc = config::resolve_env_vars_with(&parsed, |name| env.var(name));
     assert_embedded_port(&resolved_doc)?;
-    let Some(resolved) = resolve_embedded_pg(&resolved_doc, home, env.get("RIVETOS_EMBED_URL"))
-    else {
+    let embed = env.var("RIVETOS_EMBED_URL");
+    let Some(resolved) = resolve_embedded_pg(&resolved_doc, home, embed.as_deref()) else {
         return Ok(None);
     };
     Ok(Some((resolved_doc, resolved)))
@@ -282,6 +250,7 @@ fn child_object<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use protocol::host::MapEnv;
     use serde_json::json;
 
     #[test]
@@ -374,13 +343,13 @@ mod tests {
     #[test]
     fn injected_embed_url_selects_full_mode_without_the_process_environment() {
         let config = json!({"memory": {"postgres": {"embedded": {}}}});
-        let mut env = EmbeddedEnv::new();
-        env.insert("RIVETOS_EMBED_URL", "http://127.0.0.1:9/v1");
+        let mut env = MapEnv::new();
+        env.set("RIVETOS_EMBED_URL", "http://127.0.0.1:9/v1");
         let resolved =
             resolve_embedded_pg_from_env(&config, Path::new("/tmp/fakehome"), &env).expect("full");
         assert!(!resolved.lite_mode);
         let empty =
-            resolve_embedded_pg_from_env(&config, Path::new("/tmp/fakehome"), &EmbeddedEnv::new())
+            resolve_embedded_pg_from_env(&config, Path::new("/tmp/fakehome"), &MapEnv::new())
                 .expect("lite");
         assert!(empty.lite_mode);
         assert_eq!(
@@ -406,8 +375,8 @@ mod tests {
             "memory:\n  postgres:\n    embedded:\n      data_dir: \"${RIVET_DB}\"\n",
         )
         .expect("yaml");
-        let mut env = EmbeddedEnv::new();
-        env.insert("RIVET_DB", "/srv/rivet/db");
+        let mut env = MapEnv::new();
+        env.set("RIVET_DB", "/srv/rivet/db");
         let (_doc, resolved) = read_embedded_config_with(&path, &home, &env)
             .expect("read")
             .expect("configured");

@@ -2,12 +2,15 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use protocol::host::{Env, MapEnv};
 use serde_json::Value;
+use sqlx::ConnectOptions;
+use sqlx::Row;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
 use crate::config_resolve::{
-    EmbeddedEnv, EmbeddedPgEnv, ResolvedEmbeddedPg, apply_embedded_pg_url, embedded_pg_env,
-    embedded_pg_url, require_listen_port, require_max_connections, resolve_embedded_pg_from_env,
+    EmbeddedPgEnv, ResolvedEmbeddedPg, apply_embedded_pg_url, embedded_pg_env, embedded_pg_url,
+    require_listen_port, require_max_connections, resolve_embedded_pg_from_env,
 };
 use crate::error::{LocalDbError, Result, engine_error, extension_error};
 use crate::lock::{
@@ -154,14 +157,14 @@ pub async fn acquire_embedded_pg(
     resolved: ResolvedEmbeddedPg,
     log: &dyn EmbeddedPgLog,
 ) -> Result<EmbeddedPg> {
-    acquire_embedded_pg_with(resolved, log, None, &EmbeddedEnv::new()).await
+    acquire_embedded_pg_with(resolved, log, None, &MapEnv::new()).await
 }
 
 pub async fn acquire_embedded_pg_with(
     resolved: ResolvedEmbeddedPg,
     log: &dyn EmbeddedPgLog,
     port_hold: Option<std::net::TcpListener>,
-    env: &EmbeddedEnv,
+    env: &dyn Env,
 ) -> Result<EmbeddedPg> {
     let port = require_listen_port(&resolved)?;
     let max = require_max_connections(&resolved)?;
@@ -214,7 +217,7 @@ pub async fn acquire_embedded_pg_with(
 pub async fn with_embedded_pg<T, F, Fut>(
     config: &mut Value,
     home: &Path,
-    env: &EmbeddedEnv,
+    env: &dyn Env,
     log: &dyn EmbeddedPgLog,
     body: F,
 ) -> Result<T>
@@ -285,7 +288,23 @@ pub fn assert_under_rivet(home: &Path, target: &Path) -> Result<PathBuf> {
 }
 
 pub fn backup_stamp(time: chrono::DateTime<chrono::Utc>) -> String {
-    time.format("%Y-%m-%dT%H-%M-%S").to_string()
+    let ms = time.timestamp_millis() as f64;
+    let iso = match protocol::js::to_iso_string(ms) {
+        Ok(iso) => iso,
+        Err(_) => return String::new(),
+    };
+    let replaced = match protocol::js::js_replace(
+        &protocol::js::JsString::from_text(&iso),
+        "[:.]",
+        "g",
+        "-",
+    ) {
+        Ok(value) => value,
+        Err(_) => return iso,
+    };
+    protocol::js::js_slice(replaced.to_utf8(), Some(0.0), Some(19.0))
+        .to_utf8()
+        .to_string()
 }
 
 pub fn default_backup_path(home: &Path, stamp: &str) -> PathBuf {
@@ -329,7 +348,7 @@ async fn boot_owned(
     max: u32,
     lock_path: PathBuf,
     port_hold: Option<std::net::TcpListener>,
-    env: &EmbeddedEnv,
+    env: &dyn Env,
     log: &dyn EmbeddedPgLog,
 ) -> Result<EmbeddedPg> {
     let started = std::time::Instant::now();
@@ -372,7 +391,7 @@ async fn boot_owned(
 async fn prepare_migration(
     resolved: &ResolvedEmbeddedPg,
     port: u16,
-    env: &EmbeddedEnv,
+    env: &dyn Env,
     log: &dyn EmbeddedPgLog,
 ) -> Result<Option<PathBuf>> {
     let pgdata = pgdata_dir(&resolved.engine_data_dir);
@@ -399,7 +418,7 @@ async fn export_for_plan(
     pgdata: &Path,
     pending: &Path,
     port: u16,
-    env: &EmbeddedEnv,
+    env: &dyn Env,
     log: &dyn EmbeddedPgLog,
     plan: MigrationPlan,
 ) -> Result<Option<PathBuf>> {
@@ -412,11 +431,12 @@ async fn export_for_plan(
         resolved.data_dir.display(),
         pgdata.display()
     ));
+    let root = env.var("RIVETOS_ROOT");
     let exported = export_pglite_source(
         &resolved.home,
         &resolved.data_dir,
         port,
-        env.get("RIVETOS_ROOT"),
+        root.as_deref(),
         log,
     )
     .await?;
@@ -429,7 +449,7 @@ async fn start_server(
     port: u16,
     max: u32,
     port_hold: Option<std::net::TcpListener>,
-    env: &EmbeddedEnv,
+    env: &dyn Env,
     log: &dyn EmbeddedPgLog,
 ) -> Result<OwnedServer> {
     let pgdata = pgdata_dir(&resolved.engine_data_dir);
@@ -527,20 +547,20 @@ async fn configure_started(
     export_path: Option<&Path>,
     log: &dyn EmbeddedPgLog,
 ) -> std::result::Result<(), ConfigureFailure> {
-    let client = match PgClient::connect(url).await {
+    let mut client = match PgClient::connect(url).await {
         Ok(client) => client,
         Err(error) => return Err(configure_failure(error, export_path.is_some())),
     };
-    if let Err(error) = prepare_database(&client, resolved.lite_mode).await {
+    if let Err(error) = prepare_database(&mut client, resolved.lite_mode).await {
         return Err(configure_failure(error, export_path.is_some()));
     }
     if let Some(path) = export_path {
-        finish_migration(&client, resolved, path, log).await?;
+        finish_migration(&mut client, resolved, path, log).await?;
     }
     Ok(())
 }
 
-async fn prepare_database(client: &PgClient, lite: bool) -> Result<()> {
+async fn prepare_database(client: &mut PgClient, lite: bool) -> Result<()> {
     client
         .batch(
             "CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS pg_trgm;",
@@ -552,7 +572,7 @@ async fn prepare_database(client: &PgClient, lite: bool) -> Result<()> {
 }
 
 async fn finish_migration(
-    client: &PgClient,
+    client: &mut PgClient,
     resolved: &ResolvedEmbeddedPg,
     export_path: &Path,
     log: &dyn EmbeddedPgLog,
@@ -596,7 +616,7 @@ async fn engine_settings(
     resolved: &ResolvedEmbeddedPg,
     port: u16,
     max: u32,
-    env: &EmbeddedEnv,
+    env: &dyn Env,
 ) -> Result<postgresql_embedded::Settings> {
     let defaults = postgresql_embedded::Settings::new();
     let leaked_data = defaults.data_dir.clone();
@@ -610,8 +630,8 @@ async fn engine_settings(
         postgresql_embedded::VersionReq::parse(POSTGRES_VERSION_REQ).map_err(|error| {
             LocalDbError::message(format!("embedded postgres: postgres version: {error}"))
         })?;
-    let releases_url = match env.get("RIVETOS_PG_RELEASES_URL") {
-        Some(value) if !value.is_empty() => value.to_string(),
+    let releases_url = match env.var("RIVETOS_PG_RELEASES_URL") {
+        Some(value) if !value.is_empty() => value,
         _ => default_releases,
     };
     if !postgres_binaries_present(&resolved.installation_dir) && !theseus_releases(&releases_url) {
@@ -776,7 +796,7 @@ fn pgvector_install_error(error: &postgresql_extensions::Error) -> LocalDbError 
     ))
 }
 
-async fn ensure_halfvec(client: &PgClient) -> Result<()> {
+async fn ensure_halfvec(client: &mut PgClient) -> Result<()> {
     let version = client
         .query_text("SELECT extversion FROM pg_extension WHERE extname = 'vector'")
         .await?;
@@ -812,7 +832,7 @@ fn pgvector_supports_halfvec(version: &str) -> bool {
     }
 }
 
-async fn apply_guc(client: &PgClient, lite: bool) -> Result<()> {
+async fn apply_guc(client: &mut PgClient, lite: bool) -> Result<()> {
     if lite {
         client
             .batch(
@@ -837,7 +857,7 @@ async fn apply_guc(client: &PgClient, lite: bool) -> Result<()> {
     }
 }
 
-async fn apply_product_schema(client: &PgClient) -> Result<()> {
+async fn apply_product_schema(client: &mut PgClient) -> Result<()> {
     client
         .batch("SET lock_timeout = '3s'", COMMAND_TIMEOUT)
         .await?;
@@ -847,7 +867,7 @@ async fn apply_product_schema(client: &PgClient) -> Result<()> {
     reset
 }
 
-async fn apply_product_migrations(client: &PgClient) -> Result<()> {
+async fn apply_product_migrations(client: &mut PgClient) -> Result<()> {
     let exists = client
         .query_one_text(
             "SELECT CASE WHEN to_regclass('_rivetos_migrations') IS NULL THEN 'f' ELSE 't' END",
@@ -860,7 +880,7 @@ async fn apply_product_migrations(client: &PgClient) -> Result<()> {
     for migration in product_migrations() {
         let seen = client
             .query_one_text(
-                "SELECT CASE WHEN EXISTS (SELECT 1 FROM _rivetos_migrations WHERE name = $1) THEN 't' ELSE 'f' END",
+                "SELECT CASE WHEN EXISTS (SELECT 1 FROM _rivetos_migrations WHERE name = $1::text) THEN 't' ELSE 'f' END",
                 &[Some(migration.name.to_string())],
             )
             .await?;
@@ -880,7 +900,7 @@ struct CopyState {
 }
 
 async fn apply_export(
-    client: &PgClient,
+    client: &mut PgClient,
     path: &Path,
     source: &Path,
     log: &dyn EmbeddedPgLog,
@@ -928,7 +948,7 @@ async fn apply_export(
 }
 
 async fn apply_action(
-    client: &PgClient,
+    client: &mut PgClient,
     action: ExportAction,
     state: &mut CopyState,
 ) -> Result<bool> {
@@ -1028,7 +1048,7 @@ fn trigger_change(schema: &str, table: &str, action: &str) -> String {
 }
 
 async fn disable_user_triggers(
-    client: &PgClient,
+    client: &mut PgClient,
     state: &mut CopyState,
     schema: &str,
     table: &str,
@@ -1062,7 +1082,7 @@ async fn disable_user_triggers(
     Ok(())
 }
 
-async fn relation_exists(client: &PgClient, schema: &str, name: &str) -> Result<bool> {
+async fn relation_exists(client: &mut PgClient, schema: &str, name: &str) -> Result<bool> {
     let found = client
         .query_one_text(
             "SELECT CASE WHEN to_regclass(format('%I.%I', $1::text, $2::text)) IS NULL THEN 'f' ELSE 't' END",
@@ -1072,14 +1092,14 @@ async fn relation_exists(client: &PgClient, schema: &str, name: &str) -> Result<
     Ok(found.as_deref() == Some("t"))
 }
 
-async fn dest_columns(client: &PgClient, schema: &str, table: &str) -> Result<Vec<DestColumn>> {
+async fn dest_columns(client: &mut PgClient, schema: &str, table: &str) -> Result<Vec<DestColumn>> {
     let rows = client
         .query_columns(
-            "SELECT a.attname, pg_catalog.format_type(a.atttypid, a.atttypmod), a.attgenerated::text \
+            "SELECT a.attname::text, pg_catalog.format_type(a.atttypid, a.atttypmod), a.attgenerated::text \
              FROM pg_catalog.pg_attribute a \
              JOIN pg_catalog.pg_class c ON c.oid = a.attrelid \
              JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
-             WHERE n.nspname = $1 AND c.relname = $2 AND a.attnum > 0 AND NOT a.attisdropped \
+             WHERE n.nspname = $1::text AND c.relname = $2::text AND a.attnum > 0 AND NOT a.attisdropped \
              ORDER BY a.attnum",
             &[Some(schema.to_string()), Some(table.to_string())],
             3,
@@ -1097,7 +1117,12 @@ async fn dest_columns(client: &PgClient, schema: &str, table: &str) -> Result<Ve
     Ok(columns)
 }
 
-async fn check_count(client: &PgClient, schema: &str, table: &str, expected: i64) -> Result<()> {
+async fn check_count(
+    client: &mut PgClient,
+    schema: &str,
+    table: &str,
+    expected: i64,
+) -> Result<()> {
     let got = count_table(client, schema, table).await?;
     if got == expected {
         return Ok(());
@@ -1107,7 +1132,7 @@ async fn check_count(client: &PgClient, schema: &str, table: &str, expected: i64
     )))
 }
 
-async fn count_table(client: &PgClient, schema: &str, table: &str) -> Result<i64> {
+async fn count_table(client: &mut PgClient, schema: &str, table: &str) -> Result<i64> {
     let sql = format!(
         "SELECT count(*)::bigint FROM {}.{}",
         quote_ident(schema),
@@ -1117,68 +1142,78 @@ async fn count_table(client: &PgClient, schema: &str, table: &str) -> Result<i64
 }
 
 struct PgClient {
-    client: tokio_postgres::Client,
+    conn: sqlx::PgConnection,
 }
 
 impl PgClient {
     async fn connect(url: &str) -> Result<Self> {
-        let connected = tokio::time::timeout(
-            CONNECT_TIMEOUT,
-            tokio_postgres::connect(url, tokio_postgres::NoTls),
-        )
-        .await;
-        let (client, connection) = match connected {
-            Ok(Ok(pair)) => pair,
-            Ok(Err(error)) => return Err(LocalDbError::Postgres(error.to_string())),
-            Err(_) => return Err(LocalDbError::Timeout(CONNECT_TIMEOUT)),
+        ensure_crypto_provider();
+        let options = match url.parse::<sqlx::postgres::PgConnectOptions>() {
+            Ok(options) => options
+                .ssl_mode(sqlx::postgres::PgSslMode::Disable)
+                .extra_float_digits(None),
+            Err(error) => return Err(LocalDbError::Postgres(scrub_secret(&error.to_string()))),
         };
-        tokio::spawn(async move {
-            if let Err(error) = connection.await {
-                tracing::warn!(
-                    "embedded postgres connection ended: {}",
-                    scrub_secret(&error.to_string())
-                );
-            }
-        });
-        Ok(Self { client })
-    }
-
-    async fn batch(&self, sql: &str, timeout: Duration) -> Result<()> {
-        match tokio::time::timeout(timeout, self.client.batch_execute(sql)).await {
-            Ok(Ok(())) => Ok(()),
-            Ok(Err(error)) => Err(LocalDbError::Postgres(error.to_string())),
-            Err(_) => Err(LocalDbError::Timeout(timeout)),
+        match tokio::time::timeout(CONNECT_TIMEOUT, options.connect()).await {
+            Ok(Ok(conn)) => Ok(Self { conn }),
+            Ok(Err(error)) => Err(LocalDbError::Postgres(scrub_secret(&error.to_string()))),
+            Err(_) => Err(LocalDbError::Timeout(CONNECT_TIMEOUT)),
         }
     }
 
-    async fn exec(&self, sql: &str, params: &[Option<String>], timeout: Duration) -> Result<()> {
-        let mut refs: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> =
-            Vec::with_capacity(params.len());
-        for param in params {
-            refs.push(param);
-        }
-        match tokio::time::timeout(timeout, self.client.execute(sql, &refs)).await {
+    async fn batch(&mut self, sql: &str, timeout: Duration) -> Result<()> {
+        let run = sqlx::raw_sql(sqlx::AssertSqlSafe(sql)).execute(&mut self.conn);
+        match tokio::time::timeout(timeout, run).await {
             Ok(Ok(_)) => Ok(()),
             Ok(Err(error)) => Err(LocalDbError::Postgres(error.to_string())),
             Err(_) => Err(LocalDbError::Timeout(timeout)),
         }
     }
 
-    async fn query_i64(&self, sql: &str) -> Result<i64> {
-        match tokio::time::timeout(COMMAND_TIMEOUT, self.client.query_one(sql, &[])).await {
-            Ok(Ok(row)) => row
-                .try_get(0)
-                .map_err(|error| LocalDbError::Postgres(error.to_string())),
+    async fn exec(
+        &mut self,
+        sql: &str,
+        params: &[Option<String>],
+        timeout: Duration,
+    ) -> Result<()> {
+        let run = async {
+            let mut query = sqlx::query::<sqlx::Postgres>(sqlx::AssertSqlSafe(sql));
+            for param in params {
+                query = query.bind(param.as_deref());
+            }
+            query.execute(&mut self.conn).await
+        };
+        match tokio::time::timeout(timeout, run).await {
+            Ok(Ok(_)) => Ok(()),
+            Ok(Err(error)) => Err(LocalDbError::Postgres(error.to_string())),
+            Err(_) => Err(LocalDbError::Timeout(timeout)),
+        }
+    }
+
+    async fn query_i64(&mut self, sql: &str) -> Result<i64> {
+        let run = async {
+            let row = sqlx::query::<sqlx::Postgres>(sqlx::AssertSqlSafe(sql))
+                .fetch_one(&mut self.conn)
+                .await?;
+            let value: i64 = row.try_get(0)?;
+            Ok::<i64, sqlx::Error>(value)
+        };
+        match tokio::time::timeout(COMMAND_TIMEOUT, run).await {
+            Ok(Ok(value)) => Ok(value),
             Ok(Err(error)) => Err(LocalDbError::Postgres(error.to_string())),
             Err(_) => Err(LocalDbError::Timeout(COMMAND_TIMEOUT)),
         }
     }
 
-    async fn query_text(&self, sql: &str) -> Result<Option<String>> {
+    async fn query_text(&mut self, sql: &str) -> Result<Option<String>> {
         self.query_one_text(sql, &[]).await
     }
 
-    async fn query_one_text(&self, sql: &str, params: &[Option<String>]) -> Result<Option<String>> {
+    async fn query_one_text(
+        &mut self,
+        sql: &str,
+        params: &[Option<String>],
+    ) -> Result<Option<String>> {
         let rows = self.query_raw(sql, params).await?;
         let Some(row) = rows.first() else {
             return Ok(None);
@@ -1188,7 +1223,7 @@ impl PgClient {
     }
 
     async fn query_columns(
-        &self,
+        &mut self,
         sql: &str,
         params: &[Option<String>],
         width: usize,
@@ -1214,16 +1249,18 @@ impl PgClient {
     }
 
     async fn query_raw(
-        &self,
+        &mut self,
         sql: &str,
         params: &[Option<String>],
-    ) -> Result<Vec<tokio_postgres::Row>> {
-        let mut refs: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> =
-            Vec::with_capacity(params.len());
-        for param in params {
-            refs.push(param);
-        }
-        match tokio::time::timeout(COMMAND_TIMEOUT, self.client.query(sql, &refs)).await {
+    ) -> Result<Vec<sqlx::postgres::PgRow>> {
+        let run = async {
+            let mut query = sqlx::query::<sqlx::Postgres>(sqlx::AssertSqlSafe(sql));
+            for param in params {
+                query = query.bind(param.as_deref());
+            }
+            query.fetch_all(&mut self.conn).await
+        };
+        match tokio::time::timeout(COMMAND_TIMEOUT, run).await {
             Ok(Ok(rows)) => Ok(rows),
             Ok(Err(error)) => Err(LocalDbError::Postgres(error.to_string())),
             Err(_) => Err(LocalDbError::Timeout(COMMAND_TIMEOUT)),
@@ -1694,9 +1731,7 @@ mod tests {
         );
         assert_eq!(ATTACH_BACKUP_ERROR, "stop the node or run backup from it");
         let config = json!({});
-        assert!(
-            resolve_embedded_pg_from_env(&config, Path::new("/tmp"), &EmbeddedEnv::new()).is_none()
-        );
+        assert!(resolve_embedded_pg_from_env(&config, Path::new("/tmp"), &MapEnv::new()).is_none());
     }
 
     #[tokio::test]
@@ -1734,7 +1769,7 @@ mod tests {
         let config = json!({
             "memory": {"postgres": {"embedded": {"port": port, "max_connections": 16}}}
         });
-        let env = EmbeddedEnv::new();
+        let env = MapEnv::new();
         let mut resolved = resolve_embedded_pg(&config, &home, None).expect("resolved");
         use_shared_binaries(&mut resolved);
         assert!(resolved.lite_mode);
@@ -1748,7 +1783,7 @@ mod tests {
         assert_eq!(pairs.embedded_key, "RIVETOS_PG_EMBEDDED");
         assert_eq!(pairs.embedded, "1");
         assert!(handle.lite_mode());
-        let client = PgClient::connect(handle.pg_url()).await.expect("connect");
+        let mut client = PgClient::connect(handle.pg_url()).await.expect("connect");
         assert_eq!(
             client.query_i64("SELECT 1::bigint").await.expect("select"),
             1
@@ -1810,7 +1845,7 @@ mod tests {
         let listener_full = std::net::TcpListener::bind("127.0.0.1:0").expect("bind full");
         let port_full = listener_full.local_addr().expect("addr").port();
         let mut full_env = offline_releases_env();
-        full_env.insert("RIVETOS_EMBED_URL", "http://127.0.0.1:9402/v1");
+        full_env.set("RIVETOS_EMBED_URL", "http://127.0.0.1:9402/v1");
         let full_config = json!({
             "memory": {"postgres": {"embedded": {"port": port_full, "max_connections": 16}}}
         });
@@ -1855,9 +1890,9 @@ mod tests {
         resolved.installation_dir = shared_pg_bin();
     }
 
-    fn offline_releases_env() -> EmbeddedEnv {
-        let mut env = EmbeddedEnv::new();
-        env.insert("RIVETOS_PG_RELEASES_URL", "offline://postgresql-binaries");
+    fn offline_releases_env() -> MapEnv {
+        let mut env = MapEnv::new();
+        env.set("RIVETOS_PG_RELEASES_URL", "offline://postgresql-binaries");
         env
     }
 
@@ -1887,7 +1922,7 @@ mod tests {
         if url.is_empty() {
             return;
         }
-        let client = PgClient::connect(&url).await.expect("connect lane");
+        let mut client = PgClient::connect(&url).await.expect("connect lane");
         let schema = format!(
             "rr9l_{}_{}",
             std::process::id(),
@@ -1901,7 +1936,7 @@ mod tests {
             .batch(&format!("CREATE SCHEMA {ident}"), COMMAND_TIMEOUT)
             .await
             .expect("create schema");
-        let result = lane_checks(&client, &schema, &ident).await;
+        let result = lane_checks(&mut client, &schema, &ident).await;
         let dropped = client
             .batch(
                 &format!("DROP SCHEMA IF EXISTS {ident} CASCADE"),
@@ -1912,7 +1947,7 @@ mod tests {
         dropped.expect("drop schema");
     }
 
-    async fn lane_checks(client: &PgClient, schema: &str, ident: &str) -> Result<()> {
+    async fn lane_checks(client: &mut PgClient, schema: &str, ident: &str) -> Result<()> {
         client
             .batch(
                 &format!("SET search_path TO {ident}, public"),
@@ -1936,7 +1971,7 @@ mod tests {
                 "SELECT a.attgenerated::text FROM pg_attribute a \
                  JOIN pg_class c ON c.oid = a.attrelid \
                  JOIN pg_namespace n ON n.oid = c.relnamespace \
-                 WHERE n.nspname = $1 AND c.relname = 'ros_messages' AND a.attname = 'content_tsv'",
+                 WHERE n.nspname = $1::text AND c.relname = 'ros_messages' AND a.attname = 'content_tsv'",
                 &[Some(schema.to_string())],
             )
             .await?;
@@ -1948,7 +1983,7 @@ mod tests {
         let defaulted = client
             .query_one_text(
                 "SELECT column_default FROM information_schema.columns \
-                 WHERE table_schema = $1 AND table_name = 'ros_conversations' AND column_name = 'id'",
+                 WHERE table_schema = $1::text AND table_name = 'ros_conversations' AND column_name = 'id'",
                 &[Some(schema.to_string())],
             )
             .await?;
@@ -1963,7 +1998,7 @@ mod tests {
         let index = client
             .query_one_text(
                 "SELECT indexname FROM pg_indexes \
-                 WHERE schemaname = $1 AND indexname = 'ux_ros_conversations_session_agent'",
+                 WHERE schemaname = $1::text AND indexname = 'ux_ros_conversations_session_agent'",
                 &[Some(schema.to_string())],
             )
             .await?;
@@ -1976,7 +2011,7 @@ mod tests {
             .query_one_text(
                 "SELECT p.proname FROM pg_proc p \
                  JOIN pg_namespace n ON n.oid = p.pronamespace \
-                 WHERE n.nspname = $1 AND p.proname = 'notify_embedding_queue'",
+                 WHERE n.nspname = $1::text AND p.proname = 'notify_embedding_queue'",
                 &[Some(schema.to_string())],
             )
             .await?;
@@ -1996,7 +2031,7 @@ mod tests {
         for name in ["0001_baseline.sql", "0019_tags.sql"] {
             let found = client
                 .query_one_text(
-                    "SELECT name FROM _rivetos_migrations WHERE name = $1",
+                    "SELECT name FROM _rivetos_migrations WHERE name = $1::text",
                     &[Some(name.to_string())],
                 )
                 .await?;
@@ -2306,14 +2341,14 @@ mod tests {
                 "data_dir": data_dir.display().to_string()
             }}}
         });
-        let mut env = EmbeddedEnv::new();
-        env.insert("RIVETOS_ROOT", root.display().to_string());
+        let mut env = MapEnv::new();
+        env.set("RIVETOS_ROOT", root.display().to_string());
         let mut resolved = resolve_embedded_pg(&config, &home, None).expect("resolved");
         use_shared_binaries(&mut resolved);
         let mut handle = acquire_embedded_pg_with(resolved, &TracingLog, Some(listener), &env)
             .await
             .expect("migrate");
-        let client = PgClient::connect(handle.pg_url()).await.expect("connect");
+        let mut client = PgClient::connect(handle.pg_url()).await.expect("connect");
         let database = client
             .query_text("SELECT current_database()")
             .await
@@ -2339,7 +2374,7 @@ mod tests {
         for name in ["0001_baseline.sql", "0019_tags.sql"] {
             let found = client
                 .query_one_text(
-                    "SELECT name FROM _rivetos_migrations WHERE name = $1",
+                    "SELECT name FROM _rivetos_migrations WHERE name = $1::text",
                     &[Some(name.to_string())],
                 )
                 .await
@@ -2363,7 +2398,7 @@ mod tests {
                 .parse::<i64>()
                 .expect("count int");
             assert_eq!(expected, 1, "{key}");
-            let got = count_table(&client, schema, name).await.expect("count");
+            let got = count_table(&mut client, schema, name).await.expect("count");
             assert_eq!(got, expected, "{key}");
             if let Some(sample) = entry.get("sample").and_then(|value| value.as_object())
                 && let Some(aliases) = sample.get("aliases").and_then(Value::as_str)

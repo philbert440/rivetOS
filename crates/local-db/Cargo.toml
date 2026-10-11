@@ -10,21 +10,24 @@ name = "local-db"
 path = "src/bin/local-db.rs"
 
 [dependencies]
-chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+chrono = { workspace = true }
 config = { path = "../config" }
-postgresql_embedded = { version = "0.21", default-features = false, features = ["tokio", "theseus", "tls-rustls-ring"] }
-postgresql_extensions = { version = "0.21", default-features = false, features = ["tokio", "portal-corp", "tls-rustls-ring"] }
+postgresql_embedded = { workspace = true }
+postgresql_extensions = { workspace = true }
 protocol = { path = "../protocol" }
-rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rustls = { workspace = true }
 serde.workspace = true
 serde_json.workspace = true
+sqlx = { workspace = true }
 thiserror.workspace = true
-tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
-tokio-postgres = "0.7"
-tracing = "0.1"
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
+tracing = { workspace = true }
+
+[dev-dependencies]
+parking_lot = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
-nix = { version = "0.30", default-features = false, features = ["signal"] }
+nix = { workspace = true, features = ["signal"] }
 
 [lints]
 workspace = true

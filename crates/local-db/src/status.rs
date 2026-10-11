@@ -13,10 +13,13 @@ pub fn format_bytes(bytes: u64) -> String {
     if bytes < 1024 {
         return format!("{bytes} B");
     }
-    if bytes < 1024 * 1024 {
-        return format!("{:.1} KB", bytes as f64 / 1024.0);
-    }
-    format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    let (scaled, unit) = if bytes < 1024 * 1024 {
+        (bytes as f64 / 1024.0, "KB")
+    } else {
+        (bytes as f64 / (1024.0 * 1024.0), "MB")
+    };
+    let text = protocol::js::to_fixed(scaled, 1.0).unwrap_or_else(|_| String::from("0.0"));
+    format!("{text} {unit}")
 }
 
 pub fn dir_size_bytes(dir: &Path) -> u64 {

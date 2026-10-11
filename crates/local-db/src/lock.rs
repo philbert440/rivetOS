@@ -86,10 +86,12 @@ pub async fn claim_owner_lock(
     for _ in 0..LOCK_ATTEMPTS {
         match create_exclusive(&path).await {
             Ok(mut file) => {
+                let started_at = protocol::js::to_iso_string(protocol::js::date_now())
+                    .map_err(|error| LocalDbError::message(error.to_string()))?;
                 let payload = serde_json::json!({
                     "pid": std::process::id(),
                     "port": configured_port,
-                    "startedAt": now_iso(),
+                    "startedAt": started_at,
                 });
                 let body = serde_json::to_string(&payload)
                     .map_err(|error| LocalDbError::Json(error.to_string()))?;
@@ -148,12 +150,6 @@ pub async fn release_owner_lock(path: &Path) -> Result<()> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error.into()),
     }
-}
-
-pub fn now_iso() -> String {
-    chrono::Utc::now()
-        .format("%Y-%m-%dT%H:%M:%S%.3fZ")
-        .to_string()
 }
 
 pub fn probe_lock_pid(pid: i64) -> PidProbe {
@@ -301,21 +297,21 @@ fn pid_is_alive(pid: i32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
+    use parking_lot::Mutex;
 
     struct CollectLog(Mutex<Vec<String>>);
 
     impl EmbeddedPgLog for CollectLog {
         fn info(&self, message: &str) {
-            self.0.lock().expect("log").push(format!("info:{message}"));
+            self.0.lock().push(format!("info:{message}"));
         }
 
         fn warn(&self, message: &str) {
-            self.0.lock().expect("log").push(format!("warn:{message}"));
+            self.0.lock().push(format!("warn:{message}"));
         }
 
         fn error(&self, message: &str) {
-            self.0.lock().expect("log").push(format!("error:{message}"));
+            self.0.lock().push(format!("error:{message}"));
         }
     }
 
@@ -398,6 +394,8 @@ mod tests {
         let owned = read_embedded_pg_lock(&dir).expect("lock");
         assert_eq!(owned.pid, i64::from(std::process::id()));
         assert!(embedded_pg_lock_alive(&owned));
+        assert!(owned.started_at.contains('T'));
+        assert!(owned.started_at.ends_with('Z'));
 
         let other = temp_dir("claim-live");
         std::fs::create_dir_all(&other).expect("dir");
@@ -440,7 +438,7 @@ mod tests {
             }
             LockClaim::Owned { .. } => panic!("expected attach"),
         }
-        let lines = log.0.lock().expect("log");
+        let lines = log.0.lock();
         assert!(
             lines
                 .iter()

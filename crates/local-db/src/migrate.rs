@@ -195,7 +195,10 @@ pub async fn record_migrated_sources(home: &Path, sources: &[PathBuf]) -> Result
     let body = serde_json::to_vec(&MigratedFile { sources: existing })
         .map_err(|error| LocalDbError::Json(error.to_string()))?;
     let path = migrated_record(home);
-    write_atomic(&path, &body).await
+    tokio::task::spawn_blocking(move || protocol::host::atomic_replace(&path, &body))
+        .await
+        .map_err(|error| LocalDbError::message(error.to_string()))?
+        .map_err(LocalDbError::from)
 }
 
 pub async fn clear_store_work(home: &Path, source: &Path) -> Result<()> {
@@ -827,41 +830,6 @@ async fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
-async fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent).await?;
-    }
-    let mut tmp_name = path
-        .file_name()
-        .ok_or_else(|| LocalDbError::message("embedded postgres: ledger path has no file name"))?
-        .to_os_string();
-    tmp_name.push(".tmp");
-    let tmp = path.with_file_name(tmp_name);
-    {
-        let mut options = tokio::fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true);
-        #[cfg(unix)]
-        {
-            options.mode(0o600);
-        }
-        let mut file = options.open(&tmp).await?;
-        file.write_all(bytes).await?;
-        file.flush().await?;
-        file.sync_all().await?;
-    }
-    tokio::fs::rename(&tmp, path).await?;
-    if let Some(parent) = path.parent()
-        && let Ok(dir) = std::fs::File::open(parent)
-    {
-        let _ = dir.sync_all();
-    }
-    set_mode(path, 0o600).await?;
-    if tmp.exists() {
-        let _ = tokio::fs::remove_file(&tmp).await;
-    }
-    Ok(())
-}
-
 impl LedgerLock {
     async fn acquire(home: &Path) -> Result<Self> {
         let path = migrated_record(home).with_file_name("migrated-sources.lock");
@@ -1294,6 +1262,25 @@ mod tests {
                 .with_file_name("migrated-sources.json.tmp")
                 .exists()
         );
+        let names = std::fs::read_dir(migrated_record(&home).parent().expect("parent"))
+            .expect("dir")
+            .map(|entry| entry.expect("entry").file_name())
+            .collect::<Vec<_>>();
+        assert!(
+            names
+                .iter()
+                .all(|name| !name.to_string_lossy().ends_with(".tmp"))
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(migrated_record(&home))
+                .expect("meta")
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o600);
+        }
         assert!(
             !migrated_record(&home)
                 .with_file_name("migrated-sources.lock")
