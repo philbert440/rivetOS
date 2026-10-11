@@ -52,7 +52,7 @@ pub async fn send(
             provider_id,
         ));
     }
-    tracing::debug!(method = %attempt.method, url = %redact_url(&attempt.url), provider = provider_id, "provider http");
+    tracing::debug!(method = %attempt.method, url = %DisplayUrl::new(&attempt.url), provider = provider_id, "provider http");
     let mut builder = client
         .request(attempt.method.clone(), &attempt.url)
         .timeout(timeout);
@@ -90,11 +90,7 @@ pub async fn send(
                     provider_id,
                 ))
             } else {
-                Err(ProviderError::new(
-                    redact_text(&err.to_string()),
-                    0,
-                    provider_id,
-                ))
+                Err(ProviderError::new(err.to_string(), 0, provider_id))
             }
         }
     }
@@ -174,7 +170,7 @@ impl Stream for Live {
                 Poll::Ready(Some(Err(err))) => {
                     live.finish_ran = true;
                     return Poll::Ready(Some(Err(ProviderError::new(
-                        redact_text(&err.to_string()),
+                        err.to_string(),
                         0,
                         live.provider_id.clone(),
                     ))));
@@ -252,16 +248,38 @@ const SECRET_QUERY: &[&str] = &[
     "refresh_token",
 ];
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DisplayUrl(String);
+
+impl DisplayUrl {
+    pub fn new(raw: &str) -> Self {
+        Self(redact_url(raw))
+    }
+}
+
+impl std::fmt::Display for DisplayUrl {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 pub fn redact_url(url: &str) -> String {
     let Ok(mut parsed) = reqwest::Url::parse(url) else {
         return redact_text(url);
     };
+    let userinfo = !parsed.username().is_empty() || parsed.password().is_some();
     strip_userinfo(&mut parsed);
     let pairs: Vec<(String, String)> = parsed
         .query_pairs()
         .map(|(key, value)| (key.into_owned(), value.into_owned()))
         .collect();
-    if pairs.is_empty() {
+    let needs_query = pairs
+        .iter()
+        .any(|(key, value)| secret_query(key) && value != "REDACTED");
+    if !userinfo && !needs_query {
+        return url.to_string();
+    }
+    if !needs_query {
         return parsed.to_string();
     }
     parsed.set_query(None);
@@ -344,7 +362,9 @@ fn host_header_value(url: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{redact_text, redact_url};
+    use super::{DisplayUrl, redact_text, redact_url};
+
+    const CRED_MARK: &str = "rr6p-cred-4f91c2e7";
 
     #[test]
     fn strips_userinfo_before_query_secrets() {
@@ -362,5 +382,34 @@ mod tests {
         let text = redact_text("see https://user:pass@example.com/v1?api_key=abc now");
         assert!(!text.contains("user:pass"), "{text}");
         assert!(text.contains("api_key=REDACTED"), "{text}");
+    }
+
+    #[test]
+    fn display_url_is_the_only_diagnostic_form() {
+        let raw = "https://rr6puser:rr6p-cred-4f91c2e7@example.test/models?api_key=rr6p-cred-4f91c2e7&x=1";
+        let shown = DisplayUrl::new(raw).to_string();
+        assert!(!shown.contains("rr6puser"), "{shown}");
+        assert!(!shown.contains("rr6p-cred-4f91c2e7"), "{shown}");
+        assert!(!shown.contains('@'), "{shown}");
+        assert!(shown.contains("api_key=REDACTED"), "{shown}");
+        assert!(shown.contains("x=1"), "{shown}");
+        assert!(shown.contains("example.test"), "{shown}");
+        assert_eq!(redact_url(&shown), shown);
+        assert_eq!(
+            DisplayUrl::new(&shown).to_string(),
+            shown,
+            "redaction is stable"
+        );
+        let clean = "http://127.0.0.1:9/v1/models";
+        assert_eq!(redact_url(clean), clean);
+        let keyed = DisplayUrl::new(
+            "https://generativelanguage.googleapis.com/v1beta/models/m?key=rr6p-cred-4f91c2e7",
+        );
+        assert!(!keyed.to_string().contains(CRED_MARK), "{}", keyed);
+        assert!(keyed.to_string().contains("key=REDACTED"), "{keyed}");
+        let text = redact_text(&format!("boom {raw} tail"));
+        assert!(!text.contains("rr6p-cred-4f91c2e7"), "{text}");
+        assert!(text.starts_with("boom "), "{text}");
+        assert!(text.ends_with(" tail"), "{text}");
     }
 }

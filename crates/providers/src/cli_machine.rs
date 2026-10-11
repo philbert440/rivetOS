@@ -27,7 +27,6 @@ pub struct Machine {
     allow_retry: bool,
     retried: bool,
     result_error: bool,
-    result_subtype: Option<String>,
     saw_success: bool,
     saw_result: bool,
     recognized: u64,
@@ -79,7 +78,6 @@ impl Machine {
             allow_retry: false,
             retried: false,
             result_error: false,
-            result_subtype: None,
             saw_success: false,
             saw_result: false,
             recognized: 0,
@@ -398,10 +396,6 @@ impl Machine {
                 .get("is_error")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
-            self.result_subtype = value
-                .get("subtype")
-                .and_then(Value::as_str)
-                .map(str::to_string);
             if !self.result_error {
                 self.saw_success = true;
             }
@@ -444,15 +438,6 @@ impl Machine {
         }
         let missing = !self.saw_success;
         let failed = self.result_error || code != Some(0) || missing;
-        if self.result_error {
-            let raw = self
-                .result_subtype
-                .clone()
-                .unwrap_or_else(|| "error".to_string());
-            chunks.push(error_chunk(&raw));
-        } else if missing && code == Some(0) {
-            chunks.push(error_chunk("missing-result"));
-        }
         self.push_finish(&mut chunks, if failed { "error" } else { "stop" });
         chunks
     }
@@ -1361,6 +1346,54 @@ mod tests {
         fallback.mark_retried();
         let (result, _) = fallback.push_line(r#"{"type":"result","result":"recovered answer"}"#);
         assert_eq!(result[0].delta.as_deref(), Some("recovered answer"));
+    }
+
+    #[test]
+    fn qwen_finish_metadata_stays_internal() {
+        let mut errored = Machine::new(Family::Qwen, "qwen");
+        let (pushed, _) = errored.push_line(
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"hello"}]}}"#,
+        );
+        assert_eq!(pushed[0].delta.as_deref(), Some("hello"));
+        let (result, _) =
+            errored.push_line(r#"{"type":"result","is_error":true,"subtype":"boom"}"#);
+        assert!(
+            result
+                .iter()
+                .all(|chunk| chunk.r#type != LlmChunkType::Error)
+        );
+        let finish = errored.finish(Some(0), "", "");
+        assert!(finish.error.is_none());
+        assert!(
+            finish
+                .chunks
+                .iter()
+                .all(|chunk| chunk.r#type != LlmChunkType::Error && chunk.error.is_none())
+        );
+        assert!(
+            finish
+                .chunks
+                .iter()
+                .any(|chunk| chunk.r#type == LlmChunkType::Done),
+            "usage done chunk still closes the turn"
+        );
+
+        let mut missing = Machine::new(Family::Qwen, "qwen");
+        missing.push_line(
+            r#"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"partial"}}}"#,
+        );
+        let finish = missing.finish(Some(0), "", "");
+        assert!(finish.chunks.iter().all(|chunk| {
+            chunk.error.as_deref() != Some("missing-result")
+                && chunk.delta.as_deref() != Some("missing-result")
+                && chunk.r#type != LlmChunkType::Error
+        }));
+        assert!(
+            finish
+                .chunks
+                .iter()
+                .any(|chunk| chunk.r#type == LlmChunkType::Done)
+        );
     }
 
     #[test]

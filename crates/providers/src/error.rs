@@ -13,7 +13,7 @@ pub struct ProviderError {
 impl ProviderError {
     pub fn new(message: impl Into<String>, status: i64, provider_id: impl Into<String>) -> Self {
         Self {
-            message: message.into(),
+            message: crate::http::redact_text(&message.into()),
             status,
             provider_id: provider_id.into(),
             timestamp: date_now() as i64,

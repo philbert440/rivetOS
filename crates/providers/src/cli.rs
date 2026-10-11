@@ -2223,12 +2223,11 @@ impl ChildWatch {
         let stop = Arc::new(AtomicBool::new(false));
         let cancel = Arc::new(AtomicBool::new(false));
         if let Some(pid) = pid {
-            let started = proc_start(pid).unwrap_or(0);
             let stop_flag = Arc::clone(&stop);
             let cancel_flag = Arc::clone(&cancel);
             let _ = std::thread::Builder::new().spawn(move || {
                 let _hold = (stdout, stderr);
-                watch_child(pid, started, &stop_flag, &cancel_flag);
+                watch_child(pid, &stop_flag, &cancel_flag);
             });
         }
         Self { stop, cancel }
@@ -2247,7 +2246,7 @@ impl Drop for ChildWatch {
     }
 }
 
-fn watch_child(pid: u32, started: u64, stop: &AtomicBool, cancel: &AtomicBool) {
+fn watch_child(pid: u32, stop: &AtomicBool, cancel: &AtomicBool) {
     loop {
         if stop.load(Ordering::Acquire) {
             return;
@@ -2264,49 +2263,11 @@ fn watch_child(pid: u32, started: u64, stop: &AtomicBool, cancel: &AtomicBool) {
     if stop.load(Ordering::Acquire) {
         return;
     }
-    let started_at = Instant::now();
-    let deadline = started_at + KILL_GRACE;
-    signal_tree(pid, "-TERM");
-    while still_running(pid, started) {
-        if Instant::now() >= deadline {
-            signal_tree(pid, "-KILL");
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(40));
-        if !still_running(pid, started) {
-            break;
-        }
-        if started_at.elapsed() < Duration::from_millis(500) || has_children(pid) {
-            signal_tree(pid, "-TERM");
-        }
-    }
+    reap_group(pid);
 }
 
 fn dup_owned(fd: &impl AsFd) -> Option<OwnedFd> {
     fd.as_fd().try_clone_to_owned().ok()
-}
-
-fn proc_start(pid: u32) -> Option<u64> {
-    proc_identity(pid).map(|(_, start)| start)
-}
-
-fn proc_identity(pid: u32) -> Option<(char, u64)> {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    let end = stat.rfind(')')?;
-    let mut parts = stat[end + 1..].split_whitespace();
-    let state = parts.next()?.chars().next()?;
-    let start = parts.nth(18)?.parse().ok()?;
-    Some((state, start))
-}
-
-fn still_running(pid: u32, started: u64) -> bool {
-    let Some((state, start)) = proc_identity(pid) else {
-        return false;
-    };
-    if started != 0 && start != started {
-        return false;
-    }
-    !matches!(state, 'Z' | 'X' | 'x')
 }
 
 pub(crate) fn group_has_live(pgid: u32) -> bool {
@@ -2357,13 +2318,6 @@ fn signal_tree(pid: u32, flag: &str) {
         signal_descendants(kid, flag);
         signal_one(kid, flag);
     }
-}
-
-fn has_children(pid: u32) -> bool {
-    if !child_pids(pid).is_empty() {
-        return true;
-    }
-    !ppid_children(pid).is_empty()
 }
 
 fn child_pids(pid: u32) -> Vec<u32> {

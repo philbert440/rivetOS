@@ -1226,9 +1226,8 @@ async fn cli_sessions_hermes_db_and_signals() {
     assert!(elapsed >= Duration::from_millis(2_900), "{elapsed:?}");
     assert!(elapsed < Duration::from_secs(8), "{elapsed:?}");
     assert!(!Path::new(&kill_flag).exists());
-    let pid = std::fs::read_to_string(&kill_pid).unwrap();
-    let pid = pid.trim();
-    assert!(!Path::new(&format!("/proc/{pid}")).exists());
+    let pid = read_pid_file(&kill_pid);
+    assert_dead(pid).await;
 
     let drop_file = format!("{dir}/drop-out");
     let drop_bin = format!("{dir}/drop-bin");
@@ -1284,11 +1283,13 @@ fn as_map(value: Value) -> Map<String, Value> {
     }
 }
 
-fn hold_stdout_script(pid_file: &str, lived: &str) -> String {
+fn hold_stdout_script(leader: &str, pid_file: &str, lived: &str) -> String {
     script_with(
         r#"#!/bin/bash
+leader=LEADER
 pidfile=PIDFILE
 lived=LIVED
+printf '%s\n' "$$" > "$leader"
 (
   trap '' TERM HUP
   printf '%s\n' "$BASHPID" > "$pidfile"
@@ -1302,26 +1303,89 @@ while [ ! -s "$pidfile" ]; do
 done
 exit 0
 "#,
-        &[("PIDFILE", pid_file), ("LIVED", lived)],
+        &[("LEADER", leader), ("PIDFILE", pid_file), ("LIVED", lived)],
     )
 }
 
-async fn wait_gone(pid: &str) {
-    let path = format!("/proc/{pid}");
-    let deadline = Instant::now() + Duration::from_secs(2);
-    while Path::new(&path).exists() && Instant::now() < deadline {
-        tokio::time::sleep(Duration::from_millis(20)).await;
+fn proc_state_group(pid: u32) -> Option<(char, u32)> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let end = stat.rfind(')')?;
+    let mut parts = stat[end + 1..].split_whitespace();
+    let state = parts.next()?.chars().next()?;
+    let _ppid = parts.next()?;
+    let group = parts.next()?.parse().ok()?;
+    Some((state, group))
+}
+
+fn group_live(pgid: u32) -> bool {
+    if pgid == 0 {
+        return false;
     }
-    assert!(!Path::new(&path).exists(), "{pid}");
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        let Ok(pid) = name.parse::<u32>() else {
+            continue;
+        };
+        let Some((state, group)) = proc_state_group(pid) else {
+            continue;
+        };
+        if group == pgid && !matches!(state, 'Z' | 'X' | 'x') {
+            return true;
+        }
+    }
+    false
+}
+
+fn read_pid_file(path: &str) -> u32 {
+    std::fs::read_to_string(path)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap()
+}
+
+async fn assert_dead(pid: u32) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        match proc_state_group(pid) {
+            None => return,
+            Some(('Z' | 'X' | 'x', _)) => return,
+            Some((state, _)) if Instant::now() >= deadline => {
+                panic!("pid {pid} still live ({state})")
+            }
+            Some(_) => tokio::time::sleep(Duration::from_millis(20)).await,
+        }
+    }
+}
+
+async fn assert_group_clear(pgid: u32) {
+    let deadline = Instant::now() + Duration::from_secs(6);
+    while group_live(pgid) && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+    assert!(!group_live(pgid), "group {pgid} still has a live member");
+}
+
+fn assert_same_group(descendant: u32, leader: u32) {
+    if let Some((state, group)) = proc_state_group(descendant) {
+        assert_eq!(group, leader, "descendant {descendant} state {state}");
+    }
 }
 
 #[tokio::test]
 async fn cli_timeout_kills_descendants_after_the_leader_exits() {
     let dir = scratch("cli-desc");
+    let leader_file = format!("{dir}/leader");
     let pid_file = format!("{dir}/pid");
     let lived = format!("{dir}/lived");
     let bin = format!("{dir}/bin");
-    write_script(&bin, &hold_stdout_script(&pid_file, &lived));
+    write_script(&bin, &hold_stdout_script(&leader_file, &pid_file, &lived));
     let mut provider = CliProvider::claude(&bin);
     provider.set_home(Some(dir));
     let started = Instant::now();
@@ -1333,17 +1397,57 @@ async fn cli_timeout_kills_descendants_after_the_leader_exits() {
     assert!(elapsed >= Duration::from_millis(3_500), "{elapsed:?}");
     assert!(elapsed < Duration::from_secs(8), "{elapsed:?}");
     assert!(!Path::new(&lived).exists());
-    let pid = std::fs::read_to_string(&pid_file).unwrap();
-    wait_gone(pid.trim()).await;
+    let leader = read_pid_file(&leader_file);
+    let descendant = read_pid_file(&pid_file);
+    assert_same_group(descendant, leader);
+    assert_group_clear(leader).await;
+    assert_dead(descendant).await;
+}
+
+#[tokio::test]
+async fn cli_cancel_kills_descendants_after_the_leader_exits() {
+    let dir = scratch("cli-cancel-desc");
+    let leader_file = format!("{dir}/leader");
+    let pid_file = format!("{dir}/pid");
+    let lived = format!("{dir}/lived");
+    let bin = format!("{dir}/bin");
+    write_script(&bin, &hold_stdout_script(&leader_file, &pid_file, &lived));
+    let mut provider = CliProvider::claude(&bin);
+    provider.set_home(Some(dir));
+    let stream = provider
+        .stream_chat(chat("hi", "cancel-desc", 30_000))
+        .await
+        .unwrap();
+    let ready = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < ready && !Path::new(&pid_file).exists() {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let leader = read_pid_file(&leader_file);
+    let descendant = read_pid_file(&pid_file);
+    assert_dead(leader).await;
+    assert_same_group(descendant, leader);
+    assert!(
+        group_live(leader),
+        "descendant should still be in the group"
+    );
+    let started = Instant::now();
+    drop(stream);
+    assert_group_clear(leader).await;
+    let elapsed = started.elapsed();
+    assert!(elapsed >= Duration::from_millis(2_900), "{elapsed:?}");
+    assert!(elapsed < Duration::from_secs(8), "{elapsed:?}");
+    assert!(!Path::new(&lived).exists());
+    assert_dead(descendant).await;
 }
 
 #[tokio::test]
 async fn token_timeout_kills_descendants_after_the_leader_exits() {
     let dir = scratch("tok-desc");
+    let leader_file = format!("{dir}/leader");
     let pid_file = format!("{dir}/pid");
     let lived = format!("{dir}/lived");
     let bin = format!("{dir}/bin");
-    write_script(&bin, &hold_stdout_script(&pid_file, &lived));
+    write_script(&bin, &hold_stdout_script(&leader_file, &pid_file, &lived));
     let started = Instant::now();
     let err = default_run_command(&[bin], 600, None).await.unwrap_err();
     let elapsed = started.elapsed();
@@ -1351,8 +1455,11 @@ async fn token_timeout_kills_descendants_after_the_leader_exits() {
     assert!(elapsed >= Duration::from_millis(3_200), "{elapsed:?}");
     assert!(elapsed < Duration::from_secs(8), "{elapsed:?}");
     assert!(!Path::new(&lived).exists());
-    let pid = std::fs::read_to_string(&pid_file).unwrap();
-    wait_gone(pid.trim()).await;
+    let leader = read_pid_file(&leader_file);
+    let descendant = read_pid_file(&pid_file);
+    assert_same_group(descendant, leader);
+    assert_group_clear(leader).await;
+    assert_dead(descendant).await;
 }
 
 #[tokio::test]
@@ -1548,4 +1655,267 @@ async fn vllm_extra_body_does_not_override_named_kwargs() {
     assert!(body.get("chat_template_kwargs").is_none());
     assert_eq!(body["guided_decoding_backend"], "outlines");
     assert_eq!(body["temperature"].to_string(), "0.7");
+}
+
+const CRED_USER: &str = "rr6puser";
+const CRED_SECRET: &str = "rr6p-cred-4f91c2e7";
+
+fn cred_base(url: &str) -> String {
+    let rest = url.strip_prefix("http://").unwrap();
+    format!("http://{CRED_USER}:{CRED_SECRET}@{rest}")
+}
+
+fn cred_models(url: &str) -> String {
+    format!(
+        "{}?api_key={CRED_SECRET}&x=1",
+        cred_base(&format!("{url}/models"))
+    )
+}
+
+fn assert_clean(label: &str, text: &str) {
+    assert!(!text.contains(CRED_USER), "{label} kept the user: {text}");
+    assert!(
+        !text.contains(CRED_SECRET),
+        "{label} kept the credential: {text}"
+    );
+}
+
+fn assert_warnings(label: &str, provider: &HttpProvider) {
+    for warning in provider.warnings() {
+        assert_clean(label, &warning);
+    }
+}
+
+async fn hang() -> String {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        loop {
+            if let Ok((sock, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let _sock = sock;
+                    tokio::time::sleep(Duration::from_secs(30)).await;
+                });
+            }
+        }
+    });
+    format!("http://127.0.0.1:{port}")
+}
+
+fn fail_runner() -> Runner {
+    Arc::new(|_argv, _timeout| {
+        Box::pin(async {
+            Err(format!(
+                "mint https://{CRED_USER}:{CRED_SECRET}@example.test/token?api_key={CRED_SECRET}"
+            ))
+        })
+    })
+}
+
+#[tokio::test]
+async fn configured_credential_stays_out_of_warnings_and_errors() {
+    let refused = cred_base("http://127.0.0.1:9");
+    let refused_models = cred_models("http://127.0.0.1:9");
+
+    let mut vllm = HttpProvider::vllm(None, "missing", &refused).unwrap();
+    vllm.set_models_url(Some(refused_models.clone()));
+    vllm.set_verify_model(true);
+    assert!(!vllm.is_available().await);
+    let joined = vllm.warnings().join("\n");
+    assert!(joined.contains("cannot reach"), "{joined}");
+    assert!(joined.contains("Is the server running?"), "{joined}");
+    assert!(joined.contains("api_key=REDACTED"), "{joined}");
+    assert_warnings("vllm refuse", &vllm);
+
+    let llama = HttpProvider::llama(None, "m", &refused).unwrap();
+    assert!(!llama.is_available().await);
+    let joined = llama.warnings().join("\n");
+    assert!(joined.contains("[llama-server] cannot reach"), "{joined}");
+    assert!(joined.contains("For llama.cpp: llama-server"), "{joined}");
+    assert_warnings("llama refuse", &llama);
+
+    let (base, gate) = serve().await;
+    gate.script(&[("", 401)]);
+    let denied = HttpProvider::vllm(None, "m", &base).unwrap();
+    denied.set_models_url(Some(cred_models(&base)));
+    assert!(!denied.is_available().await);
+    let hits = gate.hits();
+    assert!(
+        hits[0].target.contains(CRED_SECRET),
+        "the wire request keeps the query credential: {}",
+        hits[0].target
+    );
+    let joined = denied.warnings().join("\n");
+    assert!(joined.contains("returned HTTP 401"), "{joined}");
+    assert!(joined.contains("set api_key"), "{joined}");
+    assert!(joined.contains("api_key=REDACTED"), "{joined}");
+    assert_warnings("vllm 401", &denied);
+
+    gate.script(&[("nope", 500)]);
+    let llama = HttpProvider::llama(None, "m", cred_base(&base)).unwrap();
+    assert!(!llama.is_available().await);
+    let joined = llama.warnings().join("\n");
+    assert!(joined.contains("returned HTTP 500"), "{joined}");
+    assert!(!joined.contains("set api_key"), "{joined}");
+    assert_warnings("llama 500", &llama);
+
+    gate.script(&[(r#"{"data":[{"id":"other"}]}"#, 200)]);
+    let mut missing = HttpProvider::vllm(None, "missing", &base).unwrap();
+    missing.set_models_url(Some(cred_models(&base)));
+    missing.set_verify_model(true);
+    assert!(!missing.is_available().await);
+    let joined = missing.warnings().join("\n");
+    assert!(
+        joined.contains("configured model \"missing\"") && joined.contains("(served: other)"),
+        "{joined}"
+    );
+    assert!(joined.contains("api_key=REDACTED"), "{joined}");
+    assert_warnings("missing model", &missing);
+    assert!(
+        gate.hits()[0].target.contains(CRED_SECRET),
+        "{}",
+        gate.hits()[0].target
+    );
+
+    gate.script(&[(
+        r#"{"data":[{"id":"alpha","max_model_len":8},{"id":"beta"}]}"#,
+        200,
+    )]);
+    let picked = HttpProvider::vllm(None, "default", &base).unwrap();
+    picked.set_models_url(Some(cred_models(&base)));
+    assert!(picked.is_available().await);
+    assert!(
+        picked
+            .warnings()
+            .iter()
+            .any(|item| item.contains("auto-selected model \"alpha\""))
+    );
+    assert_warnings("auto vllm", &picked);
+
+    gate.script(&[(r#"{"data":[{"id":"alpha"}]}"#, 200)]);
+    let llama = HttpProvider::llama(None, "default", cred_base(&base)).unwrap();
+    assert!(llama.is_available().await);
+    assert!(
+        llama
+            .warnings()
+            .iter()
+            .any(|item| item.contains("auto-selected served model \"alpha\""))
+    );
+    assert_warnings("auto llama", &llama);
+
+    let quiet = HttpProvider::from_manifest(
+        "vllm",
+        ManifestConfig {
+            base_url: Some(refused.clone()),
+            models_url: Some(refused_models.clone()),
+            token_command: Some(TokenCommandInput::String("echo hi".to_string())),
+            probe_models: Some(false),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let joined = quiet.warnings().join("\n");
+    assert!(
+        joined.contains("token_command must be an argv array"),
+        "{joined}"
+    );
+    assert!(joined.contains("probe_models is false"), "{joined}");
+    assert_warnings("register", &quiet);
+
+    let mut chat_refused = HttpProvider::vllm(None, "m", &refused).unwrap();
+    chat_refused.set_probe_models(false);
+    let err = err_of(
+        chat_refused
+            .stream_chat(chat("hi", "cred-chat", 2_000))
+            .await,
+    );
+    assert_clean("chat refuse", &err.message);
+    assert_warnings("chat refuse warnings", &chat_refused);
+
+    let body = format!("see http://{CRED_USER}:{CRED_SECRET}@example.test/v?token={CRED_SECRET}");
+    gate.script(&[(&body, 500)]);
+    let mut chat_http = HttpProvider::vllm(None, "m", &base).unwrap();
+    chat_http.set_probe_models(false);
+    let err = err_of(chat_http.stream_chat(chat("hi", "cred-http", 2_000)).await);
+    assert!(err.message.contains("vLLM 500:"), "{}", err.message);
+    assert!(err.message.contains("token=REDACTED"), "{}", err.message);
+    assert_clean("chat 500", &err.message);
+
+    let hung = hang().await;
+    let mut slow = HttpProvider::vllm(None, "m", cred_base(&hung)).unwrap();
+    slow.set_probe_models(false);
+    let err = err_of(slow.stream_chat(chat("hi", "cred-timeout", 300)).await);
+    assert!(err.message.contains("timed out"), "{}", err.message);
+    assert_clean("timeout", &err.message);
+
+    let google = HttpProvider::google(CRED_SECRET, "test-model").unwrap();
+    google.set_base_url(cred_base("http://127.0.0.1:9"));
+    let err = err_of(google.stream_chat(chat("hi", "cred-google", 2_000)).await);
+    assert_clean("google chat", &err.message);
+    assert!(!google.is_available().await);
+    assert_warnings("google probe", &google);
+
+    let ollama = HttpProvider::ollama("m", &refused).unwrap();
+    let err = ollama.unload_model(None).await.unwrap_err();
+    assert_clean("unload", &err.message);
+
+    let catalog = HttpProvider::vllm(None, "pinned", &refused).unwrap();
+    catalog.set_models_url(Some(refused_models));
+    let _ = catalog.list_models().await;
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        if catalog
+            .warnings()
+            .iter()
+            .any(|item| item.contains("model catalog"))
+        {
+            break;
+        }
+        if Instant::now() >= deadline {
+            panic!("catalog warning missing: {:?}", catalog.warnings());
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let joined = catalog.warnings().join("\n");
+    assert!(joined.contains("[token-command] model catalog"), "{joined}");
+    assert_warnings("catalog", &catalog);
+
+    let warmed = HttpProvider::from_manifest(
+        "xai",
+        ManifestConfig {
+            model: "grok-test".to_string(),
+            token_argv: Some(vec!["mint".to_string()]),
+            token_runner: Some(fail_runner()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        if warmed
+            .warnings()
+            .iter()
+            .any(|item| item.contains("token_command warm failed"))
+        {
+            break;
+        }
+        if Instant::now() >= deadline {
+            panic!("warm warning missing: {:?}", warmed.warnings());
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let joined = warmed.warnings().join("\n");
+    assert!(joined.contains("example.test"), "{joined}");
+    assert!(joined.contains("api_key=REDACTED"), "{joined}");
+    assert_warnings("warm", &warmed);
+
+    let anthropic = HttpProvider::anthropic("", "claude-test").unwrap();
+    anthropic.set_base_url(refused);
+    let err = err_of(
+        anthropic
+            .stream_chat(chat("hi", "cred-anthropic", 2_000))
+            .await,
+    );
+    assert_clean("anthropic chat", &err.message);
+    assert_warnings("anthropic", &anthropic);
 }

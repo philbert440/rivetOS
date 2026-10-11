@@ -131,6 +131,7 @@ fn note_failure(
     label: &str,
     msg: String,
 ) {
+    let msg = crate::http::redact_text(&msg);
     if let Some(log) = log
         && !guard.failing
     {

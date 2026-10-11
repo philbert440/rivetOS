@@ -14,7 +14,8 @@ use crate::decode::{Decoder, Kind as DecKind};
 use crate::error::ProviderError;
 use crate::fold::{FoldContent, FoldMessage, split_and_fold_system};
 use crate::http::{
-    HttpAttempt, build_client, connection_header, decode_response, read_limited, send, tail_headers,
+    DisplayUrl, HttpAttempt, build_client, connection_header, decode_response, read_limited, send,
+    tail_headers,
 };
 use crate::jsonutil::{
     IdGen, encode_path_segment, encode_query, gemini_schema, is_claude_4, join_url, json_number,
@@ -559,7 +560,8 @@ impl HttpProvider {
         self.tokens.lock().clone()
     }
 
-    fn note(&self, message: String) {
+    fn note(&self, message: impl AsRef<str>) {
+        let message = crate::http::redact_text(message.as_ref());
         tracing::warn!(provider = %self.id, "{message}");
         self.warnings.lock().push(message);
     }
@@ -574,7 +576,7 @@ impl HttpProvider {
         let warnings = Arc::clone(&self.warnings);
         handle.spawn(async move {
             if let Err(err) = source.get_token().await {
-                let message = TokenSource::warm_log(&err);
+                let message = crate::http::redact_text(&TokenSource::warm_log(&err));
                 tracing::warn!("{message}");
                 warnings.lock().push(message);
             }
@@ -605,6 +607,7 @@ impl HttpProvider {
             None,
             Some(Arc::new(|| protocol::js::date_now() as i64)),
             Some(Arc::new(move |message| {
+                let message = crate::http::redact_text(&message);
                 tracing::warn!("{message}");
                 warnings.lock().push(message);
             })),
@@ -1075,9 +1078,9 @@ impl HttpProvider {
                                 ids.join(", ")
                             };
                             let where_shown = if self.wire == Wire::Llama {
-                                "/v1/models".to_string()
+                                DisplayUrl::new("/v1/models")
                             } else {
-                                url
+                                DisplayUrl::new(&url)
                             };
                             self.note(format!(
                                 "[{}] configured model \"{model}\" not in {where_shown} (served: {served}).",
@@ -1101,8 +1104,9 @@ impl HttpProvider {
                         } else {
                             "For llama.cpp: llama-server -m <model.gguf> --port <port>."
                         };
+                        let shown = DisplayUrl::new(&url);
                         self.note(format!(
-                            "[{}] cannot reach {url} ({}). Is the server running? {hint}",
+                            "[{}] cannot reach {shown} ({}). Is the server running? {hint}",
                             self.id, err.message
                         ));
                     } else {
@@ -1115,8 +1119,9 @@ impl HttpProvider {
                         } else {
                             ""
                         };
+                        let shown = DisplayUrl::new(&url);
                         self.note(format!(
-                            "[{}] {url} returned HTTP {}{hint}",
+                            "[{}] {shown} returned HTTP {}{hint}",
                             self.id, err.status
                         ));
                     }
