@@ -237,6 +237,15 @@ Residual: Hermes/claude-cli adapters may still omit tool args; chips degrade cle
   automatically (`effectivePreference`); the `index.html` boot script mirrors
   that rule.
 
+### Agent logos
+
+The rail avatar shows the brand logo of the agent's model, else its harness
+(`lib/model-icon.ts` picks the key, model first and past any provider prefix;
+`components/model-icon.tsx` draws it). SVGs come from
+`@lobehub/icons-static-svg` (MIT), pinned and imported `?raw` so they ship in
+the bundle; single-colour marks take `currentColor`. No match keeps the
+initials tile.
+
 ### Material style (explicit Light / Dark)
 
 - **Two UI styles, one token vocabulary.** `html[data-style]` is `material`
@@ -326,16 +335,41 @@ region and is not a drop target. `+ New thread` is the phantom slot at the
 end of each real space.
 
 **History** (`HistoryPanel.tsx`) is the session drawer minus placed rows
-(same agent and archive filters, same `DrawerItem`). Dock toggle and `H`.
-Opening a row opens it at Thread and does not place it. History rows are not
-prewarmed. `Ctrl+Shift+E` still collapses the side panes; History closes on
-that transition and `H` can open it again while the panes stay collapsed.
+(same agent and archive filters, same `DrawerItem`). It opens from the right
+(the top-right History button, or `H`); its left edge resizes it (240–720px,
+`rivethub.canvas.historyWidth`, double-click resets) and the top-right
+buttons step left by its width. While the rail's agent filter is on, History
+shows an `Only <agent>` chip with ✕ — without it, a thread from another agent
+looks lost. Opening a row opens it at Thread and does not place it. History
+rows are not prewarmed. `Ctrl+Shift+E` still collapses the side panes;
+History closes on that transition and `H` can open it again while the panes
+stay collapsed.
 
-**Drag** is pointer-based (no HTML5 drag-and-drop). It arms after 8px on a
-tile or a History row, and a press on a tile does not pan the camera.
-History row → region places; tile → another region moves; tile → the History
-panel unplaces. A drop on empty space snaps back. `M` on a selected tile
-opens a Move-to popover (the spaces, plus History).
+**HUD.** One top band: the breadcrumb (Everything › space › thread) on the
+left is the altitude control — there is no zoom ladder — and History plus the
+shortcuts dock toggle sit top right, the dock dropping down from them. The
+camera's right inset is only a margin, so an open thread runs to the right
+edge (`insets` in `camera.ts`).
+
+**Drag** within the canvas is pointer-based. It arms after 8px on a tile or
+a History row, and a press on a tile does not pan the camera. History row →
+region places; History row → the empty `+ New thread` slot places it there
+and opens it (History closes); tile → another region moves; tile → the
+History panel unplaces. A drop on empty space snaps back. `M` on a selected
+tile opens a Move-to popover (the spaces, plus History). Each tile also
+carries a ✕ beside the rename pencil that unplaces it (Move → History).
+
+The one HTML5 drag is an **agent from the rail** (expanded or collapsed):
+the rail's drag carries `AGENT_DRAG_MIME` (`lib/agent-drag.ts`) next to its
+reorder `text/plain`, and the empty `+ New thread` slot accepts it — it
+mints a thread with that agent via `startThreadWithDefaults(space, { agentId })`
+and opens it.
+
+**Tiles.** The card leads with the session title, then the model (as the
+roster agent that runs it, else the model id's last segment, else the harness;
+`tile-label.ts`), then status. The card face counter-scales its type with the
+camera but caps each line by the tile's own height (`cqh`, size container), so
+nothing clips; at Everything the last-message line drops (`theme.css`).
 
 **New thread** is a chooser: a prompt (mint like the rail's start-over, write
 model/effort into chat settings, place, enqueue one outbound turn) or History
