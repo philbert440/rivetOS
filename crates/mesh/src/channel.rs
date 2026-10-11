@@ -206,14 +206,14 @@ impl AgentChannel {
 
     pub async fn send_to_peer(&self, peer: &PeerConfig, body: &Value) -> Result<Value, String> {
         let url = format!("{}/api/message", peer.url.trim_end_matches('/'));
-        let timeout_ms = body.get("timeoutMs").and_then(finite_timeout);
+        let abort_after = scheduled_timeout(body.get("timeoutMs"), 5_000.0);
         let mut builder = reqwest::Client::builder();
         if let Some(material) = &self.inner.config.tls {
             let config = client_config(material).map_err(|err| err.to_string())?;
             builder = builder.use_preconfigured_tls(config);
         }
-        if let Some(ms) = timeout_ms {
-            builder = builder.timeout(Duration::from_millis(ms.saturating_add(5000)));
+        if let Some(ms) = abort_after {
+            builder = builder.timeout(Duration::from_millis(ms));
         }
         let client = builder.build().map_err(|err| err.to_string())?;
         let mut request = client.post(&url).json(body);
@@ -295,7 +295,7 @@ impl AgentMessageTool {
         };
         let message = args.get("message").and_then(Value::as_str).unwrap_or("");
         let wait = wait_flag(args.get("wait_for_response"));
-        let timeout_ms = finite_timeout(args.get("timeout_ms").unwrap_or(&Value::Null));
+        let timeout_ms = forwarded_timeout(args.get("timeout_ms"));
         let Some((_, peer)) = self
             .channel
             .inner
@@ -320,11 +320,8 @@ impl AgentMessageTool {
             Some(other) => other.clone(),
         };
         body.insert("waitForResponse".to_string(), wait_value);
-        if let Some(ms) = timeout_ms {
-            body.insert(
-                "timeoutMs".to_string(),
-                Value::Number(serde_json::Number::from(ms)),
-            );
+        if let Some(timeout_ms) = timeout_ms {
+            body.insert("timeoutMs".to_string(), timeout_ms);
         }
         match self.channel.send_to_peer(peer, &Value::Object(body)).await {
             Ok(response) => {
@@ -559,7 +556,7 @@ impl Inner {
                     let _ = sender.send(format!("[error processing message: {msg}]"));
                 }
             });
-            let timeout_ms = body.get("timeoutMs").and_then(finite_timeout);
+            let timeout_ms = scheduled_timeout(body.get("timeoutMs"), 0.0);
             let text = wait_for_text(self.pending.as_ref(), &request_id, rx, timeout_ms).await;
             let mut response = Map::new();
             response.insert("response".to_string(), Value::String(text));
@@ -943,12 +940,33 @@ fn waits_for_response(value: &Value) -> bool {
     !matches!(value.get("waitForResponse"), Some(Value::Bool(false)))
 }
 
-fn finite_timeout(value: &Value) -> Option<u64> {
-    let number = value.as_f64()?;
-    if !number.is_finite() || number <= 0.0 {
+const JS_TIMEOUT_MAX_MS: f64 = 2_147_483_647.0;
+
+fn scheduled_timeout(value: Option<&Value>, extra_ms: f64) -> Option<u64> {
+    let number = value?.as_f64()?;
+    if !number.is_finite() || number == 0.0 {
         return None;
     }
-    Some(number as u64)
+    Some(js_timer_millis(number + extra_ms))
+}
+
+fn js_timer_millis(after: f64) -> u64 {
+    if (1.0..=JS_TIMEOUT_MAX_MS).contains(&after) {
+        after as u64
+    } else if after > JS_TIMEOUT_MAX_MS {
+        JS_TIMEOUT_MAX_MS as u64
+    } else {
+        1
+    }
+}
+
+fn forwarded_timeout(value: Option<&Value>) -> Option<Value> {
+    let value = value?;
+    let number = value.as_f64()?;
+    if !number.is_finite() {
+        return None;
+    }
+    Some(value.clone())
 }
 
 fn wait_flag(value: Option<&Value>) -> bool {
@@ -1070,4 +1088,39 @@ fn inbound_message(
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|err| err.into_inner())
+}
+
+#[cfg(test)]
+mod timeout_delay {
+    use super::js_timer_millis;
+    use super::scheduled_timeout;
+    use serde_json::json;
+
+    #[test]
+    fn zero_is_absent_and_negative_is_a_one_millisecond_timer() {
+        let zero = json!(0);
+        let negative = json!(-1);
+        let half = json!(0.4);
+        let thirty = json!(30);
+        let just_under = json!(-5_000);
+        let past_max = json!(2_147_483_647_i64);
+        assert_eq!(scheduled_timeout(None, 0.0), None);
+        assert_eq!(scheduled_timeout(Some(&json!(null)), 0.0), None);
+        assert_eq!(scheduled_timeout(Some(&zero), 0.0), None);
+        assert_eq!(scheduled_timeout(Some(&zero), 5_000.0), None);
+        assert_eq!(scheduled_timeout(Some(&negative), 0.0), Some(1));
+        assert_eq!(scheduled_timeout(Some(&negative), 5_000.0), Some(4_999));
+        assert_eq!(scheduled_timeout(Some(&just_under), 5_000.0), Some(1));
+        assert_eq!(scheduled_timeout(Some(&json!(-6_000)), 5_000.0), Some(1));
+        assert_eq!(scheduled_timeout(Some(&half), 0.0), Some(1));
+        assert_eq!(scheduled_timeout(Some(&thirty), 0.0), Some(30));
+        assert_eq!(scheduled_timeout(Some(&thirty), 5_000.0), Some(5_030));
+        assert_eq!(
+            scheduled_timeout(Some(&past_max), 5_000.0),
+            Some(2_147_483_647)
+        );
+        assert_eq!(js_timer_millis(1.9), 1);
+        assert_eq!(js_timer_millis(0.0), 1);
+        assert_eq!(js_timer_millis(-4.0), 1);
+    }
 }

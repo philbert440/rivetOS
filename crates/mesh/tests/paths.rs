@@ -79,15 +79,17 @@ fn roots_stay_lexical_until_a_segment_is_joined() {
 
 #[test]
 fn live_dir_functions_agree_with_the_join_helpers() {
-    assert_eq!(shared_path(&[]), shared_dir());
+    let shared = shared_dir();
+    let install = install_root();
+    assert_eq!(shared_path(&[]), path_join(&shared, &[]));
     assert_eq!(
         shared_path(&["mesh.json"]),
-        path_join(&shared_dir(), &["mesh.json"])
+        path_join(&shared, &["mesh.json"])
     );
-    assert_eq!(mesh::install_path(&[]), install_root());
+    assert_eq!(mesh::install_path(&[]), path_join(&install, &[]));
     assert_eq!(
         mesh::install_path(&["packages", "cli"]),
-        path_join(&install_root(), &["packages", "cli"])
+        path_join(&install, &["packages", "cli"])
     );
 }
 

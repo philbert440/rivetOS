@@ -836,6 +836,93 @@ async fn zero_wait_is_fire_and_forget_and_the_server_still_waits() {
 }
 
 #[tokio::test]
+async fn negative_timeout_fires_and_zero_keeps_waiting() {
+    let negative = started("opus").await;
+    negative.on_message(|_| async { Ok(()) });
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .unwrap();
+    let response = client
+        .post(format!(
+            "http://127.0.0.1:{}/api/message",
+            negative.bound_port()
+        ))
+        .header("content-type", "application/json")
+        .body(r#"{"fromAgent":"grok","message":"wait","timeoutMs":-1}"#)
+        .send()
+        .await
+        .expect("negative timeout hung");
+    assert_eq!(response.status().as_u16(), 200);
+    let body: Value = response.json().await.unwrap();
+    assert_eq!(
+        body["response"],
+        json!("[timeout — agent did not respond in time]")
+    );
+    negative.stop().await;
+
+    let holding = started("opus").await;
+    let port = holding.bound_port();
+    let seen = AtomicFlag::new();
+    let seen_handler = Arc::clone(&seen);
+    holding.on_message(move |_| {
+        seen_handler.set();
+        async { Ok(()) }
+    });
+    let pending = tokio::spawn(async move {
+        exchange(
+            port,
+            "POST",
+            "/api/message",
+            Some(r#"{"fromAgent":"grok","message":"hold","timeoutMs":0}"#),
+            &[],
+        )
+        .await
+    });
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    while !seen.get() {
+        if tokio::time::Instant::now() > deadline {
+            panic!("zero-timeout handler was not called");
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!pending.is_finished(), "timeoutMs 0 scheduled a timer");
+    holding.stop().await;
+    let (status, body, _) = pending.await.unwrap();
+    assert_eq!(status, 200);
+    assert_eq!(body["response"], json!("[channel shutting down]"));
+
+    let (kept_port, kept_body) = serve_capture(200, r#"{"response":"kept"}"#).await;
+    let (zero_port, zero_body) = serve_capture(200, r#"{"response":"zero"}"#).await;
+    let mut config = AgentChannelConfig::new("opus");
+    config.peers = vec![peer("neg", kept_port), peer("zero", zero_port)];
+    let tool = AgentChannel::new(config).create_message_tool();
+    let kept = tool
+        .execute(&json!({ "to_agent": "neg", "message": "x", "timeout_ms": -1 }))
+        .await;
+    assert_eq!(kept, "kept");
+    let zero = tool
+        .execute(&json!({ "to_agent": "zero", "message": "x", "timeout_ms": 0 }))
+        .await;
+    assert_eq!(zero, "zero");
+    assert!(kept_body.lock().unwrap().contains("\"timeoutMs\":-1"));
+    assert!(zero_body.lock().unwrap().contains("\"timeoutMs\":0"));
+
+    let hung = serve_hang().await;
+    let mut config = AgentChannelConfig::new("opus");
+    config.peers = vec![peer("hung", hung)];
+    let tool = AgentChannel::new(config).create_message_tool();
+    let aborted = tokio::time::timeout(
+        Duration::from_secs(2),
+        tool.execute(&json!({ "to_agent": "hung", "message": "x", "timeout_ms": -6000 })),
+    )
+    .await
+    .expect("negative outbound timeout hung");
+    assert!(aborted.starts_with("Error sending message to hung:"));
+}
+
+#[tokio::test]
 async fn join_auth_answers_before_the_body_is_read() {
     let mut config = plain("opus");
     config.on_mesh_join = Some(Arc::new(|_| Box::pin(async { Ok(()) })));
@@ -938,6 +1025,18 @@ async fn read_http(sock: &mut tokio::net::TcpStream) -> String {
         }
     }
     String::from_utf8_lossy(&buf).into_owned()
+}
+
+async fn serve_hang() -> u16 {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        if let Ok((mut sock, _)) = listener.accept().await {
+            let _ = read_http(&mut sock).await;
+            tokio::time::sleep(Duration::from_secs(30)).await;
+        }
+    });
+    port
 }
 
 async fn serve_json(status: u16, body: &'static str) -> u16 {

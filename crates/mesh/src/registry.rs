@@ -866,8 +866,9 @@ async fn blocking<T: Send + 'static>(
     let deadline = Instant::now() + FILE_OP_TIMEOUT;
     let handle = tokio::runtime::Handle::try_current()
         .map_err(|_| MeshError::message("mesh registry needs a tokio runtime"))?;
+    let flight = Flight::enter(gate);
     let joined = handle.spawn_blocking(move || {
-        let _flight = Flight::enter(gate);
+        let _flight = flight;
         body(deadline)
     });
     match joined.await {
@@ -1143,5 +1144,94 @@ mod deadline_and_seed {
             .and_then(protocol::js::JsValue::as_str);
         assert_eq!(status, Some("offline"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn queued_blocking_job_keeps_shutdown_busy() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .max_blocking_threads(1)
+            .enable_time()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or(0);
+            let dir =
+                std::env::temp_dir().join(format!("rr7m-queue-{}-{nanos}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let registry = FileMeshRegistry::new(RegistryConfig {
+                storage_dir: dir.display().to_string(),
+                heartbeat_interval_ms: Some(60_000),
+                stale_threshold_ms: None,
+                discovery: None,
+                on_event: None,
+                tls: None,
+            });
+            let parsed = protocol::js::parse(
+                r#"{"id":"n","name":"n","host":"h","status":"online","lastSeen":1,"port":1}"#,
+            )
+            .unwrap();
+            let node = crate::model::mesh_node_from_value("n", &parsed, "test").unwrap();
+            registry.register(node).await.unwrap();
+            let before = std::fs::read_to_string(&registry.inner.file_path).unwrap();
+
+            let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+            let (entered_tx, entered_rx) = std::sync::mpsc::channel::<()>();
+            let occupier = tokio::runtime::Handle::current().spawn_blocking(move || {
+                entered_tx.send(()).unwrap();
+                let _ = release_rx.recv();
+            });
+            entered_rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .expect("blocking thread did not start");
+            let release = super::Release(Some(release_tx));
+
+            let heartbeat_registry = registry.clone();
+            let heartbeat =
+                tokio::spawn(
+                    async move { heartbeat_registry.heartbeat("n", Some("online")).await },
+                );
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+            while registry
+                .inner
+                .flights
+                .inflight
+                .load(std::sync::atomic::Ordering::SeqCst)
+                == 0
+            {
+                if tokio::time::Instant::now() > deadline {
+                    panic!("queued blocking job was not counted");
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            assert_eq!(
+                before,
+                std::fs::read_to_string(&registry.inner.file_path).unwrap(),
+                "heartbeat ran before the blocking thread was free"
+            );
+            let idle_registry = registry.clone();
+            let idle = tokio::spawn(async move {
+                idle_registry.inner.flights.wait_idle().await;
+            });
+            tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+            assert!(
+                !idle.is_finished(),
+                "shutdown drain reported idle while a blocking job was queued"
+            );
+            drop(release);
+            occupier.await.unwrap();
+            heartbeat.await.unwrap().unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(2), idle)
+                .await
+                .expect("gate stayed busy after the queued job finished")
+                .expect("queued job task panicked");
+            assert_ne!(
+                before,
+                std::fs::read_to_string(&registry.inner.file_path).unwrap()
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+        });
     }
 }
