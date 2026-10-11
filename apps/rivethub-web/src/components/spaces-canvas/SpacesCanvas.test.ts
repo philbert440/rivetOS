@@ -625,7 +625,7 @@ describe('SpacesCanvas mount', () => {
     const onOpen = vi.fn()
     placeOnHome(rows.map((item) => item.key))
     mount(rows, onOpen, { descriptors: [CLAUDE] })
-    const space = host?.querySelector('[data-alt="space"]')
+    const space = host?.querySelector('[data-crumb="space"]')
     if (!(space instanceof HTMLElement)) throw new Error('missing space')
     act(() => {
       space.click()
@@ -662,7 +662,7 @@ describe('SpacesCanvas mount', () => {
     const onOpen = vi.fn()
     placeOnHome(rows.map((item) => item.key))
     const { render } = mount(rows, onOpen, { descriptors: [CLAUDE] })
-    const space = host?.querySelector('[data-alt="space"]')
+    const space = host?.querySelector('[data-crumb="space"]')
     if (!(space instanceof HTMLElement)) throw new Error('missing space')
     act(() => {
       space.click()
@@ -759,7 +759,7 @@ describe('SpacesCanvas mount', () => {
     placeOnHome([remoteRow.key])
     try {
       mount([remoteRow], onOpen, { descriptors: [CLAUDE] })
-      const space = host?.querySelector('[data-alt="space"]')
+      const space = host?.querySelector('[data-crumb="space"]')
       if (!(space instanceof HTMLElement)) throw new Error('missing space')
       act(() => {
         space.click()
@@ -831,7 +831,7 @@ describe('SpacesCanvas mount', () => {
     placeOnHome([remoteRow.key])
     try {
       const { render } = mount(rows, () => undefined, { descriptors: [CLAUDE] })
-      const space = host?.querySelector('[data-alt="space"]')
+      const space = host?.querySelector('[data-crumb="space"]')
       if (!(space instanceof HTMLElement)) throw new Error('missing space')
       act(() => {
         space.click()
@@ -1314,7 +1314,7 @@ describe('SpacesCanvas mount', () => {
   it('cancels History pick mode from the canvas at Space and not from a field', () => {
     placeOnHome(['a'])
     mount([row('a', 'Alpha'), row('b', 'Beta')], () => undefined)
-    const space = host?.querySelector('[data-alt="space"]')
+    const space = host?.querySelector('[data-crumb="space"]')
     if (!(space instanceof HTMLElement)) throw new Error('missing space')
     act(() => {
       space.click()
@@ -1477,7 +1477,7 @@ describe('SpacesCanvas mount', () => {
     const other = host?.querySelector('[data-tile-hit="b"]')
     expect(selected?.getAttribute('tabindex')).toBe('0')
     expect(other?.getAttribute('tabindex')).toBe('-1')
-    const space = host?.querySelector('[data-alt="space"]')
+    const space = host?.querySelector('[data-crumb="space"]')
     if (!(space instanceof HTMLElement)) throw new Error('missing space')
     act(() => {
       space.click()
@@ -1547,7 +1547,7 @@ describe('SpacesCanvas mount', () => {
     try {
       placeOnHome(['a'])
       mount([row('a', 'Alpha', 'active')], () => undefined, { descriptors: [CLAUDE] })
-      const space = host?.querySelector('[data-alt="space"]')
+      const space = host?.querySelector('[data-crumb="space"]')
       if (!(space instanceof HTMLElement)) throw new Error('missing space')
       act(() => {
         space.click()
@@ -1573,7 +1573,7 @@ describe('SpacesCanvas mount', () => {
       node: gone,
     })
     mount([row('a', 'Alpha')], () => undefined)
-    const space = host?.querySelector('[data-alt="space"]')
+    const space = host?.querySelector('[data-crumb="space"]')
     if (!(space instanceof HTMLElement)) throw new Error('missing space')
     act(() => {
       space.click()
@@ -1657,7 +1657,7 @@ describe('SpacesCanvas mount', () => {
       },
     })
     durations.length = 0
-    const space = host?.querySelector('[data-alt="space"]')
+    const space = host?.querySelector('[data-crumb="space"]')
     if (!(space instanceof HTMLElement)) throw new Error('missing space')
     act(() => {
       space.click()
