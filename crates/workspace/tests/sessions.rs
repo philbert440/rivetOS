@@ -4,8 +4,7 @@ use parking_lot::Mutex;
 
 use async_trait::async_trait;
 use protocol::{
-    CompactionPending, InboundMessage, JsNumber, Message, MessageContent, MessageRole,
-    ThinkingLevel, ToolCall,
+    CompactionPending, InboundMessage, JsNumber, Message, MessageContent, MessageRole, ToolCall,
 };
 use serde_json::json;
 use workspace::{
@@ -162,18 +161,18 @@ fn session_key_joins_channel_and_user() {
 }
 
 #[test]
-fn settings_json_uses_camel_case_and_ignores_unknown_thinking() {
+fn settings_json_uses_camel_case_and_keeps_thinking_strings() {
     let loaded = session_settings_from_json(&json!({
         "thinking": "low",
         "reasoningVisible": false,
         "toolsVisible": true
     }))
     .unwrap();
-    let mut thinking = ThinkingLevel::Medium;
+    let mut thinking = "medium".to_string();
     let mut reasoning = true;
     let mut tools = false;
     workspace::apply_loaded_settings(&mut thinking, &mut reasoning, &mut tools, &loaded);
-    assert_eq!(thinking, ThinkingLevel::Low);
+    assert_eq!(thinking, "low");
     assert!(!reasoning);
     assert!(tools);
 
@@ -183,11 +182,11 @@ fn settings_json_uses_camel_case_and_ignores_unknown_thinking() {
     }))
     .unwrap();
     assert_eq!(invalid.thinking.as_deref(), Some("turbo"));
-    let mut thinking = ThinkingLevel::High;
+    let mut thinking = "high".to_string();
     let mut reasoning = true;
     let mut tools = false;
     workspace::apply_loaded_settings(&mut thinking, &mut reasoning, &mut tools, &invalid);
-    assert_eq!(thinking, ThinkingLevel::High);
+    assert_eq!(thinking, "turbo");
     assert!(reasoning);
     assert!(!tools);
 
@@ -196,9 +195,9 @@ fn settings_json_uses_camel_case_and_ignores_unknown_thinking() {
     }))
     .unwrap();
     assert!(not_a_string.thinking.is_none());
-    let mut thinking = ThinkingLevel::High;
+    let mut thinking = "high".to_string();
     workspace::apply_loaded_settings(&mut thinking, &mut reasoning, &mut tools, &not_a_string);
-    assert_eq!(thinking, ThinkingLevel::High);
+    assert_eq!(thinking, "high");
 
     assert!(session_settings_from_json(&json!(null)).is_none());
     assert!(session_settings_from_json(&json!(["low"])).is_none());
@@ -234,7 +233,7 @@ async fn create_session_emits_start_and_does_not_insert() {
         .await;
     let state = session.snapshot();
     assert_eq!(state.id, "ch-1:user-1");
-    assert_eq!(state.thinking, ThinkingLevel::Medium);
+    assert_eq!(state.thinking, "medium");
     assert!(!state.reasoning_visible);
     assert!(!state.tools_visible);
     assert!(state.history.is_empty());
@@ -411,7 +410,7 @@ async fn memory_context_and_settings_follow_the_session_manager() {
         )
         .await;
     let state = session.snapshot();
-    assert_eq!(state.thinking, ThinkingLevel::High);
+    assert_eq!(state.thinking, "high");
     assert!(!state.reasoning_visible);
     assert!(state.tools_visible);
     assert_eq!(state.history.len(), 1);
@@ -464,7 +463,7 @@ async fn blank_or_failed_memory_context_leaves_history_empty() {
         .create_session("s", &agent(false), SessionOptions::default())
         .await;
     assert!(session.snapshot().history.is_empty());
-    assert_eq!(session.snapshot().thinking, ThinkingLevel::Medium);
+    assert_eq!(session.snapshot().thinking, "medium");
 
     let store = memory(Ok(String::new()));
     *store.settings.lock() = Ok(Some(LoadedSessionSettings {
@@ -477,7 +476,7 @@ async fn blank_or_failed_memory_context_leaves_history_empty() {
     let session = manager
         .create_session("s", &agent(false), SessionOptions::default())
         .await;
-    assert_eq!(session.snapshot().thinking, ThinkingLevel::Medium);
+    assert_eq!(session.snapshot().thinking, "");
 }
 
 #[tokio::test]
@@ -584,7 +583,7 @@ async fn session_reads_are_the_live_map_object() {
         .await;
     manager.set("ch-1:user-1", created.clone());
     created.with_mut(|state| {
-        state.thinking = ThinkingLevel::High;
+        state.thinking = "high".to_string();
         state.reasoning_visible = true;
         state.history.push(Message {
             role: MessageRole::User,
@@ -596,7 +595,7 @@ async fn session_reads_are_the_live_map_object() {
     let fetched = manager.get("ch-1:user-1").unwrap();
     assert!(SharedSession::ptr_eq(&created, &fetched));
     let state = fetched.snapshot();
-    assert_eq!(state.thinking, ThinkingLevel::High);
+    assert_eq!(state.thinking, "high");
     assert!(state.reasoning_visible);
     assert_eq!(state.history.len(), 1);
     manager.save_session_settings(&fetched).await;
@@ -613,6 +612,39 @@ async fn session_reads_are_the_live_map_object() {
     assert!(SharedSession::ptr_eq(&created, &again));
     again.with_mut(|state| state.tools_visible = true);
     assert!(created.snapshot().tools_visible);
+}
+
+#[tokio::test]
+async fn restored_thinking_strings_stay_on_the_session_and_the_next_save() {
+    let store = memory(Ok(String::new()));
+    *store.settings.lock() = Ok(Some(LoadedSessionSettings {
+        thinking: Some("turbo".to_string()),
+        reasoning_visible: None,
+        tools_visible: None,
+    }));
+    let manager = SessionManager::new(router());
+    manager.set_store(store.clone());
+    let session = manager
+        .create_session("s", &agent(false), SessionOptions::default())
+        .await;
+    assert_eq!(session.snapshot().thinking, "turbo");
+    manager.save_session_settings(&session).await;
+    assert_eq!(store.saved.lock()[0].1.thinking, "turbo");
+    session.with_mut(|state| state.thinking = "low".to_string());
+    manager.save_session_settings(&session).await;
+    assert_eq!(store.saved.lock()[1].1.thinking, "low");
+
+    *store.settings.lock() = Ok(Some(LoadedSessionSettings {
+        thinking: Some(String::new()),
+        reasoning_visible: None,
+        tools_visible: None,
+    }));
+    let blank = manager
+        .create_session("blank", &agent(false), SessionOptions::default())
+        .await;
+    assert_eq!(blank.snapshot().thinking, "");
+    manager.save_session_settings(&blank).await;
+    assert_eq!(store.saved.lock()[2].1.thinking, "");
 }
 
 #[tokio::test]

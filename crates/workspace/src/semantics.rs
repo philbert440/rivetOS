@@ -258,11 +258,16 @@ fn command_split_uses_recorded_whitespace() {
     let mut separators = 0usize;
     let mut kept = 0usize;
     for row in rows {
-        let code = row["code_point"].as_u64().unwrap() as u32;
-        let ch = char::from_u32(code).unwrap();
+        let code = row["code_point"].as_u64().unwrap();
+        let unit = u16::try_from(code).unwrap();
+        let text = units_of(&row["text"]);
+        let trimmed = units_of(&row["trim"]);
+        assert_eq!(text.first().copied(), Some(unit), "U+{code:04X}");
+        let removed = trimmed.first().copied() != Some(unit);
+        let ch = char::from_u32(u32::try_from(code).unwrap()).unwrap();
         let sample = format!("left{ch}right");
         let parts = js_split_whitespace(&sample);
-        if js::is_js_whitespace(ch) {
+        if removed {
             assert_eq!(parts, ["left", "right"], "U+{code:04X}");
             separators += 1;
         } else {

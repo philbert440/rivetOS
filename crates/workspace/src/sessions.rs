@@ -161,15 +161,13 @@ pub fn session_settings_from_json(value: &Value) -> Option<LoadedSessionSettings
 }
 
 pub fn apply_loaded_settings(
-    thinking: &mut ThinkingLevel,
+    thinking: &mut String,
     reasoning_visible: &mut bool,
     tools_visible: &mut bool,
     settings: &LoadedSessionSettings,
 ) {
-    if let Some(text) = settings.thinking.as_deref()
-        && let Ok(level) = text.parse()
-    {
-        *thinking = level;
+    if let Some(text) = settings.thinking.as_deref() {
+        *thinking = text.to_string();
     }
     if let Some(value) = settings.reasoning_visible {
         *reasoning_visible = value;
@@ -341,7 +339,11 @@ impl SessionManager {
             history.push(message);
         }
 
-        let mut thinking = agent.default_thinking.unwrap_or(ThinkingLevel::Medium);
+        let mut thinking = agent
+            .default_thinking
+            .unwrap_or(ThinkingLevel::Medium)
+            .as_str()
+            .to_string();
         let mut reasoning_visible = agent.local;
         let mut tools_visible = false;
         if let Some(store) = &store
@@ -442,7 +444,7 @@ impl SessionManager {
             return;
         };
         let settings = session.with(|state| SavedSessionSettings {
-            thinking: state.thinking.as_str().to_string(),
+            thinking: state.thinking.clone(),
             reasoning_visible: state.reasoning_visible,
             tools_visible: state.tools_visible,
         });

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -468,9 +469,14 @@ async fn write_utf8(path: &str, content: &str) -> Result<(), WorkspaceError> {
         Ok(Err(source)) => return Err(WorkspaceError::io(&parent, "mkdir", source)),
         Err(_) => return Err(WorkspaceError::Timeout(parent)),
     }
-    match tokio::time::timeout(FILE_IO_TIMEOUT, tokio::fs::write(path, content.as_bytes())).await {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(source)) => Err(WorkspaceError::io(path, "open", source)),
+    let target = path.to_string();
+    let body = content.to_string();
+    let wrote =
+        tokio::task::spawn_blocking(move || protocol::host::write_text(Path::new(&target), &body));
+    match tokio::time::timeout(FILE_IO_TIMEOUT, wrote).await {
+        Ok(Ok(Ok(()))) => Ok(()),
+        Ok(Ok(Err(error))) => Err(WorkspaceError::Io(error.to_string())),
+        Ok(Err(error)) => Err(WorkspaceError::Io(error.to_string())),
         Err(_) => Err(WorkspaceError::Timeout(path.to_string())),
     }
 }

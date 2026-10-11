@@ -554,6 +554,26 @@ async fn a_directory_read_is_a_fault_and_a_missing_file_is_not() {
 }
 
 #[tokio::test]
+async fn writing_to_a_full_device_uses_the_write_syscall() {
+    let loader = WorkspaceLoader::new("/dev");
+    let err = loader.write("full", "x").await.unwrap_err();
+    assert_eq!(err.to_string(), "ENOSPC: no space left on device, write");
+}
+
+#[tokio::test]
+async fn writing_onto_a_directory_uses_the_open_syscall() {
+    let dir = TempDir::new();
+    std::fs::create_dir_all(dir.path().join("slot")).unwrap();
+    let loader = loader(dir.path());
+    let err = loader.write("slot", "x").await.unwrap_err();
+    let path = format!("{}/slot", dir.path().to_string_lossy());
+    assert_eq!(
+        err.to_string(),
+        format!("EISDIR: illegal operation on a directory, open '{path}'")
+    );
+}
+
+#[tokio::test]
 async fn writing_through_a_file_uses_the_node_mkdir_message() {
     let dir = TempDir::new();
     std::fs::write(dir.path().join("notdir"), "file").unwrap();
