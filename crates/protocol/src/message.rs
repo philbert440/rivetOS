@@ -149,11 +149,39 @@ fn take_string(object: &mut JsObject, key: &str) -> Result<Option<String>, &'sta
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(untagged)]
 pub enum MessageContent {
     Text(String),
     Parts(Vec<ContentPart>),
+}
+
+impl<'de> Deserialize<'de> for MessageContent {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = Box::<serde_json::value::RawValue>::deserialize(deserializer)?;
+        let mut value = parse(raw.get()).map_err(de::Error::custom)?;
+        match &mut value {
+            JsValue::String(slot) => {
+                let text = std::mem::replace(slot, JsString::from_units(Vec::new()));
+                match String::from_utf16(text.units()) {
+                    Ok(utf8) => Ok(Self::Text(utf8)),
+                    Err(_) => Err(de::Error::custom("message-content")),
+                }
+            }
+            JsValue::Array(items) => {
+                let items = std::mem::take(items);
+                let mut parts = Vec::with_capacity(items.len());
+                for item in items {
+                    parts.push(content_part_from_js(item).map_err(de::Error::custom)?);
+                }
+                Ok(Self::Parts(parts))
+            }
+            _ => Err(de::Error::custom("message-content")),
+        }
+    }
 }
 
 crate::wire_enum! {
