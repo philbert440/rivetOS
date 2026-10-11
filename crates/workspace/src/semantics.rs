@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
