@@ -805,6 +805,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "session-events"
+version = "0.1.0"
+dependencies = [
+ "protocol",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "sha2"
 version = "0.10.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
