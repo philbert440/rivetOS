@@ -37,6 +37,10 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
 const PGVECTOR_NAMESPACE: &str = "portal-corp";
 const PGVECTOR_NAME: &str = "pgvector_compiled";
+const POSTGRES_VERSION_REQ: &str = "=16.10.0";
+const POSTGRES_VERSION: &str = "16.10.0";
+const THESEUS_RELEASES: &str = "https://github.com/theseus-rs/postgresql-binaries";
+const INSTALL_LOCK: &str = ".install.lock";
 
 struct OwnedServer {
     supervisor: SupervisorProcess,
@@ -336,7 +340,7 @@ async fn boot_owned(
             return Err(error);
         }
     };
-    let owned = match start_server(&resolved, port, max, port_hold, log).await {
+    let owned = match start_server(&resolved, port, max, port_hold, env, log).await {
         Ok(owned) => owned,
         Err(error) => {
             let _ = release_owner_lock(&lock_path).await;
@@ -425,18 +429,21 @@ async fn start_server(
     port: u16,
     max: u32,
     port_hold: Option<std::net::TcpListener>,
+    env: &EmbeddedEnv,
     log: &dyn EmbeddedPgLog,
 ) -> Result<OwnedServer> {
     let pgdata = pgdata_dir(&resolved.engine_data_dir);
     let early = find_pg_ctl(&resolved.installation_dir);
     clear_stale_postmaster(&pgdata, early.as_deref(), log).await?;
     remove_incomplete(&pgdata, log).await?;
-    let settings = engine_settings(resolved, port, max).await?;
+    let guard = acquire_install_lock(&resolved.installation_dir).await?;
+    let settings = engine_settings(resolved, port, max, env).await?;
     write_password_file(&settings.password_file, &settings.password).await?;
     ensure_crypto_provider();
     let mut server = postgresql_embedded::PostgreSQL::new(settings);
     setup_cluster(&mut server, &pgdata, log).await?;
     install_pgvector(server.settings()).await?;
+    drop(guard);
     let backup_settings = server.settings().clone();
     let pg_ctl = match find_pg_ctl(&backup_settings.installation_dir) {
         Some(path) => path,
@@ -493,6 +500,7 @@ async fn setup_cluster(
     pgdata: &Path,
     log: &dyn EmbeddedPgLog,
 ) -> Result<()> {
+    let install_dir = server.settings().installation_dir.clone();
     let setup = with_timeout(SETUP_TIMEOUT, async {
         server.setup().await.map_err(engine_error)
     })
@@ -504,6 +512,9 @@ async fn setup_cluster(
                 pgdata.display()
             ));
             let _ = clear_dir(pgdata).await;
+        }
+        if !postgres_binaries_present(&install_dir) {
+            return Err(binaries_offline_error(&install_dir, &error.to_string()));
         }
         return Err(error);
     }
@@ -585,18 +596,30 @@ async fn engine_settings(
     resolved: &ResolvedEmbeddedPg,
     port: u16,
     max: u32,
+    env: &EmbeddedEnv,
 ) -> Result<postgresql_embedded::Settings> {
     let defaults = postgresql_embedded::Settings::new();
     let leaked_data = defaults.data_dir.clone();
     let leaked_pass = defaults.password_file.parent().map(Path::to_path_buf);
-    let releases_url = defaults.releases_url.clone();
+    let default_releases = defaults.releases_url.clone();
     discard_leaked(&leaked_data).await;
     if let Some(dir) = leaked_pass {
         discard_leaked(&dir).await;
     }
-    let version = postgresql_embedded::VersionReq::parse("=16").map_err(|error| {
-        LocalDbError::message(format!("embedded postgres: postgres version: {error}"))
-    })?;
+    let version =
+        postgresql_embedded::VersionReq::parse(POSTGRES_VERSION_REQ).map_err(|error| {
+            LocalDbError::message(format!("embedded postgres: postgres version: {error}"))
+        })?;
+    let releases_url = match env.get("RIVETOS_PG_RELEASES_URL") {
+        Some(value) if !value.is_empty() => value.to_string(),
+        _ => default_releases,
+    };
+    if !postgres_binaries_present(&resolved.installation_dir) && !theseus_releases(&releases_url) {
+        return Err(binaries_offline_error(
+            &resolved.installation_dir,
+            "releases URL is not the theseus PostgreSQL archive",
+        ));
+    }
     let configuration: HashMap<String, String> =
         server_configuration(resolved, max).into_iter().collect();
     Ok(postgresql_embedded::Settings {
@@ -615,6 +638,112 @@ async fn engine_settings(
         trust_installation_dir: false,
         socket_dir: None,
     })
+}
+
+fn pinned_version_dir(installation_dir: &Path) -> PathBuf {
+    if installation_dir.file_name().and_then(|name| name.to_str()) == Some(POSTGRES_VERSION) {
+        installation_dir.to_path_buf()
+    } else {
+        installation_dir.join(POSTGRES_VERSION)
+    }
+}
+
+fn postgres_binaries_present(installation_dir: &Path) -> bool {
+    find_pg_ctl(&pinned_version_dir(installation_dir)).is_some()
+}
+
+fn theseus_releases(url: &str) -> bool {
+    url.starts_with(THESEUS_RELEASES)
+}
+
+fn binaries_offline_error(installation_dir: &Path, detail: &str) -> LocalDbError {
+    let dir = pinned_version_dir(installation_dir);
+    LocalDbError::message(format!(
+        "embedded postgres: PostgreSQL {POSTGRES_VERSION} binaries are not installed under {} and were not downloaded because the network path is unavailable ({detail}). Retry while online, or place bin/pg_ctl in that directory; later boots stay offline and do not query the network.",
+        dir.display()
+    ))
+}
+
+struct InstallGuard {
+    path: PathBuf,
+}
+
+impl Drop for InstallGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+async fn acquire_install_lock(installation_dir: &Path) -> Result<InstallGuard> {
+    tokio::fs::create_dir_all(installation_dir).await?;
+    let path = installation_dir.join(INSTALL_LOCK);
+    let deadline = tokio::time::Instant::now() + SETUP_TIMEOUT;
+    loop {
+        match open_exclusive(&path).await {
+            Ok(mut file) => {
+                let body = std::process::id().to_string();
+                if let Err(error) = file.write_all(body.as_bytes()).await {
+                    drop(file);
+                    let _ = tokio::fs::remove_file(&path).await;
+                    return Err(error.into());
+                }
+                if let Err(error) = file.flush().await {
+                    drop(file);
+                    let _ = tokio::fs::remove_file(&path).await;
+                    return Err(error.into());
+                }
+                drop(file);
+                return Ok(InstallGuard { path });
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                if install_lock_is_stale(&path).await {
+                    let _ = tokio::fs::remove_file(&path).await;
+                    continue;
+                }
+                if tokio::time::Instant::now() >= deadline {
+                    return Err(LocalDbError::message(format!(
+                        "embedded postgres: timed out waiting for the PostgreSQL binary install lock {}",
+                        path.display()
+                    )));
+                }
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
+async fn open_exclusive(path: &Path) -> std::io::Result<tokio::fs::File> {
+    let mut options = tokio::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        options.mode(0o600);
+    }
+    options.open(path).await
+}
+
+async fn install_lock_is_stale(path: &Path) -> bool {
+    let text = match tokio::fs::read_to_string(path).await {
+        Ok(text) => text,
+        Err(_) => return true,
+    };
+    if let Ok(pid) = text.trim().parse::<i64>() {
+        return pid <= 0 || probe_lock_pid(pid) == PidProbe::Dead;
+    }
+    lock_file_is_old(path).await
+}
+
+async fn lock_file_is_old(path: &Path) -> bool {
+    let Ok(meta) = tokio::fs::metadata(path).await else {
+        return true;
+    };
+    let Ok(modified) = meta.modified() else {
+        return true;
+    };
+    modified
+        .elapsed()
+        .is_ok_and(|age| age > Duration::from_secs(5))
 }
 
 async fn install_pgvector(settings: &postgresql_embedded::Settings) -> Result<()> {
@@ -1571,6 +1700,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn missing_postgres_binaries_while_offline_is_operator_readable() {
+        let home = temp_home("offline-bin");
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).expect("home");
+        let config = json!({
+            "memory": {"postgres": {"embedded": {"port": 5433, "max_connections": 16}}}
+        });
+        let resolved = resolve_embedded_pg(&config, &home, None).expect("resolved");
+        let failed =
+            acquire_embedded_pg_with(resolved, &TracingLog, None, &offline_releases_env()).await;
+        let Err(error) = failed else {
+            panic!("offline boot succeeded");
+        };
+        let text = error.to_string();
+        assert!(text.contains("PostgreSQL 16.10.0 binaries are not installed"));
+        assert!(text.contains("network path is unavailable"));
+        assert!(text.contains("later boots stay offline"));
+        assert!(!text.contains("api.github.com"));
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[tokio::test]
     async fn boots_embedded_postgres_when_enabled() {
         if std::env::var("RIVETOS_TEST_EMBEDDED_PG").ok().as_deref() != Some("1") {
             return;
@@ -1584,7 +1735,8 @@ mod tests {
             "memory": {"postgres": {"embedded": {"port": port, "max_connections": 16}}}
         });
         let env = EmbeddedEnv::new();
-        let resolved = resolve_embedded_pg(&config, &home, None).expect("resolved");
+        let mut resolved = resolve_embedded_pg(&config, &home, None).expect("resolved");
+        use_shared_binaries(&mut resolved);
         assert!(resolved.lite_mode);
         let mut handle =
             acquire_embedded_pg_with(resolved.clone(), &TracingLog, Some(listener), &env)
@@ -1636,8 +1788,19 @@ mod tests {
         assert!(!engine.join("rivetos-owner.lock").exists());
         std::fs::create_dir_all(&pgdata).expect("pgdata");
         std::fs::write(pgdata.join("postmaster.pid"), format!("{}\n", i32::MAX)).expect("pid");
-        let again_resolved = resolve_embedded_pg(&config, &home, None).expect("resolved");
-        let mut again = acquire_embedded_pg_with(again_resolved, &TracingLog, None, &env)
+        let mut again_resolved = resolve_embedded_pg(&config, &home, None).expect("resolved");
+        use_shared_binaries(&mut again_resolved);
+        let pinned = shared_pg_bin()
+            .join("16.10.0")
+            .join("bin")
+            .join(crate::supervisor::pg_ctl_name());
+        assert!(
+            pinned.is_file(),
+            "pinned binaries missing at {}",
+            pinned.display()
+        );
+        let offline = offline_releases_env();
+        let mut again = acquire_embedded_pg_with(again_resolved, &TracingLog, None, &offline)
             .await
             .expect("restart");
         again.close().await.expect("close again");
@@ -1646,13 +1809,14 @@ mod tests {
         std::fs::create_dir_all(&home_full).expect("full home");
         let listener_full = std::net::TcpListener::bind("127.0.0.1:0").expect("bind full");
         let port_full = listener_full.local_addr().expect("addr").port();
-        let mut full_env = EmbeddedEnv::new();
+        let mut full_env = offline_releases_env();
         full_env.insert("RIVETOS_EMBED_URL", "http://127.0.0.1:9402/v1");
         let full_config = json!({
             "memory": {"postgres": {"embedded": {"port": port_full, "max_connections": 16}}}
         });
-        let full_resolved =
+        let mut full_resolved =
             resolve_embedded_pg_from_env(&full_config, &home_full, &full_env).expect("full");
+        use_shared_binaries(&mut full_resolved);
         assert!(!full_resolved.lite_mode);
         let mut full =
             acquire_embedded_pg_with(full_resolved, &TracingLog, Some(listener_full), &full_env)
@@ -1674,7 +1838,27 @@ mod tests {
                 return path;
             }
         }
+        if let Some(value) = std::env::var_os("RIVETOS_ROOT") {
+            let path = PathBuf::from(value);
+            if !path.as_os_str().is_empty() {
+                return path;
+            }
+        }
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
+    }
+
+    fn shared_pg_bin() -> PathBuf {
+        std::env::temp_dir().join("rivetos-local-db-pg-bin")
+    }
+
+    fn use_shared_binaries(resolved: &mut ResolvedEmbeddedPg) {
+        resolved.installation_dir = shared_pg_bin();
+    }
+
+    fn offline_releases_env() -> EmbeddedEnv {
+        let mut env = EmbeddedEnv::new();
+        env.insert("RIVETOS_PG_RELEASES_URL", "offline://postgresql-binaries");
+        env
     }
 
     fn temp_home(label: &str) -> PathBuf {
@@ -2124,7 +2308,8 @@ mod tests {
         });
         let mut env = EmbeddedEnv::new();
         env.insert("RIVETOS_ROOT", root.display().to_string());
-        let resolved = resolve_embedded_pg(&config, &home, None).expect("resolved");
+        let mut resolved = resolve_embedded_pg(&config, &home, None).expect("resolved");
+        use_shared_binaries(&mut resolved);
         let mut handle = acquire_embedded_pg_with(resolved, &TracingLog, Some(listener), &env)
             .await
             .expect("migrate");
