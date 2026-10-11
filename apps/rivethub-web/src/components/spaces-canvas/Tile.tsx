@@ -108,6 +108,7 @@ export const Tile = memo(function Tile(props: TileProps): JSX.Element {
   })
   // Leads with the model (as its roster agent's name), not the harness.
   const chip = tileChip(props.item, props.modelNames)
+  const everything = props.altitude === 'everything'
   const focused = props.altitude === 'thread' && props.selected
   const dimmed = props.altitude === 'thread' && !props.selected
   const outlined = props.selected && props.altitude !== 'thread'
@@ -156,11 +157,14 @@ export const Tile = memo(function Tile(props: TileProps): JSX.Element {
           pill for the name box in the same spot. Hidden at Thread. */}
       <div
         data-tile-label=""
-        className="pointer-events-none absolute bottom-full z-[2] flex max-w-[90%] items-center"
+        className="pointer-events-none absolute bottom-full z-[2] flex items-center"
         style={withVars(
           { '--ch': 'min(var(--inv, 1), 2.2)' },
           {
             left: 'calc(16px * var(--ch, 1))',
+            // Leave the right edge to the rename / back-to-History buttons
+            // (two 1.8em buttons, a gap and their inset, in the same --ch).
+            maxWidth: 'calc(100% - 6.5em)',
             marginBottom: 'calc(9px * var(--ch, 1))',
             fontSize: 'calc(12.5px * var(--ch, 1))',
             gap: '0.4em',
@@ -195,52 +199,74 @@ export const Tile = memo(function Tile(props: TileProps): JSX.Element {
                 data-harness={harness}
                 style={{ width: '0.62em', height: '0.62em' }}
               />
-              <b className="truncate">{chip}</b>
-              <span className="truncate text-ink-dim">{title}</span>
+              <b className="truncate">{title}</b>
+              <span className="truncate text-ink-dim">{chip}</span>
             </div>
-            <button
-              type="button"
-              data-act=""
-              data-tile-rename=""
-              aria-label={`Rename ${title}`}
-              title="Rename"
-              onClick={() => setRenaming(true)}
-              className={`pointer-events-auto shrink-0 rounded-full border border-line bg-panel text-ink-dim hover:border-em hover:text-em focus:opacity-100 ${
-                props.selected ? '' : 'opacity-0 group-hover:opacity-100'
-              }`}
-              style={{ padding: '0.4em', borderWidth: 'calc(1px * var(--ch, 1))' }}
-            >
-              <Pencil style={{ width: '1em', height: '1em' }} />
-            </button>
-            <button
-              type="button"
-              data-act=""
-              data-tile-unplace=""
-              aria-label={`Move ${title} back to History`}
-              title="Back to History"
-              onClick={() => {
-                // Same as Move → History: the thread leaves the space, the
-                // conversation itself is untouched.
-                const membership = useSpaces.getState().membership
-                const base = useConnection.getState().baseUrl
-                useSpaces.getState().unplace(rowMembershipKey(base, props.item, membership))
-              }}
-              className={`pointer-events-auto shrink-0 rounded-full border border-line bg-panel text-ink-dim hover:border-red hover:text-red focus:opacity-100 ${
-                props.selected ? '' : 'opacity-0 group-hover:opacity-100'
-              }`}
-              style={{ padding: '0.4em', borderWidth: 'calc(1px * var(--ch, 1))' }}
-            >
-              <X style={{ width: '1em', height: '1em' }} />
-            </button>
           </>
         )}
+      </div>
+      {/* Rename and back-to-History, on the right. At Everything the tile is
+          small on screen, so they move inside its top-right corner and scale
+          up with the camera (--ca); elsewhere they sit above the tile's right
+          edge. Hidden at Thread and while renaming. */}
+      <div
+        data-tile-actions=""
+        className="pointer-events-none absolute z-[2] flex items-center"
+        style={withVars(
+          { '--ca': everything ? 'min(var(--inv, 1), 4.4)' : 'min(var(--inv, 1), 2.2)' },
+          {
+            fontSize: 'calc(12.5px * var(--ca, 1))',
+            gap: '0.4em',
+            right: 'calc(12px * var(--ca, 1))',
+            ...(everything
+              ? { top: 'calc(10px * var(--ca, 1))' }
+              : { bottom: '100%', marginBottom: 'calc(9px * var(--ca, 1))' }),
+            display: props.altitude === 'thread' || renaming ? 'none' : undefined,
+          },
+        )}
+      >
+        <button
+          type="button"
+          data-act=""
+          data-tile-rename=""
+          aria-label={`Rename ${title}`}
+          title="Rename"
+          onClick={() => setRenaming(true)}
+          className={`pointer-events-auto shrink-0 rounded-full border border-line bg-panel text-ink-dim hover:border-em hover:text-em focus:opacity-100 ${
+            props.selected ? '' : 'opacity-0 group-hover:opacity-100'
+          }`}
+          style={{ padding: '0.4em', borderWidth: 'calc(1px * var(--ca, 1))' }}
+        >
+          <Pencil style={{ width: '1em', height: '1em' }} />
+        </button>
+        <button
+          type="button"
+          data-act=""
+          data-tile-unplace=""
+          aria-label={`Move ${title} back to History`}
+          title="Back to History"
+          onClick={() => {
+            // Same as Move → History: the thread leaves the space, the
+            // conversation itself is untouched.
+            const membership = useSpaces.getState().membership
+            const base = useConnection.getState().baseUrl
+            useSpaces.getState().unplace(rowMembershipKey(base, props.item, membership))
+          }}
+          className={`pointer-events-auto shrink-0 rounded-full border border-line bg-panel text-ink-dim hover:border-red hover:text-red focus:opacity-100 ${
+            props.selected ? '' : 'opacity-0 group-hover:opacity-100'
+          }`}
+          style={{ padding: '0.4em', borderWidth: 'calc(1px * var(--ca, 1))' }}
+        >
+          <X style={{ width: '1em', height: '1em' }} />
+        </button>
       </div>
       {/* The card face counter-scales its type (--cs) so it stays legible as
           the camera pulls out. Far out that would outgrow the tile and clip
           every line, so the face is a size container and each size is capped
           by the tile's own height (cqh): the content always fits. At
           Everything the last-message line drops (theme.css) to give the
-          name, title and status the room. */}
+          title, model and status the room. The session title leads; the
+          model sits under it, a step smaller. */}
       <div
         data-face="card"
         aria-hidden="true"
@@ -259,11 +285,22 @@ export const Tile = memo(function Tile(props: TileProps): JSX.Element {
           }}
         >
           <div
-            className="flex shrink-0 items-center text-ink"
+            className="shrink-0 truncate text-ink"
             style={{
-              fontSize: 'min(calc(24px * var(--cs, 1)), var(--face-name-cap, 16cqh))',
+              fontSize: 'min(calc(22px * var(--cs, 1)), var(--face-title-cap, 15cqh))',
               lineHeight: 1.25,
-              gap: '0.4em',
+              // Clear the corner actions, which sit inside the tile here.
+              paddingRight: everything ? 'min(calc(44px * var(--cs, 1)), 30cqw)' : undefined,
+            }}
+          >
+            {title}
+          </div>
+          <div
+            className="flex shrink-0 items-center text-ink-dim"
+            style={{
+              fontSize: 'min(calc(16px * var(--cs, 1)), var(--face-name-cap, 10cqh))',
+              lineHeight: 1.3,
+              gap: '0.45em',
             }}
           >
             <span
@@ -272,15 +309,6 @@ export const Tile = memo(function Tile(props: TileProps): JSX.Element {
               style={{ width: '0.62em', height: '0.62em' }}
             />
             <span className="truncate">{chip}</span>
-          </div>
-          <div
-            className="shrink-0 truncate text-ink-dim"
-            style={{
-              fontSize: 'min(calc(13px * var(--cs, 1)), var(--face-title-cap, 9cqh))',
-              lineHeight: 1.3,
-            }}
-          >
-            {title}
           </div>
           <span
             className={`shrink-0 self-start rounded-full font-mono leading-none uppercase ${

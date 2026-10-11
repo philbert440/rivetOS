@@ -841,12 +841,12 @@ html[data-style='material'] .spaces-canvas .sc-region.border-dashed {
   border-color: color-mix(in srgb, var(--color-line) 60%, var(--color-ink));
 }
 /* Everything: tiles are small on screen, so the card face drops its
-   last-message line and spends that height on larger name, title and
+   last-message line and spends that height on larger title, model and
    status caps (Tile.tsx sizes each line with min(…, cap)). The caps sum to
    under the tile height with the face padding and gaps. */
 .spaces-canvas[data-altitude='everything'] [data-face='card'] {
-  --face-name-cap: 20cqh;
-  --face-title-cap: 12cqh;
+  --face-title-cap: 18cqh;
+  --face-name-cap: 13cqh;
   --face-pill-cap: 9cqh;
 }
 .spaces-canvas[data-altitude='everything'] [data-face-last] {
