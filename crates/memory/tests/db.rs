@@ -1068,10 +1068,33 @@ async fn database_parity_paths_body(pool: PgPool) -> Result<(), String> {
     {
         return Err(format!("sources {:?}", expanded.source_messages));
     }
-    let rendered = memory::search_tool_output(
-        &store.expander(),
-        "deploy",
-        &[memory::SearchHit {
+    memory::tags::add_tag(
+        &store.tag_conn(),
+        &memory::tags::AddTagInput {
+            entity_type: "conversation".to_string(),
+            entity_id: Some(summary_capture.conversation_id.clone()),
+            session_key: None,
+            agent: None,
+            tag: Some("project:AcmeApp".to_string()),
+            key: None,
+            value: None,
+            display: None,
+            reason: None,
+        },
+        "alice",
+    )
+    .await
+    .map_err(|err| format!("tag summary conversation: {err}"))?;
+    sqlx::query(
+        "INSERT INTO ros_tags (entity_type, entity_id, key, value, display, source, state)
+         VALUES ('conversation', $1::uuid, 'project', 'hidden', 'Hidden', 'user', 'rejected')",
+    )
+    .bind(&summary_capture.conversation_id)
+    .execute(&pool)
+    .await
+    .map_err(|err| format!("rejected tag: {err}"))?;
+    let tool_hits = [
+        memory::SearchHit {
             id: summary_id.clone(),
             hit_type: "summary".to_string(),
             content: "parent summary body".to_string(),
@@ -1091,19 +1114,72 @@ async fn database_parity_paths_body(pool: PgPool) -> Result<(), String> {
             degraded: None,
             chunk_arm: None,
             snippet: None,
-        }],
+        },
+        memory::SearchHit {
+            id: message_id.clone(),
+            hit_type: "message".to_string(),
+            content: source.to_string(),
+            role: "user".to_string(),
+            agent: "ranker".to_string(),
+            conversation_id: summary_capture.conversation_id.clone(),
+            score: 0.4,
+            created_at: chrono::Utc::now(),
+            truncated: false,
+            full_length: None,
+            tool_name: None,
+            tool_result: None,
+            kind: None,
+            earliest_at: None,
+            latest_at: None,
+            fallback: None,
+            degraded: None,
+            chunk_arm: None,
+            snippet: None,
+        },
+    ];
+    let now_ms = memory::now_ms();
+    let rendered = memory::search_tool_output(
+        &store.expander(),
+        &store.tag_conn(),
+        "deploy",
+        &tool_hits,
         &memory::SearchToolView {
             expand: true,
+            now_ms,
             ..memory::SearchToolView::default()
         },
     )
-    .await;
+    .await
+    .map_err(|err| format!("search tool output: {err}"))?;
     if !rendered.contains("### Summaries (expanded)")
         || !rendered.contains("child body")
         || !rendered.contains(source)
         || rendered.contains("### Summaries\n")
+        || rendered.matches("tags: project:AcmeApp").count() != 2
+        || rendered.contains("hidden")
+        || rendered.contains("Hidden")
     {
         return Err(format!("expanded tool text:\n{rendered}"));
+    }
+    let closed = memory::search_tool_output(
+        &store.expander(),
+        &store.tag_conn(),
+        "deploy",
+        &tool_hits,
+        &memory::SearchToolView {
+            expand: false,
+            now_ms,
+            ..memory::SearchToolView::default()
+        },
+    )
+    .await
+    .map_err(|err| format!("unexpanded tool output: {err}"))?;
+    if !closed.contains("### Summaries\n")
+        || closed.contains("### Summaries (expanded)")
+        || closed.matches("tags: project:AcmeApp").count() != 2
+        || closed.contains("hidden")
+    {
+        return Err(format!("unexpanded tool text:\n{closed}"));
     }
     let entity: String = sqlx::query_scalar("SELECT gen_random_uuid()::text")
         .fetch_one(&pool)
@@ -1188,6 +1264,563 @@ async fn database_parity_paths() {
         "database_parity_paths",
         "rr2b_paths",
         database_parity_paths_body,
+    )
+    .await;
+}
+
+fn near(actual: f64, expected: f64) -> bool {
+    (actual - expected).abs() < 0.01
+}
+
+fn pair_literal(axis0: f64, axis1: f64) -> String {
+    let mut parts = Vec::with_capacity(1024);
+    for index in 0..1024 {
+        if index == 0 {
+            parts.push(format!("{axis0}"));
+        } else if index == 1 {
+            parts.push(format!("{axis1}"));
+        } else {
+            parts.push("0".to_string());
+        }
+    }
+    format!("[{}]", parts.join(","))
+}
+
+fn query_embedding() -> Vec<f64> {
+    let mut values = vec![0.0; 1024];
+    values[0] = 1.0;
+    values
+}
+
+async fn ranking_fusion_body(pool: PgPool) -> Result<(), String> {
+    let store = PostgresMemory::from_pool_with(
+        pool.clone(),
+        false,
+        &memory::MemoryEmbedConfig {
+            embed_endpoint: Some(String::new()),
+            ..memory::MemoryEmbedConfig::default()
+        },
+    )
+    .map_err(|err| err.to_string())?;
+    let options = capture_options();
+    let dense = format!("dense {}", "alpharank ".repeat(30));
+    let sparse = format!("sparse alpharank {}", "zzzzzz ".repeat(20));
+    MemoryStore::capture(&store, &captured("fuse-dense", "user", &dense), &options)
+        .await
+        .map_err(|err| format!("capture dense: {err}"))?;
+    MemoryStore::capture(&store, &captured("fuse-sparse", "user", &sparse), &options)
+        .await
+        .map_err(|err| format!("capture sparse: {err}"))?;
+    sqlx::query(
+        "UPDATE ros_messages SET created_at = NOW(), access_count = 0 WHERE content LIKE '%alpharank%'",
+    )
+    .execute(&pool)
+    .await
+    .map_err(|err| format!("stamp alpharank: {err}"))?;
+    let formula: Vec<(String, f64)> = sqlx::query_as(
+        "SELECT CASE WHEN content LIKE 'dense %' THEN 'dense' ELSE 'sparse' END,
+                (ts_rank_cd(content_tsv, plainto_tsquery('english', 'alpharank'), 32) * 0.3
+                 + LEAST(length(content) / 1000.0, 1.0) * 0.3
+                 + (EXP(-0.05 * EXTRACT(EPOCH FROM (NOW() - created_at)) / 86400.0)
+                    * (1.0 + 0.01 * LEAST(COALESCE(access_count, 0), 25))) * 0.3
+                 + (CASE WHEN role = 'system' THEN 0.5 WHEN tool_name IS NOT NULL THEN 0.3 WHEN role = 'user' THEN 0.7 ELSE 0.6 END) * 0.1)::float8
+         FROM ros_messages
+         WHERE content LIKE '%alpharank%'
+         ORDER BY 2 DESC",
+    )
+    .fetch_all(&pool)
+    .await
+    .map_err(|err| format!("fts formula: {err}"))?;
+    if formula.first().map(|(name, _)| name.as_str()) != Some("dense") {
+        return Err(format!("fts formula order {formula:?}"));
+    }
+    let fts = store
+        .search_with(
+            "alpharank",
+            &EngineOptions {
+                mode: Some("fts".to_string()),
+                scope: Some("messages".to_string()),
+                limit: Some(10),
+                ..EngineOptions::default()
+            },
+        )
+        .await
+        .map_err(|err| format!("fts search: {err}"))?;
+    let fts_order: Vec<String> = fts
+        .hits
+        .iter()
+        .map(|hit| {
+            if hit.content.starts_with("dense ") {
+                "dense".to_string()
+            } else {
+                "sparse".to_string()
+            }
+        })
+        .collect();
+    if fts_order != ["dense", "sparse"] {
+        return Err(format!("fts order {fts_order:?}"));
+    }
+    for hit in &fts.hits {
+        let name = if hit.content.starts_with("dense ") {
+            "dense"
+        } else {
+            "sparse"
+        };
+        let Some((_, expected)) = formula.iter().find(|(label, _)| label == name) else {
+            return Err(format!("fts hit {name} missing from formula"));
+        };
+        if (hit.score - expected).abs() > 1e-3 {
+            return Err(format!("fts {name} score {} formula {expected}", hit.score));
+        }
+    }
+    let message_body = format!("fusiontoken {}", "m".repeat(40));
+    let summary_body = format!("fusiontoken {}", "s".repeat(40));
+    let summed = MemoryStore::capture(
+        &store,
+        &captured("fuse-sum", "user", &message_body),
+        &options,
+    )
+    .await
+    .map_err(|err| format!("capture fusion message: {err}"))?;
+    sqlx::query(
+        "INSERT INTO ros_summaries (conversation_id, kind, depth, content, message_count)
+         VALUES ($1::uuid, 'leaf', 0, $2, 1)",
+    )
+    .bind(&summed.conversation_id)
+    .bind(&summary_body)
+    .execute(&pool)
+    .await
+    .map_err(|err| format!("insert fusion summary: {err}"))?;
+    sqlx::query(
+        "UPDATE ros_messages SET created_at = NOW(), access_count = 0 WHERE content LIKE 'fusiontoken %'",
+    )
+    .execute(&pool)
+    .await
+    .map_err(|err| format!("stamp fusion message: {err}"))?;
+    sqlx::query(
+        "UPDATE ros_summaries SET created_at = NOW(), access_count = 0 WHERE content LIKE 'fusiontoken %'",
+    )
+    .execute(&pool)
+    .await
+    .map_err(|err| format!("stamp fusion summary: {err}"))?;
+    let bonus = store
+        .search_with(
+            "fusiontoken",
+            &EngineOptions {
+                mode: Some("hybrid".to_string()),
+                scope: Some("both".to_string()),
+                limit: Some(10),
+                ..EngineOptions::default()
+            },
+        )
+        .await
+        .map_err(|err| format!("summary bonus search: {err}"))?;
+    let bonus_types: Vec<&str> = bonus.hits.iter().map(|hit| hit.hit_type.as_str()).collect();
+    if bonus_types != ["summary", "message"] {
+        return Err(format!(
+            "summary bonus order {bonus_types:?} scores {:?}",
+            bonus.hits.iter().map(|hit| hit.score).collect::<Vec<_>>()
+        ));
+    }
+    let summary_score = (1.0 / 22.0) * (1.0 + 0.36) * 1.3;
+    let message_score = (1.0 / 21.0) * (1.0 + 0.37);
+    if !near(bonus.hits[0].score, summary_score) || !near(bonus.hits[1].score, message_score) {
+        return Err(format!(
+            "summary bonus scores {:?} expected {summary_score} then {message_score}",
+            bonus.hits.iter().map(|hit| hit.score).collect::<Vec<_>>()
+        ));
+    }
+    let lead = format!("ftslead {}", "armword ".repeat(25));
+    let both = format!("bothhit armword {}", "q".repeat(40));
+    MemoryStore::capture(&store, &captured("fuse-arm-lead", "user", &lead), &options)
+        .await
+        .map_err(|err| format!("capture fts lead: {err}"))?;
+    MemoryStore::capture(&store, &captured("fuse-arm-both", "user", &both), &options)
+        .await
+        .map_err(|err| format!("capture both arms: {err}"))?;
+    sqlx::query(
+        "UPDATE ros_messages SET created_at = NOW(), access_count = 0, embedding = $1::halfvec(1024) WHERE content LIKE 'bothhit %'",
+    )
+    .bind(pair_literal(1.0, 0.0))
+    .execute(&pool)
+    .await
+    .map_err(|err| format!("embed bothhit: {err}"))?;
+    sqlx::query(
+        "UPDATE ros_messages SET created_at = NOW(), access_count = 0 WHERE content LIKE 'ftslead %'",
+    )
+    .execute(&pool)
+    .await
+    .map_err(|err| format!("stamp fts lead: {err}"))?;
+    let embedding = query_embedding();
+    store.configure_embed(
+        Some("http://127.0.0.1:9".to_string()),
+        "text-embedding-3-small",
+    );
+    store.set_embed_fetch(std::sync::Arc::new(move |_call: EmbedCall| {
+        let body = serde_json::json!({ "data": [{ "embedding": embedding.clone(), "index": 0 }] })
+            .to_string();
+        Box::pin(async move { Ok(EmbedResponse { status: 200, body }) })
+            as std::pin::Pin<
+                Box<
+                    dyn std::future::Future<Output = Result<EmbedResponse, memory::FetchFail>>
+                        + Send,
+                >,
+            >
+    }));
+    let arms = store
+        .search_with(
+            "armword",
+            &EngineOptions {
+                mode: Some("hybrid".to_string()),
+                scope: Some("messages".to_string()),
+                limit: Some(10),
+                ..EngineOptions::default()
+            },
+        )
+        .await
+        .map_err(|err| format!("competing arms: {err}"))?;
+    let arm_order: Vec<&str> = arms
+        .hits
+        .iter()
+        .map(|hit| {
+            if hit.content.starts_with("bothhit ") {
+                "both"
+            } else {
+                "lead"
+            }
+        })
+        .collect();
+    if arm_order != ["both", "lead"] {
+        return Err(format!(
+            "competing-arm order {arm_order:?} scores {:?}",
+            arms.hits.iter().map(|hit| hit.score).collect::<Vec<_>>()
+        ));
+    }
+    let both_score = (1.0 / 22.0 + 1.0 / 21.0) * (1.0 + 0.37);
+    let lead_score = (1.0 / 21.0) * (1.0 + 0.37);
+    if !near(arms.hits[0].score, both_score) || !near(arms.hits[1].score, lead_score) {
+        return Err(format!(
+            "competing-arm scores {:?} expected {both_score} then {lead_score}",
+            arms.hits.iter().map(|hit| hit.score).collect::<Vec<_>>()
+        ));
+    }
+    for index in 0..22 {
+        let content = format!("rank-{index:02} {}", "rankword ".repeat(40 - index));
+        MemoryStore::capture(
+            &store,
+            &captured(&format!("fuse-rank-{index}"), "user", &content),
+            &options,
+        )
+        .await
+        .map_err(|err| format!("capture rank {index}: {err}"))?;
+        sqlx::query(
+            "UPDATE ros_messages SET created_at = NOW(), access_count = 0, embedding = $1::halfvec(1024) WHERE content LIKE $2",
+        )
+        .bind(pair_literal(1.0, index as f64))
+        .bind(format!("rank-{index:02} %"))
+        .execute(&pool)
+        .await
+        .map_err(|err| format!("embed rank {index}: {err}"))?;
+    }
+    let weak_both = format!("rank-weakboth {}{}", "rankword ".repeat(2), "x".repeat(24));
+    let weak_single = format!("rank-single rankword {}", "z".repeat(30));
+    MemoryStore::capture(
+        &store,
+        &captured("fuse-weakboth", "user", &weak_both),
+        &options,
+    )
+    .await
+    .map_err(|err| format!("capture weak both: {err}"))?;
+    MemoryStore::capture(
+        &store,
+        &captured("fuse-single", "user", &weak_single),
+        &options,
+    )
+    .await
+    .map_err(|err| format!("capture weak single: {err}"))?;
+    sqlx::query(
+        "UPDATE ros_messages SET created_at = NOW(), access_count = 0, embedding = $1::halfvec(1024) WHERE content LIKE 'rank-weakboth %'",
+    )
+    .bind(axis_literal(2))
+    .execute(&pool)
+    .await
+    .map_err(|err| format!("embed weak both: {err}"))?;
+    sqlx::query(
+        "UPDATE ros_messages SET created_at = NOW(), access_count = 0 WHERE content LIKE 'rank-single %'",
+    )
+    .execute(&pool)
+    .await
+    .map_err(|err| format!("stamp weak single: {err}"))?;
+    let gated = store
+        .search_with(
+            "rankword",
+            &EngineOptions {
+                mode: Some("hybrid".to_string()),
+                scope: Some("messages".to_string()),
+                limit: Some(30),
+                ..EngineOptions::default()
+            },
+        )
+        .await
+        .map_err(|err| format!("gate search: {err}"))?;
+    let top = gated
+        .hits
+        .first()
+        .ok_or_else(|| "gate search returned nothing".to_string())?;
+    if !top.content.starts_with("rank-00 ") {
+        return Err(format!(
+            "gate top {:?} score {}",
+            top.content.chars().take(12).collect::<String>(),
+            top.score
+        ));
+    }
+    let Some(weak) = gated
+        .hits
+        .iter()
+        .find(|hit| hit.content.starts_with("rank-weakboth "))
+    else {
+        return Err(format!(
+            "gate dropped the two-arm tail; hits {}",
+            gated.hits.len()
+        ));
+    };
+    if weak.score >= top.score * 0.5 {
+        return Err(format!(
+            "two-arm tail {} is not below half of {}",
+            weak.score, top.score
+        ));
+    }
+    if gated
+        .hits
+        .iter()
+        .any(|hit| hit.content.starts_with("rank-single "))
+    {
+        return Err(format!(
+            "gate kept the single-arm tail score {}",
+            gated
+                .hits
+                .iter()
+                .find(|hit| hit.content.starts_with("rank-single "))
+                .map(|hit| hit.score)
+                .unwrap_or(0.0)
+        ));
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn ranking_fusion() {
+    with_schema("ranking_fusion", "rr2b_fuse", ranking_fusion_body).await;
+}
+
+fn advisory_key_sql(column: &str) -> String {
+    format!(
+        "{column}.classid::bigint = ((hashtextextended($1, 0) >> 32) & 4294967295)
+         AND {column}.objid::bigint = (hashtextextended($1, 0) & 4294967295)
+         AND {column}.objsubid = 1
+         AND {column}.locktype = 'advisory'"
+    )
+}
+
+async fn cancelled_taxonomy_body(pool: PgPool) -> Result<(), String> {
+    let store = PostgresMemory::from_pool_with(
+        pool.clone(),
+        false,
+        &memory::MemoryEmbedConfig {
+            embed_endpoint: Some(String::new()),
+            ..memory::MemoryEmbedConfig::default()
+        },
+    )
+    .map_err(|err| err.to_string())?;
+    sqlx::query(
+        "CREATE FUNCTION rr2b_hold() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_sleep(3); RETURN NEW; END $$",
+    )
+    .execute(&pool)
+    .await
+    .map_err(|err| format!("hold function: {err}"))?;
+    sqlx::query(
+        "CREATE TRIGGER rr2b_hold_ins AFTER INSERT ON ros_tag_taxonomy FOR EACH ROW EXECUTE FUNCTION rr2b_hold()",
+    )
+    .execute(&pool)
+    .await
+    .map_err(|err| format!("hold trigger: {err}"))?;
+    let key = format!("c{}", std::process::id());
+    let lock_name = format!("ros_tag_taxonomy:{key}");
+    let tags = store.tag_conn();
+    let task_tags = tags.clone();
+    let task_key = key.clone();
+    let task = tokio::spawn(async move {
+        memory::tags::upsert_taxonomy(
+            &task_tags,
+            &memory::tags::UpsertTaxonomy {
+                key: task_key,
+                value: "blocked".to_string(),
+                display: None,
+                parent: memory::tags::ParentSet::Omitted,
+                aliases: None,
+                state: None,
+                reason: Some("cancel".to_string()),
+            },
+            None,
+        )
+        .await
+    });
+    let waiter = format!(
+        "SELECT a.pid FROM pg_stat_activity a
+         JOIN pg_locks l ON l.pid = a.pid AND l.granted
+         WHERE a.pid <> pg_backend_pid()
+           AND a.state = 'active'
+           AND a.wait_event_type = 'Timeout'
+           AND {}
+         LIMIT 1",
+        advisory_key_sql("l")
+    );
+    let mut holder = pool
+        .acquire()
+        .await
+        .map_err(|err| format!("acquire holder: {err}"))?;
+    let mut seen = false;
+    for _ in 0..50 {
+        let pid: Option<i32> = sqlx::query_scalar(audited(waiter.clone()))
+            .bind(&lock_name)
+            .fetch_optional(&mut *holder)
+            .await
+            .map_err(|err| format!("wait for taxonomy insert: {err}"))?;
+        if pid.is_some() {
+            seen = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    if !seen {
+        task.abort();
+        let joined = task.await;
+        return Err(format!(
+            "upsert did not reach the taxonomy insert: {joined:?}"
+        ));
+    }
+    task.abort();
+    let _ = task.await;
+    drop(holder);
+    let granted = format!(
+        "SELECT count(*)::bigint FROM pg_locks l WHERE l.granted AND {}",
+        advisory_key_sql("l")
+    );
+    let mut released = false;
+    for _ in 0..80 {
+        let count: i64 = sqlx::query_scalar(audited(granted.clone()))
+            .bind(&lock_name)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| format!("advisory count: {err}"))?;
+        if count == 0 {
+            released = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    if !released {
+        return Err("cancelled taxonomy transaction kept the advisory lock".to_string());
+    }
+    let kept: i64 = sqlx::query_scalar(
+        "SELECT count(*)::bigint FROM ros_tag_taxonomy WHERE key = $1 AND value = 'blocked'",
+    )
+    .bind(&key)
+    .fetch_one(&pool)
+    .await
+    .map_err(|err| format!("blocked row: {err}"))?;
+    if kept != 0 {
+        return Err(format!("cancelled taxonomy insert persisted {kept} rows"));
+    }
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(8);
+    let mut first = None;
+    let mut second = None;
+    while tokio::time::Instant::now() < deadline && (first.is_none() || second.is_none()) {
+        if first.is_none() {
+            first = pool.try_acquire();
+        }
+        if second.is_none() {
+            second = pool.try_acquire();
+        }
+        if first.is_some() && second.is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    let mut first = first.ok_or_else(|| "pool withheld a connection after cancel".to_string())?;
+    let mut second =
+        second.ok_or_else(|| "pool withheld the second connection after cancel".to_string())?;
+    for conn in [&mut first, &mut second] {
+        let txid: Option<i64> = sqlx::query_scalar("SELECT txid_current_if_assigned()")
+            .fetch_one(&mut **conn)
+            .await
+            .map_err(|err| format!("txid: {err}"))?;
+        if txid.is_some() {
+            return Err("cancelled taxonomy transaction returned an open transaction".to_string());
+        }
+    }
+    drop(first);
+    drop(second);
+    let mut proof = pool
+        .acquire()
+        .await
+        .map_err(|err| format!("proof acquire: {err}"))?;
+    sqlx::query("BEGIN")
+        .execute(&mut *proof)
+        .await
+        .map_err(|err| format!("proof begin: {err}"))?;
+    sqlx::query("SET LOCAL lock_timeout = '2s'")
+        .execute(&mut *proof)
+        .await
+        .map_err(|err| format!("proof timeout: {err}"))?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(&lock_name)
+        .execute(&mut *proof)
+        .await
+        .map_err(|err| format!("advisory lock still held: {err}"))?;
+    sqlx::query("COMMIT")
+        .execute(&mut *proof)
+        .await
+        .map_err(|err| format!("proof commit: {err}"))?;
+    drop(proof);
+    sqlx::query("DROP TRIGGER rr2b_hold_ins ON ros_tag_taxonomy")
+        .execute(&pool)
+        .await
+        .map_err(|err| format!("drop trigger: {err}"))?;
+    memory::tags::upsert_taxonomy(
+        &tags,
+        &memory::tags::UpsertTaxonomy {
+            key: key.clone(),
+            value: "kept".to_string(),
+            display: None,
+            parent: memory::tags::ParentSet::Omitted,
+            aliases: None,
+            state: None,
+            reason: None,
+        },
+        None,
+    )
+    .await
+    .map_err(|err| format!("follow-up upsert: {err}"))?;
+    let saved: i64 = sqlx::query_scalar(
+        "SELECT count(*)::bigint FROM ros_tag_taxonomy WHERE key = $1 AND value = 'kept'",
+    )
+    .bind(&key)
+    .fetch_one(&pool)
+    .await
+    .map_err(|err| format!("kept row: {err}"))?;
+    if saved != 1 {
+        return Err(format!("follow-up upsert saved {saved}"));
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn cancelled_taxonomy_rolls_back() {
+    with_schema(
+        "cancelled_taxonomy_rolls_back",
+        "rr2b_tax",
+        cancelled_taxonomy_body,
     )
     .await;
 }

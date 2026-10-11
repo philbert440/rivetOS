@@ -118,11 +118,13 @@ pub struct AddTagInput {
 pub type Handler = Arc<dyn Fn(&str, &[Bind]) -> Result<QueryResult, String> + Send + Sync>;
 pub type TagCalls = Arc<Mutex<Vec<(String, Vec<Bind>)>>>;
 type TagSession = Arc<tokio::sync::Mutex<sqlx::pool::PoolConnection<sqlx::Postgres>>>;
+type TagTx = Arc<tokio::sync::Mutex<Option<sqlx::Transaction<'static, sqlx::Postgres>>>>;
 
 enum TagBackend {
     Handler(Handler),
     Pool(PgPool),
     Session(TagSession),
+    Tx(TagTx),
 }
 
 impl Clone for TagBackend {
@@ -131,6 +133,7 @@ impl Clone for TagBackend {
             Self::Handler(handler) => Self::Handler(handler.clone()),
             Self::Pool(pool) => Self::Pool(pool.clone()),
             Self::Session(session) => Self::Session(session.clone()),
+            Self::Tx(tx) => Self::Tx(tx.clone()),
         }
     }
 }
@@ -197,7 +200,32 @@ impl TagConn {
                     .await
                     .map_err(|err| err.message)
             }
+            TagBackend::Tx(slot) => {
+                let mut guard = slot.lock().await;
+                let Some(tx) = guard.as_mut() else {
+                    return Err("taxonomy transaction is closed".to_string());
+                };
+                exec_query(tx, sql, params).await.map_err(|err| err.message)
+            }
         }
+    }
+}
+
+async fn finish_taxonomy_tx(session: &TagConn, commit: bool) -> Result<(), String> {
+    let TagBackend::Tx(slot) = &session.backend else {
+        return Ok(());
+    };
+    let Some(tx) = slot.lock().await.take() else {
+        return Ok(());
+    };
+    if commit {
+        tx.commit()
+            .await
+            .map_err(|err| DbFail::from_sqlx(err).message)
+    } else {
+        tx.rollback()
+            .await
+            .map_err(|err| DbFail::from_sqlx(err).message)
     }
 }
 
@@ -207,37 +235,39 @@ where
     F: for<'a> FnOnce(&'a TagConn) -> Pin<Box<dyn Future<Output = Result<T, String>> + Send + 'a>>,
 {
     if let TagBackend::Pool(pool) = &db.backend {
-        let conn = pool
-            .acquire()
+        let tx = pool
+            .begin()
             .await
             .map_err(|err| DbFail::from_sqlx(err).message)?;
         let session = TagConn {
-            backend: TagBackend::Session(Arc::new(tokio::sync::Mutex::new(conn))),
+            backend: TagBackend::Tx(Arc::new(tokio::sync::Mutex::new(Some(tx)))),
             record: false,
             calls: db.calls.clone(),
             connect_to: None,
             total_count: None,
             releases: db.releases.clone(),
         };
-        let out = async {
-            session.query("BEGIN", &[]).await?;
-            if let Some(name) = lock_name {
-                session
-                    .query(
-                        "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
-                        &[Bind::Text(name.to_string())],
-                    )
-                    .await?;
+        if let Some(name) = lock_name
+            && let Err(err) = session
+                .query(
+                    "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+                    &[Bind::Text(name.to_string())],
+                )
+                .await
+        {
+            let _ = finish_taxonomy_tx(&session, false).await;
+            return Err(err);
+        }
+        return match f(&session).await {
+            Ok(value) => {
+                finish_taxonomy_tx(&session, true).await?;
+                Ok(value)
             }
-            let value = f(&session).await?;
-            session.query("COMMIT", &[]).await?;
-            Ok(value)
-        }
-        .await;
-        if out.is_err() {
-            let _ = session.query("ROLLBACK", &[]).await;
-        }
-        return out;
+            Err(err) => {
+                let _ = finish_taxonomy_tx(&session, false).await;
+                Err(err)
+            }
+        };
     }
     let Some(client) = db.connect_to.clone().filter(|_| db.total_count.is_some()) else {
         return f(db).await;

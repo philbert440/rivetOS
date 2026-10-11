@@ -224,7 +224,7 @@ async fn run_token_command(argv: Vec<String>, timeout_ms: i64) -> Result<String,
     })
     .await;
     let mut child = match spawned {
-        Err(_) => return Err(format!("token_command timed out after {timeout_ms} ms")),
+        Err(_) => return Err(timed_out(timeout_ms)),
         Ok(Err(err)) => return Err(spawn_fail(err)),
         Ok(Ok(child)) => child,
     };
@@ -245,23 +245,34 @@ async fn run_token_command(argv: Vec<String>, timeout_ms: i64) -> Result<String,
     drop(stdout);
     match read_result {
         None => {
-            let _ = child.start_kill();
-            let _ = child.wait().await;
-            Err(format!("token_command timed out after {timeout_ms} ms"))
+            kill_and_reap(&mut child).await;
+            Err(timed_out(timeout_ms))
         }
         Some(Err(())) => {
-            let _ = child.start_kill();
-            let _ = child.wait().await;
-            Err("token_command failed (exit ERR_CHILD_PROCESS_STDIO_MAXBUFFER)".to_string())
+            kill_and_reap(&mut child).await;
+            Err(timed_out(timeout_ms))
         }
         Some(Ok(bytes)) => {
-            let status = match child.wait().await {
-                Ok(status) => status,
-                Err(_) => return Err("token_command failed (exit error)".to_string()),
+            let status = match tokio::time::timeout_at(deadline, child.wait()).await {
+                Ok(Ok(status)) => status,
+                Ok(Err(_)) => return Err("token_command failed (exit error)".to_string()),
+                Err(_) => {
+                    kill_and_reap(&mut child).await;
+                    return Err(timed_out(timeout_ms));
+                }
             };
             finish_token(bytes, status)
         }
     }
+}
+
+fn timed_out(timeout_ms: i64) -> String {
+    format!("token_command timed out after {timeout_ms} ms")
+}
+
+async fn kill_and_reap(child: &mut tokio::process::Child) {
+    let _ = child.start_kill();
+    let _ = child.wait().await;
 }
 
 async fn read_capped(
@@ -637,9 +648,23 @@ mod tests {
             .await
             .expect("runner returned")
             .expect_err("overflow");
-        assert_eq!(
-            err,
-            "token_command failed (exit ERR_CHILD_PROCESS_STDIO_MAXBUFFER)"
-        );
+        assert_eq!(err, "token_command timed out after 2000 ms");
+        let closed = TokenSource::new(
+            vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                "exec 1>&-; exec sleep 30".into(),
+            ],
+            None,
+            Some(300),
+            None,
+            None,
+        )
+        .unwrap();
+        let err = tokio::time::timeout(Duration::from_secs(3), closed.get_token())
+            .await
+            .expect("runner returned")
+            .expect_err("closed stdout");
+        assert_eq!(err, "token_command timed out after 300 ms");
     }
 }

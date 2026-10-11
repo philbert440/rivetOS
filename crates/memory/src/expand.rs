@@ -154,17 +154,18 @@ impl Default for SearchToolView {
             mode: "hybrid".to_string(),
             degraded_reason: None,
             chunk_reason: None,
-            now_ms: 0,
+            now_ms: crate::error::now_ms(),
         }
     }
 }
 
 pub async fn search_tool_output<D: SearchDb>(
     expander: &Expander<D>,
+    tags: &crate::tags::TagConn,
     query: &str,
     hits: &[SearchHit],
     view: &SearchToolView,
-) -> String {
+) -> Result<String, String> {
     let expanded = if view.expand {
         auto_expand_summaries(expander, hits)
             .await
@@ -192,10 +193,14 @@ pub async fn search_tool_output<D: SearchDb>(
     } else {
         Vec::new()
     };
-    format_search_tool_output(
+    let mut tool_hits: Vec<ToolHit> = hits.iter().map(tool_hit_from_search).collect();
+    if !hits.is_empty() {
+        attach_conversation_tags(tags, hits, &mut tool_hits).await?;
+    }
+    Ok(format_search_tool_output(
         query,
         &ToolResults {
-            hits: hits.iter().map(tool_hit_from_search).collect(),
+            hits: tool_hits,
             degraded_reason: view.degraded_reason.clone(),
             chunk_reason: view.chunk_reason.clone(),
             mode: view.mode.clone(),
@@ -206,7 +211,51 @@ pub async fn search_tool_output<D: SearchDb>(
             expanded,
         },
         view.now_ms,
+    ))
+}
+
+async fn attach_conversation_tags(
+    db: &crate::tags::TagConn,
+    hits: &[SearchHit],
+    tool_hits: &mut [ToolHit],
+) -> Result<(), String> {
+    let ids: Vec<String> = hits.iter().map(|hit| hit.conversation_id.clone()).collect();
+    let grouped = match crate::tags::tags_for_conversations(
+        db,
+        &ids,
+        Some(vec!["accepted".to_string()]),
+        true,
+        None,
     )
+    .await
+    {
+        Ok(grouped) => grouped,
+        Err(err) if tag_lookup_silent(&err) => return Ok(()),
+        Err(err) => return Err(err),
+    };
+    let mut by_id: HashMap<String, Vec<String>> = HashMap::new();
+    for (id, found) in grouped {
+        by_id.insert(
+            id,
+            found
+                .iter()
+                .map(|tag| crate::slug::format_tag(&tag.key, &tag.value, &tag.display))
+                .collect(),
+        );
+    }
+    for (hit, tool_hit) in hits.iter().zip(tool_hits.iter_mut()) {
+        if let Some(labels) = by_id.get(&hit.conversation_id)
+            && !labels.is_empty()
+        {
+            tool_hit.tags = labels.clone();
+        }
+    }
+    Ok(())
+}
+
+fn tag_lookup_silent(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("does not exist") || lower.contains("relation")
 }
 
 fn tool_hit_from_search(hit: &SearchHit) -> ToolHit {
@@ -573,5 +622,125 @@ mod tests {
         high.id = "root".to_string();
         let failed = auto_expand_summaries(&expander, &[high]).await;
         assert!(failed[0].children.is_empty());
+    }
+
+    fn tool_view(now_ms: i64) -> SearchToolView {
+        SearchToolView {
+            expand: false,
+            now_ms,
+            ..SearchToolView::default()
+        }
+    }
+
+    fn tagged_hit(hit_type: &str, id: &str) -> SearchHit {
+        SearchHit {
+            id: id.to_string(),
+            hit_type: hit_type.to_string(),
+            content: format!("{id} body"),
+            role: "user".to_string(),
+            agent: "ranker".to_string(),
+            conversation_id: "conv-1".to_string(),
+            score: 0.4,
+            created_at: stamp(),
+            truncated: false,
+            full_length: None,
+            tool_name: None,
+            tool_result: None,
+            kind: Some("leaf".to_string()),
+            earliest_at: None,
+            latest_at: None,
+            fallback: None,
+            degraded: None,
+            chunk_arm: None,
+            snippet: None,
+        }
+    }
+
+    fn tag_row() -> HashMap<String, Cell> {
+        let mut row = HashMap::new();
+        row.insert("id".to_string(), Cell::Text("t1".to_string()));
+        row.insert(
+            "entity_type".to_string(),
+            Cell::Text("conversation".to_string()),
+        );
+        row.insert("entity_id".to_string(), Cell::Text("conv-1".to_string()));
+        row.insert("key".to_string(), Cell::Text("project".to_string()));
+        row.insert("value".to_string(), Cell::Text("acmeapp".to_string()));
+        row.insert("display".to_string(), Cell::Text("AcmeApp".to_string()));
+        row.insert("source".to_string(), Cell::Text("user".to_string()));
+        row.insert("state".to_string(), Cell::Text("accepted".to_string()));
+        row.insert(
+            "conversation_id".to_string(),
+            Cell::Text("conv-1".to_string()),
+        );
+        row
+    }
+
+    #[test]
+    fn search_tool_view_uses_the_clock() {
+        let before = crate::error::now_ms();
+        let view = SearchToolView::default();
+        let after = crate::error::now_ms();
+        assert!(view.now_ms > 0);
+        assert!(view.now_ms >= before && view.now_ms <= after);
+        assert!(view.expand);
+    }
+
+    #[tokio::test]
+    async fn search_tool_output_loads_conversation_tags() {
+        let tags = crate::tags::TagConn::from_handler(Arc::new(|sql, params| {
+            assert!(sql.contains("ros_summaries"));
+            assert!(sql.contains("state = ANY($2::text[])"));
+            assert!(
+                matches!(&params[1], Bind::Texts(states) if states == &vec!["accepted".to_string()])
+            );
+            Ok(QueryResult {
+                rows: vec![tag_row()],
+                row_count: 1,
+            })
+        }));
+        let hits = vec![
+            tagged_hit("summary", "sum-1"),
+            tagged_hit("message", "msg-1"),
+        ];
+        let rendered = search_tool_output(
+            &Expander::new(db()),
+            &tags,
+            "deploy",
+            &hits,
+            &tool_view(1_700_000_000_000),
+        )
+        .await
+        .expect("tags");
+        assert_eq!(rendered.matches("tags: project:AcmeApp").count(), 2);
+        assert!(rendered.contains("### Summaries\n"));
+        assert!(rendered.contains("### Messages\n"));
+        let missing = crate::tags::TagConn::from_handler(Arc::new(|_, _| {
+            Err("relation \"ros_tags\" does not exist".to_string())
+        }));
+        let plain = search_tool_output(
+            &Expander::new(db()),
+            &missing,
+            "deploy",
+            &hits,
+            &tool_view(1_700_000_000_000),
+        )
+        .await
+        .expect("missing relation");
+        assert!(!plain.contains("tags:"));
+        let broken =
+            crate::tags::TagConn::from_handler(Arc::new(
+                |_, _| Err("connection reset".to_string()),
+            ));
+        let err = search_tool_output(
+            &Expander::new(db()),
+            &broken,
+            "deploy",
+            &hits,
+            &tool_view(1_700_000_000_000),
+        )
+        .await
+        .expect_err("hard error");
+        assert!(err.contains("connection reset"));
     }
 }
