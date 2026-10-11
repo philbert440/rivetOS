@@ -6,18 +6,20 @@ use serde::Serialize;
 use serde_json::Value;
 use tokio::io::AsyncWriteExt;
 
+use crate::config_resolve::{embedded_pg_env, embedded_pg_url};
 use crate::error::{LocalDbError, Result};
 use crate::lock::{
-    EmbeddedPgLog, LockClaim, claim_owner_lock, embedded_pg_lock_alive, read_embedded_pg_lock,
-    release_owner_lock,
+    EmbeddedPgLog, LockClaim, PidProbe, claim_owner_lock, embedded_pg_lock_alive, probe_lock_pid,
+    read_embedded_pg_lock, release_owner_lock,
 };
 use crate::paths::{lexical_absolute, migrate_dir, shell_quote};
 use crate::process::wait_child;
-use crate::sql_compat::{quote_ident, safe_pg_type};
+use crate::sql_compat::quote_ident;
 
 pub const MIGRATE_PENDING_FILE: &str = "rivetos-migrate-pending";
 pub const EXPORT_TIMEOUT: Duration = Duration::from_secs(600);
 const NODE_PROBE_TIMEOUT: Duration = Duration::from_secs(30);
+const LEDGER_LOCK_TIMEOUT: Duration = Duration::from_secs(30);
 const LOCKFILE: &str = "rivetos-owner.lock";
 
 const EXPORT_SCRIPT: &str = include_str!("pglite_export.mjs");
@@ -40,6 +42,13 @@ pub enum MigrationPlan {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PglitePaths {
+    pub entry: PathBuf,
+    pub vector: Option<PathBuf>,
+    pub trgm: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExportRequest {
     pub source_copy: PathBuf,
     pub script: PathBuf,
@@ -47,6 +56,7 @@ pub struct ExportRequest {
     pub pglite_entry: PathBuf,
     pub vector_entry: Option<PathBuf>,
     pub trgm_entry: Option<PathBuf>,
+    pub pg_url: String,
     pub command: String,
 }
 
@@ -57,29 +67,45 @@ pub struct BoundInsert {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RowBatch {
+    pub schema: String,
+    pub table: String,
+    pub columns: Vec<String>,
+    pub rows: Vec<Vec<Option<String>>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DestColumn {
+    pub name: String,
+    pub type_name: String,
+    pub generated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExportAction {
     Exec(String),
-    Insert(BoundInsert),
+    Insert(RowBatch),
     Count {
         schema: String,
         table: String,
         expected: i64,
     },
+    Setval {
+        schema: String,
+        name: String,
+        last: String,
+        called: bool,
+    },
     Done,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum Cell {
-    Null,
-    Text(String),
-    Bool(bool),
-    Json(String),
-    Bytea(String),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 struct MigratedFile {
     sources: Vec<String>,
+}
+
+struct LedgerLock {
+    path: PathBuf,
 }
 
 pub fn pending_marker(engine_dir: &Path) -> PathBuf {
@@ -96,6 +122,10 @@ pub fn migrated_record(home: &Path) -> PathBuf {
 
 pub fn work_dir(home: &Path) -> PathBuf {
     migrate_dir(home).join("work")
+}
+
+pub fn store_work_dir(home: &Path, source: &Path) -> PathBuf {
+    work_dir(home).join(store_slug(source))
 }
 
 pub fn plan_migration(
@@ -154,6 +184,7 @@ pub fn source_is_migrated(home: &Path, source: &Path) -> Result<bool> {
 }
 
 pub async fn record_migrated_sources(home: &Path, sources: &[PathBuf]) -> Result<()> {
+    let _lock = LedgerLock::acquire(home).await?;
     let mut existing = load_migrated(home)?;
     for source in sources {
         let key = source_key(source);
@@ -164,11 +195,72 @@ pub async fn record_migrated_sources(home: &Path, sources: &[PathBuf]) -> Result
     let body = serde_json::to_vec(&MigratedFile { sources: existing })
         .map_err(|error| LocalDbError::Json(error.to_string()))?;
     let path = migrated_record(home);
-    write_private(&path, &body).await
+    write_atomic(&path, &body).await
 }
 
-pub async fn clear_work(home: &Path) -> Result<()> {
-    remove_dir_if_present(&work_dir(home)).await
+pub async fn clear_store_work(home: &Path, source: &Path) -> Result<()> {
+    remove_dir_if_present(&store_work_dir(home, source)).await
+}
+
+pub fn copy_this_table(table: &str) -> bool {
+    table != "_rivetos_migrations"
+}
+
+pub fn setval_statement() -> &'static str {
+    "SELECT setval(format('%I.%I', $1::text, $2::text)::regclass, $3::text::bigint, $4::text::boolean)"
+}
+
+pub fn plan_insert(
+    schema: &str,
+    table: &str,
+    export_columns: &[String],
+    dest: &[DestColumn],
+    rows: &[Vec<Option<String>>],
+) -> Result<Option<BoundInsert>> {
+    let mut kept = Vec::new();
+    for (index, name) in export_columns.iter().enumerate() {
+        let Some(column) = dest.iter().find(|column| &column.name == name) else {
+            continue;
+        };
+        if column.generated {
+            continue;
+        }
+        kept.push((index, name.clone(), column.type_name.clone()));
+    }
+    if kept.is_empty() || rows.is_empty() {
+        return Ok(None);
+    }
+    let mut params = Vec::new();
+    let mut tuples = Vec::new();
+    let mut number = 1usize;
+    for row in rows {
+        if row.len() != export_columns.len() {
+            return Err(LocalDbError::message(format!(
+                "embedded postgres: PGlite insert row for {schema}.{table} has the wrong width"
+            )));
+        }
+        let mut places = Vec::new();
+        for (index, _, type_name) in &kept {
+            places.push(format!("(${number}::text)::{type_name}"));
+            params.push(row[*index].clone());
+            number += 1;
+        }
+        tuples.push(format!("({})", places.join(", ")));
+    }
+    let listed = kept
+        .iter()
+        .map(|(_, name, _)| quote_ident(name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Ok(Some(BoundInsert {
+        sql: format!(
+            "INSERT INTO {}.{} ({listed}) VALUES {}",
+            quote_ident(schema),
+            quote_ident(table),
+            tuples.join(", ")
+        ),
+        params,
+    }))
 }
 
 pub fn parse_export_line(line: &str) -> Result<Option<ExportAction>> {
@@ -183,29 +275,25 @@ pub fn parse_export_line(line: &str) -> Result<Option<ExportAction>> {
         .and_then(Value::as_str)
         .ok_or_else(|| LocalDbError::message("embedded postgres: PGlite export line has no op"))?;
     let action = match op {
-        "extension" => ExportAction::Exec(create_extension(&required_str(&value, "name")?)?),
-        "schema" => ExportAction::Exec(format!(
-            "CREATE SCHEMA IF NOT EXISTS {}",
-            quote_ident(&required_str(&value, "name")?)
-        )),
-        "table" => ExportAction::Exec(create_table(&value)?),
-        "pk" => ExportAction::Exec(add_primary_key(&value)?),
         "begin" => ExportAction::Exec("BEGIN".to_string()),
         "commit" => ExportAction::Exec("COMMIT".to_string()),
-        "insert" => {
-            let insert = build_insert(&value)?;
-            if insert.params.is_empty() {
-                return Ok(None);
-            }
-            ExportAction::Insert(insert)
-        }
+        "insert" => ExportAction::Insert(parse_insert(&value)?),
         "count" => ExportAction::Count {
             schema: required_str(&value, "schema")?,
             table: required_str(&value, "table")?,
             expected: required_i64(&value, "n")?,
         },
-        "sql" => ExportAction::Exec(required_str(&value, "sql")?),
-        "setval" => ExportAction::Exec(setval_sql(&value)?),
+        "setval" => ExportAction::Setval {
+            schema: required_str(&value, "schema")?,
+            name: required_str(&value, "name")?,
+            last: sequence_last(&value)?,
+            called: value
+                .get("called")
+                .and_then(Value::as_bool)
+                .ok_or_else(|| {
+                    LocalDbError::message("embedded postgres: PGlite setval needs called")
+                })?,
+        },
         "done" => ExportAction::Done,
         other => {
             return Err(LocalDbError::message(format!(
@@ -244,8 +332,8 @@ pub async fn export_pglite_source(
     log: &dyn EmbeddedPgLog,
 ) -> Result<PathBuf> {
     let held = guard_pglite_source(source, port, log).await?;
-    clear_work(home).await?;
-    let snap = work_dir(home).join("snapshot");
+    clear_store_work(home, source).await?;
+    let snap = store_work_dir(home, source).join("snapshot");
     let copied = snapshot_source(source, &snap).await;
     if let Some(path) = &held {
         release_owner_lock(path).await?;
@@ -256,7 +344,7 @@ pub async fn export_pglite_source(
         source.display(),
         snap.display()
     ));
-    let request = prepare_export(home, &snap, rivet_root, log).await?;
+    let request = prepare_export(home, source, &snap, rivet_root, port, log).await?;
     run_export(&request, log).await?;
     Ok(request.export_out)
 }
@@ -279,20 +367,7 @@ pub fn package_entry(dir: &Path, export_key: &str) -> Result<PathBuf> {
     Ok(dir.join(relative))
 }
 
-async fn prepare_export(
-    home: &Path,
-    source_copy: &Path,
-    rivet_root: Option<&str>,
-    log: &dyn EmbeddedPgLog,
-) -> Result<ExportRequest> {
-    let Some(root) = rivet_root.filter(|value| !value.is_empty()) else {
-        let command = fallback_command(home, source_copy);
-        return Err(LocalDbError::message(format!(
-            "embedded postgres: RIVETOS_ROOT is not set, so @electric-sql/pglite cannot be located. {}",
-            node_missing_message(&command)
-        )));
-    };
-    let root = PathBuf::from(root);
+pub fn locate_pglite(root: &Path) -> Result<PglitePaths> {
     let pglite_boot = join_rel(&[
         "packages",
         "boot",
@@ -308,12 +383,12 @@ async fn prepare_export(
         "pglite-pgvector",
     ]);
     let pglite_dir = find_package(
-        &root,
+        root,
         &["node_modules/@electric-sql/pglite", pglite_boot.as_str()],
     )?;
-    let pglite_entry = package_entry(&pglite_dir, ".")?;
-    let vector_entry = find_package(
-        &root,
+    let entry = package_entry(&pglite_dir, ".")?;
+    let vector = find_package(
+        root,
         &[
             "node_modules/@electric-sql/pglite-pgvector",
             vector_boot.as_str(),
@@ -321,18 +396,42 @@ async fn prepare_export(
     )
     .ok()
     .and_then(|dir| package_entry(&dir, ".").ok());
-    let trgm_entry = package_entry(&pglite_dir, "./contrib/pg_trgm").ok();
-    let migrate = migrate_dir(home);
-    tokio::fs::create_dir_all(&migrate).await?;
-    let script = migrate.join("pglite_export.mjs");
+    let trgm = package_entry(&pglite_dir, "./contrib/pg_trgm").ok();
+    Ok(PglitePaths {
+        entry,
+        vector,
+        trgm,
+    })
+}
+
+async fn prepare_export(
+    home: &Path,
+    source: &Path,
+    source_copy: &Path,
+    rivet_root: Option<&str>,
+    port: u16,
+    log: &dyn EmbeddedPgLog,
+) -> Result<ExportRequest> {
+    let Some(root) = rivet_root.filter(|value| !value.is_empty()) else {
+        let command = fallback_command(home, source);
+        return Err(LocalDbError::message(format!(
+            "embedded postgres: RIVETOS_ROOT is not set, so @electric-sql/pglite cannot be located. {}",
+            node_missing_message(&command)
+        )));
+    };
+    let paths = locate_pglite(Path::new(root))?;
+    let work = store_work_dir(home, source);
+    tokio::fs::create_dir_all(&work).await?;
+    let script = work.join("pglite_export.mjs");
     write_script(&script).await?;
     let request = ExportRequest {
         source_copy: source_copy.to_path_buf(),
         script,
-        export_out: work_dir(home).join("pglite-export.jsonl"),
-        pglite_entry,
-        vector_entry,
-        trgm_entry,
+        export_out: work.join("pglite-export.jsonl"),
+        pglite_entry: paths.entry,
+        vector_entry: paths.vector,
+        trgm_entry: paths.trgm,
+        pg_url: embedded_pg_url(i64::from(port)),
         command: String::new(),
     };
     let command = export_command(&request);
@@ -368,6 +467,7 @@ async fn run_export(request: &ExportRequest, log: &dyn EmbeddedPgLog) -> Result<
     if let Some(trgm) = &request.trgm_entry {
         command.arg("--trgm").arg(trgm);
     }
+    embedded_pg_env(&request.pg_url).apply_to_tokio(&mut command);
     let child = command.spawn().map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
             LocalDbError::message(node_missing_message(&request.command))
@@ -421,117 +521,20 @@ fn export_command(request: &ExportRequest) -> String {
     parts.join(" ")
 }
 
-fn create_extension(name: &str) -> Result<String> {
-    if name.is_empty()
-        || !name
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
-    {
-        return Err(LocalDbError::message(format!(
-            "embedded postgres: refusing PGlite extension name {name}"
-        )));
-    }
-    Ok(format!("CREATE EXTENSION IF NOT EXISTS {name}"))
-}
-
-fn create_table(value: &Value) -> Result<String> {
-    let schema = required_str(value, "schema")?;
-    let name = required_str(value, "name")?;
-    let columns = value
-        .get("columns")
-        .and_then(Value::as_array)
-        .ok_or_else(|| LocalDbError::message("embedded postgres: PGlite table has no columns"))?;
-    if columns.is_empty() {
-        return Err(LocalDbError::message(format!(
-            "embedded postgres: PGlite table {schema}.{name} has no columns"
-        )));
-    }
-    let mut parts = Vec::new();
-    for column in columns {
-        let column_name = required_str(column, "name")?;
-        let column_type = required_str(column, "type")?;
-        if !safe_pg_type(&column_type) {
-            return Err(LocalDbError::message(format!(
-                "embedded postgres: refusing PGlite column type {column_type}"
-            )));
-        }
-        let mut part = format!("{} {}", quote_ident(&column_name), column_type);
-        let nullable = column
-            .get("nullable")
-            .and_then(Value::as_bool)
-            .unwrap_or(true);
-        if !nullable {
-            part.push_str(" NOT NULL");
-        }
-        parts.push(part);
-    }
-    Ok(format!(
-        "CREATE TABLE {}.{} ({})",
-        quote_ident(&schema),
-        quote_ident(&name),
-        parts.join(", ")
-    ))
-}
-
-fn add_primary_key(value: &Value) -> Result<String> {
+fn parse_insert(value: &Value) -> Result<RowBatch> {
     let schema = required_str(value, "schema")?;
     let table = required_str(value, "table")?;
     let columns = string_list(value, "columns")?;
     if columns.is_empty() {
-        return Err(LocalDbError::message(
-            "embedded postgres: PGlite primary key has no columns",
-        ));
-    }
-    let listed = columns
-        .iter()
-        .map(|column| quote_ident(column))
-        .collect::<Vec<_>>()
-        .join(", ");
-    Ok(format!(
-        "ALTER TABLE {}.{} ADD PRIMARY KEY ({listed})",
-        quote_ident(&schema),
-        quote_ident(&table)
-    ))
-}
-
-fn setval_sql(value: &Value) -> Result<String> {
-    let schema = required_str(value, "schema")?;
-    let name = required_str(value, "name")?;
-    let last = required_str(value, "last")?;
-    if last.is_empty() || !last.chars().all(|ch| ch.is_ascii_digit()) {
         return Err(LocalDbError::message(format!(
-            "embedded postgres: PGlite sequence {schema}.{name} last value is not an integer"
-        )));
-    }
-    let called = value
-        .get("called")
-        .and_then(Value::as_bool)
-        .ok_or_else(|| LocalDbError::message("embedded postgres: PGlite setval needs called"))?;
-    let flag = if called { "true" } else { "false" };
-    Ok(format!(
-        "SELECT setval('{}.{}', {last}, {flag})",
-        quote_ident(&schema),
-        quote_ident(&name)
-    ))
-}
-
-fn build_insert(value: &Value) -> Result<BoundInsert> {
-    let schema = required_str(value, "schema")?;
-    let table = required_str(value, "table")?;
-    let columns = string_list(value, "columns")?;
-    let types = string_list(value, "types")?;
-    if columns.len() != types.len() || columns.is_empty() {
-        return Err(LocalDbError::message(format!(
-            "embedded postgres: PGlite insert for {schema}.{table} has mismatched columns"
+            "embedded postgres: PGlite insert for {schema}.{table} has no columns"
         )));
     }
     let rows = value
         .get("rows")
         .and_then(Value::as_array)
         .ok_or_else(|| LocalDbError::message("embedded postgres: PGlite insert has no rows"))?;
-    let mut params = Vec::new();
-    let mut tuples = Vec::new();
-    let mut index = 1usize;
+    let mut parsed = Vec::new();
     for row in rows {
         let cells = row.as_array().ok_or_else(|| {
             LocalDbError::message("embedded postgres: PGlite insert row is not an array")
@@ -541,83 +544,47 @@ fn build_insert(value: &Value) -> Result<BoundInsert> {
                 "embedded postgres: PGlite insert row for {schema}.{table} has the wrong width"
             )));
         }
-        let mut places = Vec::new();
-        for (cell, udt) in cells.iter().zip(types.iter()) {
-            places.push(cast_place(index, udt)?);
-            params.push(cell_param(&cell_from_json(cell)?)?);
-            index += 1;
+        let mut values = Vec::new();
+        for cell in cells {
+            values.push(cell_text(cell)?);
         }
-        tuples.push(format!("({})", places.join(", ")));
+        parsed.push(values);
     }
-    if tuples.is_empty() {
-        return Ok(BoundInsert {
-            sql: String::new(),
-            params: Vec::new(),
-        });
-    }
-    let listed = columns
-        .iter()
-        .map(|column| quote_ident(column))
-        .collect::<Vec<_>>()
-        .join(", ");
-    Ok(BoundInsert {
-        sql: format!(
-            "INSERT INTO {}.{} ({listed}) VALUES {}",
-            quote_ident(&schema),
-            quote_ident(&table),
-            tuples.join(", ")
-        ),
-        params,
+    Ok(RowBatch {
+        schema,
+        table,
+        columns,
+        rows: parsed,
     })
 }
 
-fn cast_place(index: usize, udt: &str) -> Result<String> {
-    if udt.eq_ignore_ascii_case("bytea") {
-        return Ok(format!("decode(${index}, 'hex')"));
-    }
-    if !safe_pg_type(udt) {
+fn sequence_last(value: &Value) -> Result<String> {
+    let schema = required_str(value, "schema")?;
+    let name = required_str(value, "name")?;
+    let last = required_str(value, "last")?;
+    if last.is_empty() || !last.chars().all(|ch| ch.is_ascii_digit()) {
         return Err(LocalDbError::message(format!(
-            "embedded postgres: refusing PGlite column type {udt}"
+            "embedded postgres: PGlite sequence {schema}.{name} last value is not an integer"
         )));
     }
-    Ok(format!("${index}::{udt}"))
+    Ok(last)
 }
 
-fn cell_from_json(value: &Value) -> Result<Cell> {
+fn cell_text(value: &Value) -> Result<Option<String>> {
     if value.is_null() {
-        return Ok(Cell::Null);
+        return Ok(None);
     }
     let Some(object) = value.as_object() else {
         return Err(LocalDbError::message(
             "embedded postgres: PGlite cell is not an object or null",
         ));
     };
-    if let Some(flag) = object.get("b").and_then(Value::as_bool) {
-        return Ok(Cell::Bool(flag));
-    }
-    if let Some(hex) = object.get("x").and_then(Value::as_str) {
-        return Ok(Cell::Bytea(hex.to_string()));
-    }
-    if let Some(json) = object.get("j") {
-        let text =
-            serde_json::to_string(json).map_err(|error| LocalDbError::Json(error.to_string()))?;
-        return Ok(Cell::Json(text));
-    }
     if let Some(text) = object.get("t").and_then(Value::as_str) {
-        return Ok(Cell::Text(text.to_string()));
+        return Ok(Some(text.to_string()));
     }
     Err(LocalDbError::message(
-        "embedded postgres: PGlite cell has no value",
+        "embedded postgres: PGlite cell has no text value",
     ))
-}
-
-fn cell_param(cell: &Cell) -> Result<Option<String>> {
-    Ok(match cell {
-        Cell::Null => None,
-        Cell::Text(text) | Cell::Json(text) | Cell::Bytea(text) => Some(text.clone()),
-        Cell::Bool(true) => Some("true".to_string()),
-        Cell::Bool(false) => Some("false".to_string()),
-    })
 }
 
 fn required_str(value: &Value, key: &str) -> Result<String> {
@@ -680,18 +647,28 @@ fn same_path(left: &Path, right: &Path) -> bool {
     lexical_absolute(left) == lexical_absolute(right)
 }
 
+fn store_slug(source: &Path) -> String {
+    let text = source_key(source);
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in text.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{hash:016x}")
+}
+
 fn join_rel(parts: &[&str]) -> String {
     parts.join("/")
 }
 
 fn fallback_command(home: &Path, source: &Path) -> String {
-    let script = migrate_dir(home).join("pglite_export.mjs");
+    let script = store_work_dir(home, source).join("pglite_export.mjs");
     format!(
         "node {} --data-dir {} --out {} --pglite {}",
         shell_quote(&script.display().to_string()),
         shell_quote(&source.display().to_string()),
         shell_quote(
-            &work_dir(home)
+            &store_work_dir(home, source)
                 .join("pglite-export.jsonl")
                 .display()
                 .to_string()
@@ -715,10 +692,13 @@ fn find_package(root: &Path, relatives: &[&str]) -> Result<PathBuf> {
 }
 
 fn entry_relative(value: &Value, export_key: &str) -> Option<String> {
-    if let Some(exports) = value.get("exports")
-        && let Some(target) = exports.get(export_key).and_then(export_target)
-    {
-        return Some(target);
+    if let Some(exports) = value.get("exports") {
+        if let Some(target) = exports.get(export_key).and_then(export_target) {
+            return Some(target);
+        }
+        if let Some(target) = wildcard_export(exports, export_key) {
+            return Some(target);
+        }
     }
     if export_key == "." {
         if let Some(module) = value.get("module").and_then(Value::as_str) {
@@ -727,6 +707,29 @@ fn entry_relative(value: &Value, export_key: &str) -> Option<String> {
         if let Some(main) = value.get("main").and_then(Value::as_str) {
             return Some(main.to_string());
         }
+    }
+    None
+}
+
+fn wildcard_export(exports: &Value, export_key: &str) -> Option<String> {
+    let map = exports.as_object()?;
+    for (pattern, target) in map {
+        let Some((prefix, suffix)) = pattern.split_once('*') else {
+            continue;
+        };
+        if !export_key.starts_with(prefix) || !export_key.ends_with(suffix) {
+            continue;
+        }
+        let middle_end = export_key.len() - suffix.len();
+        if middle_end < prefix.len() {
+            continue;
+        }
+        let middle = &export_key[prefix.len()..middle_end];
+        if middle.is_empty() || middle.contains('*') {
+            continue;
+        }
+        let resolved = export_target(target)?;
+        return Some(resolved.replace('*', middle));
     }
     None
 }
@@ -820,7 +823,103 @@ async fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
     let mut file = options.open(path).await?;
     file.write_all(bytes).await?;
     file.flush().await?;
+    file.sync_all().await?;
     Ok(())
+}
+
+async fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    let mut tmp_name = path
+        .file_name()
+        .ok_or_else(|| LocalDbError::message("embedded postgres: ledger path has no file name"))?
+        .to_os_string();
+    tmp_name.push(".tmp");
+    let tmp = path.with_file_name(tmp_name);
+    {
+        let mut options = tokio::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            options.mode(0o600);
+        }
+        let mut file = options.open(&tmp).await?;
+        file.write_all(bytes).await?;
+        file.flush().await?;
+        file.sync_all().await?;
+    }
+    tokio::fs::rename(&tmp, path).await?;
+    if let Some(parent) = path.parent()
+        && let Ok(dir) = std::fs::File::open(parent)
+    {
+        let _ = dir.sync_all();
+    }
+    set_mode(path, 0o600).await?;
+    if tmp.exists() {
+        let _ = tokio::fs::remove_file(&tmp).await;
+    }
+    Ok(())
+}
+
+impl LedgerLock {
+    async fn acquire(home: &Path) -> Result<Self> {
+        let path = migrated_record(home).with_file_name("migrated-sources.lock");
+        if let Some(parent) = path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        let deadline = tokio::time::Instant::now() + LEDGER_LOCK_TIMEOUT;
+        loop {
+            let mut options = tokio::fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                options.mode(0o600);
+            }
+            match options.open(&path).await {
+                Ok(mut file) => {
+                    let body = std::process::id().to_string();
+                    file.write_all(body.as_bytes()).await?;
+                    file.flush().await?;
+                    file.sync_all().await?;
+                    return Ok(Self { path });
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    if ledger_lock_stale(&path).await {
+                        let _ = tokio::fs::remove_file(&path).await;
+                        continue;
+                    }
+                    if tokio::time::Instant::now() >= deadline {
+                        return Err(LocalDbError::message(
+                            "embedded postgres: timed out waiting for the migration ledger lock",
+                        ));
+                    }
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+}
+
+impl Drop for LedgerLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+async fn ledger_lock_stale(path: &Path) -> bool {
+    let text = match tokio::fs::read_to_string(path).await {
+        Ok(text) => text,
+        Err(_) => return true,
+    };
+    let Ok(pid) = text.trim().parse::<i64>() else {
+        return true;
+    };
+    if pid <= 0 {
+        return true;
+    }
+    probe_lock_pid(pid) == PidProbe::Dead
 }
 
 async fn set_mode(path: &Path, mode: u32) -> Result<()> {
@@ -947,28 +1046,120 @@ mod tests {
     }
 
     #[test]
-    fn export_script_reads_rows_instead_of_rewriting_a_dump() {
+    fn export_script_pages_by_ctid_and_casts_text() {
         assert!(EXPORT_SCRIPT.contains("PGlite"));
+        assert!(EXPORT_SCRIPT.contains("ctid >"));
         assert!(EXPORT_SCRIPT.contains("ORDER BY ctid"));
-        assert!(EXPORT_SCRIPT.contains("LIMIT"));
-        assert!(EXPORT_SCRIPT.contains("op: 'insert'"));
+        assert!(!EXPORT_SCRIPT.contains("OFFSET"));
+        assert!(EXPORT_SCRIPT.contains("--seed"));
+        assert!(EXPORT_SCRIPT.contains("::text"));
+        assert!(!EXPORT_SCRIPT.contains("op: 'table'"));
         assert!(!EXPORT_SCRIPT.contains("pgDump"));
         assert!(!EXPORT_SCRIPT.contains("pglite-tools"));
-        let line = r#"{"op":"insert","schema":"public","table":"ros_messages","columns":["body"],"types":["text"],"rows":[[{"t":"hello\n\\restrict\nSET transaction_timeout = 0;"}]]}"#;
+        let line = r#"{"op":"insert","schema":"public","table":"ros_messages","columns":["body"],"rows":[[{"t":"hello\n\\restrict\nSET transaction_timeout = 0;"}]]}"#;
         let action = parse_export_line(line).expect("line").expect("action");
         match action {
-            ExportAction::Insert(insert) => {
+            ExportAction::Insert(batch) => {
+                let plan = plan_insert(
+                    &batch.schema,
+                    &batch.table,
+                    &batch.columns,
+                    &[DestColumn {
+                        name: "body".to_string(),
+                        type_name: "text".to_string(),
+                        generated: false,
+                    }],
+                    &batch.rows,
+                )
+                .expect("plan")
+                .expect("insert");
                 assert_eq!(
-                    insert.params,
+                    plan.params,
                     vec![Some(
                         "hello\n\\restrict\nSET transaction_timeout = 0;".to_string()
                     )]
                 );
-                assert!(insert.sql.contains("$1::text"));
-                assert!(!insert.sql.contains("\\restrict"));
+                assert!(plan.sql.contains("($1::text)::text"));
+                assert!(!plan.sql.contains("$1::text::text"));
+                assert!(!plan.sql.contains("\\restrict"));
             }
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[test]
+    fn destination_types_include_arrays_and_skip_generated_columns() {
+        let columns = vec!["aliases".to_string(), "content_tsv".to_string()];
+        let rows = vec![vec![
+            Some("{alpha,beta}".to_string()),
+            Some("junk".to_string()),
+        ]];
+        let plan = plan_insert(
+            "public",
+            "ros_wiki_topics",
+            &columns,
+            &[
+                DestColumn {
+                    name: "aliases".to_string(),
+                    type_name: "text[]".to_string(),
+                    generated: false,
+                },
+                DestColumn {
+                    name: "content_tsv".to_string(),
+                    type_name: "tsvector".to_string(),
+                    generated: true,
+                },
+            ],
+            &rows,
+        )
+        .expect("plan")
+        .expect("insert");
+        assert!(plan.sql.contains("($1::text)::text[]"));
+        assert!(!plan.sql.contains("content_tsv"));
+        assert_eq!(plan.params, vec![Some("{alpha,beta}".to_string())]);
+        let stamped = plan_insert(
+            "public",
+            "ros_conversations",
+            &["created_at".to_string()],
+            &[DestColumn {
+                name: "created_at".to_string(),
+                type_name: "timestamp with time zone".to_string(),
+                generated: false,
+            }],
+            &[vec![Some("2024-01-02 03:04:05+00".to_string())]],
+        )
+        .expect("stamp")
+        .expect("insert");
+        assert!(stamped.sql.contains("($1::text)::timestamp with time zone"));
+        assert!(!stamped.sql.contains("$1::text::timestamp"));
+        assert!(copy_this_table("ros_messages"));
+        assert!(!copy_this_table("_rivetos_migrations"));
+    }
+
+    #[test]
+    fn setval_keeps_the_name_out_of_the_sql_text() {
+        let line = r#"{"op":"setval","schema":"public","name":"a'b","last":"3","called":true}"#;
+        let action = parse_export_line(line).expect("line").expect("action");
+        match action {
+            ExportAction::Setval {
+                schema,
+                name,
+                last,
+                called,
+            } => {
+                assert_eq!(schema, "public");
+                assert_eq!(name, "a'b");
+                assert_eq!(last, "3");
+                assert!(called);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        let sql = setval_statement();
+        assert!(sql.contains("format('%I.%I'"));
+        assert!(sql.contains("$1::text"));
+        assert!(!sql.contains("a'b"));
+        let error = parse_export_line(r#"{"op":"table","name":"ros_messages"}"#).expect_err("ddl");
+        assert!(error.to_string().contains("unknown PGlite export op"));
     }
 
     #[test]
@@ -987,7 +1178,30 @@ mod tests {
             package_entry(&dir, "./contrib/pg_trgm").expect("trgm"),
             dir.join("dist/pg_trgm.js")
         );
+        std::fs::write(
+            dir.join("package.json"),
+            r#"{"exports":{"./contrib/*":{"import":"./dist/contrib/*.js"},".":{"import":"./dist/index.js"}}}"#,
+        )
+        .expect("wildcard");
+        assert_eq!(
+            package_entry(&dir, "./contrib/pg_trgm").expect("wildcard trgm"),
+            dir.join("dist/contrib/pg_trgm.js")
+        );
+        assert_eq!(
+            package_entry(&dir, ".").expect("root"),
+            dir.join("dist/index.js")
+        );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn each_store_gets_its_own_scratch_directory() {
+        let home = temp_dir("scratch");
+        let left = home.join("pglite");
+        let right = home.join("other");
+        assert_ne!(store_work_dir(&home, &left), store_work_dir(&home, &right));
+        assert!(store_work_dir(&home, &left).starts_with(work_dir(&home)));
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[tokio::test]
@@ -1065,15 +1279,34 @@ mod tests {
     async fn reset_record_survives_and_marks_the_source() {
         let home = temp_dir("record");
         let source = home.join(".rivetos").join("pglite");
+        let other = home.join(".rivetos").join("db");
         assert!(!source_is_migrated(&home, &source).expect("empty"));
         record_migrated_sources(&home, std::slice::from_ref(&source))
             .await
             .expect("record");
         assert!(source_is_migrated(&home, &source).expect("marked"));
-        record_migrated_sources(&home, std::slice::from_ref(&source))
+        record_migrated_sources(&home, std::slice::from_ref(&other))
             .await
-            .expect("again");
-        assert_eq!(load_migrated(&home).expect("load").len(), 1);
+            .expect("second");
+        assert_eq!(load_migrated(&home).expect("load").len(), 2);
+        assert!(
+            !migrated_record(&home)
+                .with_file_name("migrated-sources.json.tmp")
+                .exists()
+        );
+        assert!(
+            !migrated_record(&home)
+                .with_file_name("migrated-sources.lock")
+                .exists()
+        );
+        let text = std::fs::read_to_string(migrated_record(&home)).expect("json");
+        let parsed: serde_json::Value = serde_json::from_str(&text).expect("parse");
+        assert!(
+            parsed
+                .get("sources")
+                .and_then(|item| item.as_array())
+                .is_some()
+        );
         let _ = std::fs::remove_dir_all(&home);
     }
 }

@@ -5,6 +5,7 @@ mod lock;
 mod migrate;
 mod paths;
 mod process;
+mod schema_sql;
 mod sql_compat;
 mod status;
 mod supervisor;

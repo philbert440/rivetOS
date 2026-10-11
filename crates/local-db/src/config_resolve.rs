@@ -83,6 +83,18 @@ pub fn embedded_pg_env(pg_url: &str) -> EmbeddedPgEnv {
     }
 }
 
+impl EmbeddedPgEnv {
+    pub fn apply_to_std(&self, command: &mut std::process::Command) {
+        command.env(self.pg_url_key, &self.pg_url);
+        command.env(self.embedded_key, self.embedded);
+    }
+
+    pub fn apply_to_tokio(&self, command: &mut tokio::process::Command) {
+        command.env(self.pg_url_key, &self.pg_url);
+        command.env(self.embedded_key, self.embedded);
+    }
+}
+
 pub fn resolve_embedded_pg(
     config: &Value,
     home: &Path,
@@ -436,6 +448,24 @@ mod tests {
         assert_eq!(
             config["memory"]["postgres"]["connection_string"],
             env.pg_url
+        );
+        let mut command = std::process::Command::new("true");
+        env.apply_to_std(&mut command);
+        let vars: Vec<(String, Option<String>)> = command
+            .get_envs()
+            .map(|(key, value)| {
+                (
+                    key.to_string_lossy().to_string(),
+                    value.map(|item| item.to_string_lossy().to_string()),
+                )
+            })
+            .collect();
+        assert!(vars.iter().any(|(key, value)| {
+            key == "RIVETOS_PG_URL" && value.as_deref() == Some(env.pg_url.as_str())
+        }));
+        assert!(
+            vars.iter()
+                .any(|(key, value)| key == "RIVETOS_PG_EMBEDDED" && value.as_deref() == Some("1"))
         );
     }
 

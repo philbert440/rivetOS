@@ -12,6 +12,7 @@ on:
       - rust-toolchain.toml
       - rustfmt.toml
       - .github/workflows/rust.yml
+      - plugins/memory/postgres/src/schema/migrations
       - plugins/memory/postgres/src/schema/migrations/**
       - packages/boot/src/**
       - packages/types/src/**
@@ -31,6 +32,7 @@ on:
       - rust-toolchain.toml
       - rustfmt.toml
       - .github/workflows/rust.yml
+      - plugins/memory/postgres/src/schema/migrations
       - plugins/memory/postgres/src/schema/migrations/**
       - packages/boot/src/**
       - packages/types/src/**

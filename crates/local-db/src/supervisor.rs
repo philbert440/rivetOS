@@ -5,6 +5,8 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::error::{LocalDbError, Result};
+use crate::lock::EMBEDDED_PG_LOCKFILE;
+use crate::paths::shell_quote;
 use crate::process::wait_child;
 
 pub const CLOSE_TIMEOUT: Duration = Duration::from_secs(90);
@@ -259,7 +261,21 @@ where
 }
 
 async fn supervise(start: ClusterStart) -> Result<()> {
-    start_cluster(&start).await?;
+    let started = start_cluster(&start).await;
+    let session = if started.is_ok() {
+        wait_for_owner().await
+    } else {
+        started
+    };
+    let stopped = stop_cluster(&start.pg_ctl, &start.pgdata).await;
+    if stopped.is_ok() {
+        release_cluster_lock(&start.pgdata).await;
+    }
+    session?;
+    stopped
+}
+
+async fn wait_for_owner() -> Result<()> {
     let mut stdout = tokio::io::stdout();
     stdout.write_all(b"ready\n").await?;
     stdout.flush().await?;
@@ -272,7 +288,22 @@ async fn supervise(start: ClusterStart) -> Result<()> {
             Err(_) => break,
         }
     }
-    stop_cluster(&start.pg_ctl, &start.pgdata).await
+    Ok(())
+}
+
+async fn release_cluster_lock(pgdata: &Path) {
+    let Some(parent) = pgdata.parent() else {
+        return;
+    };
+    if parent.as_os_str().is_empty() {
+        return;
+    }
+    let path = parent.join(EMBEDDED_PG_LOCKFILE);
+    let _ = crate::lock::release_owner_lock(&path).await;
+}
+
+fn quoted_config(key: &str, value: &str) -> String {
+    format!("-c {key}={}", shell_quote(value))
 }
 
 pub async fn start_cluster(start: &ClusterStart) -> Result<()> {
@@ -295,7 +326,7 @@ pub async fn start_cluster(start: &ClusterStart) -> Result<()> {
         .arg("-o")
         .arg(format!("-F -p {}", start.port));
     for (key, value) in &start.configuration {
-        command.arg("-o").arg(format!("-c {key}={value}"));
+        command.arg("-o").arg(quoted_config(key, value));
     }
     command
         .kill_on_drop(true)
@@ -495,6 +526,18 @@ mod tests {
         );
         let rendered = format!("{start:?}");
         assert!(!rendered.contains("postgres:postgres"));
+    }
+
+    #[test]
+    fn config_options_quote_shell_metacharacters() {
+        assert_eq!(
+            quoted_config("unix_socket_directories", "/tmp/my cluster"),
+            "-c unix_socket_directories='/tmp/my cluster'"
+        );
+        assert_eq!(
+            quoted_config("listen_addresses", "o'brian"),
+            "-c listen_addresses='o'\\''brian'"
+        );
     }
 
     #[test]

@@ -15,14 +15,16 @@ use crate::lock::{
     read_embedded_pg_lock, release_owner_lock,
 };
 use crate::migrate::{
-    ExportAction, MigrationPlan, SkipReason, clear_work, export_pglite_source, parse_export_line,
-    pending_marker, pgdata_dir, plan_migration, record_migrated_sources, source_is_migrated,
+    DestColumn, ExportAction, MigrationPlan, SkipReason, clear_store_work, copy_this_table,
+    export_pglite_source, parse_export_line, pending_marker, pgdata_dir, plan_insert,
+    plan_migration, record_migrated_sources, setval_statement, source_is_migrated,
 };
 use crate::paths::{
     backups_dir, cluster_dir_for, expand_tilde, lexical_absolute, real_of_nearest, rivet_dir,
     shell_quote,
 };
 use crate::process::{clear_stale_postmaster, read_postmaster_pid};
+use crate::schema_sql::{MIGRATIONS_TABLE_SQL, migration_batch, product_migrations};
 use crate::sql_compat::quote_ident;
 use crate::supervisor::{ClusterStart, SupervisorProcess, find_pg_ctl, spawn_supervisor};
 
@@ -86,10 +88,9 @@ impl EmbeddedPg {
         if self.closed {
             return Ok(());
         }
-        let stopped = self.stop_owned().await;
+        self.stop_owned().await?;
         let released = self.release_lock().await;
         self.closed = true;
-        stopped?;
         released
     }
 
@@ -114,10 +115,14 @@ impl EmbeddedPg {
         let Some(mut owned) = self.owned_server.take() else {
             return Ok(());
         };
-        owned
+        let stopped = owned
             .supervisor
             .shutdown(&owned.pg_ctl, &owned.pgdata)
-            .await
+            .await;
+        if stopped.is_err() {
+            self.owned_server = Some(owned);
+        }
+        stopped
     }
 
     async fn release_lock(&mut self) -> Result<()> {
@@ -137,9 +142,6 @@ impl Drop for EmbeddedPg {
         self.closed = true;
         if let Some(mut owned) = self.owned_server.take() {
             owned.supervisor.lifeline.take();
-        }
-        if let Some(path) = self.lock_path.take() {
-            let _ = std::fs::remove_file(path);
         }
     }
 }
@@ -260,7 +262,10 @@ pub async fn reset_engine_with(home: &Path, target: &Path, config: Option<&Value
     refuse_if_running(&cluster)?;
     record_migrated_sources(home, &sources).await?;
     clear_dir(&cluster).await?;
-    clear_work(home).await
+    for source in &sources {
+        clear_store_work(home, source).await?;
+    }
+    Ok(())
 }
 
 pub fn assert_under_rivet(home: &Path, target: &Path) -> Result<PathBuf> {
@@ -541,6 +546,9 @@ async fn finish_migration(
     export_path: &Path,
     log: &dyn EmbeddedPgLog,
 ) -> std::result::Result<(), ConfigureFailure> {
+    if let Err(error) = apply_product_schema(client).await {
+        return Err(configure_failure(error, true));
+    }
     if let Err(error) = apply_export(client, export_path, &resolved.data_dir, log).await {
         return Err(configure_failure(error, true));
     }
@@ -700,6 +708,48 @@ async fn apply_guc(client: &PgClient, lite: bool) -> Result<()> {
     }
 }
 
+async fn apply_product_schema(client: &PgClient) -> Result<()> {
+    client
+        .batch("SET lock_timeout = '3s'", COMMAND_TIMEOUT)
+        .await?;
+    let applied = apply_product_migrations(client).await;
+    let reset = client.batch("RESET lock_timeout", COMMAND_TIMEOUT).await;
+    applied?;
+    reset
+}
+
+async fn apply_product_migrations(client: &PgClient) -> Result<()> {
+    let exists = client
+        .query_one_text(
+            "SELECT CASE WHEN to_regclass('_rivetos_migrations') IS NULL THEN 'f' ELSE 't' END",
+            &[],
+        )
+        .await?;
+    if exists.as_deref() != Some("t") {
+        client.batch(MIGRATIONS_TABLE_SQL, COMMAND_TIMEOUT).await?;
+    }
+    for migration in product_migrations() {
+        let seen = client
+            .query_one_text(
+                "SELECT CASE WHEN EXISTS (SELECT 1 FROM _rivetos_migrations WHERE name = $1) THEN 't' ELSE 'f' END",
+                &[Some(migration.name.to_string())],
+            )
+            .await?;
+        if seen.as_deref() == Some("t") {
+            continue;
+        }
+        let batch = migration_batch(migration.name, migration.sql);
+        client.batch(&batch, SETUP_TIMEOUT).await?;
+    }
+    Ok(())
+}
+
+struct CopyState {
+    verified: u64,
+    saw_done: bool,
+    triggers: Option<(String, String)>,
+}
+
 async fn apply_export(
     client: &PgClient,
     path: &Path,
@@ -713,12 +763,16 @@ async fn apply_export(
     let file = tokio::fs::File::open(path).await?;
     let reader = tokio::io::BufReader::new(file);
     let mut lines = reader.lines();
-    let mut verified = 0u64;
+    let mut state = CopyState {
+        verified: 0,
+        saw_done: false,
+        triggers: None,
+    };
     while let Some(line) = lines.next_line().await? {
         let Some(action) = parse_export_line(&line)? else {
             continue;
         };
-        match apply_action(client, action, &mut verified).await {
+        match apply_action(client, action, &mut state).await {
             Ok(true) => break,
             Ok(false) => {}
             Err(error) => {
@@ -727,7 +781,16 @@ async fn apply_export(
             }
         }
     }
-    log.info(&format!("embedded postgres: verified {verified} tables"));
+    if !state.saw_done {
+        let _ = client.batch("ROLLBACK", COMMAND_TIMEOUT).await;
+        return Err(LocalDbError::message(
+            "embedded postgres: PGlite export ended before done",
+        ));
+    }
+    log.info(&format!(
+        "embedded postgres: verified {} tables",
+        state.verified
+    ));
     log.info(&format!(
         "embedded postgres: PGlite directory left in place at {}",
         source.display()
@@ -735,15 +798,52 @@ async fn apply_export(
     Ok(())
 }
 
-async fn apply_action(client: &PgClient, action: ExportAction, verified: &mut u64) -> Result<bool> {
+async fn apply_action(
+    client: &PgClient,
+    action: ExportAction,
+    state: &mut CopyState,
+) -> Result<bool> {
     match action {
         ExportAction::Exec(sql) => {
+            if sql == "COMMIT" {
+                if let Some((schema, table)) = state.triggers.take() {
+                    client
+                        .exec(
+                            &trigger_change(&schema, &table, "ENABLE"),
+                            &[],
+                            SETUP_TIMEOUT,
+                        )
+                        .await?;
+                }
+            } else if sql != "BEGIN" {
+                return Err(LocalDbError::message(format!(
+                    "embedded postgres: PGlite export cannot execute {sql}"
+                )));
+            }
             client.exec(&sql, &[], SETUP_TIMEOUT).await?;
             Ok(false)
         }
-        ExportAction::Insert(insert) => {
+        ExportAction::Insert(batch) => {
+            if !copy_this_table(&batch.table) {
+                return Ok(false);
+            }
+            if !relation_exists(client, &batch.schema, &batch.table).await? {
+                return Ok(false);
+            }
+            let dest = dest_columns(client, &batch.schema, &batch.table).await?;
+            let Some(bound) = plan_insert(
+                &batch.schema,
+                &batch.table,
+                &batch.columns,
+                &dest,
+                &batch.rows,
+            )?
+            else {
+                return Ok(false);
+            };
+            disable_user_triggers(client, state, &batch.schema, &batch.table).await?;
             client
-                .exec(&insert.sql, &insert.params, SETUP_TIMEOUT)
+                .exec(&bound.sql, &bound.params, SETUP_TIMEOUT)
                 .await?;
             Ok(false)
         }
@@ -752,12 +852,120 @@ async fn apply_action(client: &PgClient, action: ExportAction, verified: &mut u6
             table,
             expected,
         } => {
+            if !copy_this_table(&table) || !relation_exists(client, &schema, &table).await? {
+                return Ok(false);
+            }
             check_count(client, &schema, &table, expected).await?;
-            *verified += 1;
+            state.verified += 1;
             Ok(false)
         }
-        ExportAction::Done => Ok(true),
+        ExportAction::Setval {
+            schema,
+            name,
+            last,
+            called,
+        } => {
+            if !relation_exists(client, &schema, &name).await? {
+                return Ok(false);
+            }
+            let called_text = if called { "true" } else { "false" };
+            client
+                .exec(
+                    setval_statement(),
+                    &[
+                        Some(schema),
+                        Some(name),
+                        Some(last),
+                        Some(called_text.to_string()),
+                    ],
+                    SETUP_TIMEOUT,
+                )
+                .await?;
+            Ok(false)
+        }
+        ExportAction::Done => {
+            state.saw_done = true;
+            Ok(true)
+        }
     }
+}
+
+fn trigger_change(schema: &str, table: &str, action: &str) -> String {
+    format!(
+        "ALTER TABLE {}.{} {action} TRIGGER USER",
+        quote_ident(schema),
+        quote_ident(table)
+    )
+}
+
+async fn disable_user_triggers(
+    client: &PgClient,
+    state: &mut CopyState,
+    schema: &str,
+    table: &str,
+) -> Result<()> {
+    if state
+        .triggers
+        .as_ref()
+        .is_some_and(|(current_schema, current_table)| {
+            current_schema == schema && current_table == table
+        })
+    {
+        return Ok(());
+    }
+    if let Some((current_schema, current_table)) = state.triggers.take() {
+        client
+            .exec(
+                &trigger_change(&current_schema, &current_table, "ENABLE"),
+                &[],
+                SETUP_TIMEOUT,
+            )
+            .await?;
+    }
+    client
+        .exec(
+            &trigger_change(schema, table, "DISABLE"),
+            &[],
+            SETUP_TIMEOUT,
+        )
+        .await?;
+    state.triggers = Some((schema.to_string(), table.to_string()));
+    Ok(())
+}
+
+async fn relation_exists(client: &PgClient, schema: &str, name: &str) -> Result<bool> {
+    let found = client
+        .query_one_text(
+            "SELECT CASE WHEN to_regclass(format('%I.%I', $1::text, $2::text)) IS NULL THEN 'f' ELSE 't' END",
+            &[Some(schema.to_string()), Some(name.to_string())],
+        )
+        .await?;
+    Ok(found.as_deref() == Some("t"))
+}
+
+async fn dest_columns(client: &PgClient, schema: &str, table: &str) -> Result<Vec<DestColumn>> {
+    let rows = client
+        .query_columns(
+            "SELECT a.attname, pg_catalog.format_type(a.atttypid, a.atttypmod), a.attgenerated::text \
+             FROM pg_catalog.pg_attribute a \
+             JOIN pg_catalog.pg_class c ON c.oid = a.attrelid \
+             JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+             WHERE n.nspname = $1 AND c.relname = $2 AND a.attnum > 0 AND NOT a.attisdropped \
+             ORDER BY a.attnum",
+            &[Some(schema.to_string()), Some(table.to_string())],
+            3,
+        )
+        .await?;
+    let mut columns = Vec::with_capacity(rows.len());
+    for row in rows {
+        let generated = row[2] == "s";
+        columns.push(DestColumn {
+            name: row[0].clone(),
+            type_name: row[1].clone(),
+            generated,
+        });
+    }
+    Ok(columns)
 }
 
 async fn check_count(client: &PgClient, schema: &str, table: &str, expected: i64) -> Result<()> {
@@ -838,14 +1046,56 @@ impl PgClient {
     }
 
     async fn query_text(&self, sql: &str) -> Result<Option<String>> {
-        match tokio::time::timeout(COMMAND_TIMEOUT, self.client.query(sql, &[])).await {
-            Ok(Ok(rows)) => rows
-                .first()
-                .map(|row| {
-                    row.try_get(0)
-                        .map_err(|error| LocalDbError::Postgres(error.to_string()))
-                })
-                .transpose(),
+        self.query_one_text(sql, &[]).await
+    }
+
+    async fn query_one_text(&self, sql: &str, params: &[Option<String>]) -> Result<Option<String>> {
+        let rows = self.query_raw(sql, params).await?;
+        let Some(row) = rows.first() else {
+            return Ok(None);
+        };
+        row.try_get(0)
+            .map_err(|error| LocalDbError::Postgres(error.to_string()))
+    }
+
+    async fn query_columns(
+        &self,
+        sql: &str,
+        params: &[Option<String>],
+        width: usize,
+    ) -> Result<Vec<Vec<String>>> {
+        let rows = self.query_raw(sql, params).await?;
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            let mut values = Vec::with_capacity(width);
+            for index in 0..width {
+                let value: Option<String> = row
+                    .try_get(index)
+                    .map_err(|error| LocalDbError::Postgres(error.to_string()))?;
+                let Some(value) = value else {
+                    return Err(LocalDbError::message(
+                        "embedded postgres: catalog query returned null",
+                    ));
+                };
+                values.push(value);
+            }
+            out.push(values);
+        }
+        Ok(out)
+    }
+
+    async fn query_raw(
+        &self,
+        sql: &str,
+        params: &[Option<String>],
+    ) -> Result<Vec<tokio_postgres::Row>> {
+        let mut refs: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> =
+            Vec::with_capacity(params.len());
+        for param in params {
+            refs.push(param);
+        }
+        match tokio::time::timeout(COMMAND_TIMEOUT, self.client.query(sql, &refs)).await {
+            Ok(Ok(rows)) => Ok(rows),
             Ok(Err(error)) => Err(LocalDbError::Postgres(error.to_string())),
             Err(_) => Err(LocalDbError::Timeout(COMMAND_TIMEOUT)),
         }
@@ -879,6 +1129,7 @@ async fn dump_database(settings: &postgresql_embedded::Settings, out: &Path) -> 
         .stdout(std::process::Stdio::from(std_file))
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
+    embedded_pg_env(&embedded_pg_url(i64::from(settings.port))).apply_to_tokio(&mut command);
     let child = command.spawn()?;
     let dumped = crate::process::wait_child(child, BACKUP_TIMEOUT).await;
     if let Err(error) = dumped {
@@ -1232,9 +1483,13 @@ mod tests {
         std::fs::write(source.join("PG_VERSION"), b"18\n").expect("version");
         std::fs::create_dir_all(cluster.join("pgdata")).expect("pgdata");
         std::fs::write(cluster.join("rivetos-migrate-pending"), b"pending").expect("pending");
-        let work = home.join(".rivetos").join("migrate").join("work");
-        std::fs::create_dir_all(&work).expect("work");
-        std::fs::write(work.join("snapshot"), b"copy").expect("snap");
+        let mine = crate::migrate::store_work_dir(&home, &source);
+        let other_source = home.join(".rivetos").join("other-store");
+        let other = crate::migrate::store_work_dir(&home, &other_source);
+        std::fs::create_dir_all(&mine).expect("mine");
+        std::fs::create_dir_all(&other).expect("other");
+        std::fs::write(mine.join("snapshot"), b"copy").expect("snap");
+        std::fs::write(other.join("snapshot"), b"keep").expect("other snap");
         let runtime = test_runtime();
         runtime
             .block_on(reset_engine(&home, &cluster))
@@ -1244,7 +1499,11 @@ mod tests {
             std::fs::read(source.join("PG_VERSION")).expect("kept"),
             b"18\n"
         );
-        assert!(!work.exists());
+        assert!(!mine.exists());
+        assert_eq!(
+            std::fs::read(other.join("snapshot")).expect("other kept"),
+            b"keep"
+        );
         assert!(source_is_migrated(&home, &source).expect("record"));
         let plan = plan_migration(
             &source,
@@ -1405,6 +1664,19 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home_full);
     }
 
+    fn pglite_root() -> PathBuf {
+        if let Some(value) = std::env::var_os("RIVETOS_TEST_PGLITE_ROOT") {
+            let path = PathBuf::from(value);
+            if path
+                .join("node_modules/@electric-sql/pglite/package.json")
+                .is_file()
+            {
+                return path;
+            }
+        }
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
+    }
+
     fn temp_home(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
             "local-db-{label}-{}-{}",
@@ -1421,5 +1693,533 @@ mod tests {
             .enable_all()
             .build()
             .expect("rt")
+    }
+
+    #[tokio::test]
+    async fn applies_product_schema_and_text_casts_on_the_lane_database() {
+        let Ok(url) = std::env::var("RIVETOS_PG_URL") else {
+            return;
+        };
+        if url.is_empty() {
+            return;
+        }
+        let client = PgClient::connect(&url).await.expect("connect lane");
+        let schema = format!(
+            "rr9l_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        );
+        let ident = quote_ident(&schema);
+        client
+            .batch(&format!("CREATE SCHEMA {ident}"), COMMAND_TIMEOUT)
+            .await
+            .expect("create schema");
+        let result = lane_checks(&client, &schema, &ident).await;
+        let dropped = client
+            .batch(
+                &format!("DROP SCHEMA IF EXISTS {ident} CASCADE"),
+                SETUP_TIMEOUT,
+            )
+            .await;
+        result.expect("lane checks");
+        dropped.expect("drop schema");
+    }
+
+    async fn lane_checks(client: &PgClient, schema: &str, ident: &str) -> Result<()> {
+        client
+            .batch(
+                &format!("SET search_path TO {ident}, public"),
+                COMMAND_TIMEOUT,
+            )
+            .await?;
+        client
+            .batch(
+                &format!(
+                    "CREATE TABLE IF NOT EXISTS {ident}._rivetos_migrations (\
+                        name TEXT PRIMARY KEY, \
+                        applied_at TIMESTAMPTZ NOT NULL DEFAULT now(), \
+                        checksum TEXT)"
+                ),
+                COMMAND_TIMEOUT,
+            )
+            .await?;
+        apply_product_schema(client).await?;
+        let generated = client
+            .query_one_text(
+                "SELECT a.attgenerated::text FROM pg_attribute a \
+                 JOIN pg_class c ON c.oid = a.attrelid \
+                 JOIN pg_namespace n ON n.oid = c.relnamespace \
+                 WHERE n.nspname = $1 AND c.relname = 'ros_messages' AND a.attname = 'content_tsv'",
+                &[Some(schema.to_string())],
+            )
+            .await?;
+        if generated.as_deref() != Some("s") {
+            return Err(LocalDbError::message(format!(
+                "content_tsv generated marker is {generated:?}"
+            )));
+        }
+        let defaulted = client
+            .query_one_text(
+                "SELECT column_default FROM information_schema.columns \
+                 WHERE table_schema = $1 AND table_name = 'ros_conversations' AND column_name = 'id'",
+                &[Some(schema.to_string())],
+            )
+            .await?;
+        if !defaulted
+            .as_deref()
+            .is_some_and(|text| text.contains("gen_random_uuid()"))
+        {
+            return Err(LocalDbError::message(format!(
+                "conversation id default is {defaulted:?}"
+            )));
+        }
+        let index = client
+            .query_one_text(
+                "SELECT indexname FROM pg_indexes \
+                 WHERE schemaname = $1 AND indexname = 'ux_ros_conversations_session_agent'",
+                &[Some(schema.to_string())],
+            )
+            .await?;
+        if index.as_deref() != Some("ux_ros_conversations_session_agent") {
+            return Err(LocalDbError::message(
+                "unique conversation index is missing".to_string(),
+            ));
+        }
+        let function = client
+            .query_one_text(
+                "SELECT p.proname FROM pg_proc p \
+                 JOIN pg_namespace n ON n.oid = p.pronamespace \
+                 WHERE n.nspname = $1 AND p.proname = 'notify_embedding_queue'",
+                &[Some(schema.to_string())],
+            )
+            .await?;
+        if function.as_deref() != Some("notify_embedding_queue") {
+            return Err(LocalDbError::message(
+                "notify_embedding_queue is missing".to_string(),
+            ));
+        }
+        let applied = client
+            .query_i64("SELECT count(*)::bigint FROM _rivetos_migrations")
+            .await?;
+        if applied != 20 {
+            return Err(LocalDbError::message(format!(
+                "migration ledger has {applied} rows"
+            )));
+        }
+        for name in ["0001_baseline.sql", "0019_tags.sql"] {
+            let found = client
+                .query_one_text(
+                    "SELECT name FROM _rivetos_migrations WHERE name = $1",
+                    &[Some(name.to_string())],
+                )
+                .await?;
+            if found.as_deref() != Some(name) {
+                return Err(LocalDbError::message(format!("{name} was not applied")));
+            }
+        }
+        client
+            .exec(
+                "INSERT INTO ros_tag_taxonomy (key, value, aliases) VALUES ('topic', 'direct', $1::text::text[])",
+                &[Some("{alpha,beta}".to_string())],
+                COMMAND_TIMEOUT,
+            )
+            .await?;
+        let aliases = client
+            .query_text(
+                "SELECT aliases::text FROM ros_tag_taxonomy WHERE key = 'topic' AND value = 'direct'",
+            )
+            .await?;
+        if aliases.as_deref() != Some("{alpha,beta}") {
+            return Err(LocalDbError::message(format!(
+                "text[] round trip returned {aliases:?}"
+            )));
+        }
+        client
+            .batch(
+                "DELETE FROM ros_tag_taxonomy WHERE key = 'topic' AND value = 'direct'",
+                COMMAND_TIMEOUT,
+            )
+            .await?;
+        client
+            .batch(
+                &format!("CREATE SEQUENCE {}", quote_ident("a'b")),
+                COMMAND_TIMEOUT,
+            )
+            .await?;
+        let incomplete = temp_home("lane-partial");
+        std::fs::create_dir_all(&incomplete).expect("partial dir");
+        let partial = incomplete.join("partial.jsonl");
+        std::fs::write(
+            &partial,
+            export_line(&json!({
+                "op": "begin"
+            })) + &export_line(&json!({
+                "op": "insert",
+                "schema": schema,
+                "table": "ros_conversations",
+                "columns": ["id", "session_key", "agent", "created_at"],
+                "rows": [[
+                    cell("11111111-1111-4111-8111-0000000000aa"),
+                    cell("partial-session"),
+                    cell("sample-agent"),
+                    cell("2024-01-02 03:04:05+00")
+                ]]
+            })),
+        )
+        .expect("partial");
+        let missing = apply_export(client, &partial, Path::new("source"), &TracingLog).await;
+        let Err(error) = missing else {
+            return Err(LocalDbError::message(
+                "export without done was accepted".to_string(),
+            ));
+        };
+        if !error.to_string().contains("ended before done") {
+            return Err(error);
+        }
+        let leftover = count_table(client, schema, "ros_conversations").await?;
+        if leftover != 0 {
+            return Err(LocalDbError::message(format!(
+                "rolled back conversation count is {leftover}"
+            )));
+        }
+        let good = incomplete.join("good.jsonl");
+        std::fs::write(&good, lane_export(schema)).expect("good");
+        apply_export(client, &good, Path::new("source"), &TracingLog).await?;
+        let id = client
+            .query_text("SELECT id::text FROM ros_conversations")
+            .await?;
+        if id.as_deref() != Some("11111111-1111-4111-8111-0000000000aa") {
+            return Err(LocalDbError::message(format!("conversation id is {id:?}")));
+        }
+        let created = client
+            .query_text("SELECT created_at::text FROM ros_conversations")
+            .await?;
+        if !created
+            .as_deref()
+            .is_some_and(|text| text.starts_with("2024-01-02 03:04:05"))
+        {
+            return Err(LocalDbError::message(format!(
+                "conversation created_at is {created:?}"
+            )));
+        }
+        let content = client
+            .query_text("SELECT content FROM ros_messages")
+            .await?;
+        if content.as_deref() != Some("sample message") {
+            return Err(LocalDbError::message(format!(
+                "message content is {content:?}"
+            )));
+        }
+        let tsv = client
+            .query_text("SELECT content_tsv::text FROM ros_messages")
+            .await?;
+        if !tsv.as_deref().is_some_and(|text| !text.is_empty()) {
+            return Err(LocalDbError::message("content_tsv was empty".to_string()));
+        }
+        let copied = client
+            .query_text("SELECT aliases::text FROM ros_tag_taxonomy WHERE key = 'topic'")
+            .await?;
+        if copied.as_deref() != Some("{alpha,beta}") {
+            return Err(LocalDbError::message(format!(
+                "copied aliases are {copied:?}"
+            )));
+        }
+        let ledger = client
+            .query_i64("SELECT count(*)::bigint FROM _rivetos_migrations")
+            .await?;
+        if ledger != 20 {
+            return Err(LocalDbError::message(format!(
+                "ledger grew to {ledger} after the skipped copy"
+            )));
+        }
+        let extra = client
+            .query_text("SELECT name FROM _rivetos_migrations WHERE name = 'extra.sql'")
+            .await?;
+        if extra.is_some() {
+            return Err(LocalDbError::message(
+                "source ledger row was copied".to_string(),
+            ));
+        }
+        let last = client
+            .query_text(&format!(
+                "SELECT last_value::text FROM {}",
+                quote_ident("a'b")
+            ))
+            .await?;
+        if last.as_deref() != Some("7") {
+            return Err(LocalDbError::message(format!("setval last is {last:?}")));
+        }
+        let called = client
+            .query_text(&format!(
+                "SELECT is_called::text FROM {}",
+                quote_ident("a'b")
+            ))
+            .await?;
+        if called.as_deref() != Some("true") {
+            return Err(LocalDbError::message(format!(
+                "setval called is {called:?}"
+            )));
+        }
+        let _ = std::fs::remove_dir_all(&incomplete);
+        Ok(())
+    }
+
+    fn cell(text: &str) -> Value {
+        json!({"t": text})
+    }
+
+    fn export_line(value: &Value) -> String {
+        format!("{value}\n")
+    }
+
+    fn lane_export(schema: &str) -> String {
+        let mut out = String::new();
+        out.push_str(&export_line(&json!({"op": "begin"})));
+        out.push_str(&export_line(&json!({
+            "op": "insert",
+            "schema": schema,
+            "table": "ros_conversations",
+            "columns": ["id", "session_key", "agent", "created_at"],
+            "rows": [[
+                cell("11111111-1111-4111-8111-0000000000aa"),
+                cell("sample-session"),
+                cell("sample-agent"),
+                cell("2024-01-02 03:04:05+00")
+            ]]
+        })));
+        out.push_str(&export_line(&json!({
+            "op": "count",
+            "schema": schema,
+            "table": "ros_conversations",
+            "n": 1
+        })));
+        out.push_str(&export_line(&json!({"op": "commit"})));
+        out.push_str(&export_line(&json!({"op": "begin"})));
+        out.push_str(&export_line(&json!({
+            "op": "insert",
+            "schema": schema,
+            "table": "ros_messages",
+            "columns": ["conversation_id", "agent", "channel", "role", "content", "content_tsv"],
+            "rows": [[
+                cell("11111111-1111-4111-8111-0000000000aa"),
+                cell("sample-agent"),
+                cell("sample-channel"),
+                cell("user"),
+                cell("sample message"),
+                cell("sample")
+            ]]
+        })));
+        out.push_str(&export_line(&json!({
+            "op": "count",
+            "schema": schema,
+            "table": "ros_messages",
+            "n": 1
+        })));
+        out.push_str(&export_line(&json!({"op": "commit"})));
+        out.push_str(&export_line(&json!({"op": "begin"})));
+        out.push_str(&export_line(&json!({
+            "op": "insert",
+            "schema": schema,
+            "table": "ros_tag_taxonomy",
+            "columns": ["key", "value", "aliases"],
+            "rows": [[
+                cell("topic"),
+                cell("alpha"),
+                cell("{alpha,beta}")
+            ]]
+        })));
+        out.push_str(&export_line(&json!({
+            "op": "count",
+            "schema": schema,
+            "table": "ros_tag_taxonomy",
+            "n": 1
+        })));
+        out.push_str(&export_line(&json!({"op": "commit"})));
+        out.push_str(&export_line(&json!({"op": "begin"})));
+        out.push_str(&export_line(&json!({
+            "op": "insert",
+            "schema": schema,
+            "table": "_rivetos_migrations",
+            "columns": ["name"],
+            "rows": [[cell("extra.sql")]]
+        })));
+        out.push_str(&export_line(&json!({
+            "op": "count",
+            "schema": schema,
+            "table": "_rivetos_migrations",
+            "n": 21
+        })));
+        out.push_str(&export_line(&json!({"op": "commit"})));
+        out.push_str(&export_line(&json!({
+            "op": "setval",
+            "schema": schema,
+            "name": "a'b",
+            "last": "7",
+            "called": true
+        })));
+        out.push_str(&export_line(&json!({"op": "done"})));
+        out
+    }
+
+    #[tokio::test]
+    async fn migrates_a_current_memory_database_from_pglite() {
+        if std::env::var("RIVETOS_TEST_EMBEDDED_PG").ok().as_deref() != Some("1") {
+            return;
+        }
+        let root = pglite_root();
+        let paths = crate::migrate::locate_pglite(&root).unwrap_or_else(|error| {
+            panic!("PGlite package is required when RIVETOS_TEST_EMBEDDED_PG=1 ({error})")
+        });
+        let home = temp_home("pglite-migrate");
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).expect("home");
+        let data_dir = home.join(".rivetos").join("pglite");
+        let manifest = home.join("manifest.json");
+        let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/pglite_export.mjs");
+        let migrations = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../plugins/memory/postgres/src/schema/migrations");
+        assert!(
+            migrations.join("0001_baseline.sql").is_file(),
+            "memory migrations are missing at {}",
+            migrations.display()
+        );
+        let mut command = tokio::process::Command::new("node");
+        command
+            .arg(&script)
+            .arg("--seed")
+            .arg("--data-dir")
+            .arg(&data_dir)
+            .arg("--pglite")
+            .arg(&paths.entry)
+            .arg("--migrations")
+            .arg(&migrations)
+            .arg("--manifest")
+            .arg(&manifest)
+            .kill_on_drop(true)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        if let Some(vector) = &paths.vector {
+            command.arg("--vector").arg(vector);
+        }
+        if let Some(trgm) = &paths.trgm {
+            command.arg("--trgm").arg(trgm);
+        }
+        let child = command.spawn().expect("node");
+        crate::process::wait_child(child, SETUP_TIMEOUT)
+            .await
+            .expect("seed");
+        let manifest_text = std::fs::read_to_string(&manifest).expect("manifest");
+        let manifest_value: Value = serde_json::from_str(&manifest_text).expect("manifest json");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        let config = json!({
+            "memory": {"postgres": {"embedded": {
+                "port": port,
+                "max_connections": 16,
+                "data_dir": data_dir.display().to_string()
+            }}}
+        });
+        let mut env = EmbeddedEnv::new();
+        env.insert("RIVETOS_ROOT", root.display().to_string());
+        let resolved = resolve_embedded_pg(&config, &home, None).expect("resolved");
+        let mut handle = acquire_embedded_pg_with(resolved, &TracingLog, Some(listener), &env)
+            .await
+            .expect("migrate");
+        let client = PgClient::connect(handle.pg_url()).await.expect("connect");
+        let database = client
+            .query_text("SELECT current_database()")
+            .await
+            .expect("database");
+        assert_eq!(database.as_deref(), Some("postgres"));
+        let search_path = client.query_text("SHOW search_path").await.expect("search");
+        assert_eq!(search_path.as_deref(), Some("\"$user\", public"));
+        let content = client
+            .query_text("SELECT content FROM ros_messages")
+            .await
+            .expect("content");
+        assert_eq!(content.as_deref(), Some("sample message"));
+        let tsv = client
+            .query_text("SELECT content_tsv::text FROM ros_messages")
+            .await
+            .expect("tsv");
+        assert!(tsv.as_deref().is_some_and(|text| !text.is_empty()));
+        let ledger = client
+            .query_i64("SELECT count(*)::bigint FROM _rivetos_migrations")
+            .await
+            .expect("ledger");
+        assert_eq!(ledger, 20);
+        for name in ["0001_baseline.sql", "0019_tags.sql"] {
+            let found = client
+                .query_one_text(
+                    "SELECT name FROM _rivetos_migrations WHERE name = $1",
+                    &[Some(name.to_string())],
+                )
+                .await
+                .expect("name");
+            assert_eq!(found.as_deref(), Some(name));
+        }
+        let tables = manifest_value
+            .get("tables")
+            .and_then(Value::as_object)
+            .expect("tables");
+        for (key, entry) in tables {
+            let name = entry.get("name").and_then(Value::as_str).expect("name");
+            if name == "_rivetos_migrations" {
+                continue;
+            }
+            let schema = entry.get("schema").and_then(Value::as_str).expect("schema");
+            let expected = entry
+                .get("count")
+                .and_then(Value::as_str)
+                .expect("count")
+                .parse::<i64>()
+                .expect("count int");
+            assert_eq!(expected, 1, "{key}");
+            let got = count_table(&client, schema, name).await.expect("count");
+            assert_eq!(got, expected, "{key}");
+            if let Some(sample) = entry.get("sample").and_then(|value| value.as_object())
+                && let Some(aliases) = sample.get("aliases").and_then(Value::as_str)
+            {
+                let copied = client
+                    .query_text(&format!(
+                        "SELECT aliases::text FROM {}.{}",
+                        quote_ident(schema),
+                        quote_ident(name)
+                    ))
+                    .await
+                    .expect("aliases");
+                assert_eq!(copied.as_deref(), Some(aliases));
+            }
+        }
+        let generated = client
+            .query_one_text(
+                "SELECT a.attgenerated::text FROM pg_attribute a \
+                 JOIN pg_class c ON c.oid = a.attrelid \
+                 JOIN pg_namespace n ON n.oid = c.relnamespace \
+                 WHERE n.nspname = 'public' AND c.relname = 'ros_messages' AND a.attname = 'content_tsv'",
+                &[],
+            )
+            .await
+            .expect("generated");
+        assert_eq!(generated.as_deref(), Some("s"));
+        client
+            .batch(
+                "INSERT INTO ros_conversations (session_key, agent) VALUES ('default-session', 'default-agent')",
+                COMMAND_TIMEOUT,
+            )
+            .await
+            .expect("default insert");
+        let fresh = client
+            .query_text(
+                "SELECT id::text FROM ros_conversations WHERE session_key = 'default-session'",
+            )
+            .await
+            .expect("fresh id");
+        assert!(fresh.as_deref().is_some_and(|id| !id.is_empty()));
+        handle.close().await.expect("close");
+        let _ = std::fs::remove_dir_all(&home);
     }
 }
