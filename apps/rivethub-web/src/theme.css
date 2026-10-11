@@ -821,6 +821,25 @@ html[data-theme='light'] .spaces-canvas {
   background-position: var(--dot-x, 0px) var(--dot-y, 0px);
   animation: spaces-breathe 4.8s ease-in-out infinite;
 }
+/* Material: spaces read as raised cards on a tinted ground. The ground
+   sits a step below the window tone (the page tile is near-white in light,
+   so an untinted ground swallows the spaces); solid regions fill with the
+   surface and lift on the tile shadow. Dashed regions (add a space) stay
+   outlines. Classic keeps the flat, bordered canvas. */
+html[data-style='material'] .spaces-canvas .sc-ground {
+  background-color: color-mix(in oklab, var(--color-bg) 91%, var(--color-em));
+}
+html[data-style='material'][data-theme='dark'] .spaces-canvas .sc-ground {
+  background-color: var(--color-bg);
+}
+html[data-style='material'] .spaces-canvas .sc-region.border-solid {
+  background-color: var(--color-surface);
+  border-color: transparent;
+  box-shadow: var(--shadow-tile);
+}
+html[data-style='material'] .spaces-canvas .sc-region.border-dashed {
+  border-color: color-mix(in srgb, var(--color-line) 60%, var(--color-ink));
+}
 .spaces-canvas[data-altitude='thread'] .sc-ground::before {
   animation: none;
   opacity: 1;
