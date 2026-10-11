@@ -1,0 +1,13 @@
+{
+  "name": "ProviderError",
+  "code": "PROVIDER_HTTP_429",
+  "message": "slow down",
+  "statusCode": 429,
+  "providerId": "deepseek",
+  "severity": "transient",
+  "retryable": true,
+  "timestamp": 1710000000000,
+  "context": {},
+  "cause": "rate limit",
+  "stack": "ProviderError: slow down"
+}

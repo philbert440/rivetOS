@@ -1,0 +1,6 @@
+{
+  "id": "call_1",
+  "name": "search",
+  "arguments": { "q": "rivet" },
+  "thoughtSignature": "sig-gemini"
+}

@@ -1,0 +1,70 @@
+name: Rust
+
+on:
+  push:
+    branches:
+      - main
+      - rust/runtime
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - crates/**
+      - rust-toolchain.toml
+      - rustfmt.toml
+      - .github/workflows/rust.yml
+      - plugins/memory/postgres/src/schema/migrations/**
+      - packages/boot/src/**
+      - packages/types/src/**
+      - packages/cli/src/lib/**
+      - packages/capture-core/src/**
+      - packages/core/src/**
+      - plugins/providers/claude-cli/src/**
+  pull_request:
+    branches:
+      - main
+      - rust/runtime
+      - rr/**
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - crates/**
+      - rust-toolchain.toml
+      - rustfmt.toml
+      - .github/workflows/rust.yml
+      - plugins/memory/postgres/src/schema/migrations/**
+      - packages/boot/src/**
+      - packages/types/src/**
+      - packages/cli/src/lib/**
+      - packages/capture-core/src/**
+      - packages/core/src/**
+      - plugins/providers/claude-cli/src/**
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install "$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)" --profile minimal --component rustfmt,clippy
+          rustup show active-toolchain
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo fmt
+        run: cargo fmt --all --check
+
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: cargo test
+        run: cargo test --workspace

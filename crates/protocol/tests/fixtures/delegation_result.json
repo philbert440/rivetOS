@@ -1,0 +1,15 @@
+{
+  "status": "completed",
+  "response": "ok",
+  "iterations": 2,
+  "usage": {
+    "agent": "worker",
+    "provider": "anthropic",
+    "model": "claude-opus-4-7",
+    "promptTokens": 1,
+    "completionTokens": 2,
+    "timestamp": 10
+  },
+  "toolsUsed": ["search"],
+  "durationMs": 15
+}

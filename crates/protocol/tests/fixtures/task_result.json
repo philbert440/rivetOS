@@ -1,0 +1,15 @@
+{
+  "verdict": "budget-exceeded",
+  "summary": "stopped",
+  "output": "partial",
+  "artifacts": [{ "kind": "commit", "ref": "abc", "note": "head" }],
+  "criteriaSelfReport": [{ "id": "c1", "met": false, "evidence": "missing test" }],
+  "usage": {
+    "inputTokens": 1,
+    "outputTokens": 1,
+    "totalTokens": 2,
+    "turns": 1,
+    "wallClockMs": 10
+  },
+  "error": "over budget"
+}

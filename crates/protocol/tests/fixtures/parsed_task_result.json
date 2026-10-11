@@ -1,0 +1,7 @@
+{
+  "verdict": "failed",
+  "summary": "second",
+  "output": "body",
+  "artifacts": [{ "kind": "url", "ref": "https://example.test" }],
+  "criteriaSelfReport": [{ "id": "c1", "met": true }]
+}

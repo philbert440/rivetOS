@@ -1,0 +1,13 @@
+{
+  "id": "s1",
+  "thinking": "medium",
+  "reasoningVisible": true,
+  "toolsVisible": false,
+  "history": [
+    { "role": "user", "content": "hi" }
+  ],
+  "systemPrompt": "you are rivet",
+  "compactionCount": 1,
+  "compactionPending": "soft-40",
+  "nudgesFired": [40, 70]
+}

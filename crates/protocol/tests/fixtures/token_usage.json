@@ -1,0 +1,8 @@
+{
+  "agent": "main",
+  "provider": "anthropic",
+  "model": "claude-opus-4-7",
+  "promptTokens": 3,
+  "completionTokens": 4,
+  "timestamp": 1710000000000
+}

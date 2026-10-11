@@ -1,0 +1,17 @@
+{
+  "id": "m1",
+  "userId": "u1",
+  "username": "ada",
+  "displayName": "Ada",
+  "channelId": "c1",
+  "chatType": "direct",
+  "text": "hello",
+  "platform": "agent",
+  "agent": "main",
+  "replyToMessageId": "m0",
+  "attachments": [
+    { "type": "document", "fileName": "a.txt", "mimeType": "text/plain" }
+  ],
+  "metadata": { "k": "v" },
+  "timestamp": 1710000000000
+}
