@@ -2,6 +2,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
+use parking_lot::Mutex as TableMutex;
+
 use serde_json::{Map, Value};
 use tokio::sync::Mutex;
 
@@ -21,14 +23,14 @@ pub fn is_terminal_status(status: RunStatus) -> bool {
     status.is_terminal()
 }
 
-fn lock_table() -> &'static std::sync::Mutex<HashMap<PathBuf, Arc<Mutex<()>>>> {
-    static LOCKS: OnceLock<std::sync::Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> = OnceLock::new();
-    LOCKS.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+fn lock_table() -> &'static TableMutex<HashMap<PathBuf, Arc<Mutex<()>>>> {
+    static LOCKS: OnceLock<TableMutex<HashMap<PathBuf, Arc<Mutex<()>>>>> = OnceLock::new();
+    LOCKS.get_or_init(|| TableMutex::new(HashMap::new()))
 }
 
 fn case_lock(case_dir: &Path) -> Arc<Mutex<()>> {
     let table = lock_table();
-    let mut map = table.lock().unwrap_or_else(|err| err.into_inner());
+    let mut map = table.lock();
     map.entry(case_dir.to_path_buf())
         .or_insert_with(|| Arc::new(Mutex::new(())))
         .clone()
@@ -47,7 +49,7 @@ pub async fn write_case(case_dir: &Path, state: &CaseState) -> Result<(), Workfl
 async fn write_case_unlocked(case_dir: &Path, state: &CaseState) -> Result<(), WorkflowError> {
     let mut text = state.document.raw().to_string();
     text.push('\n');
-    io_fs::atomic_write(&case_path(case_dir), text.as_bytes()).await
+    io_fs::replace_bytes(&case_path(case_dir), text.as_bytes()).await
 }
 
 pub async fn read_case(case_dir: &Path) -> Result<CaseState, WorkflowError> {

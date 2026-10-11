@@ -1,6 +1,8 @@
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
+use parking_lot::Mutex;
 
 use indexmap::IndexMap;
 
@@ -38,12 +40,12 @@ impl NamespacedCallRegistry {
     }
 
     pub fn register(&self, namespace: impl Into<String>, resolver: CallResolver) {
-        let mut map = self.resolvers.lock().unwrap_or_else(|err| err.into_inner());
+        let mut map = self.resolvers.lock();
         map.insert(namespace.into(), resolver);
     }
 
     pub fn namespaces(&self) -> Vec<String> {
-        let map = self.resolvers.lock().unwrap_or_else(|err| err.into_inner());
+        let map = self.resolvers.lock();
         map.keys()
             .map(|key| {
                 if key.is_empty() {
@@ -63,12 +65,12 @@ impl NamespacedCallRegistry {
     ) -> Result<WireJson, WorkflowError> {
         let (namespace, name) = parse_call_ref(reference);
         let resolver = {
-            let map = self.resolvers.lock().unwrap_or_else(|err| err.into_inner());
+            let map = self.resolvers.lock();
             map.get(&namespace).cloned()
         };
         let Some(resolver) = resolver else {
             let known = {
-                let map = self.resolvers.lock().unwrap_or_else(|err| err.into_inner());
+                let map = self.resolvers.lock();
                 map.keys()
                     .map(|key| {
                         if key.is_empty() {

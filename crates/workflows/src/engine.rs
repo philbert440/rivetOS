@@ -28,7 +28,7 @@ use crate::pathutil::{node_join_paths, path_text};
 use crate::registry::NamespacedCallRegistry;
 use crate::script_host::{self, HostContext};
 use crate::step::{Step, StepRuntimeOptions, create_step_runtime};
-use crate::timeutil::now_iso;
+use crate::timeutil::current_iso;
 use crate::types::{
     JournalEntry, LoadedWorkflow, ParentRef, Run, RunFinishedStatus, RunStatus, StartedBy,
     StartedByType,
@@ -185,13 +185,13 @@ impl WorkflowEngine {
             workflow_dir: Some(workflow.dir.clone()),
             error: None,
             output: None,
-            started_at: Some(now_iso()),
+            started_at: Some(current_iso()),
             finished_at: None,
         };
         let state = case_state_from_wire(run, &input)?;
         write_case(&case_dir, &state).await?;
         let started = JournalEntry::RunStarted {
-            ts: now_iso(),
+            ts: current_iso(),
             run_id,
             workflow_id: workflow.manifest.id.clone(),
             version: workflow.manifest.version.clone(),
@@ -233,12 +233,16 @@ impl WorkflowEngine {
         let case_dir = self.find_case_dir(run_id).await?;
         tracing::info!(run_id = %run_id, "kill_run");
         flags::set_kill_flag(run_id);
-        io_fs::write_bytes(&node_join_paths(&case_dir, "KILLED"), now_iso().as_bytes()).await?;
+        io_fs::write_bytes(
+            &node_join_paths(&case_dir, "KILLED"),
+            current_iso().as_bytes(),
+        )
+        .await?;
         update_run(
             &case_dir,
             RunPatch {
                 status: Some(RunStatus::Killed),
-                finished_at: Some(now_iso()),
+                finished_at: Some(current_iso()),
                 ..RunPatch::default()
             },
         )
@@ -246,7 +250,7 @@ impl WorkflowEngine {
         append_journal(
             &case_dir,
             &JournalEntry::RunFinished {
-                ts: now_iso(),
+                ts: current_iso(),
                 run_id: run_id.to_string(),
                 status: RunFinishedStatus::Killed,
                 output: None,
@@ -337,7 +341,7 @@ impl WorkflowEngine {
         append_journal(
             &case_dir,
             &JournalEntry::GateResolved {
-                ts: now_iso(),
+                ts: current_iso(),
                 step_id: open.step_id,
                 label: open.label,
                 seq: open.seq,
@@ -427,7 +431,7 @@ impl WorkflowEngine {
                     RunPatch {
                         status: Some(RunStatus::Done),
                         output: Some(output.clone()),
-                        finished_at: Some(now_iso()),
+                        finished_at: Some(current_iso()),
                         ..RunPatch::default()
                     },
                 )
@@ -436,7 +440,7 @@ impl WorkflowEngine {
                 append_journal(
                     case_dir,
                     &JournalEntry::RunFinished {
-                        ts: now_iso(),
+                        ts: current_iso(),
                         run_id: state.run.id.clone(),
                         status: RunFinishedStatus::Done,
                         output: Some(output),
@@ -478,7 +482,7 @@ impl WorkflowEngine {
                     case_dir,
                     RunPatch {
                         status: Some(RunStatus::Killed),
-                        finished_at: Some(now_iso()),
+                        finished_at: Some(current_iso()),
                         error: Some(err.to_string()),
                         ..RunPatch::default()
                     },
@@ -487,7 +491,7 @@ impl WorkflowEngine {
                 append_journal(
                     case_dir,
                     &JournalEntry::RunFinished {
-                        ts: now_iso(),
+                        ts: current_iso(),
                         run_id: state.run.id.clone(),
                         status: RunFinishedStatus::Killed,
                         output: None,
@@ -505,7 +509,7 @@ impl WorkflowEngine {
                     RunPatch {
                         status: Some(RunStatus::Failed),
                         error: Some(err.to_string()),
-                        finished_at: Some(now_iso()),
+                        finished_at: Some(current_iso()),
                         ..RunPatch::default()
                     },
                 )
@@ -513,7 +517,7 @@ impl WorkflowEngine {
                 append_journal(
                     case_dir,
                     &JournalEntry::RunFinished {
-                        ts: now_iso(),
+                        ts: current_iso(),
                         run_id: state.run.id,
                         status: RunFinishedStatus::Failed,
                         output: None,
@@ -840,14 +844,15 @@ async fn cascade_kill(parent: &Path) {
         if !try_exists(&case_path(&child)).await.unwrap_or(false) {
             continue;
         }
-        let _ = io_fs::write_bytes(&node_join_paths(&child, "KILLED"), now_iso().as_bytes()).await;
+        let _ =
+            io_fs::write_bytes(&node_join_paths(&child, "KILLED"), current_iso().as_bytes()).await;
         if let Ok(state) = read_case(&child).await {
             flags::set_kill_flag(&state.run.id);
             let _ = update_run(
                 &child,
                 RunPatch {
                     status: Some(RunStatus::Killed),
-                    finished_at: Some(now_iso()),
+                    finished_at: Some(current_iso()),
                     ..RunPatch::default()
                 },
             )

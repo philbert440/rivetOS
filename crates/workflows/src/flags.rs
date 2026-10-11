@@ -1,5 +1,7 @@
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
+
+use parking_lot::Mutex;
 
 fn flags() -> &'static Mutex<HashMap<String, bool>> {
     static FLAGS: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
@@ -7,11 +9,11 @@ fn flags() -> &'static Mutex<HashMap<String, bool>> {
 }
 
 pub(crate) fn set_kill_flag(run_id: &str) {
-    let mut map = flags().lock().unwrap_or_else(|err| err.into_inner());
+    let mut map = flags().lock();
     map.insert(run_id.to_string(), true);
 }
 
 pub(crate) fn kill_flag(run_id: &str) -> bool {
-    let map = flags().lock().unwrap_or_else(|err| err.into_inner());
+    let map = flags().lock();
     map.get(run_id).copied().unwrap_or(false)
 }

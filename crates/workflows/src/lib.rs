@@ -32,7 +32,7 @@ pub use config::{
     DEFAULT_MAX_RUN_RUNTIME_MS, DEFAULT_STEP_TIMEOUT_MS, EngineConfig, default_case_dir_root,
     default_warn, default_workflows_defs_root, edit_path_for_def_dir, is_workflow_allowed,
     resolve_case_dir_root, resolve_defs_roots, resolve_max_run_runtime_ms, resolve_runs_dir,
-    resolve_step_timeout_ms, shared_dir, shared_path, workflows_enabled,
+    resolve_step_timeout_ms, shared_path, workflows_enabled,
 };
 pub use determinism::{DeterminismFinding, check_run_script_determinism};
 pub use engine::{
@@ -67,7 +67,6 @@ pub use step::{
     AgentStepOpts, BranchFn, HumanStepOpts, ParallelBegin, RunStepOpts, Step, StepOutput,
     StepRuntimeOptions, StepScope, branch, create_step_runtime,
 };
-pub use timeutil::now_iso;
 pub use types::{
     AgentConfig, AgentDef, CacheSource, CachedStep, CaseState, DetailChild, DetailRun, Field,
     FieldType, JournalEntry, LoadedWorkflow, OpenGate, OutlineStep, ParentRef, Run, RunDetail,

@@ -1,6 +1,8 @@
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+
+use parking_lot::Mutex;
 use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value, json};
@@ -404,7 +406,7 @@ async fn loop_iterations_get_distinct_seq_ids() {
                         .unwrap()
                         .parse::<i64>()
                         .unwrap();
-                    seqs.lock().unwrap().push(seq);
+                    seqs.lock().push(seq);
                     Ok(json!({"result": seq}))
                 }
             },
@@ -429,7 +431,7 @@ async fn loop_iterations_get_distinct_seq_ids() {
         .await
         .unwrap();
     assert_eq!(result.run.status, RunStatus::Done);
-    assert_eq!(*seqs.lock().unwrap(), vec![1, 2, 3]);
+    assert_eq!(*seqs.lock(), vec![1, 2, 3]);
     assert_eq!(make_step_id("loop-body", 2), "loop-body#2");
     let journal = read_journal(Path::new(&result.case_dir)).await.unwrap();
     let started: Vec<i64> = journal
@@ -565,7 +567,7 @@ async fn undeclared_agent_fields_are_not_merged() {
     ))));
     config.case_dir_root = Some(root.join("runs"));
     config.workflow_dirs = vec![("test-wf".to_string(), dir)];
-    config.warn = Arc::new(move |message: &str| hook.lock().unwrap().push(message.to_string()));
+    config.warn = Arc::new(move |message: &str| hook.lock().push(message.to_string()));
     let engine = WorkflowEngine::new(config);
     let script = run_script(|step, _ctx| async move {
         let agent = step
@@ -607,13 +609,7 @@ async fn undeclared_agent_fields_are_not_merged() {
         }
         _ => panic!("expected manifest_warn"),
     }
-    assert!(
-        warns
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|item| item.contains("undeclared"))
-    );
+    assert!(warns.lock().iter().any(|item| item.contains("undeclared")));
 }
 
 #[tokio::test]
@@ -1115,7 +1111,7 @@ async fn node_parallel_failure_returns_while_a_sibling_continues() {
             async move {
                 match opts.script.as_deref() {
                     Some("first") => {
-                        let rx = release_rx.lock().unwrap().take();
+                        let rx = release_rx.lock().take();
                         match rx {
                             Some(rx) => rx
                                 .await
@@ -1207,7 +1203,7 @@ async fn node_sibling_blocked_in_an_executor_is_bounded_by_max_runtime() {
             async move {
                 if opts.script.as_deref() == Some("parked") {
                     started_flag.fetch_add(1, Ordering::SeqCst);
-                    let rx = release_rx.lock().unwrap().take();
+                    let rx = release_rx.lock().take();
                     if let Some(rx) = rx {
                         let _ = rx.await;
                     }
@@ -1373,13 +1369,20 @@ async fn load_run_detail_matches_the_typescript_shape() {
         .await
         .unwrap();
     assert_eq!(parent.run.status, RunStatus::Done);
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+    let release_slot = Arc::new(Mutex::new(Some(release_rx)));
     let started = Arc::new(AtomicBool::new(false));
     let flag = Arc::clone(&started);
+    let slot = Arc::clone(&release_slot);
     let child_script = run_script(move |_step, _ctx| {
         let flag = Arc::clone(&flag);
+        let slot = Arc::clone(&slot);
         async move {
             flag.store(true, Ordering::SeqCst);
-            tokio::time::sleep(Duration::from_secs(30)).await;
+            let release = slot.lock().take();
+            if let Some(rx) = release {
+                let _ = rx.await;
+            }
             Ok(())
         }
     });
@@ -1387,7 +1390,7 @@ async fn load_run_detail_matches_the_typescript_shape() {
     let child_wf = child_wf.clone();
     let parent_id = parent.run.id.clone();
     let child_case = PathBuf::from(format!("{}/child-live", parent.case_dir));
-    tokio::spawn(async move {
+    let child_task = tokio::spawn(async move {
         let started_by = StartedBy::with_id(StartedByType::Workflow, parent_id.clone());
         let _ = child_engine
             .start_run(
@@ -1495,6 +1498,45 @@ async fn load_run_detail_matches_the_typescript_shape() {
     assert!(!child_run_json.contains("workflowDir"));
     assert!(!child_run_json.contains("\"parent\":"));
     assert!(child_bytes.contains("parentRunId"));
+    let _ = release_tx.send(());
+    let joined = tokio::time::timeout(Duration::from_secs(5), child_task).await;
+    assert!(joined.is_ok(), "running child did not finish after release");
+    assert!(joined.unwrap().is_ok());
+}
+
+#[tokio::test]
+async fn load_run_detail_reports_the_resolved_case_dir() {
+    let root = temp_root("moved-runs");
+    let runs = root.join("new-runs");
+    let id = "run-moved";
+    let dir = runs.join(id);
+    std::fs::create_dir_all(&dir).unwrap();
+    let stale = "/data/old-runs/run-moved";
+    let body = json!({
+        "run": {
+            "id": id,
+            "workflowId": "wf",
+            "version": "1",
+            "startedBy": {"type": "human"},
+            "caseDir": stale,
+            "status": "done",
+            "startedAt": "2026-01-01T00:00:00.000Z",
+            "finishedAt": "2026-01-01T00:00:01.000Z"
+        },
+        "fields": {}
+    });
+    std::fs::write(
+        dir.join("case.json"),
+        format!("{}\n", serde_json::to_string(&body).unwrap()),
+    )
+    .unwrap();
+    let engine = engine_for(&runs, arc_exec(MockExecutorRegistry::new()), Vec::new());
+    let detail = load_run_detail(&engine, id).await.unwrap();
+    let resolved = path_text(&node_join(&[path_text(&runs).as_str(), id]));
+    assert_eq!(detail.run.case_dir, resolved);
+    assert_ne!(detail.run.case_dir, stale);
+    let stored = std::fs::read_to_string(dir.join("case.json")).unwrap();
+    assert!(stored.contains(stale));
 }
 
 fn q(text: &str) -> String {
@@ -1522,7 +1564,7 @@ async fn wire_payloads_round_trip_through_done_call_and_prompts() {
         Arc::new(move |_name, input, _ctx| {
             let call_slot = call_slot.clone();
             Box::pin(async move {
-                *call_slot.lock().unwrap() = input.raw().to_string();
+                *call_slot.lock() = input.raw().to_string();
                 WireJson::parse(r#"{"kept":true}"#)
             })
         }),
@@ -1533,7 +1575,7 @@ async fn wire_payloads_round_trip_through_done_call_and_prompts() {
         agent_handler(move |opts| {
             let prompt_slot = prompt_slot.clone();
             async move {
-                *prompt_slot.lock().unwrap() = opts
+                *prompt_slot.lock() = opts
                     .prompt
                     .as_ref()
                     .map(|wire| wire.raw().to_string())
@@ -1544,7 +1586,7 @@ async fn wire_payloads_round_trip_through_done_call_and_prompts() {
         run_handler(move |opts| {
             let run_slot = run_slot.clone();
             async move {
-                *run_slot.lock().unwrap() = opts
+                *run_slot.lock() = opts
                     .input
                     .as_ref()
                     .map(|wire| wire.raw().to_string())
@@ -1586,9 +1628,9 @@ async fn wire_payloads_round_trip_through_done_call_and_prompts() {
         .await
         .unwrap();
     assert_eq!(result.run.status, RunStatus::Done, "{:?}", result.run.error);
-    assert_eq!(seen_call.lock().unwrap().as_str(), r#"{"text":"\ud800"}"#);
-    assert_eq!(seen_prompt.lock().unwrap().as_str(), r#""\ud800""#);
-    assert_eq!(seen_run.lock().unwrap().as_str(), r#"{"note":"\ud800"}"#);
+    assert_eq!(seen_call.lock().as_str(), r#"{"text":"\ud800"}"#);
+    assert_eq!(seen_prompt.lock().as_str(), r#""\ud800""#);
+    assert_eq!(seen_run.lock().as_str(), r#"{"note":"\ud800"}"#);
     let case_text = std::fs::read_to_string(Path::new(&result.case_dir).join("case.json")).unwrap();
     let journal_text = std::fs::read_to_string(journal_path(Path::new(&result.case_dir))).unwrap();
     assert!(case_text.contains(r#"\ud800"#), "{case_text}");
@@ -1660,7 +1702,7 @@ async fn node_bridge_keeps_surrogates_through_call_prompt_and_done() {
             move |opts| {
                 let prompt_slot = prompt_slot.clone();
                 async move {
-                    *prompt_slot.lock().unwrap() = opts
+                    *prompt_slot.lock() = opts
                         .prompt
                         .as_ref()
                         .map(|wire| wire.raw().to_string())
@@ -1697,7 +1739,7 @@ async fn node_bridge_keeps_surrogates_through_call_prompt_and_done() {
         }
     };
     assert_eq!(result.run.status, RunStatus::Done, "{:?}", result.run.error);
-    assert_eq!(seen_prompt.lock().unwrap().as_str(), r#""\ud800""#);
+    assert_eq!(seen_prompt.lock().as_str(), r#""\ud800""#);
     let case_text = std::fs::read_to_string(Path::new(&result.case_dir).join("case.json")).unwrap();
     let journal_text = std::fs::read_to_string(journal_path(Path::new(&result.case_dir))).unwrap();
     assert!(case_text.matches(r#"\ud800"#).count() >= 2, "{case_text}");
@@ -1994,7 +2036,7 @@ async fn creates_branch_subdirs() {
         arc_exec(MockExecutorRegistry::with_run(run_handler(move |opts| {
             let seen = seen_h.clone();
             async move {
-                seen.lock().unwrap().push(opts.case_dir);
+                seen.lock().push(opts.case_dir);
                 Ok(json!({"ok": true}))
             }
         }))),
@@ -2033,7 +2075,7 @@ async fn creates_branch_subdirs() {
         .await
         .unwrap();
     assert_eq!(result.run.status, RunStatus::Done);
-    let mut got = seen.lock().unwrap().clone();
+    let mut got = seen.lock().clone();
     got.sort();
     let mut expect = vec![
         path_text(&node_join(&[result.case_dir.as_str(), "fan#1", "b0"])),

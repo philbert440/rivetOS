@@ -1,6 +1,8 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use config_crate::paths::shared_path as standard_shared_path;
+use protocol::host::ProcessEnv;
 use protocol::js::js_trim;
 
 use crate::executors::ExecutorRegistry;
@@ -9,31 +11,9 @@ use crate::registry::NamespacedCallRegistry;
 
 pub const DEFAULT_STEP_TIMEOUT_MS: f64 = 30.0 * 60.0 * 1000.0;
 pub const DEFAULT_MAX_RUN_RUNTIME_MS: f64 = 24.0 * 60.0 * 60.0 * 1000.0;
-const DEFAULT_SHARED_DIR: &str = "/rivet-shared";
-
-pub fn shared_dir() -> PathBuf {
-    match std::env::var("RIVETOS_SHARED_DIR") {
-        Ok(raw) => {
-            let trimmed = js_trim(&raw);
-            if trimmed.is_empty() {
-                PathBuf::from(DEFAULT_SHARED_DIR)
-            } else {
-                PathBuf::from(trimmed)
-            }
-        }
-        Err(_) => PathBuf::from(DEFAULT_SHARED_DIR),
-    }
-}
 
 pub fn shared_path(segments: &[&str]) -> PathBuf {
-    let mut parts = Vec::with_capacity(segments.len() + 1);
-    let root = path_text(&shared_dir());
-    parts.push(root);
-    for segment in segments {
-        parts.push((*segment).to_string());
-    }
-    let refs: Vec<&str> = parts.iter().map(String::as_str).collect();
-    node_join(&refs)
+    PathBuf::from(standard_shared_path(&ProcessEnv, segments))
 }
 
 pub fn default_case_dir_root() -> PathBuf {

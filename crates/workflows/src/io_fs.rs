@@ -1,5 +1,4 @@
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::path::Path;
 use std::time::Duration;
 
 use tokio::fs;
@@ -7,8 +6,6 @@ use tokio::fs;
 use crate::error::WorkflowError;
 
 const IO_TIMEOUT: Duration = Duration::from_secs(30);
-
-static TMP_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 async fn bound<T>(
     operation: &'static str,
@@ -180,17 +177,6 @@ pub async fn write_bytes(path: &Path, bytes: &[u8]) -> Result<(), WorkflowError>
     .await
 }
 
-pub async fn rename(from: &Path, to: &Path) -> Result<(), WorkflowError> {
-    let from_owned = from.to_path_buf();
-    let to_owned = to.to_path_buf();
-    bound("rename", to, async move {
-        fs::rename(&from_owned, &to_owned)
-            .await
-            .map_err(|err| WorkflowError::io(&to_owned, err))
-    })
-    .await
-}
-
 pub async fn try_exists(path: &Path) -> Result<bool, WorkflowError> {
     let owned = path.to_path_buf();
     bound("stat", path, async move {
@@ -238,18 +224,26 @@ pub async fn read_dir(path: &Path) -> Result<Vec<DirItem>, WorkflowError> {
     .await
 }
 
-pub fn unique_tmp(path: &Path) -> PathBuf {
-    let n = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let mut tmp = path.as_os_str().to_os_string();
-    tmp.push(format!(".{}.{n}.tmp", std::process::id()));
-    PathBuf::from(tmp)
-}
-
-pub async fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), WorkflowError> {
+pub async fn replace_bytes(path: &Path, bytes: &[u8]) -> Result<(), WorkflowError> {
     if let Some(parent) = path.parent() {
         create_dir_all(parent).await?;
     }
-    let tmp = unique_tmp(path);
-    write_bytes(&tmp, bytes).await?;
-    rename(&tmp, path).await
+    let owned = path.to_path_buf();
+    let payload = bytes.to_vec();
+    bound("write", path, async move {
+        let failed = owned.clone();
+        match tokio::task::spawn_blocking(move || {
+            protocol::host::atomic_replace(&owned, &payload)
+                .map_err(|err| WorkflowError::io(&owned, err))
+        })
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => Err(WorkflowError::message(format!(
+                "atomic replace task failed: {}",
+                failed.display()
+            ))),
+        }
+    })
+    .await
 }

@@ -1,5 +1,7 @@
+use std::cmp::Ordering;
 use std::path::Path;
 
+use protocol::js::locale_compare;
 use serde_json::Value;
 
 use crate::case::case_path;
@@ -38,7 +40,7 @@ pub async fn list_runs(
     found.sort_by(|left, right| {
         let right_at = right.started_at.as_deref().unwrap_or("");
         let left_at = left.started_at.as_deref().unwrap_or("");
-        right_at.cmp(left_at)
+        locale_ordering(right_at, left_at)
     });
     found.truncate(limit);
     found
@@ -84,7 +86,7 @@ pub async fn list_child_runs(
     found.sort_by(|left, right| {
         let right_at = right.started_at.as_deref().unwrap_or("");
         let left_at = left.started_at.as_deref().unwrap_or("");
-        right_at.cmp(left_at)
+        locale_ordering(right_at, left_at)
     });
     found
 }
@@ -162,8 +164,17 @@ pub async fn list_workflow_defs(
             }
         }
     }
-    out.sort_by(|left, right| left.manifest.name.cmp(&right.manifest.name));
+    out.sort_by(|left, right| locale_ordering(&left.manifest.name, &right.manifest.name));
     out
+}
+
+fn locale_ordering(left: &str, right: &str) -> Ordering {
+    match locale_compare(left, right) {
+        Ok(value) if value < 0 => Ordering::Less,
+        Ok(value) if value > 0 => Ordering::Greater,
+        Ok(_) => Ordering::Equal,
+        Err(_) => left.cmp(right),
+    }
 }
 
 async fn scan_runs(
@@ -291,4 +302,43 @@ async fn read_run_summary(
             .and_then(Value::as_str)
             .map(str::to_string),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::locale_ordering;
+
+    #[test]
+    fn locale_ordering_matches_the_node_golden() {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden/js-semantics.json");
+        let text = std::fs::read_to_string(&path).unwrap();
+        let golden: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let names: Vec<String> = golden["locale_compare"]["sorted"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item.as_str().unwrap().to_string())
+            .collect();
+        let mut shuffled = names.clone();
+        shuffled.reverse();
+        shuffled.sort_by(|left, right| locale_ordering(left, right));
+        assert_eq!(shuffled, names);
+        for pair in golden["locale_compare"]["pairs"].as_array().unwrap() {
+            let left = pair["a"].as_str().unwrap();
+            let right = pair["b"].as_str().unwrap();
+            let sign = pair["sign"].as_i64().unwrap();
+            let actual = match locale_ordering(left, right) {
+                std::cmp::Ordering::Less => -1,
+                std::cmp::Ordering::Equal => 0,
+                std::cmp::Ordering::Greater => 1,
+            };
+            assert_eq!(actual, sign, "{left} vs {right}");
+        }
+        assert_eq!(locale_ordering("apple", "Zebra"), std::cmp::Ordering::Less);
+        assert_eq!(
+            locale_ordering("Zebra", "apple"),
+            std::cmp::Ordering::Greater
+        );
+    }
 }

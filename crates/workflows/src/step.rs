@@ -2,7 +2,9 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::path::Path;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
+use parking_lot::Mutex;
 
 use protocol::JsNumber;
 use serde::Serialize;
@@ -17,7 +19,7 @@ use crate::io_fs::{self, try_exists};
 use crate::journal::{append_journal, find_cached_step_result, is_open_gate};
 use crate::pathutil::{node_join_paths, path_text};
 use crate::registry::{CallContext, NamespacedCallRegistry};
-use crate::timeutil::now_iso;
+use crate::timeutil::current_iso;
 use crate::types::{
     AgentDef, CachedStep, Field, JournalEntry, LoadedWorkflow, StepKind, StepUsage,
     WorkflowBudgets, make_step_id,
@@ -327,11 +329,7 @@ impl Step {
     }
 
     pub fn done_output_wire(&self) -> Option<WireJson> {
-        self.inner
-            .done_output
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .clone()
+        self.inner.done_output.lock().clone()
     }
 
     fn scoped_label(&self, label: &str) -> String {
@@ -379,7 +377,7 @@ impl Step {
         let slot: Arc<Mutex<Option<StepUsage>>> = Arc::new(Mutex::new(None));
         let report_slot = Arc::clone(&slot);
         let report_usage: ReportUsageFn = Arc::new(move |usage| {
-            let mut guard = report_slot.lock().unwrap_or_else(|err| err.into_inner());
+            let mut guard = report_slot.lock();
             *guard = Some(merge_usage(guard.clone(), usage));
         });
         let result = self
@@ -404,7 +402,7 @@ impl Step {
             self.merge_agent_result(full, step_id, seq, &opts.out, &result)
                 .await?;
         }
-        let usage = slot.lock().unwrap_or_else(|err| err.into_inner()).clone();
+        let usage = slot.lock().clone();
         self.inner.accumulate(usage.as_ref());
         let output = StepOutput::from_value(result)?;
         self.inner
@@ -463,7 +461,7 @@ impl Step {
                 undeclared.join(", ")
             );
             let entry = JournalEntry::ManifestWarn {
-                ts: now_iso(),
+                ts: current_iso(),
                 step_id: step_id.to_string(),
                 label: full.to_string(),
                 seq,
@@ -507,7 +505,7 @@ impl Step {
         let slot: Arc<Mutex<Option<StepUsage>>> = Arc::new(Mutex::new(None));
         let report_slot = Arc::clone(&slot);
         let report_usage: ReportUsageFn = Arc::new(move |usage| {
-            let mut guard = report_slot.lock().unwrap_or_else(|err| err.into_inner());
+            let mut guard = report_slot.lock();
             *guard = Some(merge_usage(guard.clone(), usage));
         });
         let result = self
@@ -527,7 +525,7 @@ impl Step {
                 report_usage,
             })
             .await?;
-        let usage = slot.lock().unwrap_or_else(|err| err.into_inner()).clone();
+        let usage = slot.lock().clone();
         self.inner.accumulate(usage.as_ref());
         let output = StepOutput::from_value(result)?;
         self.inner
@@ -554,7 +552,7 @@ impl Step {
         };
         if !is_open_gate(&self.inner.journal.lock().await, &full, seq) {
             let entry = JournalEntry::GateOpened {
-                ts: now_iso(),
+                ts: current_iso(),
                 step_id: step_id.clone(),
                 label: full.clone(),
                 seq,
@@ -679,11 +677,7 @@ impl Step {
         let seq = self.inner.next_seq("done");
         let step_id = make_step_id("done", seq);
         {
-            let mut slot = self
-                .inner
-                .done_output
-                .lock()
-                .unwrap_or_else(|err| err.into_inner());
+            let mut slot = self.inner.done_output.lock();
             *slot = Some(output.clone());
         }
         merge_fields_raw(Path::new(&self.inner.case_dir), entries).await?;
@@ -810,18 +804,14 @@ impl Step {
                 merge_agent_fields: false,
             });
         }
-        self.inner
-            .pending
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .insert(
-                step_id.clone(),
-                PendingParallel {
-                    label: full,
-                    seq,
-                    step_id: step_id.clone(),
-                },
-            );
+        self.inner.pending.lock().insert(
+            step_id.clone(),
+            PendingParallel {
+                label: full,
+                seq,
+                step_id: step_id.clone(),
+            },
+        );
         Ok(ParallelBegin {
             replay: false,
             result: None,
@@ -835,13 +825,7 @@ impl Step {
         token: &str,
         result: WireJson,
     ) -> Result<(), WorkflowError> {
-        let pending = {
-            self.inner
-                .pending
-                .lock()
-                .unwrap_or_else(|err| err.into_inner())
-                .remove(token)
-        };
+        let pending = { self.inner.pending.lock().remove(token) };
         let Some(pending) = pending else {
             return Err(WorkflowError::message(format!(
                 "unknown parallel token \"{token}\""
@@ -867,13 +851,7 @@ impl Step {
         if err.is_suspension() {
             return Ok(());
         }
-        let pending = {
-            self.inner
-                .pending
-                .lock()
-                .unwrap_or_else(|err| err.into_inner())
-                .remove(token)
-        };
+        let pending = { self.inner.pending.lock().remove(token) };
         let Some(pending) = pending else {
             return Ok(());
         };
@@ -891,10 +869,7 @@ impl Step {
 
 impl StepInner {
     fn next_seq(&self, label: &str) -> i64 {
-        let mut counts = self
-            .label_counts
-            .lock()
-            .unwrap_or_else(|err| err.into_inner());
+        let mut counts = self.label_counts.lock();
         let next = counts.get(label).copied().unwrap_or(0) + 1;
         counts.insert(label.to_string(), next);
         next
@@ -904,7 +879,7 @@ impl StepInner {
         let Some(usage) = usage else {
             return;
         };
-        let mut spend = self.spend.lock().unwrap_or_else(|err| err.into_inner());
+        let mut spend = self.spend.lock();
         if let Some(tokens) = usage.token_f64() {
             spend.tokens += tokens;
         }
@@ -917,7 +892,7 @@ impl StepInner {
         let Some(budgets) = &self.budgets else {
             return Ok(());
         };
-        let spend = self.spend.lock().unwrap_or_else(|err| err.into_inner());
+        let spend = self.spend.lock();
         if let Some(limit) = positive_limit(budgets.max_tokens)
             && spend.tokens > limit
         {
@@ -969,7 +944,7 @@ impl StepInner {
         };
         if !already_started {
             let started = JournalEntry::StepStarted {
-                ts: now_iso(),
+                ts: current_iso(),
                 step_id: step_id.clone(),
                 label: label.to_string(),
                 seq,
@@ -1002,7 +977,7 @@ impl StepInner {
     ) -> Result<(), WorkflowError> {
         let usage = usage.filter(|item| !item.is_empty());
         let entry = JournalEntry::StepFinished {
-            ts: now_iso(),
+            ts: current_iso(),
             step_id: step_id.to_string(),
             label: label.to_string(),
             seq,
@@ -1024,7 +999,7 @@ impl StepInner {
         err: &WorkflowError,
     ) -> Result<(), WorkflowError> {
         let entry = JournalEntry::StepFailed {
-            ts: now_iso(),
+            ts: current_iso(),
             step_id: step_id.to_string(),
             label: label.to_string(),
             seq,

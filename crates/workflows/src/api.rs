@@ -11,7 +11,7 @@ use crate::journal::{append_journal, find_open_gate, read_journal};
 use crate::list_runs::{list_child_runs, list_workflow_defs};
 use crate::loader::load_workflow_dir;
 use crate::pathutil::{node_join_paths, path_text};
-use crate::timeutil::now_iso;
+use crate::timeutil::current_iso;
 use crate::types::{
     DetailChild, DetailRun, JournalEntry, Run, RunDetail, RunFinishedStatus, RunStatus, RunSummary,
     StartedBy, WorkflowDiagnostic, WorkflowValidateResponse,
@@ -32,7 +32,7 @@ pub async fn load_run_detail(
         None => WireJson::parse("{}")?,
     };
     Ok(RunDetail {
-        run: detail_run(state.run),
+        run: detail_run(state.run, &case_dir),
         fields,
         journal,
         children: children.into_iter().map(detail_child).collect(),
@@ -40,7 +40,7 @@ pub async fn load_run_detail(
     })
 }
 
-fn detail_run(run: Run) -> DetailRun {
+fn detail_run(run: Run, case_dir: &Path) -> DetailRun {
     let parent_run_id = run.parent.map(|parent| parent.run_id);
     DetailRun {
         id: run.id,
@@ -51,7 +51,7 @@ fn detail_run(run: Run) -> DetailRun {
         current: run.current,
         version: run.version,
         parent_run_id,
-        case_dir: run.case_dir,
+        case_dir: path_text(case_dir),
         error: run.error,
         output: run.output,
         started_by: run.started_by,
@@ -245,7 +245,7 @@ pub async fn materialize_detached_failure(
     started_by: StartedBy,
     message: &str,
 ) -> Result<(), WorkflowError> {
-    let ts = now_iso();
+    let ts = current_iso();
     if let Ok(existing) = read_case(case_dir).await {
         if existing.run.status.is_terminal() {
             return Ok(());

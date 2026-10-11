@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use parking_lot::Mutex;
+
 use serde_json::json;
 use workflows::{ListRunsOptions, list_child_runs, list_runs, list_workflow_defs};
 
@@ -52,27 +54,21 @@ async fn returns_newest_first_and_skips_garbage() {
     std::fs::create_dir_all(root.join("junk")).unwrap();
     std::fs::write(root.join("junk").join("case.json"), "{not json").unwrap();
     std::fs::create_dir_all(root.join("empty")).unwrap();
-    let warns = std::sync::Mutex::new(Vec::new());
+    let warns = Mutex::new(Vec::new());
     let runs = list_runs(
         &root,
         ListRunsOptions {
             limit: Some(10),
             depth: None,
         },
-        &|message| warns.lock().unwrap().push(message.to_string()),
+        &|message| warns.lock().push(message.to_string()),
     )
     .await;
     assert_eq!(
         runs.iter().map(|run| run.id.as_str()).collect::<Vec<_>>(),
         vec!["run-b", "run-a"]
     );
-    assert!(
-        warns
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|item| item.contains("junk"))
-    );
+    assert!(warns.lock().iter().any(|item| item.contains("junk")));
 }
 
 #[tokio::test]
@@ -124,18 +120,54 @@ async fn loads_valid_defs_and_skips_broken() {
     let bad = defs.join("broken");
     std::fs::create_dir_all(&bad).unwrap();
     std::fs::write(bad.join("workflow.yaml"), "id: only\n").unwrap();
-    let warns = std::sync::Mutex::new(Vec::new());
+    let warns = Mutex::new(Vec::new());
     let loaded = list_workflow_defs(&[defs], &|message| {
-        warns.lock().unwrap().push(message.to_string());
+        warns.lock().push(message.to_string());
     })
     .await;
     assert_eq!(loaded.len(), 1);
     assert_eq!(loaded[0].manifest.id, "hello");
-    assert!(
-        warns
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|item| item.contains("broken"))
+    assert!(warns.lock().iter().any(|item| item.contains("broken")));
+}
+
+#[tokio::test]
+async fn runs_sort_started_at_with_locale_compare() {
+    let root = temp_root("locale-runs");
+    write_case(&root.join("run-lower"), "run-lower", "wf", "readme.md");
+    write_case(&root.join("run-upper"), "run-upper", "wf", "README.md");
+    let runs = list_runs(&root, ListRunsOptions::default(), &|_message| {}).await;
+    assert_eq!(
+        runs.iter().map(|run| run.id.as_str()).collect::<Vec<_>>(),
+        vec!["run-upper", "run-lower"]
     );
+}
+
+#[tokio::test]
+async fn defs_sort_names_with_locale_compare() {
+    let root = temp_root("locale-defs");
+    let defs = root.join("defs");
+    write_def(&defs.join("upper"), "upper", "README.md");
+    write_def(&defs.join("zebra"), "zebra", "Zebra");
+    write_def(&defs.join("apple"), "apple", "apple");
+    write_def(&defs.join("lower"), "lower", "readme.md");
+    let loaded = list_workflow_defs(&[defs], &|_message| {}).await;
+    let names: Vec<_> = loaded
+        .iter()
+        .map(|item| item.manifest.name.as_str())
+        .collect();
+    assert_eq!(names, vec!["apple", "readme.md", "README.md", "Zebra"]);
+}
+
+fn write_def(dir: &std::path::Path, id: &str, name: &str) {
+    std::fs::create_dir_all(dir).unwrap();
+    std::fs::write(
+        dir.join("workflow.yaml"),
+        format!("id: {id}\nversion: \"0.1.0\"\nname: \"{name}\"\ninput: []\noutput: []\n"),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("run.ts"),
+        "export default async function run() {}\n",
+    )
+    .unwrap();
 }

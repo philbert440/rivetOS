@@ -2,6 +2,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
+use parking_lot::Mutex;
+
 use protocol::js::{JsObject, JsValue, js_trim};
 
 use crate::error::WorkflowError;
@@ -16,17 +18,16 @@ pub fn journal_path(case_dir: &Path) -> PathBuf {
     node_join_paths(case_dir, JOURNAL_FILENAME)
 }
 
-fn lock_table() -> &'static std::sync::Mutex<HashMap<PathBuf, Arc<std::sync::Mutex<()>>>> {
-    static LOCKS: OnceLock<std::sync::Mutex<HashMap<PathBuf, Arc<std::sync::Mutex<()>>>>> =
-        OnceLock::new();
-    LOCKS.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+fn lock_table() -> &'static Mutex<HashMap<PathBuf, Arc<Mutex<()>>>> {
+    static LOCKS: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> = OnceLock::new();
+    LOCKS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn path_lock(path: &Path) -> Arc<std::sync::Mutex<()>> {
+fn path_lock(path: &Path) -> Arc<Mutex<()>> {
     let table = lock_table();
-    let mut map = table.lock().unwrap_or_else(|err| err.into_inner());
+    let mut map = table.lock();
     map.entry(path.to_path_buf())
-        .or_insert_with(|| Arc::new(std::sync::Mutex::new(())))
+        .or_insert_with(|| Arc::new(Mutex::new(())))
         .clone()
 }
 
@@ -45,7 +46,7 @@ pub async fn append_journal(case_dir: &Path, entry: &JournalEntry) -> Result<(),
     line.push('\n');
     let task = tokio::task::spawn_blocking(move || {
         let lock = path_lock(&path);
-        let _guard = lock.lock().unwrap_or_else(|err| err.into_inner());
+        let _guard = lock.lock();
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|err| WorkflowError::io(parent, err))?;
         }
@@ -68,7 +69,7 @@ pub async fn read_journal(case_dir: &Path) -> Result<Vec<JournalEntry>, Workflow
     let path = journal_path(case_dir);
     let task = tokio::task::spawn_blocking(move || {
         let lock = path_lock(&path);
-        let _guard = lock.lock().unwrap_or_else(|err| err.into_inner());
+        let _guard = lock.lock();
         if !path.exists() {
             return Ok(Vec::new());
         }

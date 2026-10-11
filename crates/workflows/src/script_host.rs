@@ -3,11 +3,14 @@ use std::fmt;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream as StdUnixStream;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+
+use parking_lot::Mutex;
 use std::time::Duration;
 
 use command_fds::{CommandFdExt, FdMapping};
+use protocol::host::{ProcessEnv, env_trimmed};
 use protocol::js::{JsObject, JsValue, js_trim, parse, stringify};
 use serde_json::{Map, Value};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -477,7 +480,7 @@ async fn drain_stderr(mut stderr: tokio::process::ChildStderr, ring: &Mutex<VecD
 }
 
 fn push_ring(ring: &Mutex<VecDeque<u8>>, bytes: &[u8]) {
-    let mut guard = ring.lock().unwrap_or_else(|err| err.into_inner());
+    let mut guard = ring.lock();
     guard.extend(bytes);
     while guard.len() > STDERR_CAP {
         guard.pop_front();
@@ -485,7 +488,7 @@ fn push_ring(ring: &Mutex<VecDeque<u8>>, bytes: &[u8]) {
 }
 
 fn ring_text(ring: &Mutex<VecDeque<u8>>) -> String {
-    let mut guard = ring.lock().unwrap_or_else(|err| err.into_inner());
+    let mut guard = ring.lock();
     String::from_utf8_lossy(guard.make_contiguous()).into_owned()
 }
 
@@ -533,13 +536,11 @@ fn spawn_rpc(
             let _ = idle_tx.send(());
         }
     });
-    rpcs.lock()
-        .unwrap_or_else(|err| err.into_inner())
-        .push(task.abort_handle());
+    rpcs.lock().push(task.abort_handle());
 }
 
 fn abort_rpcs(rpcs: &Mutex<Vec<tokio::task::AbortHandle>>) {
-    let guard = rpcs.lock().unwrap_or_else(|err| err.into_inner());
+    let guard = rpcs.lock();
     for handle in guard.iter() {
         handle.abort();
     }
@@ -1128,18 +1129,13 @@ fn parse_node_version(text: &str) -> Option<NodeVersion> {
     })
 }
 
-fn env_trimmed(key: &str) -> Option<String> {
-    let value = std::env::var(key).ok()?;
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
-    }
+fn trimmed_var(name: &str) -> Option<String> {
+    let value = env_trimmed(&ProcessEnv, name)?;
+    if value.is_empty() { None } else { Some(value) }
 }
 
 async fn find_node() -> Result<PathBuf, WorkflowError> {
-    if let Some(overridden) = env_trimmed("RIVETOS_NODE") {
+    if let Some(overridden) = trimmed_var("RIVETOS_NODE") {
         if let Some(path) = resolve_program(&overridden).await {
             return Ok(path);
         }
@@ -1199,7 +1195,7 @@ async fn find_tsx_root() -> Option<PathBuf> {
 
 fn tsx_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
-    if let Some(root) = env_trimmed("RIVETOS_ROOT") {
+    if let Some(root) = trimmed_var("RIVETOS_ROOT") {
         push_unique(&mut roots, PathBuf::from(root));
     }
     push_unique(&mut roots, PathBuf::from(DEFAULT_INSTALL_ROOT));

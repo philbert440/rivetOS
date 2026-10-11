@@ -1,4 +1,4 @@
-use protocol::js::js_trim;
+use protocol::js::{js_trim, utf16_len};
 
 pub struct DeterminismFinding {
     pub line: i64,
@@ -103,10 +103,6 @@ fn js_lines(source: &str) -> Vec<&str> {
     }
     lines.push(&source[start..]);
     lines
-}
-
-fn utf16_len(text: &str) -> usize {
-    text.encode_utf16().count()
 }
 
 fn byte_offset_to_utf16(text: &str, byte_offset: usize) -> usize {
