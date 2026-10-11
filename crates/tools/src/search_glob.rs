@@ -154,7 +154,7 @@ impl Tool for SearchGlobTool {
             cancellation,
             deadline,
         };
-        match collect(&plan).await {
+        match bounded(cancellation, deadline, collect(&plan)).await {
             Ok(mut results) => {
                 if results.is_empty() {
                     return text(format!(
@@ -207,7 +207,7 @@ struct Walk<'a> {
 }
 
 fn is_pattern_magic(segment: &str) -> bool {
-    segment.contains(['*', '?', '['])
+    segment.contains(['*', '?', '[', '{'])
 }
 
 fn normalize_segments(pattern: &str) -> (bool, Vec<String>) {
@@ -290,7 +290,13 @@ async fn collect(plan: &Plan<'_>) -> Result<Vec<String>, std::io::Error> {
         return Ok(Vec::new());
     }
     if plan.absolute {
-        match tokio::fs::metadata(plan.start).await {
+        match bounded(
+            plan.cancellation,
+            plan.deadline,
+            tokio::fs::metadata(plan.start),
+        )
+        .await
+        {
             Ok(_) => {}
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
             Err(err) => return Err(err),
@@ -314,7 +320,7 @@ async fn collect(plan: &Plan<'_>) -> Result<Vec<String>, std::io::Error> {
         absolute: plan.absolute,
     };
     while let Some(frame) = walk.stack.pop() {
-        check_limits(&walk)?;
+        check_limits(walk.cancellation, walk.deadline)?;
         if walk.matched.len() >= walk.max_results {
             break;
         }
@@ -335,20 +341,39 @@ async fn collect(plan: &Plan<'_>) -> Result<Vec<String>, std::io::Error> {
     Ok(matched)
 }
 
-fn check_limits(walk: &Walk<'_>) -> Result<(), std::io::Error> {
-    if walk.cancellation.is_cancelled() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::Interrupted,
-            "glob walk aborted",
-        ));
+fn check_limits(
+    cancellation: &CancellationToken,
+    deadline: tokio::time::Instant,
+) -> Result<(), std::io::Error> {
+    if cancellation.is_cancelled() {
+        Err(aborted_error())
+    } else if tokio::time::Instant::now() >= deadline {
+        Err(timed_out_error())
+    } else {
+        Ok(())
     }
-    if tokio::time::Instant::now() >= walk.deadline {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::TimedOut,
-            "glob walk timed out",
-        ));
+}
+
+fn aborted_error() -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::Interrupted, "glob walk aborted")
+}
+
+fn timed_out_error() -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::TimedOut, "glob walk timed out")
+}
+
+async fn bounded<T>(
+    cancellation: &CancellationToken,
+    deadline: tokio::time::Instant,
+    op: impl std::future::Future<Output = Result<T, std::io::Error>>,
+) -> Result<T, std::io::Error> {
+    check_limits(cancellation, deadline)?;
+    tokio::select! {
+        biased;
+        _ = cancellation.cancelled() => Err(aborted_error()),
+        _ = tokio::time::sleep_until(deadline) => Err(timed_out_error()),
+        result = op => result,
     }
-    Ok(())
 }
 
 fn remember(walk: &mut Walk<'_>, rel: String) {
@@ -363,15 +388,15 @@ fn remember(walk: &mut Walk<'_>, rel: String) {
 }
 
 async fn push_globstar(walk: &mut Walk<'_>, frame: &Frame) -> Result<(), std::io::Error> {
-    let entries = read_entries(&frame.path).await?;
-    check_limits(walk)?;
+    let entries = read_entries(&frame.path, walk.cancellation, walk.deadline).await?;
+    check_limits(walk.cancellation, walk.deadline)?;
     let last = frame.index + 1 == walk.segments.len();
     let later_dot = walk.segments[frame.index + 1..]
         .iter()
         .any(|segment| segment.starts_with('.'));
     let mut descents = Vec::new();
     for entry in &entries {
-        check_limits(walk)?;
+        check_limits(walk.cancellation, walk.deadline)?;
         if walk.matched.len() >= walk.max_results {
             break;
         }
@@ -382,7 +407,7 @@ async fn push_globstar(walk: &mut Walk<'_>, frame: &Frame) -> Result<(), std::io
         if name.starts_with('.') && !later_dot {
             continue;
         }
-        let file_type = entry.file_type().await?;
+        let file_type = bounded(walk.cancellation, walk.deadline, entry.file_type()).await?;
         let rel = join_rel(&frame.rel, &name);
         if last {
             remember(walk, rel.clone());
@@ -409,8 +434,8 @@ async fn push_globstar(walk: &mut Walk<'_>, frame: &Frame) -> Result<(), std::io
 }
 
 async fn push_segment(walk: &mut Walk<'_>, frame: &Frame) -> Result<(), std::io::Error> {
-    let entries = read_entries(&frame.path).await?;
-    check_limits(walk)?;
+    let entries = read_entries(&frame.path, walk.cancellation, walk.deadline).await?;
+    check_limits(walk.cancellation, walk.deadline)?;
     let last = frame.index + 1 == walk.segments.len();
     let allow_dot = walk
         .segments
@@ -421,7 +446,7 @@ async fn push_segment(walk: &mut Walk<'_>, frame: &Frame) -> Result<(), std::io:
     };
     let mut descents = Vec::new();
     for entry in entries {
-        check_limits(walk)?;
+        check_limits(walk.cancellation, walk.deadline)?;
         if walk.matched.len() >= walk.max_results {
             break;
         }
@@ -436,7 +461,7 @@ async fn push_segment(walk: &mut Walk<'_>, frame: &Frame) -> Result<(), std::io:
             continue;
         }
         let rel = join_rel(&frame.rel, &name);
-        let file_type = entry.file_type().await?;
+        let file_type = bounded(walk.cancellation, walk.deadline, entry.file_type()).await?;
         if last {
             remember(walk, rel);
         } else if file_type.is_dir() {
@@ -453,14 +478,24 @@ async fn push_segment(walk: &mut Walk<'_>, frame: &Frame) -> Result<(), std::io:
     Ok(())
 }
 
-async fn read_entries(path: &Path) -> Result<Vec<tokio::fs::DirEntry>, std::io::Error> {
+async fn read_entries(
+    path: &Path,
+    cancellation: &CancellationToken,
+    deadline: tokio::time::Instant,
+) -> Result<Vec<tokio::fs::DirEntry>, std::io::Error> {
     let mut entries = Vec::new();
-    let mut read = tokio::fs::read_dir(path).await?;
-    while let Some(entry) = read.next_entry().await? {
-        if is_dot_dir(&entry.file_name()) {
-            continue;
+    let mut read = bounded(cancellation, deadline, tokio::fs::read_dir(path)).await?;
+    loop {
+        check_limits(cancellation, deadline)?;
+        match bounded(cancellation, deadline, read.next_entry()).await? {
+            Some(entry) => {
+                if is_dot_dir(&entry.file_name()) {
+                    continue;
+                }
+                entries.push(entry);
+            }
+            None => break,
         }
-        entries.push(entry);
     }
     Ok(entries)
 }
@@ -478,5 +513,96 @@ fn join_rel(parent: &str, name: &str) -> String {
         name.to_string()
     } else {
         format!("{parent}/{name}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn bounded_io_times_out_while_the_read_is_pending() {
+        let cancellation = CancellationToken::new();
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(40);
+        let started = std::time::Instant::now();
+        let err = bounded(
+            &cancellation,
+            deadline,
+            std::future::pending::<Result<(), std::io::Error>>(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+        assert_eq!(err.to_string(), "glob walk timed out");
+        assert!(started.elapsed() >= Duration::from_millis(20));
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[tokio::test]
+    async fn bounded_io_aborts_while_the_read_is_pending() {
+        let cancellation = CancellationToken::new();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        let cancel = cancellation.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(40)).await;
+            cancel.cancel();
+        });
+        let started = std::time::Instant::now();
+        let err = bounded(
+            &cancellation,
+            deadline,
+            std::future::pending::<Result<(), std::io::Error>>(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::Interrupted);
+        assert_eq!(err.to_string(), "glob walk aborted");
+        assert!(started.elapsed() >= Duration::from_millis(20));
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[tokio::test]
+    async fn bounded_io_does_not_start_after_the_deadline() {
+        let cancellation = CancellationToken::new();
+        let deadline = tokio::time::Instant::now();
+        let started = AtomicBool::new(false);
+        let op = async {
+            started.store(true, Ordering::SeqCst);
+            Ok::<(), std::io::Error>(())
+        };
+        let err = bounded(&cancellation, deadline, op).await.unwrap_err();
+        assert_eq!(err.to_string(), "glob walk timed out");
+        assert!(!started.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn bounded_io_does_not_start_after_cancel() {
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        let started = AtomicBool::new(false);
+        let op = async {
+            started.store(true, Ordering::SeqCst);
+            Ok::<(), std::io::Error>(())
+        };
+        let err = bounded(&cancellation, deadline, op).await.unwrap_err();
+        assert_eq!(err.to_string(), "glob walk aborted");
+        assert!(!started.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn bounded_io_returns_a_finished_read() {
+        let cancellation = CancellationToken::new();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        let value = bounded(
+            &cancellation,
+            deadline,
+            std::future::ready(Ok::<u8, std::io::Error>(7)),
+        )
+        .await
+        .unwrap();
+        assert_eq!(value, 7);
     }
 }

@@ -156,8 +156,32 @@ async fn search_glob_cases() {
     });
     let timed = run(&expired, json!({"pattern": "**/*"}), &ctx).await;
     assert_eq!(timed, "Error: glob walk timed out");
+    let project = temp_dir("glob-brace");
+    std::fs::create_dir_all(project.join("src")).unwrap();
+    std::fs::create_dir_all(project.join("tests")).unwrap();
+    std::fs::create_dir_all(project.join("other")).unwrap();
+    std::fs::write(project.join("src/main.ts"), "export {};").unwrap();
+    std::fs::write(project.join("tests/main.ts"), "export {};").unwrap();
+    std::fs::write(project.join("other/main.ts"), "export {};").unwrap();
+    let pattern = format!("{}/{{src,tests}}/*.ts", project.display());
+    let braced = run(&tool, json!({"pattern": pattern}), &ToolContext::default()).await;
+    let shown = project.display();
+    assert_eq!(
+        braced,
+        format!("Found 2 files:\n{shown}/src/main.ts\n{shown}/tests/main.ts"),
+        "{braced}"
+    );
+    assert!(!braced.contains("other"), "{braced}");
+    let relative = run(
+        &tool,
+        json!({"pattern": "{src,tests}/*.ts", "cwd": &project}),
+        &ToolContext::default(),
+    )
+    .await;
+    assert_eq!(relative, "Found 2 files:\nsrc/main.ts\ntests/main.ts");
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_dir_all(&outside);
+    let _ = std::fs::remove_dir_all(&project);
 }
 
 #[tokio::test]

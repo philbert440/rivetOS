@@ -75,6 +75,7 @@ pub(crate) async fn rename_confined(
 }
 
 fn write_blocking(path: &Path, content: &str, roots: &[String]) -> Result<(), String> {
+    materialize_destination(path, roots)?;
     let prepared = prepare_roots(roots)?;
     let mut current = absolute_lexical(path);
     for _ in 0..MAX_LINKS {
@@ -114,6 +115,7 @@ fn write_here(
 }
 
 fn mkdir_blocking(path: &Path, roots: &[String]) -> Result<(), String> {
+    materialize_destination(path, roots)?;
     let prepared = prepare_roots(roots)?;
     let (canonical, names) =
         locate_names(&absolute_lexical(path), &prepared).map_err(|()| refuse(path))?;
@@ -125,6 +127,9 @@ fn mkdir_blocking(path: &Path, roots: &[String]) -> Result<(), String> {
 }
 
 fn probe_blocking(path: &Path, roots: &[String]) -> Result<(), String> {
+    if destination_missing(path, roots)? {
+        return Ok(());
+    }
     let prepared = prepare_roots(roots)?;
     let (canonical, names) =
         locate_names(&absolute_lexical(path), &prepared).map_err(|()| refuse(path))?;
@@ -143,6 +148,7 @@ fn probe_blocking(path: &Path, roots: &[String]) -> Result<(), String> {
 }
 
 fn rename_blocking(from: &Path, to: &Path, roots: &[String]) -> Result<(), String> {
+    materialize_destination(to, roots)?;
     let prepared = prepare_roots(roots)?;
     let (from_root, from_names) =
         locate_names(&absolute_lexical(from), &prepared).map_err(|()| refuse(from))?;
@@ -348,9 +354,7 @@ fn prepare_roots(roots: &[String]) -> Result<Vec<PreparedRoot>, String> {
             Ok(meta) if meta.file_type().is_symlink() => continue,
             Ok(meta) if !meta.is_dir() => return Err(refuse(Path::new(root))),
             Ok(_) => {}
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                materialize_missing(&original)?;
-            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
             Err(err) => return Err(format!("Error: {err}")),
         }
         let Ok(meta) = std::fs::symlink_metadata(&original) else {
@@ -368,6 +372,50 @@ fn prepare_roots(roots: &[String]) -> Result<Vec<PreparedRoot>, String> {
         });
     }
     Ok(out)
+}
+
+fn materialize_destination(path: &Path, roots: &[String]) -> Result<(), String> {
+    let Some(root) = destination_root(path, roots) else {
+        return Ok(());
+    };
+    match std::fs::symlink_metadata(&root) {
+        Ok(_) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => materialize_missing(&root),
+        Err(err) => Err(format!("Error: {err}")),
+    }
+}
+
+fn destination_missing(path: &Path, roots: &[String]) -> Result<bool, String> {
+    let Some(root) = destination_root(path, roots) else {
+        return Ok(false);
+    };
+    match std::fs::symlink_metadata(&root) {
+        Ok(_) => Ok(false),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(true),
+        Err(err) => Err(format!("Error: {err}")),
+    }
+}
+
+fn destination_root(path: &Path, roots: &[String]) -> Option<PathBuf> {
+    let absolute = absolute_lexical(path);
+    let mut best: Option<PathBuf> = None;
+    for root in roots {
+        if root.is_empty() {
+            continue;
+        }
+        let original = absolute_lexical(Path::new(root));
+        if !absolute.starts_with(&original) {
+            continue;
+        }
+        let replace = match &best {
+            None => true,
+            Some(previous) => original.components().count() > previous.components().count(),
+        };
+        if replace {
+            best = Some(original);
+        }
+    }
+    best
 }
 
 fn materialize_missing(root: &Path) -> Result<(), String> {

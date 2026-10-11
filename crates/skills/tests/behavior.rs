@@ -1,3 +1,4 @@
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -35,6 +36,22 @@ impl TempDir {
 impl Drop for TempDir {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+struct RestoreMode {
+    path: PathBuf,
+    mode: u32,
+}
+
+impl Drop for RestoreMode {
+    fn drop(&mut self) {
+        let Ok(meta) = std::fs::metadata(&self.path) else {
+            return;
+        };
+        let mut perms = meta.permissions();
+        perms.set_mode(self.mode);
+        let _ = std::fs::set_permissions(&self.path, perms);
     }
 }
 
@@ -1201,4 +1218,60 @@ async fn create_refuses_a_missing_root_through_a_symlink() {
     assert!(created.contains("Refusing to write outside"), "{created}");
     assert!(!outside.path().join("skills").exists());
     assert!(!outside.path().join("first").exists());
+}
+
+#[tokio::test]
+async fn missing_unrelated_root_does_not_block_writes() {
+    let parent = TempDir::new("dest-parent");
+    let root = parent.path().join("not-created").join("skills");
+    let locked = TempDir::new("locked-root");
+    let mut perms = std::fs::metadata(locked.path()).unwrap().permissions();
+    let original = perms.mode();
+    perms.set_mode(0o555);
+    std::fs::set_permissions(locked.path(), perms).unwrap();
+    let _restore = RestoreMode {
+        path: locked.path().to_path_buf(),
+        mode: original,
+    };
+    let blocked = locked.path().join("optional-skills");
+    let tool = SkillManageTool::new(
+        SkillManager::new(),
+        vec![root.display().to_string(), blocked.display().to_string()],
+    );
+    let created = run(
+        &tool,
+        json!({"action": "create", "name": "first", "description": "First skill"}),
+    )
+    .await;
+    assert!(created.contains("created"), "{created}");
+    let body = std::fs::read_to_string(root.join("first").join("SKILL.md")).unwrap();
+    assert!(body.contains("name: first"), "{body}");
+    assert!(!blocked.exists());
+    let written = run(
+        &tool,
+        json!({
+            "action": "write_file",
+            "name": "first",
+            "file_path": "references/note.txt",
+            "file_content": "hello"
+        }),
+    )
+    .await;
+    assert!(written.contains("File written"), "{written}");
+    assert_eq!(
+        std::fs::read_to_string(root.join("first").join("references").join("note.txt")).unwrap(),
+        "hello"
+    );
+    let edited = run(
+        &tool,
+        json!({
+            "action": "edit",
+            "name": "first",
+            "content": "---\nname: first\ndescription: First skill\n---\n\n# Edited\n"
+        }),
+    )
+    .await;
+    assert!(edited.contains("updated"), "{edited}");
+    assert!(!blocked.exists());
+    assert!(!locked.path().join("optional-skills").exists());
 }
