@@ -2641,7 +2641,7 @@ fn list_spool(dir: &std::path::Path) -> Result<Vec<String>, std::io::Error> {
 }
 
 fn read_capture_spool() -> Option<(i64, Option<i64>, i64)> {
-    let home = std::env::var("HOME").unwrap_or_default();
+    let home = protocol::host::home_dir(&protocol::host::ProcessEnv).unwrap_or_default();
     let dir = std::path::Path::new(&home)
         .join(".rivetos")
         .join("capture-spool");

@@ -1426,7 +1426,7 @@ pub fn file_missing_message_with(
     agent: Option<&str>,
     env: &dyn protocol::host::Env,
 ) -> String {
-    let home = env.var("HOME").unwrap_or_default();
+    let home = protocol::host::Env::var(env, "HOME").unwrap_or_default();
     format_missing_jsonl_message(file, agent, &home)
 }
 
