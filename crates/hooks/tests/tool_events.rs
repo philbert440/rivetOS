@@ -8,6 +8,7 @@ use hooks::{
     ToolResult, ToolResultContent, ToolResultOutput, execute_tool, to_ai_sdk_tools,
     to_tool_result_output,
 };
+use protocol::js::JsString;
 use protocol::{ContentPart, HookEventName, StreamEventType};
 use serde_json::{Value, json};
 
@@ -478,7 +479,7 @@ fn to_model_output_matches_the_typescript_cases() {
     assert_eq!(
         to_tool_result_output(&ToolResult::Text("hello".into())),
         ToolResultOutput::Text {
-            value: "hello".to_string()
+            value: "hello".into()
         }
     );
     let parts = ToolResult::Parts(vec![
@@ -490,7 +491,7 @@ fn to_model_output_matches_the_typescript_cases() {
     assert_eq!(
         to_tool_result_output(&parts),
         ToolResultOutput::Text {
-            value: "one two".to_string()
+            value: "one two".into()
         }
     );
     let image = ToolResult::Parts(vec![
@@ -508,7 +509,7 @@ fn to_model_output_matches_the_typescript_cases() {
         ToolResultOutput::Content {
             value: vec![
                 ToolResultContent::Text {
-                    text: "snap:".to_string()
+                    text: "snap:".into()
                 },
                 ToolResultContent::ImageData {
                     data: "aGVsbG8=".to_string(),
@@ -559,7 +560,117 @@ fn to_model_output_matches_the_typescript_cases() {
             .expect("a")
             .to_model_output(&ToolResult::Text("hello".into())),
         ToolResultOutput::Text {
-            value: "hello".to_string()
+            value: "hello".into()
         }
     );
+}
+
+#[tokio::test]
+async fn truncated_emoji_results_keep_utf16_on_the_stream() {
+    let mut units = vec![u16::from(b'a'); 199];
+    units.push(0xD83D);
+    let notice = "\n\n[Truncated at 200 chars. Use max_chars parameter to see more.]";
+    units.extend(notice.encode_utf16());
+    let fetched = JsString::from_units(units);
+    let events = Arc::new(Collect(Mutex::new(Vec::new())));
+    let stored = fetched.clone();
+    execute_tool(
+        &tool(
+            "fetch",
+            Arc::new(move |_args, _signal, _ctx| {
+                let stored = stored.clone();
+                Box::pin(async move { Ok(ToolResult::Text(stored)) })
+            }),
+        ),
+        &json!({}),
+        &ToolBinding {
+            stream: Some(events.clone()),
+            ..ToolBinding::default()
+        },
+        None,
+    )
+    .await;
+    let streamed = events.0.lock().clone();
+    assert_eq!(streamed[1].r#type, StreamEventType::ToolResult);
+    assert!(streamed[1].content.units().contains(&0xD83D));
+    assert!(!streamed[1].content.units().contains(&0xFFFD));
+    let wire = serde_json::to_string(&streamed[1]).expect("event");
+    assert!(wire.contains("\\ud83d"), "{wire}");
+    assert!(!wire.contains("\\ufffd"), "{wire}");
+    assert!(!wire.contains('\u{FFFD}'), "{wire}");
+    match to_tool_result_output(&ToolResult::Text(fetched.clone())) {
+        ToolResultOutput::Text { value } => assert_eq!(value.units(), fetched.units()),
+        ToolResultOutput::Content { .. } => panic!("direct text"),
+    }
+
+    let mut head = "see ".encode_utf16().collect::<Vec<_>>();
+    head.push(0xD83D);
+    let mut tail = vec![0xDE00];
+    tail.extend(notice.encode_utf16());
+    let parts = ToolResult::Parts(vec![
+        ContentPart::Text {
+            text: JsString::from_units(head),
+        },
+        ContentPart::Text {
+            text: JsString::from_units(tail),
+        },
+    ]);
+    let events = Arc::new(Collect(Mutex::new(Vec::new())));
+    let streamed_parts = parts.clone();
+    execute_tool(
+        &tool(
+            "shell",
+            Arc::new(move |_args, _signal, _ctx| {
+                let streamed_parts = streamed_parts.clone();
+                Box::pin(async move { Ok(streamed_parts) })
+            }),
+        ),
+        &json!({}),
+        &ToolBinding {
+            stream: Some(events.clone()),
+            ..ToolBinding::default()
+        },
+        None,
+    )
+    .await;
+    let streamed = events.0.lock().clone();
+    assert!(
+        streamed[1]
+            .content
+            .units()
+            .windows(2)
+            .any(|pair| pair == [0xD83D, 0xDE00])
+    );
+    assert!(!streamed[1].content.units().contains(&0xFFFD));
+    let wire = serde_json::to_string(&streamed[1]).expect("parts event");
+    let parsed: StreamEvent = serde_json::from_str(&wire).expect("parse event");
+    assert_eq!(parsed.content.units(), streamed[1].content.units());
+    assert!(!wire.contains("\\ufffd"), "{wire}");
+    assert!(!wire.contains('\u{FFFD}'), "{wire}");
+    match to_tool_result_output(&parts) {
+        ToolResultOutput::Text { value } => {
+            assert!(
+                value
+                    .units()
+                    .windows(2)
+                    .any(|pair| pair == [0xD83D, 0xDE00])
+            );
+            let model = serde_json::to_string(&ToolResultOutput::Text {
+                value: value.clone(),
+            })
+            .expect("model");
+            let parsed: ToolResultOutput = serde_json::from_str(&model).expect("parse model");
+            match parsed {
+                ToolResultOutput::Text {
+                    value: parsed_value,
+                } => {
+                    assert_eq!(parsed_value.units(), value.units());
+                }
+                ToolResultOutput::Content { .. } => panic!("joined text"),
+            }
+            assert!(!model.contains("\\ufffd"), "{model}");
+            assert!(!model.contains('\u{FFFD}'), "{model}");
+        }
+        ToolResultOutput::Content { .. } => panic!("joined text"),
+    }
 }

@@ -146,11 +146,12 @@ impl WorkspaceFenceConfig {
     }
 }
 
+fn fence_home_from(env: &dyn protocol::host::Env) -> String {
+    protocol::host::Env::var(env, "HOME").unwrap_or_else(|| "/root".to_string())
+}
+
 fn fence_home() -> String {
-    match protocol::host::home_dir(&protocol::host::ProcessEnv) {
-        Some(value) => value,
-        None => "/root".to_string(),
-    }
+    fence_home_from(&protocol::host::ProcessEnv)
 }
 
 pub fn normalize_fence_path(path: &str, home: &str) -> String {
@@ -454,6 +455,30 @@ mod tests {
         assert_eq!(normalize_fence_path("/tmp/", "/root"), "/tmp");
         assert_eq!(normalize_fence_path("/", "/root"), "");
         assert!("/tmp-evil".starts_with(&normalize_fence_path("/tmp", "/root")));
+    }
+
+    #[test]
+    fn unset_home_is_root_and_empty_home_stays_empty() {
+        let unset = protocol::host::MapEnv::new();
+        assert_eq!(super::fence_home_from(&unset), "/root");
+        assert_eq!(
+            normalize_fence_path("~/secrets", &super::fence_home_from(&unset)),
+            "/root/secrets"
+        );
+        let mut empty = protocol::host::MapEnv::new();
+        empty.set("HOME", "");
+        assert_eq!(super::fence_home_from(&empty), "");
+        assert_eq!(
+            normalize_fence_path("~/secrets", &super::fence_home_from(&empty)),
+            "/secrets"
+        );
+        let mut service = protocol::host::MapEnv::new();
+        service.set("HOME", "/home/service");
+        assert_eq!(super::fence_home_from(&service), "/home/service");
+        assert_eq!(
+            normalize_fence_path("~/workspace/file", &super::fence_home_from(&service)),
+            "/home/service/workspace/file"
+        );
     }
 
     #[test]

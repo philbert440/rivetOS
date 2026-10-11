@@ -543,93 +543,89 @@ fn test_file_pattern() -> Option<&'static Regex> {
 const FILE_ENV: &str = "RIVET_FILE";
 const FILE_EXPANSION: &str = "${RIVET_FILE}";
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum ShellQuote {
-    None,
-    Single,
-    Double,
-}
-
 fn substitute_file(command: &str) -> String {
+    let chars: Vec<char> = command.chars().collect();
     let mut out = String::with_capacity(command.len());
-    let mut rest = command;
-    let mut base = 0;
-    while let Some(rel) = rest.find("{{file}}") {
-        let abs = base + rel;
-        out.push_str(&command[base..abs]);
-        match quote_at(command, abs) {
-            ShellQuote::Single => {
+    let mut single = false;
+    let mut double = false;
+    let mut depth: u32 = 0;
+    let mut layers: Vec<(bool, bool, u32)> = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if starts_with_placeholder(&chars[i..]) {
+            if single {
                 out.push('\'');
                 out.push('"');
                 out.push_str(FILE_EXPANSION);
                 out.push('"');
                 out.push('\'');
+            } else {
+                out.push_str(FILE_EXPANSION);
             }
-            ShellQuote::None | ShellQuote::Double => out.push_str(FILE_EXPANSION),
+            i += PLACEHOLDER.len();
+            continue;
         }
-        base = abs + "{{file}}".len();
-        rest = &command[base..];
+        let ch = chars[i];
+        if !single && ch == '\\' {
+            out.push(ch);
+            i += 1;
+            if i < chars.len() {
+                out.push(chars[i]);
+                i += 1;
+            }
+            continue;
+        }
+        if ch == '\'' && !double {
+            single = !single;
+            out.push(ch);
+            i += 1;
+            continue;
+        }
+        if !single && ch == '"' {
+            double = !double;
+            out.push(ch);
+            i += 1;
+            continue;
+        }
+        if !single && ch == '$' && i + 1 < chars.len() && chars[i + 1] == '(' {
+            layers.push((single, double, depth));
+            single = false;
+            double = false;
+            depth = 1;
+            out.push('$');
+            out.push('(');
+            i += 2;
+            continue;
+        }
+        if !single && !double && ch == '(' && depth > 0 {
+            depth += 1;
+            out.push(ch);
+            i += 1;
+            continue;
+        }
+        if !single && !double && ch == ')' && depth > 0 {
+            depth -= 1;
+            if depth == 0
+                && let Some((prev_single, prev_double, prev_depth)) = layers.pop()
+            {
+                single = prev_single;
+                double = prev_double;
+                depth = prev_depth;
+            }
+            out.push(ch);
+            i += 1;
+            continue;
+        }
+        out.push(ch);
+        i += 1;
     }
-    out.push_str(&command[base..]);
     out
 }
 
-fn quote_at(command: &str, index: usize) -> ShellQuote {
-    let bytes = command.as_bytes();
-    let mut i = 0;
-    let mut state = ShellQuote::None;
-    while i < index && i < bytes.len() {
-        let ch = bytes[i];
-        match state {
-            ShellQuote::None => {
-                if ch == b'\\' {
-                    i = skip_escaped(bytes, i);
-                    continue;
-                } else if ch == b'\'' {
-                    state = ShellQuote::Single;
-                } else if ch == b'"' {
-                    state = ShellQuote::Double;
-                }
-                i += 1;
-            }
-            ShellQuote::Single => {
-                if ch == b'\'' {
-                    state = ShellQuote::None;
-                }
-                i += 1;
-            }
-            ShellQuote::Double => {
-                if ch == b'\\' {
-                    i = skip_escaped(bytes, i);
-                    continue;
-                } else if ch == b'"' {
-                    state = ShellQuote::None;
-                }
-                i += 1;
-            }
-        }
-    }
-    state
-}
+const PLACEHOLDER: [char; 8] = ['{', '{', 'f', 'i', 'l', 'e', '}', '}'];
 
-fn skip_escaped(bytes: &[u8], slash: usize) -> usize {
-    let next = slash + 1;
-    if next >= bytes.len() {
-        return next;
-    }
-    next + utf8_width(bytes[next])
-}
-
-fn utf8_width(lead: u8) -> usize {
-    if lead < 0x80 {
-        1
-    } else if lead < 0xE0 {
-        2
-    } else if lead < 0xF0 {
-        3
-    } else {
-        4
-    }
+fn starts_with_placeholder(chars: &[char]) -> bool {
+    chars.len() >= PLACEHOLDER.len() && chars[..PLACEHOLDER.len()] == PLACEHOLDER
 }
 
 #[cfg(test)]
@@ -664,6 +660,26 @@ mod tests {
         assert_eq!(
             substitute_file("echo \\\"{{file}}"),
             "echo \\\"${RIVET_FILE}"
+        );
+        assert_eq!(
+            substitute_file(r#"cd "$(dirname '{{file}}')" && npm run x"#),
+            r#"cd "$(dirname ''"${RIVET_FILE}"'')" && npm run x"#
+        );
+        assert_eq!(
+            substitute_file(r#"echo "it's {{file}}""#),
+            r#"echo "it's ${RIVET_FILE}""#
+        );
+        assert_eq!(
+            substitute_file(r#"echo "a\"{{file}}""#),
+            r#"echo "a\"${RIVET_FILE}""#
+        );
+        assert_eq!(
+            substitute_file(r#"echo '$({{file}})'"#),
+            r#"echo '$('"${RIVET_FILE}"')'"#
+        );
+        assert_eq!(
+            substitute_file(r#"echo "$(echo "$({{file}})")""#),
+            r#"echo "$(echo "$(${RIVET_FILE})")""#
         );
     }
 }

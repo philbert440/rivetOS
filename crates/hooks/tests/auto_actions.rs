@@ -668,6 +668,79 @@ async fn hostile_filenames_pass_through_the_environment() {
         "/tmp/$&$$`$'x"
     );
     assert_no_markers(&dir);
+
+    let dirname = scripted(r#"cd "$(dirname '{{file}}')" && npm run x"#, "src/index.ts").await;
+    assert_file_call_recorded(
+        &dirname,
+        r#"cd "$(dirname ''"${RIVET_FILE}"'')" && npm run x"#,
+        "src/index.ts",
+    );
+}
+
+#[tokio::test]
+async fn command_substitution_runs_dirname_and_keeps_hostile_names_inert() {
+    let dir = super::common::make_temp().await;
+    tokio::fs::create_dir(dir.join("src")).await.expect("src");
+    let where_file = "where.txt";
+    assert_eq!(
+        capture(
+            &dir,
+            r#""$(dirname '{{file}}')""#,
+            "src/index.ts",
+            where_file
+        )
+        .await,
+        "src"
+    );
+    let hostile = "src/$(touch${IFS}injected)/index.ts";
+    assert_eq!(
+        capture(&dir, r#""$(dirname '{{file}}')""#, hostile, "hostile.txt").await,
+        "src/$(touch${IFS}injected)"
+    );
+    assert_no_markers(&dir);
+
+    let cwd = dir.to_str().expect("temp dir is utf-8");
+    let live = Arc::new(ProcessShell::new(&dir));
+    let pipeline = HookPipeline::new();
+    pipeline.register(
+        create_custom_action_hook(
+            AutoAction {
+                id: "cd".to_string(),
+                description: "change to the file directory".to_string(),
+                tools: None,
+                file_pattern: None,
+                file_pattern_flags: None,
+                command: r#"{ cd "$(dirname '{{file}}')" && pwd; } > cd.txt"#.to_string(),
+                timeout_ms: None,
+                soft_fail: true,
+            },
+            AutoActionConfig {
+                shell: live,
+                cwd: Some(cwd.to_string()),
+            },
+        )
+        .expect("hook"),
+    );
+    let mut ctx = tool_after("file_write", json!({"path": "src/index.ts"}), false);
+    pipeline.run(&mut ctx).await;
+    assert!(
+        same_json(
+            ctx.metadata
+                .get("auto:cd")
+                .and_then(|value| value.get("status")),
+            json!("success")
+        ),
+        "cd status {:?}",
+        ctx.metadata.get("auto:cd")
+    );
+    let recorded = tokio::fs::read_to_string(dir.join("cd.txt"))
+        .await
+        .expect("pwd");
+    assert_eq!(
+        recorded.trim_end(),
+        dir.join("src").to_str().expect("src path")
+    );
+    assert_no_markers(&dir);
 }
 
 fn assert_file_call(shell: &super::common::ScriptShell, command: &str, path: &str) {

@@ -6,6 +6,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use protocol::js::{JsObject, JsString, JsValue};
 use protocol::{ContentPart, StreamEvent, StreamEventType, ToolResult};
+use serde::Deserialize;
+use serde::de::{self, Deserializer};
 use serde_json::{Map, Value};
 
 use crate::context::HookContext;
@@ -118,11 +120,11 @@ pub struct ToolImage {
     pub mime_type: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(tag = "type")]
 pub enum ToolResultContent {
     #[serde(rename = "text")]
-    Text { text: String },
+    Text { text: JsString },
     #[serde(rename = "image-data")]
     ImageData {
         data: String,
@@ -133,13 +135,116 @@ pub enum ToolResultContent {
     ImageUrl { url: String },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(tag = "type")]
 pub enum ToolResultOutput {
     #[serde(rename = "text")]
-    Text { value: String },
+    Text { value: JsString },
     #[serde(rename = "content")]
     Content { value: Vec<ToolResultContent> },
+}
+
+impl<'de> Deserialize<'de> for ToolResultContent {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = Box::<serde_json::value::RawValue>::deserialize(deserializer)?;
+        let value = protocol::js::parse(raw.get()).map_err(de::Error::custom)?;
+        content_from_js(value).map_err(de::Error::custom)
+    }
+}
+
+impl<'de> Deserialize<'de> for ToolResultOutput {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = Box::<serde_json::value::RawValue>::deserialize(deserializer)?;
+        let value = protocol::js::parse(raw.get()).map_err(de::Error::custom)?;
+        output_from_js(value).map_err(de::Error::custom)
+    }
+}
+
+fn output_from_js(value: JsValue) -> Result<ToolResultOutput, &'static str> {
+    let mut object = take_object(value)?;
+    let kind = js_text(object.remove("type"))?;
+    match kind.as_str() {
+        "text" => Ok(ToolResultOutput::Text {
+            value: js_string(object.remove("value"))?,
+        }),
+        "content" => {
+            let items = take_array(object.remove("value"))?;
+            let mut value = Vec::with_capacity(items.len());
+            for item in items {
+                value.push(content_from_js(item)?);
+            }
+            Ok(ToolResultOutput::Content { value })
+        }
+        _ => Err("tool-result"),
+    }
+}
+
+fn content_from_js(value: JsValue) -> Result<ToolResultContent, &'static str> {
+    let mut object = take_object(value)?;
+    let kind = js_text(object.remove("type"))?;
+    match kind.as_str() {
+        "text" => Ok(ToolResultContent::Text {
+            text: js_string(object.remove("text"))?,
+        }),
+        "image-data" => Ok(ToolResultContent::ImageData {
+            data: required_utf8(object.remove("data"))?,
+            media_type: required_utf8(object.remove("mediaType"))?,
+        }),
+        "image-url" => Ok(ToolResultContent::ImageUrl {
+            url: required_utf8(object.remove("url"))?,
+        }),
+        _ => Err("tool-result"),
+    }
+}
+
+fn take_object(mut value: JsValue) -> Result<JsObject, &'static str> {
+    if let JsValue::Object(object) = &mut value {
+        Ok(std::mem::replace(object, JsObject::new()))
+    } else {
+        Err("tool-result")
+    }
+}
+
+fn take_array(value: Option<JsValue>) -> Result<Vec<JsValue>, &'static str> {
+    let Some(mut value) = value else {
+        return Err("tool-result");
+    };
+    if let JsValue::Array(items) = &mut value {
+        Ok(std::mem::take(items))
+    } else {
+        Err("tool-result")
+    }
+}
+
+fn js_string(value: Option<JsValue>) -> Result<JsString, &'static str> {
+    let Some(mut value) = value else {
+        return Err("tool-result");
+    };
+    if let JsValue::String(text) = &mut value {
+        Ok(std::mem::replace(text, JsString::from_units(Vec::new())))
+    } else {
+        Err("tool-result")
+    }
+}
+
+fn js_text(value: Option<JsValue>) -> Result<String, &'static str> {
+    Ok(js_string(value)?.to_utf8().to_string())
+}
+
+fn required_utf8(value: Option<JsValue>) -> Result<String, &'static str> {
+    let text = js_string(value)?;
+    let utf8 = text.to_utf8();
+    let round: Vec<u16> = utf8.encode_utf16().collect();
+    if round.as_slice() != text.units() {
+        return Err("tool-result");
+    }
+    Ok(utf8.to_string())
 }
 
 pub struct AiSdkTool {
@@ -343,25 +448,29 @@ fn metadata_object<const N: usize>(pairs: [(&str, JsValue); N]) -> JsObject {
     object
 }
 
-fn result_content(mark: &str, name: &str, text: &str) -> JsString {
+fn result_content(mark: &str, name: &str, text: &JsString) -> JsString {
     let prefix = format!("{mark} {name}: ");
     let mut units: Vec<u16> = prefix.encode_utf16().collect();
-    let body: Vec<u16> = text.encode_utf16().collect();
-    units.extend(protocol::js::js_slice_units(&body, Some(0.0), Some(200.0)));
+    units.extend(protocol::js::js_slice_units(
+        text.units(),
+        Some(0.0),
+        Some(200.0),
+    ));
     JsString::from_units(units)
 }
 
-pub fn tool_result_text(result: &ToolResult) -> String {
+pub fn tool_result_text(result: &ToolResult) -> JsString {
     match result {
-        ToolResult::Text(text) => text.to_utf8().to_string(),
-        ToolResult::Parts(parts) => parts
-            .iter()
-            .filter_map(|part| match part {
-                ContentPart::Text { text } => Some(text.to_utf8()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join(""),
+        ToolResult::Text(text) => text.clone(),
+        ToolResult::Parts(parts) => {
+            let mut units = Vec::new();
+            for part in parts {
+                if let ContentPart::Text { text } = part {
+                    units.extend_from_slice(text.units());
+                }
+            }
+            JsString::from_units(units)
+        }
     }
 }
 
@@ -396,13 +505,13 @@ pub fn tool_result_has_images(result: &ToolResult) -> bool {
 }
 
 pub fn tool_result_is_error(result: &ToolResult) -> bool {
-    tool_result_text(result).starts_with("Error")
+    tool_result_text(result).to_utf8().starts_with("Error")
 }
 
 pub fn to_tool_result_output(result: &ToolResult) -> ToolResultOutput {
     if let ToolResult::Text(text) = result {
         return ToolResultOutput::Text {
-            value: text.to_utf8().to_string(),
+            value: text.clone(),
         };
     }
     if !tool_result_has_images(result) {
@@ -450,7 +559,7 @@ mod tests {
         build_local_session_with_env, summarize_args, to_tool_result_output,
         tool_result_has_images, tool_result_images, tool_result_is_error, tool_result_text,
     };
-    use protocol::js::JsValue;
+    use protocol::js::{JsString, JsValue};
     use protocol::{ContentPart, ToolResult};
     use serde_json::{Number, Value, json};
 
@@ -538,7 +647,7 @@ mod tests {
         assert_eq!(
             to_tool_result_output(&text),
             ToolResultOutput::Text {
-                value: "Error: boom".to_string()
+                value: "Error: boom".into()
             }
         );
         let plain = ToolResult::Text("Error".into());
@@ -555,12 +664,12 @@ mod tests {
                 mime_type: None,
             },
         ]);
-        assert_eq!(tool_result_text(&parts), "one two");
+        assert_eq!(tool_result_text(&parts).to_utf8(), "one two");
         assert!(!tool_result_has_images(&parts));
         assert_eq!(
             to_tool_result_output(&parts),
             ToolResultOutput::Text {
-                value: "one two".to_string()
+                value: "one two".into()
             }
         );
         let image = ToolResult::Parts(vec![
@@ -595,7 +704,7 @@ mod tests {
             ToolResultOutput::Content {
                 value: vec![
                     ToolResultContent::Text {
-                        text: "snap:".to_string()
+                        text: "snap:".into()
                     },
                     ToolResultContent::ImageData {
                         data: "aGVsbG8=".to_string(),
@@ -614,11 +723,97 @@ mod tests {
                 ]
             }
         );
+        let image_output = to_tool_result_output(&image);
+        let image_wire = serde_json::to_string(&image_output).expect("image");
+        let parsed: ToolResultOutput = serde_json::from_str(&image_wire).expect("image parse");
+        assert_eq!(parsed, image_output);
         let signal = AbortSignal::new();
         assert!(!signal.is_aborted());
         signal.abort();
         assert!(signal.is_aborted());
         assert_eq!(signal, signal.clone());
         assert_ne!(signal, AbortSignal::new());
+    }
+
+    fn truncated_fetch(max_chars: usize) -> JsString {
+        let mut units = vec![u16::from(b'a'); max_chars - 1];
+        units.push(0xD83D);
+        let notice =
+            format!("\n\n[Truncated at {max_chars} chars. Use max_chars parameter to see more.]");
+        units.extend(notice.encode_utf16());
+        JsString::from_units(units)
+    }
+
+    #[test]
+    fn truncated_emoji_text_stays_utf16_in_model_output() {
+        let fetched = truncated_fetch(200);
+        assert_eq!(
+            serde_json::to_string(&to_tool_result_output(&ToolResult::Text("hello".into())))
+                .expect("plain text"),
+            r#"{"type":"text","value":"hello"}"#
+        );
+        let direct = to_tool_result_output(&ToolResult::Text(fetched.clone()));
+        match &direct {
+            ToolResultOutput::Text { value } => assert_eq!(value.units(), fetched.units()),
+            ToolResultOutput::Content { .. } => panic!("direct text"),
+        }
+        let direct_wire = serde_json::to_string(&direct).expect("direct");
+        assert!(direct_wire.contains("\\ud83d"), "{direct_wire}");
+        assert!(!direct_wire.contains("\\ufffd"), "{direct_wire}");
+        assert!(!direct_wire.contains('\u{FFFD}'), "{direct_wire}");
+
+        let mut head = "pre".encode_utf16().collect::<Vec<_>>();
+        head.push(0xD83D);
+        let mut tail = vec![0xDE00];
+        tail.extend(" post".encode_utf16());
+        let joined_parts = ToolResult::Parts(vec![
+            ContentPart::Text {
+                text: JsString::from_units(head.clone()),
+            },
+            ContentPart::Text {
+                text: JsString::from_units(tail.clone()),
+            },
+        ]);
+        let joined = tool_result_text(&joined_parts);
+        let mut expected_units = head;
+        expected_units.extend(tail);
+        assert_eq!(joined.units(), expected_units.as_slice());
+        assert_eq!(joined.to_utf8(), "pre😀 post");
+        match to_tool_result_output(&joined_parts) {
+            ToolResultOutput::Text { value } => assert_eq!(value.units(), joined.units()),
+            ToolResultOutput::Content { .. } => panic!("joined text"),
+        }
+
+        let with_image = ToolResult::Parts(vec![
+            ContentPart::Text {
+                text: fetched.clone(),
+            },
+            ContentPart::Image {
+                data: Some("aGVsbG8=".to_string()),
+                url: None,
+                mime_type: Some("image/png".to_string()),
+            },
+        ]);
+        match to_tool_result_output(&with_image) {
+            ToolResultOutput::Content { value } => {
+                let ToolResultContent::Text { text } = &value[0] else {
+                    panic!("text part");
+                };
+                assert_eq!(text.units(), fetched.units());
+                let wire =
+                    serde_json::to_string(&ToolResultOutput::Content { value }).expect("content");
+                assert!(wire.contains("\\ud83d"), "{wire}");
+                assert!(!wire.contains("\\ufffd"), "{wire}");
+                assert!(!wire.contains('\u{FFFD}'), "{wire}");
+            }
+            ToolResultOutput::Text { .. } => panic!("image content"),
+        }
+
+        let mut error_units = "Error: ".encode_utf16().collect::<Vec<_>>();
+        error_units.push(0xD83D);
+        assert!(tool_result_is_error(&ToolResult::Text(
+            JsString::from_units(error_units)
+        )));
+        assert!(!tool_result_is_error(&ToolResult::Text(fetched)));
     }
 }
