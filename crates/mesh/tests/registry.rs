@@ -331,7 +331,7 @@ async fn re_registration_keeps_operator_fields_and_an_explicit_value_wins() {
     registry.register(node.clone()).await.unwrap();
     let mut edited = node.clone();
     edited.ssh_user = Some("deskuser".into());
-    edited.install_root = Some("/home/deskuser/rivetos".into());
+    edited.install_root = Some("/home/user/rivetos".into());
     edited.platform = Some("linux".into());
     registry.register(edited).await.unwrap();
     let mut restarted = node.clone();
@@ -339,10 +339,7 @@ async fn re_registration_keeps_operator_fields_and_an_explicit_value_wins() {
     registry.register(restarted).await.unwrap();
     let stored = registry.get_node(&node.id).await.unwrap().unwrap();
     assert_eq!(stored.ssh_user.as_deref(), Some("deskuser"));
-    assert_eq!(
-        stored.install_root.as_deref(),
-        Some("/home/deskuser/rivetos")
-    );
+    assert_eq!(stored.install_root.as_deref(), Some("/home/user/rivetos"));
     assert_eq!(stored.platform.as_deref(), Some("linux"));
     assert_eq!(stored.version, "0.8.0");
     let mut named = node.clone();
@@ -353,10 +350,7 @@ async fn re_registration_keeps_operator_fields_and_an_explicit_value_wins() {
     registry.register(blank).await.unwrap();
     let stored = registry.get_node(&node.id).await.unwrap().unwrap();
     assert_eq!(stored.ssh_user.as_deref(), Some("rivet"));
-    assert_eq!(
-        stored.install_root.as_deref(),
-        Some("/home/deskuser/rivetos")
-    );
+    assert_eq!(stored.install_root.as_deref(), Some("/home/user/rivetos"));
     let mut empty = node.clone();
     empty.ssh_user = Some("".into());
     registry.register(empty).await.unwrap();

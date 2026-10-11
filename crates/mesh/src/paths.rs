@@ -221,13 +221,13 @@ mod posix_join_table {
         let mut env = MapEnv::new();
         env.set("RIVETOS_SHARED_DIR", "/data/shared");
         let lookup = StaticPasswd {
-            result: Ok("/home/injected".to_string()),
+            result: Ok("/home/ubuntu".to_string()),
         };
         assert_eq!(
             mesh_file_paths_in("", None, &env, &lookup).unwrap(),
             vec![
                 "/data/shared/mesh.json".to_string(),
-                path_join("/home/injected", &[".rivetos", "mesh.json"]),
+                path_join("/home/ubuntu", &[".rivetos", "mesh.json"]),
             ]
         );
     }

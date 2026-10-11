@@ -401,9 +401,9 @@ mod tests {
             "A system error occurred: uv_os_homedir returned EIO (i/o error)"
         );
         let found = StaticPasswd {
-            result: Ok("/home/injected".to_string()),
+            result: Ok("/home/ubuntu".to_string()),
         };
-        assert_eq!(os_homedir(&bare, &found).unwrap(), "/home/injected");
+        assert_eq!(os_homedir(&bare, &found).unwrap(), "/home/ubuntu");
         assert_eq!(
             home_dir(&bare),
             os_homedir(&bare, &super::CurrentPasswd).ok()
