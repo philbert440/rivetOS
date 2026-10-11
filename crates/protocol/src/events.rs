@@ -56,7 +56,7 @@ crate::wire_enum! {
 #[serde(rename_all = "camelCase")]
 pub struct SessionState {
     pub id: String,
-    pub thinking: ThinkingLevel,
+    pub thinking: String,
     pub reasoning_visible: bool,
     pub tools_visible: bool,
     pub history: Vec<Message>,
