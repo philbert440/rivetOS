@@ -279,6 +279,7 @@ async fn rejects_duplicate_names_and_ids() {
     let err = registry.create(input(" reviewer ")).await.unwrap_err();
     assert!(err.is_conflict());
     assert_eq!(err.code(), Some("preset_conflict"));
+    assert_eq!(err.to_string(), "agent name already exists: reviewer");
     let mut other = input("Other");
     other.directory = "/tmp/agents/other".into();
     let other = registry.create(other).await.unwrap();
@@ -286,12 +287,14 @@ async fn rejects_duplicate_names_and_ids() {
         name: Some("REVIEWER".into()),
         ..agents::AgentPresetPatch::default()
     };
-    assert!(
-        registry
-            .update(other.id.to_utf8(), rename)
-            .await
-            .unwrap_err()
-            .is_conflict()
+    let rename_err = registry
+        .update(other.id.to_utf8(), rename)
+        .await
+        .unwrap_err();
+    assert!(rename_err.is_conflict());
+    assert_eq!(
+        rename_err.to_string(),
+        "agent name already exists: REVIEWER"
     );
     assert_eq!(
         registry
@@ -310,6 +313,34 @@ async fn rejects_duplicate_names_and_ids() {
     again.id = Some("same".into());
     again.directory = "/tmp/agents/two".into();
     assert!(registry.create(again).await.unwrap_err().is_conflict());
+}
+
+#[tokio::test]
+async fn clash_keeps_submitted_casing_and_distinct_truncated_surrogates() {
+    let dir = TempDir::new("agent-registry-file");
+    let registry = FileAgentPresetStore::new(dir.path_str("agents.json"));
+    let mut lower = input("alice");
+    lower.directory = "/tmp/agents/alice".into();
+    registry.create(lower).await.unwrap();
+    let mut upper = input("Alice");
+    upper.directory = "/tmp/agents/alice-2".into();
+    let err = registry.create(upper).await.unwrap_err();
+    assert_eq!(err.to_string(), "agent name already exists: Alice");
+    let mut smile = vec![u16::from(b'a'); 127];
+    smile.push(0xD83D);
+    let mut robot = vec![u16::from(b'a'); 127];
+    robot.push(0xD83E);
+    let mut first = input("placeholder");
+    first.name = agents::JsString::from_units(smile);
+    first.id = Some("sur-1".into());
+    first.directory = "/tmp/agents/sur-1".into();
+    registry.create(first).await.unwrap();
+    let mut second = input("placeholder");
+    second.name = agents::JsString::from_units(robot);
+    second.id = Some("sur-2".into());
+    second.directory = "/tmp/agents/sur-2".into();
+    let created = registry.create(second).await.unwrap();
+    assert_eq!(created.name.units()[127], 0xD83E);
 }
 
 #[tokio::test]

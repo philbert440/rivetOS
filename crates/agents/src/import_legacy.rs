@@ -189,7 +189,7 @@ async fn import_one(
             node_base_url: row.node_base_url.clone(),
             id: Some(row.id.clone()),
             created_at: row.created_at.as_i64(),
-            source: row.document.clone(),
+            source: None,
         };
         match args.store.create(input).await {
             Ok(created) => {

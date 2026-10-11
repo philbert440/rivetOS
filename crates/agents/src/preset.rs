@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use protocol::HARNESS_IDS;
 use protocol::JsNumber;
-use protocol::js::{JsString, JsValue, js_trim, js_trim_units};
+use protocol::js::{JsString, JsValue, js_trim_units};
 use serde::de::Deserializer;
 use serde::{Deserialize, Serialize, Serializer};
 use serde_json::{Map, Number, Value};
@@ -449,74 +449,56 @@ fn fresh_from_source(
     migrate_row(&object_from_entries(entries)?)
 }
 
-pub fn number_value(ms: i64) -> Value {
-    Value::Number(Number::from(ms))
-}
-
-fn push_js_number(map: &mut Map<String, Value>, key: &str, number: JsNumber) {
-    if let Some(ms) = number.as_i64() {
-        map.insert(key.to_string(), number_value(ms));
+pub fn write_preset_fields(document: &mut JsValue, preset: &AgentPreset) {
+    if document.as_object().is_none() {
+        *document = synthesized_document(preset);
         return;
     }
-    if let Some(value) = Number::from_f64(number.as_f64()) {
-        map.insert(key.to_string(), Value::Number(value));
-    }
-}
-
-fn json_text(text: &JsString) -> Value {
-    Value::String(text.to_utf8().to_string())
-}
-
-pub fn write_preset_fields(map: &mut Map<String, Value>, preset: &AgentPreset) {
-    map.insert("id".to_string(), json_text(&preset.id));
-    map.insert("name".to_string(), json_text(&preset.name));
-    map.insert("color".to_string(), json_text(&preset.color));
-    map.insert("model".to_string(), json_text(&preset.model));
-    map.insert("effort".to_string(), json_text(&preset.effort));
-    map.insert("systemPrompt".to_string(), json_text(&preset.system_prompt));
+    let Some(object) = document.as_object_mut() else {
+        return;
+    };
+    object.insert("id", JsValue::String(preset.id.clone()));
+    object.insert("name", JsValue::String(preset.name.clone()));
+    object.insert("color", JsValue::String(preset.color.clone()));
+    object.insert("model", JsValue::String(preset.model.clone()));
+    object.insert("effort", JsValue::String(preset.effort.clone()));
+    object.insert(
+        "systemPrompt",
+        JsValue::String(preset.system_prompt.clone()),
+    );
     if let Some(url) = &preset.node_base_url {
-        map.insert("nodeBaseUrl".to_string(), json_text(url));
+        object.insert("nodeBaseUrl", JsValue::String(url.clone()));
     }
-    push_js_number(map, "createdAt", preset.created_at);
-    push_js_number(map, "updatedAt", preset.updated_at);
+    object.insert("createdAt", JsValue::Number(preset.created_at.as_f64()));
+    object.insert("updatedAt", JsValue::Number(preset.updated_at.as_f64()));
     match preset.shared_link {
-        Some(value) => {
-            map.insert("sharedLink".to_string(), Value::Bool(value));
-        }
+        Some(value) => object.insert("sharedLink", JsValue::Bool(value)),
         None => {
-            map.remove("sharedLink");
+            object.remove("sharedLink");
         }
     }
     match &preset.node {
-        Some(value) => {
-            map.insert("node".to_string(), json_text(value));
-        }
+        Some(value) => object.insert("node", JsValue::String(value.clone())),
         None => {
-            map.remove("node");
+            object.remove("node");
         }
     }
     match &preset.directory {
-        Some(value) => {
-            map.insert("directory".to_string(), json_text(value));
-        }
+        Some(value) => object.insert("directory", JsValue::String(value.clone())),
         None => {
-            map.remove("directory");
+            object.remove("directory");
         }
     }
     match &preset.harness_id {
-        Some(value) => {
-            map.insert("harnessId".to_string(), json_text(value));
-        }
+        Some(value) => object.insert("harnessId", JsValue::String(value.clone())),
         None => {
-            map.remove("harnessId");
+            object.remove("harnessId");
         }
     }
     match preset.sort_order {
-        Some(value) => {
-            map.insert("sortOrder".to_string(), number_value(value));
-        }
+        Some(value) => object.insert("sortOrder", JsValue::Number(value as f64)),
         None => {
-            map.remove("sortOrder");
+            object.remove("sortOrder");
         }
     }
 }
@@ -538,35 +520,11 @@ pub fn migrate_map(map: &Map<String, Value>) -> Map<String, Value> {
     next
 }
 
-pub fn fresh_preset_map(preset: &AgentPreset) -> Map<String, Value> {
-    let mut map = Map::new();
-    map.insert("id".to_string(), json_text(&preset.id));
-    map.insert("name".to_string(), json_text(&preset.name));
-    map.insert("color".to_string(), json_text(&preset.color));
-    map.insert("model".to_string(), json_text(&preset.model));
-    map.insert("effort".to_string(), json_text(&preset.effort));
-    map.insert("systemPrompt".to_string(), json_text(&preset.system_prompt));
-    if let Some(url) = &preset.node_base_url {
-        map.insert("nodeBaseUrl".to_string(), json_text(url));
+pub fn fresh_preset_map(preset: &AgentPreset) -> JsValue {
+    match &preset.document {
+        Some(document) => document.as_ref().clone(),
+        None => synthesized_document(preset),
     }
-    push_js_number(&mut map, "createdAt", preset.created_at);
-    push_js_number(&mut map, "updatedAt", preset.updated_at);
-    if let Some(value) = preset.shared_link {
-        map.insert("sharedLink".to_string(), Value::Bool(value));
-    }
-    if let Some(value) = &preset.node {
-        map.insert("node".to_string(), json_text(value));
-    }
-    if let Some(value) = &preset.directory {
-        map.insert("directory".to_string(), json_text(value));
-    }
-    if let Some(value) = &preset.harness_id {
-        map.insert("harnessId".to_string(), json_text(value));
-    }
-    if let Some(value) = preset.sort_order {
-        map.insert("sortOrder".to_string(), number_value(value));
-    }
-    map
 }
 
 fn synthesized_document(preset: &AgentPreset) -> JsValue {
@@ -605,14 +563,105 @@ fn synthesized_document(preset: &AgentPreset) -> JsValue {
 }
 
 pub fn name_key(name: &str) -> String {
-    js_trim(name).to_lowercase()
+    JsString::from_units(name_key_text(&JsString::from_text(name)))
+        .to_utf8()
+        .to_string()
 }
 
-pub fn name_key_text(name: &JsString) -> String {
-    let trimmed = js_trim_units(name.units());
-    JsString::from_units(trimmed.to_vec())
-        .to_utf8()
-        .to_lowercase()
+pub fn name_key_text(name: &JsString) -> Vec<u16> {
+    lowercase_units(js_trim_units(name.units()))
+}
+
+pub(crate) fn submitted_name(name: &JsString) -> String {
+    let units = js_trim_units(name.units());
+    let mut out = String::new();
+    let mut index = 0;
+    while index < units.len() {
+        let unit = units[index];
+        if is_high_surrogate(unit) {
+            if let Some(low) = units.get(index + 1).copied()
+                && is_low_surrogate(low)
+                && let Some(ch) = decode_pair(unit, low)
+            {
+                out.push(ch);
+                index += 2;
+                continue;
+            }
+            push_unit_escape(&mut out, unit);
+            index += 1;
+            continue;
+        }
+        if is_low_surrogate(unit) {
+            push_unit_escape(&mut out, unit);
+            index += 1;
+            continue;
+        }
+        if let Some(ch) = char::from_u32(u32::from(unit)) {
+            out.push(ch);
+        }
+        index += 1;
+    }
+    out
+}
+
+fn lowercase_units(units: &[u16]) -> Vec<u16> {
+    let mut out = Vec::with_capacity(units.len());
+    let mut buf = String::new();
+    let mut index = 0;
+    while index < units.len() {
+        let unit = units[index];
+        if is_high_surrogate(unit) {
+            if let Some(low) = units.get(index + 1).copied()
+                && is_low_surrogate(low)
+                && let Some(ch) = decode_pair(unit, low)
+            {
+                buf.push(ch);
+                index += 2;
+                continue;
+            }
+            flush_lower(&mut buf, &mut out);
+            out.push(unit);
+            index += 1;
+            continue;
+        }
+        if is_low_surrogate(unit) {
+            flush_lower(&mut buf, &mut out);
+            out.push(unit);
+            index += 1;
+            continue;
+        }
+        if let Some(ch) = char::from_u32(u32::from(unit)) {
+            buf.push(ch);
+        }
+        index += 1;
+    }
+    flush_lower(&mut buf, &mut out);
+    out
+}
+
+fn flush_lower(buf: &mut String, out: &mut Vec<u16>) {
+    if buf.is_empty() {
+        return;
+    }
+    out.extend(buf.to_lowercase().encode_utf16());
+    buf.clear();
+}
+
+fn push_unit_escape(out: &mut String, unit: u16) {
+    out.push_str(&format!("\\u{unit:04x}"));
+}
+
+fn is_high_surrogate(unit: u16) -> bool {
+    (0xD800..=0xDBFF).contains(&unit)
+}
+
+fn is_low_surrogate(unit: u16) -> bool {
+    (0xDC00..=0xDFFF).contains(&unit)
+}
+
+fn decode_pair(high: u16, low: u16) -> Option<char> {
+    let code = 0x10000 + (((u32::from(high) - 0xD800) << 10) | (u32::from(low) - 0xDC00));
+    char::from_u32(code)
 }
 
 pub fn require_agent_name(name: &JsString) -> Result<JsString, PresetError> {
@@ -621,4 +670,53 @@ pub fn require_agent_name(name: &JsString) -> Result<JsString, PresetError> {
         return Err(PresetError::message(crate::error::AGENT_NAME_REQUIRED));
     }
     Ok(JsString::from_units(trimmed.to_vec()))
+}
+
+#[cfg(test)]
+mod field_tests {
+    use protocol::js::{JsString, parse, stringify};
+
+    use super::{
+        fresh_preset_map, name_key, name_key_text, preset_from_js, submitted_name,
+        write_preset_fields,
+    };
+
+    #[test]
+    fn field_writes_keep_unknown_keys_and_surrogate_units() {
+        let document = parse(
+            r##"{"id":"a","name":"N","color":"#000","model":"opus","effort":"medium","systemPrompt":"\ud83d","nodeBaseUrl":"","createdAt":1,"updatedAt":1,"displayMetadata":{"k":1}}"##,
+        )
+        .expect("document");
+        let preset = preset_from_js(&document).expect("preset");
+        let encoded = stringify(&fresh_preset_map(&preset));
+        assert!(encoded.contains(r"\ud83d"), "{encoded}");
+        assert!(encoded.contains("displayMetadata"), "{encoded}");
+        let mut next = preset.clone();
+        next.color = "#fff".into();
+        let mut edited = fresh_preset_map(&preset);
+        write_preset_fields(&mut edited, &next);
+        let again = stringify(&edited);
+        assert!(again.contains(r"\ud83d"), "{again}");
+        assert!(again.contains("displayMetadata"), "{again}");
+        assert!(again.contains("#fff"), "{again}");
+        assert!(!again.contains("#000"), "{again}");
+    }
+
+    #[test]
+    fn submitted_name_keeps_casing_and_distinct_surrogate_keys() {
+        assert_eq!(name_key(" Alice "), "alice");
+        assert_eq!(submitted_name(&JsString::from_text(" Alice ")), "Alice");
+        assert_eq!(
+            submitted_name(&JsString::from_units(vec![0xD83D])),
+            "\\ud83d"
+        );
+        let mut smile = vec![u16::from(b'a'); 127];
+        smile.push(0xD83D);
+        let mut robot = vec![u16::from(b'a'); 127];
+        robot.push(0xD83E);
+        assert_ne!(
+            name_key_text(&JsString::from_units(smile)),
+            name_key_text(&JsString::from_units(robot))
+        );
+    }
 }

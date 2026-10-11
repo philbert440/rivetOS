@@ -1,7 +1,9 @@
 use std::path::Path;
 
 use protocol::HARNESS_IDS;
-use protocol::js::{js_slice, js_trim, posix_join, posix_normalize, utf16_len};
+use protocol::js::{
+    JsString, js_slice, js_slice_units, js_trim, posix_join, posix_normalize, utf16_len,
+};
 use serde_json::{Number, Value};
 
 pub const SLUG_MAX: usize = 48;
@@ -124,8 +126,8 @@ pub fn is_agent_preset(value: &Value) -> bool {
         && map.get("updatedAt").and_then(Value::as_f64).is_some()
 }
 
-pub fn cap_text(text: &str, max_units: usize) -> protocol::js::JsString {
-    js_slice(text, Some(0.0), Some(max_units as f64))
+pub(crate) fn cap_units(units: &[u16], max_units: usize) -> JsString {
+    JsString::from_units(js_slice_units(units, Some(0.0), Some(max_units as f64)))
 }
 
 pub fn slugify(name: &str) -> String {
@@ -257,13 +259,13 @@ pub fn is_codex_default_model(harness_id: &str, model: &str) -> bool {
 mod cap_tests {
     use protocol::js::{JsValue, stringify};
 
-    use super::cap_text;
+    use super::cap_units;
 
     #[test]
     fn cap_keeps_a_surrogate_that_crosses_the_boundary() {
         let mut text = "a".repeat(127);
         text.push('\u{1F600}');
-        let capped = cap_text(&text, 128);
+        let capped = cap_units(&text.encode_utf16().collect::<Vec<_>>(), 128);
         assert_eq!(capped.len(), 128);
         assert_eq!(capped.units()[127], 0xD83D);
         let encoded = stringify(&JsValue::String(capped));

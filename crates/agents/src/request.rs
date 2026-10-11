@@ -1,4 +1,4 @@
-use protocol::js::{JsString, js_trim};
+use protocol::js::{JsObject, JsString, JsValue, js_trim, js_trim_units};
 use serde_json::Value;
 
 use crate::error::{
@@ -9,7 +9,7 @@ use crate::error::{
 };
 use crate::preset::{AgentPreset, AgentPresetInput, AgentPresetPatch, HarnessPatch, SortPatch};
 use crate::validate::{
-    ParsedHarness, cap_text, default_directory_for, directory_warnings, expand_home, has_dot_dot,
+    ParsedHarness, cap_units, default_directory_for, directory_warnings, expand_home, has_dot_dot,
     is_codex_default_model, parse_color, parse_effort, parse_harness_id, validate_directory_str,
 };
 
@@ -46,7 +46,7 @@ pub struct ValidatedPatch {
 }
 
 pub fn validate_create(
-    raw: &Value,
+    raw: &JsValue,
     ctx: &ValidateCtx<'_>,
 ) -> Result<ValidatedCreate, AgentRequestError> {
     let raw = object(raw)?;
@@ -54,19 +54,19 @@ pub fn validate_create(
     let color = require_color(raw.get("color"))?;
     let effort = require_effort(raw.get("effort"))?;
     let harness_id = require_harness(raw.get("harnessId"), ctx)?;
-    let model = trimmed_text(raw.get("model"), MODEL_MAX);
-    let system_prompt = trimmed_text(raw.get("systemPrompt"), SYSTEM_PROMPT_MAX_CHARS);
-    let node_base_url = trimmed_text(raw.get("nodeBaseUrl"), NODE_BASE_URL_MAX);
-    if let Some(Value::String(node)) = raw.get("node") {
-        let trimmed = js_trim(node);
+    let model = trimmed_units(raw.get("model"), MODEL_MAX);
+    let system_prompt = trimmed_units(raw.get("systemPrompt"), SYSTEM_PROMPT_MAX_CHARS);
+    let node_base_url = trimmed_units(raw.get("nodeBaseUrl"), NODE_BASE_URL_MAX);
+    if let Some(node) = raw.get("node").and_then(JsValue::as_js_string) {
+        let trimmed = js_trim(node.to_utf8());
         if !trimmed.is_empty() && trimmed != ctx.node_name {
             return Err(AgentRequestError::bad(hosting_node_message(ctx.node_name)));
         }
     }
-    let shared_link = match raw.get("sharedLink") {
-        Some(Value::Bool(value)) => *value,
-        _ => true,
-    };
+    let shared_link = raw
+        .get("sharedLink")
+        .and_then(JsValue::as_bool)
+        .unwrap_or(true);
     let directory = resolve_directory(raw.get("directory"), name.to_utf8(), ctx)?;
     let mut warnings = directory_warnings(&directory, ctx.shared_dir);
     vet_model(
@@ -98,7 +98,7 @@ pub fn validate_create(
 }
 
 pub fn validate_patch(
-    raw: &Value,
+    raw: &JsValue,
     existing: &AgentPreset,
     ctx: &ValidateCtx<'_>,
 ) -> Result<ValidatedPatch, AgentRequestError> {
@@ -110,25 +110,25 @@ pub fn validate_patch(
         .filter(|value| !value.is_empty());
     let stored_node = stored_owned.as_deref().unwrap_or(ctx.node_name);
     if let Some(node) = raw.get("node") {
-        let next = node.as_str().map(js_trim);
+        let next = node.as_js_string().map(|text| js_trim(text.to_utf8()));
         if next != Some(stored_node) {
             return Err(AgentRequestError::bad(NODE_IMMUTABLE));
         }
     }
     let mut patch = AgentPresetPatch::default();
     let mut name = existing.name.clone();
-    if let Some(Value::String(raw_name)) = raw.get("name") {
-        let trimmed = js_trim(raw_name);
+    if let Some(raw_name) = raw.get("name").and_then(JsValue::as_js_string) {
+        let trimmed = js_trim_units(raw_name.units());
         if !trimmed.is_empty() {
-            name = cap_text(trimmed, NAME_MAX);
+            name = cap_units(trimmed, NAME_MAX);
             patch.name = Some(name.clone());
         }
     }
     if raw.contains_key("color") {
         patch.color = Some(require_color(raw.get("color"))?.into());
     }
-    if let Some(Value::String(_)) = raw.get("model") {
-        patch.model = Some(trimmed_text(raw.get("model"), MODEL_MAX));
+    if let Some(text) = raw.get("model").and_then(JsValue::as_js_string) {
+        patch.model = Some(cap_units(js_trim_units(text.units()), MODEL_MAX));
     }
     if raw.contains_key("effort") {
         patch.effort = Some(require_effort(raw.get("effort"))?.into());
@@ -136,29 +136,28 @@ pub fn validate_patch(
     if raw.contains_key("harnessId") {
         patch.harness = patch_harness(raw.get("harnessId"), ctx)?;
     }
-    if let Some(Value::String(_)) = raw.get("systemPrompt") {
-        patch.system_prompt = Some(trimmed_text(
-            raw.get("systemPrompt"),
+    if let Some(text) = raw.get("systemPrompt").and_then(JsValue::as_js_string) {
+        patch.system_prompt = Some(cap_units(
+            js_trim_units(text.units()),
             SYSTEM_PROMPT_MAX_CHARS,
         ));
     }
     if raw.contains_key("sortOrder") {
         patch.sort_order = parse_sort(raw.get("sortOrder"))?;
     }
-    let stored_directory = existing
-        .directory
-        .as_ref()
-        .map(|value| value.to_utf8().to_string())
-        .unwrap_or_default();
+    let stored_directory = match &existing.directory {
+        Some(value) => value.clone(),
+        None => JsString::from_text(""),
+    };
     let stored_shared = existing.shared_link != Some(false);
     let directory_changed = match raw.get("directory") {
         None => false,
-        Some(Value::String(text)) => js_trim(text) != stored_directory,
+        Some(JsValue::String(text)) => js_trim_units(text.units()) != stored_directory.units(),
         Some(_) => true,
     };
-    let shared_changed = match raw.get("sharedLink") {
-        Some(Value::Bool(value)) => *value != stored_shared,
-        _ => false,
+    let shared_changed = match raw.get("sharedLink").and_then(JsValue::as_bool) {
+        Some(value) => value != stored_shared,
+        None => false,
     };
     let placement = directory_changed || shared_changed;
     let hosted_on = existing
@@ -214,7 +213,7 @@ pub fn validate_patch(
 }
 
 fn apply_placement(
-    raw: &serde_json::Map<String, Value>,
+    raw: &JsObject,
     existing: &AgentPreset,
     name: &str,
     patch: &mut AgentPresetPatch,
@@ -231,10 +230,10 @@ fn apply_placement(
         }
         next_directory = Some(directory_js);
     }
-    if let Some(Value::Bool(value)) = raw.get("sharedLink")
-        && *value != next_shared
+    if let Some(value) = raw.get("sharedLink").and_then(JsValue::as_bool)
+        && value != next_shared
     {
-        patch.shared_link = Some(*value);
+        patch.shared_link = Some(value);
     }
     if next_directory.as_ref().is_none_or(JsString::is_empty) {
         let fallback = resolve_directory(None, name, ctx)?;
@@ -246,51 +245,64 @@ fn apply_placement(
     Ok(())
 }
 
-fn object(raw: &Value) -> Result<&serde_json::Map<String, Value>, AgentRequestError> {
+fn object(raw: &JsValue) -> Result<&JsObject, AgentRequestError> {
     raw.as_object()
         .ok_or_else(|| AgentRequestError::bad(INVALID_JSON))
 }
 
-fn create_name(value: Option<&Value>) -> JsString {
-    match value {
-        Some(Value::String(text)) => {
-            let trimmed = js_trim(text);
+fn create_name(value: Option<&JsValue>) -> JsString {
+    match value.and_then(JsValue::as_js_string) {
+        Some(text) => {
+            let trimmed = js_trim_units(text.units());
             if trimmed.is_empty() {
                 JsString::from_text(UNNAMED_AGENT)
             } else {
-                cap_text(trimmed, NAME_MAX)
+                cap_units(trimmed, NAME_MAX)
             }
         }
-        _ => JsString::from_text(UNNAMED_AGENT),
+        None => JsString::from_text(UNNAMED_AGENT),
     }
 }
 
-fn trimmed_text(value: Option<&Value>, max_units: usize) -> JsString {
+fn trimmed_units(value: Option<&JsValue>, max_units: usize) -> JsString {
+    match value.and_then(JsValue::as_js_string) {
+        Some(text) => cap_units(js_trim_units(text.units()), max_units),
+        None => JsString::from_text(""),
+    }
+}
+
+fn json_atom(value: &JsValue) -> Value {
     match value {
-        Some(Value::String(text)) => cap_text(js_trim(text), max_units),
-        _ => JsString::from_text(""),
+        JsValue::Null => Value::Null,
+        JsValue::String(text) => Value::String(text.to_utf8().to_string()),
+        _ => Value::Array(Vec::new()),
     }
 }
 
-fn require_color(value: Option<&Value>) -> Result<String, AgentRequestError> {
+fn require_color(value: Option<&JsValue>) -> Result<String, AgentRequestError> {
     match value {
         None => Ok(String::new()),
-        Some(value) => parse_color(value).ok_or_else(|| AgentRequestError::bad(COLOR_HEX)),
+        Some(value) => {
+            parse_color(&json_atom(value)).ok_or_else(|| AgentRequestError::bad(COLOR_HEX))
+        }
     }
 }
 
-fn require_effort(value: Option<&Value>) -> Result<String, AgentRequestError> {
+fn require_effort(value: Option<&JsValue>) -> Result<String, AgentRequestError> {
     match value {
         None => Ok("medium".to_string()),
-        Some(value) => parse_effort(value).ok_or_else(|| AgentRequestError::bad(EFFORT_TOKEN)),
+        Some(value) => {
+            parse_effort(&json_atom(value)).ok_or_else(|| AgentRequestError::bad(EFFORT_TOKEN))
+        }
     }
 }
 
 fn require_harness(
-    value: Option<&Value>,
+    value: Option<&JsValue>,
     ctx: &ValidateCtx<'_>,
 ) -> Result<Option<String>, AgentRequestError> {
-    match parse_harness_id(value) {
+    let adapted = value.map(json_atom);
+    match parse_harness_id(adapted.as_ref()) {
         ParsedHarness::Absent => Ok(None),
         ParsedHarness::Bad => Err(AgentRequestError::bad(HARNESS_KNOWN)),
         ParsedHarness::Id(id) => {
@@ -301,10 +313,11 @@ fn require_harness(
 }
 
 fn patch_harness(
-    value: Option<&Value>,
+    value: Option<&JsValue>,
     ctx: &ValidateCtx<'_>,
 ) -> Result<HarnessPatch, AgentRequestError> {
-    match parse_harness_id(value) {
+    let adapted = value.map(json_atom);
+    match parse_harness_id(adapted.as_ref()) {
         ParsedHarness::Absent => Ok(HarnessPatch::Clear),
         ParsedHarness::Bad => Err(AgentRequestError::bad(HARNESS_KNOWN)),
         ParsedHarness::Id(id) => {
@@ -323,36 +336,35 @@ fn ensure_allowed(id: &str, ctx: &ValidateCtx<'_>) -> Result<(), AgentRequestErr
     Ok(())
 }
 
-fn parse_sort(value: Option<&Value>) -> Result<SortPatch, AgentRequestError> {
-    match value {
-        Some(Value::Null) | None => Ok(SortPatch::Clear),
-        Some(Value::Number(number))
-            if crate::validate::json_is_integer(number)
-                && crate::preset::number_to_i64(number).is_some_and(|value| {
-                    (0..=crate::error::AGENT_SORT_ORDER_MAX).contains(&value)
-                }) =>
-        {
-            Ok(SortPatch::Set(match crate::preset::number_to_i64(number) {
-                Some(value) => value,
-                None => return Err(AgentRequestError::bad(sort_order_message())),
-            }))
-        }
-        _ => Err(AgentRequestError::bad(sort_order_message())),
+fn parse_sort(value: Option<&JsValue>) -> Result<SortPatch, AgentRequestError> {
+    let Some(value) = value else {
+        return Ok(SortPatch::Clear);
+    };
+    if value.is_null() {
+        return Ok(SortPatch::Clear);
     }
+    let Some(number) = value.as_f64() else {
+        return Err(AgentRequestError::bad(sort_order_message()));
+    };
+    let max = crate::error::AGENT_SORT_ORDER_MAX as f64;
+    if number.is_finite() && number.fract() == 0.0 && (0.0..=max).contains(&number) {
+        return Ok(SortPatch::Set(number as i64));
+    }
+    Err(AgentRequestError::bad(sort_order_message()))
 }
 
 fn resolve_directory(
-    raw: Option<&Value>,
+    raw: Option<&JsValue>,
     name: &str,
     ctx: &ValidateCtx<'_>,
 ) -> Result<String, AgentRequestError> {
     let resolved = match raw {
         None => validate_directory_str(Some(&default_directory_for(ctx.directory_root, name))),
-        Some(Value::String(text)) if js_trim(text).is_empty() => {
+        Some(JsValue::String(text)) if js_trim(text.to_utf8()).is_empty() => {
             validate_directory_str(Some(&default_directory_for(ctx.directory_root, name)))
         }
-        Some(Value::String(text)) => {
-            let trimmed = js_trim(text);
+        Some(JsValue::String(text)) => {
+            let trimmed = js_trim(text.to_utf8());
             if has_dot_dot(trimmed) {
                 None
             } else {

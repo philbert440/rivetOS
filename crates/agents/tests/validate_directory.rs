@@ -136,15 +136,11 @@ fn den_state_dir_keeps_a_blank_override_and_otherwise_uses_home() {
     assert_eq!(den_state_dir_from(Some("")), "");
     let joined = den_state_dir_from(None);
     match std::env::var("HOME") {
-        Ok(home) if home.is_empty() || !home.starts_with('/') => {
-            assert_eq!(joined, "");
-        }
         Ok(home) => {
             assert_eq!(joined, posix_join(&[&home, ".rivetos", "den"]));
         }
         Err(_) => {
             assert!(joined.starts_with('/'), "{joined}");
-            assert_ne!(joined, ".rivetos/den");
         }
     }
     assert_eq!(

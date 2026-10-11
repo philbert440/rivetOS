@@ -1,9 +1,9 @@
 use std::cmp::Ordering;
 use std::future::Future;
 use std::pin::Pin;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use protocol::JsNumber;
+use protocol::js::JsString;
 
 use crate::error::PresetError;
 use crate::preset::{
@@ -19,10 +19,17 @@ pub fn box_future<'a, T>(future: impl Future<Output = T> + Send + 'a) -> BoxFutu
 }
 
 pub fn system_now_ms() -> i64 {
-    match SystemTime::now().duration_since(UNIX_EPOCH) {
-        Ok(duration) => i64::try_from(duration.as_millis()).unwrap_or(i64::MAX),
-        Err(_) => 0,
+    let ms = protocol::js::date_now();
+    if !ms.is_finite() {
+        return 0;
     }
+    if ms >= 9_223_372_036_854_775_808.0 {
+        return i64::MAX;
+    }
+    if ms < i64::MIN as f64 {
+        return i64::MIN;
+    }
+    ms as i64
 }
 
 pub fn sort_presets(presets: Vec<AgentPreset>) -> Vec<AgentPreset> {
@@ -68,7 +75,7 @@ pub fn find_preset_by_handle<'a>(
                 .find(|preset| preset.name.to_utf8() == trimmed)
         })
         .or_else(|| {
-            let key = crate::preset::name_key(trimmed);
+            let key = name_key_text(&JsString::from_text(trimmed));
             presets
                 .iter()
                 .find(|preset| name_key_text(&preset.name) == key)

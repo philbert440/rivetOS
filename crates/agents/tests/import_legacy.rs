@@ -670,10 +670,10 @@ async fn returns_zeros_when_the_file_is_absent() {
 }
 
 #[tokio::test]
-async fn file_import_keeps_display_metadata_and_a_surrogate() {
+async fn file_import_keeps_a_surrogate_and_the_create_shape() {
     let dir = TempDir::new("agent-registry-import");
     let file = dir.path_str("agents.json");
-    let legacy = r#"{"agents":[{"id":"legacy","name":"Old","color":"","model":"opus","effort":"medium","systemPrompt":"\ud83d","nodeBaseUrl":"","createdAt":1,"updatedAt":1,"displayMetadata":{"k":1}}]}"#;
+    let legacy = r#"{"agents":[{"id":"legacy","name":"Old","color":"","model":"opus","effort":"medium","systemPrompt":"\ud83d","nodeBaseUrl":"","createdAt":1,"updatedAt":1,"sortOrder":0,"displayMetadata":{"k":1}}]}"#;
     std::fs::write(&file, legacy).unwrap();
     let target = FileAgentPresetStore::new(dir.path_str("target.json"));
     let result = import_legacy_agents_json(args(&file, &target, None))
@@ -681,11 +681,54 @@ async fn file_import_keeps_display_metadata_and_a_surrogate() {
         .unwrap();
     assert_eq!(result.imported, 1);
     let row = target.get("legacy").await.unwrap().unwrap();
-    assert!(row.document_json().contains(r"\ud83d"));
-    assert!(row.document_json().contains("displayMetadata"));
-    let encoded = serde_json::to_string(&row).unwrap();
-    assert!(encoded.contains(r"\ud83d"));
-    assert!(encoded.contains("displayMetadata"));
+    assert_eq!(row.system_prompt.units(), &[0xD83D]);
+    assert_eq!(row.shared_link, Some(true));
+    assert!(row.sort_order.is_none());
+    assert_eq!(
+        row.node.as_ref().map(agents::JsString::to_utf8),
+        Some("node-f")
+    );
+    assert_eq!(
+        row.directory.as_ref().map(agents::JsString::to_utf8),
+        Some("/home/agents/old")
+    );
+    assert_eq!(row.created_at, 1);
+    assert!(row.harness_id.is_none());
+    assert_eq!(row.model.to_utf8(), "opus");
+    let encoded = row.document_json();
+    assert!(encoded.contains(r"\ud83d"), "{encoded}");
+    assert!(!encoded.contains("displayMetadata"), "{encoded}");
+    assert!(!encoded.contains("sortOrder"), "{encoded}");
+    let parsed = protocol::js::parse(&encoded).unwrap();
+    let keys: Vec<String> = parsed
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(|key| key.to_utf8().to_string())
+        .collect();
+    assert_eq!(
+        keys,
+        vec![
+            "id",
+            "name",
+            "color",
+            "model",
+            "effort",
+            "systemPrompt",
+            "nodeBaseUrl",
+            "createdAt",
+            "updatedAt",
+            "sharedLink",
+            "node",
+            "directory",
+        ]
+    );
+    let serde_encoded = serde_json::to_string(&row).unwrap();
+    assert!(serde_encoded.contains(r"\ud83d"), "{serde_encoded}");
+    assert!(
+        !serde_encoded.contains("displayMetadata"),
+        "{serde_encoded}"
+    );
 }
 
 fn dir_has_imported(dir: &TempDir) -> bool {

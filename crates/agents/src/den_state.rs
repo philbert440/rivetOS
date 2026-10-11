@@ -1,5 +1,5 @@
 use protocol::host::{Env, ProcessEnv, home_dir};
-use protocol::js::{posix_is_absolute, posix_join};
+use protocol::js::posix_join;
 
 pub fn den_state_dir() -> String {
     den_state_dir_in(&ProcessEnv)
@@ -20,15 +20,8 @@ pub fn den_state_dir_from(value: Option<&str>) -> String {
 }
 
 fn den_under_home(env: &dyn Env) -> String {
-    let Some(home) = home_dir(env).filter(|home| !home.is_empty()) else {
-        return String::new();
-    };
-    let joined = posix_join(&[&home, ".rivetos", "den"]);
-    if posix_is_absolute(&joined) {
-        joined
-    } else {
-        String::new()
-    }
+    let home = home_dir(env).unwrap_or_default();
+    posix_join(&[&home, ".rivetos", "den"])
 }
 
 pub fn agents_json_file() -> String {
@@ -43,10 +36,10 @@ pub fn agents_json_file_in(state_dir: &str) -> String {
 mod tests {
     use protocol::host::MapEnv;
 
-    use super::{den_state_dir_in, den_under_home};
+    use super::{agents_json_file_in, den_state_dir_in, den_under_home};
 
     #[test]
-    fn blank_override_is_kept_and_missing_home_is_not_relative() {
+    fn blank_override_is_kept_and_home_join_matches_den_state_dir() {
         let mut env = MapEnv::new();
         env.set("RIVETOS_DEN_STATE_DIR", "");
         assert_eq!(den_state_dir_in(&env), "");
@@ -57,9 +50,19 @@ mod tests {
         assert_eq!(den_under_home(&home), "/home/example/.rivetos/den");
         let mut empty = MapEnv::new();
         empty.set("HOME", "");
-        assert_eq!(den_under_home(&empty), "");
-        assert_ne!(den_under_home(&MapEnv::new()), ".rivetos/den");
+        assert_eq!(den_under_home(&empty), ".rivetos/den");
+        assert_eq!(
+            agents_json_file_in(&den_under_home(&empty)),
+            ".rivetos/den/agents.json"
+        );
+        let mut relative = MapEnv::new();
+        relative.set("HOME", "rel/home");
+        assert_eq!(den_under_home(&relative), "rel/home/.rivetos/den");
+        assert_eq!(
+            agents_json_file_in(&den_under_home(&relative)),
+            "rel/home/.rivetos/den/agents.json"
+        );
         let joined = den_under_home(&MapEnv::new());
-        assert!(joined.is_empty() || joined.starts_with('/'));
+        assert!(joined.starts_with('/'), "{joined}");
     }
 }

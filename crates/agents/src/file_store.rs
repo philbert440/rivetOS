@@ -15,7 +15,7 @@ use crate::js_row::{
 };
 use crate::preset::{
     AgentPreset, AgentPresetInput, AgentPresetPatch, AgentRegistryBackend, fresh_stored_row,
-    migrate_row, name_key, patch_stored_row, preset_from_js,
+    migrate_row, patch_stored_row, preset_from_js, submitted_name,
 };
 use crate::store::{
     AgentPresetStore, BoxFuture, find_preset_by_handle, sort_presets, system_now_ms,
@@ -216,7 +216,7 @@ fn assert_name_available(
     if clash {
         return Err(PresetError::conflict(format!(
             "agent name already exists: {}",
-            name_key(name.to_utf8())
+            submitted_name(name)
         )));
     }
     Ok(())
