@@ -1,13 +1,12 @@
 use std::collections::BTreeMap;
 use std::process::ExitCode;
 
-use clap::Parser;
 use tokio::signal::unix::{SignalKind, signal};
 
 use crate::config::GatewayConfig;
 use crate::listen::serve;
 
-#[derive(Parser, Debug, Clone, Copy)]
+#[derive(clap::Args, Debug, Clone, Copy)]
 #[command(about = "Serve the den gateway on HTTP and WebSocket")]
 pub struct GatewayArgs;
 

@@ -904,6 +904,27 @@ fn mesh_shape_log_is_twelve_node_lines() {
     assert_node_mesh_log(&err.log_block(), &repo, 224, "MESH_INVALID_SHAPE", &path);
 }
 
+#[test]
+fn gateway_args_reject_unknown_flags() {
+    use clap::{Parser, Subcommand};
+
+    #[derive(Parser)]
+    #[command(name = "rivetos")]
+    struct Cli {
+        #[command(subcommand)]
+        command: Cmd,
+    }
+
+    #[derive(Subcommand)]
+    enum Cmd {
+        #[command(about = "Serve the den gateway on HTTP and WebSocket")]
+        Gateway(crate::cli::GatewayArgs),
+    }
+
+    assert!(Cli::try_parse_from(["rivetos", "gateway"]).is_ok());
+    assert!(Cli::try_parse_from(["rivetos", "gateway", "--bogus"]).is_err());
+}
+
 fn assert_node_mesh_log(block: &str, repo: &str, line: u32, code: &str, path: &str) {
     let types_mesh = ["packages", "types", "dist", "mesh.js"].join("/");
     let den_mesh = ["services", "den-server", "dist", "mesh.js"].join("/");

@@ -66,6 +66,18 @@ impl<T> OrderedMap<T> {
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
+
+    pub fn remove(&mut self, key: &str) -> Option<T> {
+        let index = self
+            .entries
+            .iter()
+            .position(|(existing, _)| existing == key)?;
+        Some(self.entries.remove(index).1)
+    }
+
+    pub fn retain(&mut self, mut keep: impl FnMut(&str, &T) -> bool) {
+        self.entries.retain(|(key, value)| keep(key, value));
+    }
 }
 
 impl<T: Serialize> Serialize for OrderedMap<T> {

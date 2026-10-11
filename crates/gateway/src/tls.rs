@@ -9,6 +9,7 @@ use rustls::{DigitallySignedStruct, DistinguishedName, Error, RootCertStore, Sig
 pub struct TlsMaterial {
     pub acceptor: tokio_rustls::TlsAcceptor,
     pub checker: Arc<dyn ClientCertVerifier>,
+    root_hint_count: usize,
 }
 
 pub fn load_server(
@@ -25,22 +26,34 @@ pub fn load_server(
     }
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let _ = rustls::crypto::ring::default_provider().install_default();
+    let subjects = roots.subjects();
+    let root_hint_count = subjects.len();
     let checker: Arc<dyn ClientCertVerifier> =
         WebPkiClientVerifier::builder_with_provider(Arc::new(roots), provider.clone())
             .build()
             .map_err(|err| err.to_string())?;
     let handshake = Arc::new(AcceptAny {
         offer: offer_client,
-        subjects: Vec::<DistinguishedName>::new(),
+        subjects,
     });
     let config = rustls::ServerConfig::builder_with_provider(provider)
-        .with_protocol_versions(&[&rustls::version::TLS13])
+        .with_protocol_versions(&[&rustls::version::TLS12, &rustls::version::TLS13])
         .map_err(|err| err.to_string())?
         .with_client_cert_verifier(handshake)
         .with_single_cert(certs, key)
         .map_err(|err| err.to_string())?;
     let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
-    Ok(TlsMaterial { acceptor, checker })
+    Ok(TlsMaterial {
+        acceptor,
+        checker,
+        root_hint_count,
+    })
+}
+
+impl TlsMaterial {
+    pub fn root_hint_count(&self) -> usize {
+        self.root_hint_count
+    }
 }
 
 pub fn peer_auth(checker: &dyn ClientCertVerifier, chain: &[Vec<u8>]) -> (bool, String, String) {

@@ -18,7 +18,7 @@ enum Command {
         action: Option<DbAction>,
     },
     #[command(about = "Serve the den gateway on HTTP and WebSocket")]
-    Gateway,
+    Gateway(gateway::cli::GatewayArgs),
 }
 
 #[derive(Subcommand)]
@@ -67,7 +67,7 @@ fn main() -> ExitCode {
 
 fn dispatch(args: &[String]) -> Result<ExitCode, String> {
     if args.first().map(String::as_str) == Some("gateway") {
-        return gateway_main();
+        return Ok(gateway_main(args));
     }
     if args.first().map(String::as_str) != Some("db") {
         print_usage();
@@ -178,12 +178,33 @@ fn status() -> Result<ExitCode, String> {
     Ok(ExitCode::SUCCESS)
 }
 
-fn gateway_main() -> Result<ExitCode, String> {
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .map_err(|err| err.to_string())?;
-    Ok(runtime.block_on(gateway::run(gateway::GatewayArgs)))
+fn gateway_main(args: &[String]) -> ExitCode {
+    let mut full = Vec::with_capacity(args.len() + 1);
+    full.push("rivetos".to_string());
+    full.extend(args.iter().cloned());
+    let cli = match Cli::try_parse_from(full) {
+        Ok(cli) => cli,
+        Err(err) => {
+            let _ = err.print();
+            return ExitCode::from(err.exit_code() as u8);
+        }
+    };
+    match cli.command {
+        Command::Gateway(gateway_args) => {
+            let runtime = match tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(runtime) => runtime,
+                Err(err) => {
+                    eprintln!("Error: {err}");
+                    return ExitCode::from(1);
+                }
+            };
+            runtime.block_on(gateway::cli::run(gateway_args))
+        }
+        Command::Db { .. } => ExitCode::from(2),
+    }
 }
 
 fn print_usage() {

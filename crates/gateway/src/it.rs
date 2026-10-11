@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::io::Cursor;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use futures_util::StreamExt;
@@ -16,7 +17,10 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 
 use crate::config::GatewayConfig;
-use crate::listen::{Running, serve};
+use crate::http_codec::Reply;
+use crate::hub::{Fanout, Hub, MAX_BUFFERED};
+use crate::listen::{Running, serve, serve_with};
+use crate::routes::{GatewayRoutes, MountRequest};
 use crate::test_support::{isolated, scratch, token_lock};
 
 const EVENT: &str = r#"{"v":1,"session":"s1","name":"alpha","ts":100,"type":"session.start","title":"hello","harness":"claude-code"}"#;
@@ -881,7 +885,18 @@ fn pem_key(pem: &str) -> PrivateKeyDer<'static> {
         .unwrap()
 }
 
+static TLS13_ONLY: &[&rustls::SupportedProtocolVersion] = &[&rustls::version::TLS13];
+static TLS12_ONLY: &[&rustls::SupportedProtocolVersion] = &[&rustls::version::TLS12];
+
 fn client_config(ca_pem: &str, identity: Option<&Issued>) -> ClientConfig {
+    client_config_with(ca_pem, identity, TLS13_ONLY)
+}
+
+fn client_config_with(
+    ca_pem: &str,
+    identity: Option<&Issued>,
+    versions: &'static [&'static rustls::SupportedProtocolVersion],
+) -> ClientConfig {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let mut roots = RootCertStore::empty();
     for cert in pem_certs(ca_pem) {
@@ -889,7 +904,7 @@ fn client_config(ca_pem: &str, identity: Option<&Issued>) -> ClientConfig {
     }
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let builder = ClientConfig::builder_with_provider(provider)
-        .with_protocol_versions(&[&rustls::version::TLS13])
+        .with_protocol_versions(versions)
         .unwrap()
         .with_root_certificates(roots);
     match identity {
@@ -1457,5 +1472,581 @@ async fn localhost_listen_uses_addrconfig() {
             .listen_line
             .starts_with("[den-server] listening on ::1:")
     );
+    running.shutdown().await;
+}
+
+fn masked_frame(opcode: u8, payload: &[u8]) -> Vec<u8> {
+    let mask = [9_u8, 8, 7, 6];
+    let mut frame = vec![0x80 | opcode, 0x80 | u8::try_from(payload.len()).unwrap()];
+    frame.extend_from_slice(&mask);
+    for (index, byte) in payload.iter().enumerate() {
+        frame.push(byte ^ mask[index % 4]);
+    }
+    frame
+}
+
+fn mesh_doc(nodes: &[(&str, &str)]) -> String {
+    let mut body = String::from("{\"version\":1,\"updatedAt\":1,\"nodes\":{");
+    for (index, (id, url)) in nodes.iter().enumerate() {
+        if index > 0 {
+            body.push(',');
+        }
+        body.push_str(&format!(
+            "\"{id}\":{{\"id\":\"{id}\",\"metadata\":{{\"denUrl\":\"{url}\"}}}}"
+        ));
+    }
+    body.push_str("}}");
+    body
+}
+
+async fn hold_listener(listener: tokio::net::TcpListener, accepts: Arc<AtomicUsize>) {
+    let mut held = Vec::new();
+    loop {
+        let Ok((sock, _)) = listener.accept().await else {
+            return;
+        };
+        accepts.fetch_add(1, Ordering::SeqCst);
+        held.push(sock);
+    }
+}
+
+#[tokio::test]
+async fn body_limits_run_after_origin_and_auth() {
+    let dir = scratch("body-order");
+    let static_dir = dir.join("static");
+    std::fs::create_dir_all(&static_dir).unwrap();
+    std::fs::write(static_dir.join("index.html"), "index\n").unwrap();
+    let mut env = isolated(&dir);
+    env.insert(
+        "RIVETOS_DEN_STATIC_DIR".to_string(),
+        static_dir.to_string_lossy().into_owned(),
+    );
+    let running = boot(env).await;
+    let addr = running.addr();
+    let host = format!("127.0.0.1:{}", addr.port());
+    let evil = format!(
+        "POST /event HTTP/1.1\r\nHost: {host}\r\nOrigin: https://evil.example\r\nContent-Length: 300000\r\n\r\n"
+    );
+    let denied = exchange(addr, &evil).await;
+    assert_eq!(denied.status, 403);
+    body_eq(&denied.body, "forbidden-origin");
+    let health =
+        format!("POST /healthz HTTP/1.1\r\nHost: {host}\r\nContent-Length: 300000\r\n\r\n");
+    let ok = exchange(addr, &health).await;
+    assert_eq!(ok.status, 200);
+    assert!(
+        ok.head
+            .to_ascii_lowercase()
+            .contains("transfer-encoding: chunked")
+    );
+    running.shutdown().await;
+
+    let (ca_cert, ca_key, ca_pem) = ca_pair();
+    let node = issue(
+        &ca_cert,
+        &ca_key,
+        "node-test",
+        None,
+        vec!["127.0.0.2".to_string()],
+        false,
+    );
+    let cert_path = dir.join("node.pem");
+    let key_path = dir.join("node.key");
+    let ca_path = dir.join("ca.pem");
+    std::fs::write(&cert_path, &node.cert_pem).unwrap();
+    std::fs::write(&key_path, &node.key_pem).unwrap();
+    std::fs::write(&ca_path, &ca_pem).unwrap();
+    let material = crate::tls::load_server(
+        &std::fs::read(&cert_path).unwrap(),
+        &std::fs::read(&key_path).unwrap(),
+        &std::fs::read(&ca_path).unwrap(),
+        true,
+    )
+    .unwrap();
+    assert!(material.root_hint_count() > 0);
+    let mut tls_env = isolated(&dir);
+    tls_env.insert("RIVETOS_DEN_HOST".to_string(), "127.0.0.2".to_string());
+    tls_env.insert(
+        "RIVETOS_DEN_TLS_CERT".to_string(),
+        cert_path.to_string_lossy().into_owned(),
+    );
+    tls_env.insert(
+        "RIVETOS_DEN_TLS_KEY".to_string(),
+        key_path.to_string_lossy().into_owned(),
+    );
+    tls_env.insert(
+        "RIVETOS_DEN_TLS_CA".to_string(),
+        ca_path.to_string_lossy().into_owned(),
+    );
+    let running = boot(tls_env).await;
+    let addr = running.addr();
+    let host = format!("127.0.0.2:{}", addr.port());
+    let huge = format!("POST /event HTTP/1.1\r\nHost: {host}\r\nContent-Length: 300000\r\n\r\n");
+    let unauth = tls_exchange(addr, client_config(&ca_pem, None), &huge).await;
+    assert_eq!(unauth.status, 401);
+    body_eq(&unauth.body, "unauthorized");
+    let tls12 = tls_exchange(
+        addr,
+        client_config_with(&ca_pem, None, TLS12_ONLY),
+        &request("GET", "/healthz", &host, "", ""),
+    )
+    .await;
+    assert_eq!(tls12.status, 200);
+    running.shutdown().await;
+}
+
+#[tokio::test]
+async fn ambiguous_framing_follows_hyper() {
+    let dir = scratch("framing");
+    let running = boot(isolated(&dir)).await;
+    let addr = running.addr();
+    let host = format!("127.0.0.1:{}", addr.port());
+    let event = r#"{"v":1,"session":"s1","name":"alpha","ts":100,"type":"session.start","title":"hello","harness":"claude-code"}"#;
+    let same = format!(
+        "POST /event HTTP/1.1\r\nHost: {host}\r\nContent-Length: {len}\r\nContent-Length: {len}\r\n\r\n{event}",
+        len = event.len()
+    );
+    let ok = exchange(addr, &same).await;
+    assert_eq!(ok.status, 200);
+    let differ = format!(
+        "POST /event HTTP/1.1\r\nHost: {host}\r\nContent-Length: 1\r\nContent-Length: 2\r\n\r\nab"
+    );
+    let bad = exchange(addr, &differ).await;
+    assert_eq!(bad.status, 400);
+    assert!(bad.head.contains("Connection: close"));
+    assert!(!bad.head.to_ascii_lowercase().contains("transfer-encoding"));
+    let smuggle = format!(
+        "POST /event HTTP/1.1\r\nHost: {host}\r\nContent-Length: 1\r\nTransfer-Encoding: chunked\r\n\r\n2\r\n[]\r\n0\r\n\r\n"
+    );
+    let mixed = exchange(addr, &smuggle).await;
+    assert_eq!(mixed.status, 422);
+    assert!(
+        mixed
+            .head
+            .to_ascii_lowercase()
+            .contains("transfer-encoding: chunked")
+    );
+    assert!(String::from_utf8_lossy(&mixed.body).contains("not a valid"));
+    running.shutdown().await;
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn header_and_idle_deadlines_close() {
+    let dir = scratch("deadlines");
+    let running = boot(isolated(&dir)).await;
+    let addr = running.addr();
+    let mut silent = TcpStream::connect(addr).await.unwrap();
+    tokio::time::sleep(Duration::from_secs(61)).await;
+    tokio::time::resume();
+    let mut tmp = [0_u8; 32];
+    let n = tokio::time::timeout(Duration::from_secs(2), silent.read(&mut tmp))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(n, 0);
+    let host = format!("127.0.0.1:{}", addr.port());
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+    stream
+        .write_all(request("GET", "/healthz", &host, "", "").as_bytes())
+        .await
+        .unwrap();
+    let resp = read_http(&mut stream).await;
+    assert_eq!(resp.status, 200);
+    stream
+        .write_all(request("GET", "/healthz", &host, "", "").as_bytes())
+        .await
+        .unwrap();
+    let again = read_http(&mut stream).await;
+    assert_eq!(again.status, 200);
+    tokio::time::pause();
+    tokio::time::sleep(Duration::from_secs(6)).await;
+    tokio::time::resume();
+    let n = tokio::time::timeout(Duration::from_secs(2), stream.read(&mut tmp))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(n, 0);
+    running.shutdown().await;
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn websocket_data_and_ping_do_not_count_as_pong() {
+    let dir = scratch("pong-data");
+    let running = boot(isolated(&dir)).await;
+    let addr = running.addr();
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+    let key = "dGhlIHNhbXBsZSBub25jZQ==";
+    let upgrade = format!(
+        "GET /ws HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n",
+        addr.port()
+    );
+    stream.write_all(upgrade.as_bytes()).await.unwrap();
+    let mut buf = Vec::new();
+    let mut tmp = [0_u8; 4096];
+    let end = loop {
+        let read = stream.read(&mut tmp).await.unwrap();
+        assert!(read > 0);
+        buf.extend_from_slice(&tmp[..read]);
+        if let Some(end) = header_end(&buf) {
+            break end;
+        }
+    };
+    assert!(buf[..end].starts_with(b"HTTP/1.1 101"));
+    let mut pending = buf[end..].to_vec();
+    let frame = read_frame(&mut stream, &mut pending).await;
+    assert_eq!(frame.0 & 0x0f, 0x1);
+    tokio::time::sleep(Duration::from_secs(31)).await;
+    stream.write_all(&masked_frame(0x1, b"hi")).await.unwrap();
+    stream.write_all(&masked_frame(0x9, b"")).await.unwrap();
+    tokio::time::sleep(Duration::from_secs(31)).await;
+    tokio::time::resume();
+    let mut opcodes = Vec::new();
+    let saw_eof = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if pending.len() >= 2 {
+                let opcode = pending[0];
+                let len_byte = pending[1] & 0x7f;
+                let header = if len_byte == 126 {
+                    4
+                } else if len_byte == 127 {
+                    10
+                } else {
+                    2
+                };
+                if pending.len() >= header {
+                    let len = if len_byte == 126 {
+                        u16::from_be_bytes([pending[2], pending[3]]) as usize
+                    } else if len_byte == 127 {
+                        u64::from_be_bytes(pending[2..10].try_into().unwrap()) as usize
+                    } else {
+                        usize::from(len_byte)
+                    };
+                    if pending.len() >= header + len {
+                        opcodes.push(opcode & 0x0f);
+                        pending.drain(..header + len);
+                        continue;
+                    }
+                }
+            }
+            match stream.read(&mut tmp).await {
+                Ok(0) | Err(_) => return true,
+                Ok(n) => pending.extend_from_slice(&tmp[..n]),
+            }
+        }
+    })
+    .await
+    .unwrap_or(false);
+    assert!(saw_eof);
+    assert!(!opcodes.contains(&0x8));
+    running.shutdown().await;
+}
+
+#[tokio::test]
+async fn fanout_stops_at_one_mib_before_enqueue() {
+    let dir = scratch("ws-cap");
+    let event = r#"{"v":1,"session":"s1","type":"thinking.delta","text":"hello","ts":1}"#;
+    let hub = Hub::open(dir.join("owners.json").to_string_lossy().into_owned(), 0);
+    let buffered = Arc::new(AtomicU64::new(MAX_BUFFERED));
+    let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+    hub.subscribe(None, None, tx, buffered.clone());
+    hub.ingest_text(false, event).unwrap();
+    assert!(matches!(rx.recv().await.unwrap(), Fanout::Shutdown));
+    assert!(rx.recv().await.is_none());
+    assert_eq!(buffered.load(Ordering::Relaxed), MAX_BUFFERED);
+
+    let hub = Hub::open(dir.join("owners-2.json").to_string_lossy().into_owned(), 0);
+    let buffered = Arc::new(AtomicU64::new(0));
+    let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+    hub.subscribe(None, None, tx, buffered.clone());
+    hub.ingest_text(false, event).unwrap();
+    let Fanout::Text(frame) = rx.recv().await.unwrap() else {
+        panic!("first frame");
+    };
+    assert!(frame.contains("thinking.delta"));
+    buffered.store(MAX_BUFFERED.saturating_sub(1), Ordering::Relaxed);
+    hub.ingest_text(false, event).unwrap();
+    assert!(matches!(rx.recv().await.unwrap(), Fanout::Shutdown));
+    assert_eq!(
+        buffered.load(Ordering::Relaxed),
+        MAX_BUFFERED.saturating_sub(1)
+    );
+}
+
+#[tokio::test]
+async fn snapshot_preserves_a_lone_surrogate() {
+    let dir = scratch("surrogate");
+    let hub = Hub::open(dir.join("owners.json").to_string_lossy().into_owned(), 0);
+    let body =
+        "{\"v\":1,\"session\":\"s1\",\"type\":\"session.start\",\"title\":\"a\\uD800b\",\"ts\":1}";
+    hub.ingest_text(false, body).unwrap();
+    let snap = hub.snapshot_json(None, None);
+    assert!(snap.contains("\\ud800"), "{snap}");
+    assert_ne!(snap, "{}");
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn roster_none_clears_peers_and_shape_errors_keep_them() {
+    let dir = scratch("roster");
+    let mesh = dir.join("mesh.json");
+    std::fs::write(&mesh, mesh_doc(&[("tls", "https://tls.example:5174")])).unwrap();
+    let mut env = isolated(&dir);
+    env.insert(
+        "RIVETOS_DEN_MESH_FILE".to_string(),
+        mesh.to_string_lossy().into_owned(),
+    );
+    env.insert("RIVETOS_DEN_MESH_CACHE_MS".to_string(), "5000".to_string());
+    let running = boot(env).await;
+    let addr = running.addr();
+    let host = format!("127.0.0.1:{}", addr.port());
+    let origin = "Origin: https://tls.example:5174\r\n";
+    let allowed = exchange(addr, &request("GET", "/healthz", &host, origin, "")).await;
+    assert_eq!(allowed.status, 200);
+    std::fs::write(&mesh, "{\"version\":1,\"updatedAt\":1,\"nodes\":1}\n").unwrap();
+    tokio::time::sleep(Duration::from_secs(6)).await;
+    let kept = exchange(addr, &request("GET", "/healthz", &host, origin, "")).await;
+    assert_eq!(kept.status, 200);
+    std::fs::remove_file(&mesh).unwrap();
+    tokio::time::sleep(Duration::from_secs(6)).await;
+    let cleared = exchange(addr, &request("GET", "/healthz", &host, origin, "")).await;
+    assert_eq!(cleared.status, 403);
+    body_eq(&cleared.body, "forbidden-origin");
+    running.shutdown().await;
+}
+
+#[tokio::test]
+async fn mesh_probes_are_parallel_and_single_flight() {
+    let left = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let right = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let left_port = left.local_addr().unwrap().port();
+    let right_port = right.local_addr().unwrap().port();
+    let accepts = Arc::new(AtomicUsize::new(0));
+    tokio::spawn(hold_listener(left, accepts.clone()));
+    tokio::spawn(hold_listener(right, accepts.clone()));
+    let dir = scratch("mesh-flight");
+    let mesh = dir.join("mesh.json");
+    let doc = mesh_doc(&[
+        ("a", &format!("http://127.0.0.1:{left_port}")),
+        ("b", &format!("http://127.0.0.1:{right_port}")),
+    ]);
+    std::fs::write(&mesh, &doc).unwrap();
+    let mut env = isolated(&dir);
+    env.insert(
+        "RIVETOS_DEN_MESH_FILE".to_string(),
+        mesh.to_string_lossy().into_owned(),
+    );
+    env.insert("RIVETOS_DEN_MESH_CACHE_MS".to_string(), "60000".to_string());
+    let running = boot(env).await;
+    let addr = running.addr();
+    let host = format!("127.0.0.1:{}", addr.port());
+    let req = request("GET", "/mesh.json", &host, "", "");
+    let (one, two) = tokio::join!(exchange(addr, &req), exchange(addr, &req));
+    assert_eq!(one.status, 200);
+    assert_eq!(two.status, 200);
+    assert_eq!(accepts.load(Ordering::SeqCst), 2);
+    running.shutdown().await;
+
+    let left = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let right = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let left_port = left.local_addr().unwrap().port();
+    let right_port = right.local_addr().unwrap().port();
+    let accepts = Arc::new(AtomicUsize::new(0));
+    tokio::spawn(hold_listener(left, accepts.clone()));
+    tokio::spawn(hold_listener(right, accepts.clone()));
+    let dir = scratch("mesh-zero");
+    let mesh = dir.join("mesh.json");
+    std::fs::write(
+        &mesh,
+        mesh_doc(&[
+            ("a", &format!("http://127.0.0.1:{left_port}")),
+            ("b", &format!("http://127.0.0.1:{right_port}")),
+        ]),
+    )
+    .unwrap();
+    let mut env = isolated(&dir);
+    env.insert(
+        "RIVETOS_DEN_MESH_FILE".to_string(),
+        mesh.to_string_lossy().into_owned(),
+    );
+    env.insert("RIVETOS_DEN_MESH_CACHE_MS".to_string(), "0".to_string());
+    let running = boot(env).await;
+    let addr = running.addr();
+    let host = format!("127.0.0.1:{}", addr.port());
+    let req = request("GET", "/mesh.json", &host, "", "");
+    let (one, two) = tokio::join!(exchange(addr, &req), exchange(addr, &req));
+    assert_eq!(one.status, 200);
+    assert_eq!(two.status, 200);
+    assert_eq!(accepts.load(Ordering::SeqCst), 4);
+    running.shutdown().await;
+}
+
+#[tokio::test]
+async fn https_mesh_probe_decodes_chunked_healthz() {
+    let dir = scratch("mesh-https");
+    let (ca_cert, ca_key, ca_pem) = ca_pair();
+    let mut params = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
+    params.not_before = rcgen::date_time_ymd(2024, 1, 1);
+    params.not_after = rcgen::date_time_ymd(2032, 1, 1);
+    params.subject_alt_names = vec![rcgen::SanType::IpAddress(std::net::IpAddr::V4(
+        std::net::Ipv4Addr::LOCALHOST,
+    ))];
+    params.key_usages = vec![rcgen::KeyUsagePurpose::DigitalSignature];
+    params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
+    let key = rcgen::KeyPair::generate().unwrap();
+    let cert = params.signed_by(&key, &ca_cert, &ca_key).unwrap();
+    let issued = Issued {
+        cert_pem: cert.pem(),
+        key_pem: key.serialize_pem(),
+    };
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let server = rustls::ServerConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(pem_certs(&issued.cert_pem), pem_key(&issued.key_pem))
+        .unwrap();
+    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        loop {
+            let Ok((sock, _)) = listener.accept().await else {
+                return;
+            };
+            let acceptor = acceptor.clone();
+            tokio::spawn(async move {
+                let Ok(mut tls) = acceptor.accept(sock).await else {
+                    return;
+                };
+                let mut buf = Vec::new();
+                let mut tmp = [0_u8; 1024];
+                loop {
+                    let Ok(n) = tls.read(&mut tmp).await else {
+                        return;
+                    };
+                    if n == 0 {
+                        return;
+                    }
+                    buf.extend_from_slice(&tmp[..n]);
+                    if buf.windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let payload = "{\"ok\":true,\"sessions\":2}";
+                let msg = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n{:x}\r\n{payload}\r\n0\r\n\r\n",
+                    payload.len()
+                );
+                let _ = tls.write_all(msg.as_bytes()).await;
+                let _ = tls.shutdown().await;
+            });
+        }
+    });
+    let ca_path = dir.join("ca.pem");
+    std::fs::write(&ca_path, &ca_pem).unwrap();
+    let mesh = dir.join("mesh.json");
+    std::fs::write(
+        &mesh,
+        mesh_doc(&[("peer", &format!("https://127.0.0.1:{port}"))]),
+    )
+    .unwrap();
+    let mut env = isolated(&dir);
+    env.insert(
+        "RIVETOS_DEN_MESH_FILE".to_string(),
+        mesh.to_string_lossy().into_owned(),
+    );
+    env.insert("RIVETOS_DEN_MESH_CACHE_MS".to_string(), "0".to_string());
+    env.insert(
+        "RIVETOS_DEN_TLS_CA".to_string(),
+        ca_path.to_string_lossy().into_owned(),
+    );
+    let running = boot(env).await;
+    let addr = running.addr();
+    let host = format!("127.0.0.1:{}", addr.port());
+    let resp = exchange(addr, &request("GET", "/mesh.json", &host, "", "")).await;
+    assert_eq!(resp.status, 200);
+    let json: serde_json::Value = serde_json::from_slice(&resp.body).unwrap();
+    let node = &json["nodes"][0];
+    assert_eq!(node["online"], true);
+    assert_eq!(node["sessions"], 2);
+    running.shutdown().await;
+}
+
+#[tokio::test]
+async fn mounts_claim_prefixes_and_stamp_non_owners() {
+    let _guard = token_lock().await;
+    identity::clear_user_tokens();
+    let dir = scratch("mounts");
+    let users = dir.join("users.json");
+    std::fs::write(
+        &users,
+        r#"{"ownerUserId":"alice","unmappedIsOwner":false,"users":{"alice":{"devices":[],"pgUrl":"postgres://alice@db/alice"},"coco":{"devices":["win-coco"],"pgUrl":"postgres://coco@db/coco"}}}"#,
+    )
+    .unwrap();
+    let static_dir = dir.join("static");
+    std::fs::create_dir_all(&static_dir).unwrap();
+    std::fs::write(static_dir.join("index.html"), "spa-index\n").unwrap();
+    let mut routes = GatewayRoutes::new();
+    routes.mount("/wiki", |request: MountRequest| async move {
+        let user = request
+            .headers
+            .iter()
+            .find(|(name, _)| name == "x-rivetos-user")
+            .map(|(_, value)| value.clone())
+            .unwrap_or_default();
+        let spoof = request
+            .headers
+            .iter()
+            .any(|(_, value)| value == "alice-spoof");
+        Reply::json(
+            200,
+            &format!("{{\"hit\":\"wiki\",\"user\":\"{user}\",\"spoof\":{spoof}}}"),
+            &request.preset,
+        )
+    });
+    routes.mount("/api/tasks", |request: MountRequest| async move {
+        Reply::json(200, "{\"hit\":\"tasks\"}", &request.preset)
+    });
+    routes.mount("/api/tasks/item", |request: MountRequest| async move {
+        Reply::json(200, "{\"hit\":\"item\"}", &request.preset)
+    });
+    let mut env = isolated(&dir);
+    env.insert(
+        "RIVETOS_USERS_FILE".to_string(),
+        users.to_string_lossy().into_owned(),
+    );
+    env.insert(
+        "RIVETOS_DEN_STATIC_DIR".to_string(),
+        static_dir.to_string_lossy().into_owned(),
+    );
+    let running = serve_with(GatewayConfig::from_env(&env), routes)
+        .await
+        .unwrap();
+    let addr = running.addr();
+    let host = format!("127.0.0.1:{}", addr.port());
+    let wiki = exchange(addr, &request("GET", "/wiki", &host, "", "")).await;
+    assert_eq!(wiki.status, 200);
+    assert!(String::from_utf8_lossy(&wiki.body).contains("\"hit\":\"wiki\""));
+    assert!(!String::from_utf8_lossy(&wiki.body).contains("spa-index"));
+    let item = exchange(addr, &request("GET", "/api/tasks/item/9", &host, "", "")).await;
+    assert!(String::from_utf8_lossy(&item.body).contains("\"hit\":\"item\""));
+    let tasks = exchange(addr, &request("GET", "/api/tasks/other", &host, "", "")).await;
+    assert!(String::from_utf8_lossy(&tasks.body).contains("\"hit\":\"tasks\""));
+    let other = exchange(addr, &request("GET", "/api/tasks-other", &host, "", "")).await;
+    assert_eq!(other.status, 404);
+    let index = exchange(addr, &request("GET", "/", &host, "", "")).await;
+    assert!(String::from_utf8_lossy(&index.body).contains("spa-index"));
+    let coco = identity::mint_user_token("coco").unwrap();
+    let spoofed = format!("x-rivetos-user: alice-spoof\r\nx-rivetos-user-token: {coco}\r\n");
+    let stamped = exchange(addr, &request("GET", "/wiki/page", &host, &spoofed, "")).await;
+    let text = String::from_utf8_lossy(&stamped.body);
+    assert!(text.contains("\"user\":\"coco\""), "{text}");
+    assert!(text.contains("\"spoof\":false"), "{text}");
+    let alice = identity::mint_user_token("alice").unwrap();
+    let owner = format!("x-rivetos-user: alice-spoof\r\nx-rivetos-user-token: {alice}\r\n");
+    let owner_hit = exchange(addr, &request("GET", "/wiki", &host, &owner, "")).await;
+    let owner_body = String::from_utf8_lossy(&owner_hit.body);
+    assert!(owner_body.contains("\"user\":\"\""), "{owner_body}");
+    assert!(owner_body.contains("\"spoof\":false"), "{owner_body}");
     running.shutdown().await;
 }

@@ -7,13 +7,17 @@ use identity::{
 };
 use parking_lot::Mutex;
 use serde_json::{Value, json};
+use std::future::Future;
+use std::pin::Pin;
 
 use crate::auth::{
     ConnInfo, UNAUTHORIZED_HTML, device_id_from_subject, is_gateway_authorized, is_loopback_host,
     wants_html_unauthorized,
 };
 use crate::config::GatewayConfig;
-use crate::http_codec::{Framing, Incoming, Reply, header, push_new, query_first};
+use crate::http_codec::{
+    BodyFail, Framing, Incoming, Reply, RequestBody, header, push_new, query_first,
+};
 use crate::hub::{Hub, IngestFail, joined_session};
 use crate::mesh_view::{MeshCache, home_for_mesh, mesh_paths_for, overview};
 use crate::origin::{OriginDecision, check_origin};
@@ -27,6 +31,7 @@ pub struct App {
     pub peers: Mutex<Vec<String>>,
     pub refused: Mutex<Vec<String>>,
     pub mesh_cache: Mutex<MeshCache>,
+    pub routes: GatewayRoutes,
 }
 
 pub enum Outcome {
@@ -41,9 +46,59 @@ pub struct WsPlan {
     pub owned_reject: bool,
 }
 
-pub struct GatewayRoutes;
+pub struct MountRequest {
+    pub method: String,
+    pub path: String,
+    pub query: Vec<(String, String)>,
+    pub headers: Vec<(String, String)>,
+    pub preset: Vec<(String, String)>,
+}
+
+type MountFut = Pin<Box<dyn Future<Output = Reply> + Send>>;
+
+struct Mounted {
+    prefix: String,
+    handler: Arc<dyn Fn(MountRequest) -> MountFut + Send + Sync>,
+}
+
+#[derive(Default)]
+pub struct GatewayRoutes {
+    mounts: Vec<Mounted>,
+}
 
 impl GatewayRoutes {
+    pub fn new() -> Self {
+        Self { mounts: Vec::new() }
+    }
+
+    pub fn mount<F, Fut>(&mut self, prefix: impl Into<String>, handler: F)
+    where
+        F: Fn(MountRequest) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Reply> + Send + 'static,
+    {
+        let prefix = prefix.into();
+        if prefix.is_empty() {
+            return;
+        }
+        self.mounts.push(Mounted {
+            prefix,
+            handler: Arc::new(move |request| Box::pin(handler(request))),
+        });
+    }
+
+    pub fn owns(&self, path: &str) -> bool {
+        self.mounts
+            .iter()
+            .any(|mount| prefix_match(path, &mount.prefix))
+    }
+
+    fn longest(&self, path: &str) -> Option<&Mounted> {
+        self.mounts
+            .iter()
+            .filter(|mount| prefix_match(path, &mount.prefix))
+            .max_by_key(|mount| mount.prefix.len())
+    }
+
     pub fn devices_disabled_body() -> &'static str {
         "{\"error\":\"device enrollment disabled on this node\"}"
     }
@@ -104,6 +159,10 @@ const API_PATHS: &[&str] = &[
     "/files/delete",
 ];
 
+fn prefix_match(path: &str, prefix: &str) -> bool {
+    path == prefix || path.starts_with(&format!("{prefix}/"))
+}
+
 pub fn canonicalize(path: &str) -> String {
     if let Some((_, dest)) = ALIASES.iter().find(|(src, _)| *src == path) {
         return (*dest).to_string();
@@ -117,7 +176,12 @@ pub fn canonicalize(path: &str) -> String {
     path.to_string()
 }
 
-pub async fn dispatch(app: &Arc<App>, incoming: &Incoming, info: &ConnInfo) -> Outcome {
+pub async fn dispatch(
+    app: &Arc<App>,
+    incoming: &Incoming,
+    body: &mut RequestBody,
+    info: &ConnInfo,
+) -> Outcome {
     let path = canonicalize(&incoming.path);
     let origin_header = header(&incoming.headers, "origin");
     let host_header = header(&incoming.headers, "host").unwrap_or("");
@@ -170,7 +234,7 @@ pub async fn dispatch(app: &Arc<App>, incoming: &Incoming, info: &ConnInfo) -> O
         return Outcome::Reply(reply);
     }
     if path == "/api/devices/pair" {
-        return Outcome::Reply(pair_reply(incoming, &origin_preset));
+        return Outcome::Reply(pair_reply(incoming, body, &origin_preset).await);
     }
     if path == "/api/devices" || path.starts_with("/api/devices/") {
         return Outcome::Reply(json_reply(
@@ -196,7 +260,21 @@ pub async fn dispatch(app: &Arc<App>, incoming: &Incoming, info: &ConnInfo) -> O
             return Outcome::Reply(json_reply(403, &body, &origin_preset, true));
         }
     };
-    if let Some(reply) = route(app, incoming, &path, &origin_preset, user.as_ref()).await {
+    if let Some(handler) = app
+        .routes
+        .longest(&path)
+        .map(|mounted| Arc::clone(&mounted.handler))
+    {
+        let request = MountRequest {
+            method: incoming.method.clone(),
+            path: path.clone(),
+            query: incoming.query.clone(),
+            headers: mount_headers(incoming, info, user.as_ref()),
+            preset: origin_preset.clone(),
+        };
+        return Outcome::Reply(handler(request).await);
+    }
+    if let Some(reply) = route(app, incoming, body, &path, &origin_preset, user.as_ref()).await {
         return Outcome::Reply(reply);
     }
     Outcome::Reply(json_reply(
@@ -255,6 +333,7 @@ fn upgrade(
 async fn route(
     app: &Arc<App>,
     incoming: &Incoming,
+    body: &mut RequestBody,
     path: &str,
     preset: &[(String, String)],
     user: Option<&UserContext>,
@@ -281,7 +360,7 @@ async fn route(
         return None;
     }
     if incoming.method == "POST" && (path == "/event" || path == "/events") {
-        return Some(ingest_reply(app, incoming, path == "/events", preset));
+        return Some(ingest_reply(app, body, path == "/events", preset).await);
     }
     if incoming.method == "GET" && path == "/sessions" {
         let body = json!({"sessions": app.hub.sessions(user)}).to_string();
@@ -306,13 +385,42 @@ async fn route(
         return Some(state_reply(app, incoming, preset, user));
     }
     if path == "/layout" {
-        return layout_reply(app, incoming, preset);
+        return layout_reply(app, incoming, body, preset).await;
     }
     None
 }
 
-fn ingest_reply(app: &App, incoming: &Incoming, batch: bool, preset: &[(String, String)]) -> Reply {
-    let text = String::from_utf8_lossy(&incoming.body);
+fn too_large(preset: &[(String, String)]) -> Reply {
+    Reply::json(413, "{\"error\":\"body too large\"}", preset)
+}
+
+async fn read_route_body(
+    body: &mut RequestBody,
+    preset: &[(String, String)],
+) -> Result<Vec<u8>, Reply> {
+    match body.bytes().await {
+        Ok(bytes) => Ok(bytes),
+        Err(BodyFail::TooLarge) => Err(too_large(preset)),
+        Err(BodyFail::Closed) => Err(json_reply(
+            400,
+            "{\"error\":\"invalid JSON\"}",
+            preset,
+            false,
+        )),
+    }
+}
+
+async fn ingest_reply(
+    app: &App,
+    body: &mut RequestBody,
+    batch: bool,
+    preset: &[(String, String)],
+) -> Reply {
+    let bytes = match read_route_body(body, preset).await {
+        Ok(bytes) => bytes,
+        Err(reply) => return reply,
+    };
+    let text = String::from_utf8_lossy(&bytes);
     match app.hub.ingest_text(batch, &text) {
         Ok(count) if batch => {
             let body = json!({"ok": true, "ingested": count}).to_string();
@@ -570,11 +678,19 @@ fn phone_unavailable(app: &App) -> &'static str {
     "could not run rivetos pair"
 }
 
-fn pair_reply(incoming: &Incoming, preset: &[(String, String)]) -> Reply {
+async fn pair_reply(
+    incoming: &Incoming,
+    body: &mut RequestBody,
+    preset: &[(String, String)],
+) -> Reply {
     if incoming.method != "POST" {
         return json_reply(405, "{\"error\":\"POST only\"}", preset, true);
     }
-    let _token = pairing_token(&incoming.body);
+    let bytes = match read_route_body(body, preset).await {
+        Ok(bytes) => bytes,
+        Err(reply) => return reply,
+    };
+    let _token = pairing_token(&bytes);
     json_reply(
         403,
         "{\"error\":\"invalid or expired pairing code\"}",
@@ -622,7 +738,12 @@ async fn mesh_reply(app: &Arc<App>, preset: &[(String, String)]) -> Reply {
     }
 }
 
-fn layout_reply(app: &App, incoming: &Incoming, preset: &[(String, String)]) -> Option<Reply> {
+async fn layout_reply(
+    app: &App,
+    incoming: &Incoming,
+    body: &mut RequestBody,
+    preset: &[(String, String)],
+) -> Option<Reply> {
     let key = match query_first(&incoming.query, "viewer") {
         None => "default".to_string(),
         Some(value) if full_match("^[A-Za-z0-9_.-]{1,64}$", value) => value.to_string(),
@@ -650,7 +771,11 @@ fn layout_reply(app: &App, incoming: &Incoming, preset: &[(String, String)]) -> 
         return Some(json_reply(200, &text, preset, false));
     }
     if incoming.method == "POST" {
-        let text = String::from_utf8_lossy(&incoming.body);
+        let bytes = match read_route_body(body, preset).await {
+            Ok(bytes) => bytes,
+            Err(reply) => return Some(reply),
+        };
+        let text = String::from_utf8_lossy(&bytes);
         if protocol::js::parse(&text).is_err() {
             return Some(json_reply(
                 400,
@@ -663,7 +788,7 @@ fn layout_reply(app: &App, incoming: &Incoming, preset: &[(String, String)]) -> 
             let _ = std::fs::create_dir_all(parent);
         }
         let tmp = file.with_extension("json.tmp");
-        if std::fs::write(&tmp, incoming.body.as_slice()).is_err() {
+        if std::fs::write(&tmp, bytes.as_slice()).is_err() {
             return Some(json_reply(
                 500,
                 "{\"error\":\"internal error\"}",
@@ -717,7 +842,7 @@ fn static_reply(
     if incoming.method != "GET" && incoming.method != "HEAD" {
         return None;
     }
-    if static_blocked(path) {
+    if static_blocked(app, path) {
         return None;
     }
     if app.config.static_dir.is_empty() {
@@ -781,12 +906,34 @@ fn file_reply(path: &Path, preset: &[(String, String)]) -> Reply {
     }
 }
 
-fn static_blocked(path: &str) -> bool {
+fn static_blocked(app: &App, path: &str) -> bool {
     API_PATHS.contains(&path)
         || path.starts_with("/api/")
         || path.starts_with("/term")
         || path.starts_with("/files")
         || path.starts_with("/audio")
+        || app.routes.owns(path)
+}
+
+fn mount_headers(
+    incoming: &Incoming,
+    info: &ConnInfo,
+    user: Option<&UserContext>,
+) -> Vec<(String, String)> {
+    let mut ident = request_identity(incoming, info);
+    stamp_user_header(&mut ident, user);
+    let mut headers = Vec::new();
+    for (name, value) in &ident.headers {
+        match value {
+            HeaderVal::One(text) => headers.push((name.clone(), text.clone())),
+            HeaderVal::Many(texts) => {
+                for text in texts {
+                    headers.push((name.clone(), text.clone()));
+                }
+            }
+        }
+    }
+    headers
 }
 
 fn inside(root: &Path, candidate: &Path) -> bool {

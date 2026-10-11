@@ -7,10 +7,10 @@ use identity::UserContext;
 use parking_lot::Mutex;
 use serde_json::{Value, json};
 use session_events::{
-    AgentEvent, AgentEventBody, DenState, RoomState, SessionInfo, initial_den_state, list_sessions,
-    parse_event_str, reduce_den, snapshot_frame,
+    AgentEvent, AgentEventBody, DenState, RoomState, SessionInfo, forget_session,
+    initial_den_state, list_sessions, parse_event_str, reduce_den, snapshot_frame,
 };
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::Sender;
 
 use crate::session_key::den_join_key;
 use crate::session_owners::SessionOwners;
@@ -33,12 +33,11 @@ struct Viewer {
     id: u64,
     session: Option<String>,
     user: Option<UserContext>,
-    tx: UnboundedSender<Fanout>,
+    tx: Sender<Fanout>,
     buffered: Arc<AtomicU64>,
 }
 
 struct Inner {
-    events: Vec<AgentEvent>,
     state: DenState,
     owners: SessionOwners,
     viewers: Vec<Viewer>,
@@ -57,7 +56,6 @@ impl Hub {
     pub fn open(owners_file: String, evict_ttl_ms: i64) -> Self {
         Self {
             inner: Arc::new(Mutex::new(Inner {
-                events: Vec::new(),
                 state: initial_den_state(),
                 owners: SessionOwners::load(owners_file),
                 viewers: Vec::new(),
@@ -138,7 +136,6 @@ impl Hub {
             let mut inner = self.inner.lock();
             let previous = std::mem::replace(&mut inner.state, initial_den_state());
             inner.state = reduce_den(previous, &event);
-            inner.events.push(event);
             inner.evict_seq = inner.evict_seq.wrapping_add(1);
             let generation = inner.evict_seq;
             if ended {
@@ -186,24 +183,15 @@ impl Hub {
     pub fn snapshot_json(&self, raw_session: Option<&str>, user: Option<&UserContext>) -> String {
         let inner = self.inner.lock();
         let resolved = raw_session.map(den_join_key);
-        let frame = snapshot_frame(&inner.state, resolved.as_deref());
-        let mut value = serde_json::to_value(&frame).unwrap_or_else(|_| json!({}));
-        if let Some(object) = value.as_object_mut() {
-            if let Some(sessions) = object.get_mut("sessions").and_then(Value::as_array_mut) {
-                sessions.retain(|item| {
-                    item.get("id")
-                        .and_then(Value::as_str)
-                        .is_some_and(|id| visible(&inner.owners, user, id))
-                });
-            }
-            if resolved.is_none()
-                && let Some(rooms) = object.get_mut("rooms").and_then(Value::as_object_mut)
-            {
-                let owners = &inner.owners;
-                rooms.retain(|id, _| visible(owners, user, id));
-            }
+        let mut frame = snapshot_frame(&inner.state, resolved.as_deref());
+        frame
+            .sessions
+            .retain(|info| visible(&inner.owners, user, &info.id));
+        if resolved.is_none() {
+            let owners = &inner.owners;
+            frame.rooms.retain(|id, _| visible(owners, user, id));
         }
-        serde_json::to_string(&value).unwrap_or_else(|_| "{}".to_string())
+        serde_json::to_string(&frame).unwrap_or_else(|_| "{}".to_string())
     }
 
     pub fn local_latest(&self) -> Option<Value> {
@@ -221,7 +209,7 @@ impl Hub {
         &self,
         session: Option<String>,
         user: Option<UserContext>,
-        tx: UnboundedSender<Fanout>,
+        tx: Sender<Fanout>,
         buffered: Arc<AtomicU64>,
     ) -> u64 {
         let mut inner = self.inner.lock();
@@ -244,14 +232,13 @@ impl Hub {
     pub fn close_viewers(&self) {
         let mut inner = self.inner.lock();
         for viewer in inner.viewers.drain(..) {
-            let _ = viewer.tx.send(Fanout::Shutdown);
+            let _ = viewer.tx.try_send(Fanout::Shutdown);
         }
     }
 }
 
 fn drop_session(inner: &mut Inner, session: &str) {
-    inner.events.retain(|event| event.session() != session);
-    inner.state = replay(&inner.events);
+    forget_session(&mut inner.state, session);
     let frame = json!({
         "type": "session.removed",
         "v": 1,
@@ -259,14 +246,6 @@ fn drop_session(inner: &mut Inner, session: &str) {
     })
     .to_string();
     fanout(inner, &frame, Some(session));
-}
-
-fn replay(events: &[AgentEvent]) -> DenState {
-    let mut state = initial_den_state();
-    for event in events {
-        state = reduce_den(state, event);
-    }
-    state
 }
 
 fn visible(owners: &SessionOwners, user: Option<&UserContext>, session_id: &str) -> bool {
@@ -288,11 +267,16 @@ fn fanout(inner: &mut Inner, frame: &str, session: Option<&str>) {
         {
             return true;
         }
-        if viewer.buffered.load(Ordering::Relaxed) > MAX_BUFFERED {
-            let _ = viewer.tx.send(Fanout::Shutdown);
+        let len = u64::try_from(frame.len()).unwrap_or(u64::MAX);
+        let queued = viewer.buffered.load(Ordering::Relaxed);
+        if queued.saturating_add(len) > MAX_BUFFERED
+            || viewer.tx.try_send(Fanout::Text(frame.to_string())).is_err()
+        {
+            let _ = viewer.tx.try_send(Fanout::Shutdown);
             return false;
         }
-        viewer.tx.send(Fanout::Text(frame.to_string())).is_ok()
+        viewer.buffered.fetch_add(len, Ordering::Relaxed);
+        true
     });
 }
 

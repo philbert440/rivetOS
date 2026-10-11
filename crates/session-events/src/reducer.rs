@@ -308,6 +308,11 @@ pub fn reduce_den(mut state: DenState, event: &AgentEvent) -> DenState {
     state
 }
 
+pub fn forget_session(state: &mut DenState, session: &str) {
+    state.rooms.remove(session);
+    state.sessions.remove(session);
+}
+
 pub fn list_sessions(state: &DenState) -> Vec<SessionInfo> {
     let mut sessions: Vec<SessionInfo> = state.sessions.values().cloned().collect();
     sessions.sort_by(cmp_recency);

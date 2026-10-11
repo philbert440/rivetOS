@@ -1,6 +1,9 @@
 use std::cell::RefCell;
 use std::time::Duration;
 
+use futures_util::FutureExt;
+use futures_util::future::Shared;
+use http_body_util::BodyExt;
 use parking_lot::Mutex;
 use serde_json::{Map, Value};
 
@@ -391,14 +394,21 @@ pub fn mesh_den_origins(file: &MeshFile) -> Vec<String> {
     out
 }
 
+type Sweep = Shared<futures_util::future::BoxFuture<'static, Result<Option<Value>, MeshFailure>>>;
+
 pub struct MeshCache {
     pub at: i64,
     pub value: Option<Value>,
+    inflight: Option<(i64, Sweep)>,
 }
 
 impl MeshCache {
     pub fn empty() -> Self {
-        Self { at: 0, value: None }
+        Self {
+            at: 0,
+            value: None,
+            inflight: None,
+        }
     }
 }
 
@@ -412,17 +422,97 @@ pub async fn overview(
     cache: &Mutex<MeshCache>,
 ) -> Result<Option<Value>, MeshFailure> {
     let now = crate::standard_helpers::unix_millis();
-    {
-        let cached = cache.lock();
-        if cached.value.is_some() && now.saturating_sub(cached.at) < cache_ms {
-            return Ok(cached.value.clone());
+    if let Some(hit) = mesh_hit(cache, now, cache_ms) {
+        return match hit {
+            Ok(value) => Ok(value),
+            Err(inflight) => inflight.await,
+        };
+    }
+    let paths = paths.to_vec();
+    let shared_root = shared_root.to_string();
+    let local_node_id = local_node_id.to_string();
+    let latest = latest.clone();
+    let ca_owned = ca_pem.clone();
+    let started = now;
+    let work =
+        async move { build_overview(&paths, &shared_root, &local_node_id, latest, ca_owned).await }
+            .boxed()
+            .shared();
+    let joined = if cache_ms > 0 {
+        let mut guard = cache.lock();
+        let fresh = guard.value.is_some() && started.saturating_sub(guard.at) < cache_ms;
+        let shared = guard.inflight.as_ref().and_then(|(at, inflight)| {
+            (started.saturating_sub(*at) < cache_ms).then(|| inflight.clone())
+        });
+        if fresh {
+            Some(Ok(guard.value.clone()))
+        } else if let Some(sweep) = shared {
+            Some(Err(sweep))
+        } else {
+            guard.inflight = Some((started, work.clone()));
+            None
+        }
+    } else {
+        None
+    };
+    if let Some(hit) = joined {
+        return match hit {
+            Ok(value) => Ok(value),
+            Err(inflight) => inflight.await,
+        };
+    }
+    let result = work.await;
+    if cache_ms > 0 {
+        let mut guard = cache.lock();
+        let owns = guard
+            .inflight
+            .as_ref()
+            .is_some_and(|(at, _)| *at == started);
+        if owns {
+            guard.inflight = None;
+            match &result {
+                Ok(Some(value)) => {
+                    guard.at = started;
+                    guard.value = Some(value.clone());
+                }
+                _ => {
+                    guard.value = None;
+                    guard.at = 0;
+                }
+            }
         }
     }
+    result
+}
+
+fn mesh_hit(
+    cache: &Mutex<MeshCache>,
+    now: i64,
+    cache_ms: i64,
+) -> Option<Result<Option<Value>, Sweep>> {
+    if cache_ms <= 0 {
+        return None;
+    }
+    let cached = cache.lock();
+    if cached.value.is_some() && now.saturating_sub(cached.at) < cache_ms {
+        return Some(Ok(cached.value.clone()));
+    }
+    let shared = cached
+        .inflight
+        .as_ref()
+        .and_then(|(at, inflight)| (now.saturating_sub(*at) < cache_ms).then(|| inflight.clone()));
+    shared.map(Err)
+}
+
+async fn build_overview(
+    paths: &[String],
+    shared_root: &str,
+    local_node_id: &str,
+    latest: Option<Value>,
+    ca_pem: Option<String>,
+) -> Result<Option<Value>, MeshFailure> {
     let loaded = load_mesh_file(paths, shared_root)?;
     let Some(file) = loaded else {
-        let mut cached = cache.lock();
-        cached.value = None;
-        cached.at = 0;
         return Ok(None);
     };
     let mut enabled = Vec::new();
@@ -436,9 +526,16 @@ pub async fn overview(
             enabled.push((id, node.name.clone(), den_url));
         }
     }
+    let jobs = enabled.into_iter().map(|(id, name, den_url)| {
+        let ca = ca_pem.clone();
+        async move {
+            let probed = probe_healthz(&den_url, ca.as_deref()).await;
+            (id, name, den_url, probed)
+        }
+    });
+    let rows = futures_util::future::join_all(jobs).await;
     let mut nodes = Vec::new();
-    for (id, name, den_url) in enabled {
-        let probed = probe_healthz(&den_url, ca_pem.as_deref()).await;
+    for (id, name, den_url, probed) in rows {
         let mut row = Map::new();
         row.insert("id".to_string(), Value::String(id.clone()));
         row.insert("name".to_string(), Value::String(name));
@@ -466,13 +563,7 @@ pub async fn overview(
     };
     body.insert("updatedAt".to_string(), updated);
     body.insert("nodes".to_string(), Value::Array(nodes));
-    let value = Value::Object(body);
-    if cache_ms > 0 {
-        let mut cached = cache.lock();
-        cached.at = now;
-        cached.value = Some(value.clone());
-    }
-    Ok(Some(value))
+    Ok(Some(Value::Object(body)))
 }
 
 async fn probe_healthz(den_url: &str, ca_pem: Option<&str>) -> (bool, Option<i64>) {
@@ -508,6 +599,7 @@ async fn fetch_http(url: &str) -> Result<String, String> {
     let request = hyper::Request::builder()
         .method(hyper::Method::GET)
         .uri(url)
+        .header(hyper::header::CONNECTION, "close")
         .body(http_body_util::Empty::<bytes::Bytes>::new())
         .map_err(|err| err.to_string())?;
     let response = client
@@ -518,14 +610,7 @@ async fn fetch_http(url: &str) -> Result<String, String> {
     if !status.is_success() {
         return Err(format!("status {}", status.as_u16()));
     }
-    let bytes = http_body_util::BodyExt::collect(response.into_body())
-        .await
-        .map_err(|err| err.to_string())?
-        .to_bytes();
-    if bytes.len() > BODY_LIMIT {
-        return Err("body".to_string());
-    }
-    String::from_utf8(bytes.to_vec()).map_err(|err| err.to_string())
+    read_capped(response.into_body()).await
 }
 
 async fn fetch_https(url: &url::Url, ca_pem: Option<&str>) -> Result<String, String> {
@@ -553,43 +638,71 @@ async fn fetch_https(url: &url::Url, ca_pem: Option<&str>) -> Result<String, Str
     let connector = tokio_rustls::TlsConnector::from(std::sync::Arc::new(config));
     let name =
         rustls::pki_types::ServerName::try_from(host.to_string()).map_err(|err| err.to_string())?;
-    let mut tls = connector
+    let tls = connector
         .connect(name, stream)
         .await
         .map_err(|err| err.to_string())?;
-    let path = if url.query().is_some() {
-        format!("{}?{}", url.path(), url.query().unwrap_or(""))
-    } else {
-        let path = url.path();
-        if path.is_empty() {
-            "/".to_string()
-        } else {
-            path.to_string()
-        }
-    };
-    let request = format!("GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    tls.write_all(request.as_bytes())
+    let io = hyper_util::rt::TokioIo::new(tls);
+    let (mut sender, connection) = hyper::client::conn::http1::handshake(io)
         .await
         .map_err(|err| err.to_string())?;
-    let mut buf = Vec::new();
-    tls.read_to_end(&mut buf)
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+    let path = url.path();
+    let path = if path.is_empty() { "/" } else { path };
+    let target = match url.query() {
+        Some(query) => format!("{path}?{query}"),
+        None => path.to_string(),
+    };
+    let request = hyper::Request::builder()
+        .method(hyper::Method::GET)
+        .uri(target)
+        .header(hyper::header::HOST, host_header(url))
+        .header(hyper::header::CONNECTION, "close")
+        .body(http_body_util::Empty::<bytes::Bytes>::new())
+        .map_err(|err| err.to_string())?;
+    let response = sender
+        .send_request(request)
         .await
         .map_err(|err| err.to_string())?;
-    let text = String::from_utf8_lossy(&buf);
-    let Some((head, body)) = text.split_once("\r\n\r\n") else {
-        return Err("http".to_string());
-    };
-    let status = head
-        .lines()
-        .next()
-        .and_then(|line| line.split_whitespace().nth(1))
-        .and_then(|code| code.parse::<u16>().ok())
-        .unwrap_or(0);
-    if !(200..300).contains(&status) {
-        return Err(format!("status {status}"));
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!("status {}", status.as_u16()));
     }
-    Ok(body.to_string())
+    read_capped(response.into_body()).await
+}
+
+fn host_header(url: &url::Url) -> String {
+    let raw = url.host_str().unwrap_or("");
+    let host = if raw.contains(':') && !raw.starts_with('[') {
+        format!("[{raw}]")
+    } else {
+        raw.to_string()
+    };
+    match url.port() {
+        Some(port) => format!("{host}:{port}"),
+        None => host,
+    }
+}
+
+async fn read_capped<B>(mut body: B) -> Result<String, String>
+where
+    B: hyper::body::Body<Data = bytes::Bytes> + Unpin,
+    B::Error: std::fmt::Display,
+{
+    let mut buf = Vec::new();
+    while let Some(frame) = body.frame().await {
+        let frame = frame.map_err(|err| err.to_string())?;
+        let Some(data) = frame.data_ref() else {
+            continue;
+        };
+        if buf.len().saturating_add(data.len()) > BODY_LIMIT {
+            return Err("body".to_string());
+        }
+        buf.extend_from_slice(data);
+    }
+    String::from_utf8(buf).map_err(|err| err.to_string())
 }
 
 pub fn mesh_paths_for(config_mesh: &str, shared_root: &str, env_home: &str) -> Vec<String> {

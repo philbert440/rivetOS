@@ -1,9 +1,61 @@
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-
-use crate::standard_helpers::http_date;
-
-const HEADER_LIMIT: usize = 64 * 1024;
 pub const BODY_LIMIT: usize = 256 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BodyFail {
+    TooLarge,
+    Closed,
+}
+
+pub struct RequestBody {
+    stream: Option<hyper::body::Incoming>,
+    declared: Option<u64>,
+    cached: Option<Result<Vec<u8>, BodyFail>>,
+}
+
+impl RequestBody {
+    pub fn new(stream: hyper::body::Incoming, declared: Option<u64>) -> Self {
+        Self {
+            stream: Some(stream),
+            declared,
+            cached: None,
+        }
+    }
+
+    pub async fn bytes(&mut self) -> Result<Vec<u8>, BodyFail> {
+        if let Some(cached) = &self.cached {
+            return cached.clone();
+        }
+        if self.declared.is_some_and(|len| len > BODY_LIMIT as u64) {
+            let err = Err(BodyFail::TooLarge);
+            self.cached = Some(err.clone());
+            return err;
+        }
+        let Some(mut stream) = self.stream.take() else {
+            let err = Err(BodyFail::Closed);
+            self.cached = Some(err.clone());
+            return err;
+        };
+        let result = collect_limited(&mut stream).await;
+        self.cached = Some(result.clone());
+        result
+    }
+}
+
+async fn collect_limited(stream: &mut hyper::body::Incoming) -> Result<Vec<u8>, BodyFail> {
+    use http_body_util::BodyExt;
+    let mut out = Vec::new();
+    while let Some(next) = stream.frame().await {
+        let frame = next.map_err(|_| BodyFail::Closed)?;
+        let Ok(data) = frame.into_data() else {
+            continue;
+        };
+        if out.len().saturating_add(data.len()) > BODY_LIMIT {
+            return Err(BodyFail::TooLarge);
+        }
+        out.extend_from_slice(&data);
+    }
+    Ok(out)
+}
 
 #[derive(Debug, Clone)]
 pub struct Incoming {
@@ -16,15 +68,6 @@ pub struct Incoming {
     pub http10: bool,
     pub head: bool,
     pub upgrade: bool,
-}
-
-#[derive(Debug)]
-pub enum ReadError {
-    Eof,
-    BadLine,
-    MissingHost,
-    TooLarge,
-    Closed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -136,252 +179,6 @@ pub fn header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str
         .iter()
         .find(|(key, _)| key.eq_ignore_ascii_case(name))
         .map(|(_, value)| value.as_str())
-}
-
-pub fn encode(reply: &Reply, http10: bool, head: bool) -> Vec<u8> {
-    let mut headers = reply.headers.clone();
-    let close = reply.close || http10;
-    let mut framing = reply.framing;
-    if http10 && framing == Framing::Chunked {
-        framing = Framing::UntilClose;
-    }
-    if head {
-        framing = Framing::None;
-    }
-    if reply.auto {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| duration.as_secs() as i64)
-            .unwrap_or(0);
-        push_new(&mut headers, "Date", &http_date(now));
-        push_new(
-            &mut headers,
-            "Connection",
-            if close { "close" } else { "keep-alive" },
-        );
-        if !close {
-            push_new(&mut headers, "Keep-Alive", "timeout=5");
-        }
-        if framing == Framing::Chunked {
-            push_new(&mut headers, "Transfer-Encoding", "chunked");
-        }
-    }
-    let status = axum::http::StatusCode::from_u16(reply.status)
-        .unwrap_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
-    let mut out = format!("HTTP/1.1 {} {}\r\n", status.as_u16(), reply.reason).into_bytes();
-    for (name, value) in &headers {
-        out.extend_from_slice(name.as_bytes());
-        out.extend_from_slice(b": ");
-        out.extend_from_slice(value.as_bytes());
-        out.extend_from_slice(b"\r\n");
-    }
-    out.extend_from_slice(b"\r\n");
-    match framing {
-        Framing::None => {}
-        Framing::ContentLength | Framing::UntilClose => out.extend_from_slice(&reply.body),
-        Framing::Chunked => {
-            if !reply.body.is_empty() {
-                out.extend_from_slice(format!("{:x}\r\n", reply.body.len()).as_bytes());
-                out.extend_from_slice(&reply.body);
-                out.extend_from_slice(b"\r\n");
-            }
-            out.extend_from_slice(b"0\r\n\r\n");
-        }
-    }
-    out
-}
-
-pub async fn read_request<R>(reader: &mut R, buf: &mut Vec<u8>) -> Result<Incoming, ReadError>
-where
-    R: AsyncRead + Unpin,
-{
-    let header_end = read_headers(reader, buf).await?;
-    let head = buf[..header_end].to_vec();
-    buf.drain(..header_end);
-    let text = String::from_utf8_lossy(&head);
-    let mut lines = text.split("\r\n");
-    let request_line = lines.next().unwrap_or("");
-    if request_line.is_empty() {
-        return Err(ReadError::BadLine);
-    }
-    let mut parts = request_line.split(' ');
-    let method = parts.next().unwrap_or("");
-    let target = parts.next().unwrap_or("");
-    let version = parts.next().unwrap_or("");
-    if parts.next().is_some()
-        || method.is_empty()
-        || target.is_empty()
-        || !version.starts_with("HTTP/")
-        || !method.bytes().all(|byte| byte.is_ascii_alphabetic())
-    {
-        return Err(ReadError::BadLine);
-    }
-    let http10 = version == "HTTP/1.0";
-    if version != "HTTP/1.0" && version != "HTTP/1.1" {
-        return Err(ReadError::BadLine);
-    }
-    let mut headers = Vec::new();
-    for line in lines {
-        if line.is_empty() {
-            continue;
-        }
-        let Some((name, value)) = line.split_once(':') else {
-            return Err(ReadError::BadLine);
-        };
-        headers.push((name.trim().to_ascii_lowercase(), value.trim().to_string()));
-    }
-    if !http10 && header(&headers, "host").is_none() {
-        return Err(ReadError::MissingHost);
-    }
-    let upgrade =
-        header(&headers, "upgrade").is_some_and(|value| value.eq_ignore_ascii_case("websocket"));
-    let (path, query) = split_target(target);
-    Ok(Incoming {
-        head: method.eq_ignore_ascii_case("HEAD"),
-        method: method.to_ascii_uppercase(),
-        target: target.to_string(),
-        path,
-        query,
-        headers,
-        body: Vec::new(),
-        http10,
-        upgrade,
-    })
-}
-
-pub async fn read_headers<R>(reader: &mut R, buf: &mut Vec<u8>) -> Result<usize, ReadError>
-where
-    R: AsyncRead + Unpin,
-{
-    loop {
-        if let Some(end) = find_header_end(buf) {
-            return Ok(end);
-        }
-        if buf.len() > HEADER_LIMIT {
-            return Err(ReadError::BadLine);
-        }
-        let mut chunk = [0_u8; 4096];
-        let read = reader
-            .read(&mut chunk)
-            .await
-            .map_err(|_| ReadError::Closed)?;
-        if read == 0 {
-            if buf.is_empty() {
-                return Err(ReadError::Eof);
-            }
-            return Err(ReadError::BadLine);
-        }
-        buf.extend_from_slice(&chunk[..read]);
-    }
-}
-
-fn find_header_end(buf: &[u8]) -> Option<usize> {
-    buf.windows(4)
-        .position(|window| window == b"\r\n\r\n")
-        .map(|index| index + 4)
-}
-
-pub async fn send_continue<W>(writer: &mut W) -> Result<(), ReadError>
-where
-    W: AsyncWrite + Unpin,
-{
-    writer
-        .write_all(b"HTTP/1.1 100 Continue\r\n\r\n")
-        .await
-        .map_err(|_| ReadError::Closed)?;
-    writer.flush().await.map_err(|_| ReadError::Closed)
-}
-
-pub async fn read_body<R>(
-    reader: &mut R,
-    buf: &mut Vec<u8>,
-    headers: &[(String, String)],
-) -> Result<Vec<u8>, ReadError>
-where
-    R: AsyncRead + Unpin,
-{
-    if header(headers, "transfer-encoding")
-        .is_some_and(|value| value.to_ascii_lowercase().contains("chunked"))
-    {
-        return read_chunked(reader, buf).await;
-    }
-    if let Some(length) = header(headers, "content-length") {
-        let length = length.parse::<usize>().map_err(|_| ReadError::BadLine)?;
-        if length > BODY_LIMIT {
-            return Err(ReadError::TooLarge);
-        }
-        return read_exact(reader, buf, length).await;
-    }
-    Ok(Vec::new())
-}
-
-async fn read_exact<R>(
-    reader: &mut R,
-    buf: &mut Vec<u8>,
-    length: usize,
-) -> Result<Vec<u8>, ReadError>
-where
-    R: AsyncRead + Unpin,
-{
-    while buf.len() < length {
-        let mut chunk = [0_u8; 8192];
-        let read = reader
-            .read(&mut chunk)
-            .await
-            .map_err(|_| ReadError::Closed)?;
-        if read == 0 {
-            return Err(ReadError::Closed);
-        }
-        buf.extend_from_slice(&chunk[..read]);
-    }
-    let body = buf[..length].to_vec();
-    buf.drain(..length);
-    Ok(body)
-}
-
-async fn read_chunked<R>(reader: &mut R, buf: &mut Vec<u8>) -> Result<Vec<u8>, ReadError>
-where
-    R: AsyncRead + Unpin,
-{
-    let mut body = Vec::new();
-    loop {
-        let line = read_line(reader, buf).await?;
-        let size_text = line.split(';').next().unwrap_or("").trim();
-        let size = usize::from_str_radix(size_text, 16).map_err(|_| ReadError::BadLine)?;
-        if size == 0 {
-            let _ = read_line(reader, buf).await?;
-            break;
-        }
-        if body.len().saturating_add(size) > BODY_LIMIT {
-            return Err(ReadError::TooLarge);
-        }
-        let chunk = read_exact(reader, buf, size).await?;
-        body.extend_from_slice(&chunk);
-        let _ = read_line(reader, buf).await?;
-    }
-    Ok(body)
-}
-
-async fn read_line<R>(reader: &mut R, buf: &mut Vec<u8>) -> Result<String, ReadError>
-where
-    R: AsyncRead + Unpin,
-{
-    loop {
-        if let Some(index) = buf.windows(2).position(|window| window == b"\r\n") {
-            let line = String::from_utf8_lossy(&buf[..index]).into_owned();
-            buf.drain(..index + 2);
-            return Ok(line);
-        }
-        let mut chunk = [0_u8; 1024];
-        let read = reader
-            .read(&mut chunk)
-            .await
-            .map_err(|_| ReadError::Closed)?;
-        if read == 0 {
-            return Err(ReadError::Closed);
-        }
-        buf.extend_from_slice(&chunk[..read]);
-    }
 }
 
 pub fn split_target(target: &str) -> (String, Vec<(String, String)>) {

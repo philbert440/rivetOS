@@ -10,7 +10,7 @@ pub use ordered::OrderedMap;
 pub use protocol::JsNumber;
 pub use protocol::js::JsString;
 pub use reducer::{
-    DenState, LogEntry, LogWho, RoomState, SessionInfo, Task, initial_den_state,
+    DenState, LogEntry, LogWho, RoomState, SessionInfo, Task, forget_session, initial_den_state,
     initial_room_state, list_sessions, reduce_den, reduce_room,
 };
 pub use snapshot::{SnapshotFrame, SnapshotType, snapshot_frame};
