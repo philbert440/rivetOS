@@ -13,16 +13,17 @@ use crate::cowork::{CoworkHookRow, pick_cowork_hook_rewrite};
 use crate::error::{StoreError, now_ms};
 use crate::get_full::{
     extract_full_from_line, file_missing_message, is_capture_sqlite_path,
-    is_capture_transcript_path, missing_pointer_message, path_exists, read_jsonl_line,
-    read_opencode_part, render_extracted, render_stored_row,
+    is_capture_transcript_path, missing_pointer_message, path_exists_async, read_jsonl_line_async,
+    read_opencode_part_async, render_extracted, render_stored_row,
 };
 use crate::project::{ProjectHit, plan_project_rule_tag};
 use crate::report::{
-    EMBEDDING_HEALTH_SQL, FULL_WINDOW, IDLE_MINUTES, MIN_BATCH_SIZE, OWNER_COLUMN_PROBE_SQL,
-    QUEUE_HEALTH_SQL, QueueRow, STALE_MIN_BATCH, STALE_MINUTES, assemble_stats, browse_sql,
-    compaction_sql, embedding_probe_reason, en_us, fmt_date, fmt_queue_age, format_embedding_queue,
-    format_js_iso, format_queue_health, format_unsummarized, health_cached, history_limit,
-    is_missing_schema_code, time_since,
+    BrowseToolRow, EMBEDDING_HEALTH_SQL, FULL_WINDOW, IDLE_MINUTES, MIN_BATCH_SIZE,
+    OWNER_COLUMN_PROBE_SQL, QUEUE_HEALTH_SQL, QueueRow, STALE_MIN_BATCH, STALE_MINUTES,
+    assemble_stats, browse_sql, browse_tool_sql, compaction_sql, embedding_probe_reason, en_us,
+    fmt_date, fmt_queue_age, format_embedding_queue, format_js_iso, format_queue_health,
+    format_unsummarized, health_cached, history_limit, is_missing_schema_code,
+    memory_tool_parameters, render_browse_tool, time_since,
 };
 use crate::slug::{PROJECT_RULE_NAME, normalize_tag_key, normalize_tag_value};
 use crate::store::{
@@ -32,7 +33,9 @@ use crate::store::{
 };
 use crate::text::{capture_cap, ingest_event_id, resolve_memory_write_tags, truncate_content};
 use crate::window::apply_window_args;
-use crate::writers::{append_result_value, prepare_append};
+use crate::writers::{
+    append_result_value, ingest_result_value, prepare_append, validate_ingest_messages,
+};
 
 const POOL_MAX: u32 = 5;
 
@@ -172,9 +175,7 @@ fn append_insert_sql(owner: bool) -> &'static str {
 }
 
 fn parse_timestamptz(raw: &str) -> Option<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(raw)
-        .ok()
-        .map(|dt| dt.with_timezone(&Utc))
+    crate::window::parse_js_date(raw)
 }
 
 fn parse_ordinal(raw: &str) -> Option<i64> {
@@ -421,35 +422,51 @@ impl PostgresMemory {
         Ok(present)
     }
 
+    fn planned_project(batch: &CaptureBatch, options: &CaptureOptions) -> Option<ProjectHit> {
+        let (allow_filesystem, disabled) = match options.project {
+            ProjectChoice::Disabled => (false, true),
+            ProjectChoice::BasenameOnly => (false, false),
+            ProjectChoice::Default => (options.allow_filesystem, false),
+        };
+        plan_project_rule_tag(
+            batch.settings.as_ref(),
+            allow_filesystem,
+            disabled,
+            batch.channel.as_deref(),
+        )
+    }
+
     pub async fn capture_on_connection(
         &self,
         conn: &mut PgConnection,
         batch: &CaptureBatch,
         options: &CaptureOptions,
     ) -> Result<CaptureResult, StoreError> {
-        let (allow_filesystem, disabled) = match options.project {
-            ProjectChoice::Disabled => (false, true),
-            ProjectChoice::BasenameOnly => (false, false),
-            ProjectChoice::Default => (options.allow_filesystem, false),
-        };
-        let project = plan_project_rule_tag(
-            batch.settings.as_ref(),
-            allow_filesystem,
-            disabled,
-            batch.channel.as_deref(),
-        );
-        sqlx::query("BEGIN")
-            .execute(&mut *conn)
+        let project = Self::planned_project(batch, options);
+        self.capture_in_transaction(conn, batch, options, project.as_ref())
             .await
-            .map_err(query_failed)?;
-        sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))")
-            .bind(&batch.session_key)
-            .execute(&mut *conn)
-            .await
-            .map_err(query_failed)?;
-        let outcome = self
-            .capture_locked(conn, batch, options, project.as_ref())
-            .await;
+    }
+
+    async fn capture_in_transaction(
+        &self,
+        conn: &mut PgConnection,
+        batch: &CaptureBatch,
+        options: &CaptureOptions,
+        project: Option<&ProjectHit>,
+    ) -> Result<CaptureResult, StoreError> {
+        if let Err(err) = sqlx::query("BEGIN").execute(&mut *conn).await {
+            let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
+            return Err(query_failed(err));
+        }
+        let outcome = async {
+            sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))")
+                .bind(&batch.session_key)
+                .execute(&mut *conn)
+                .await
+                .map_err(query_failed)?;
+            self.capture_locked(conn, batch, options, project).await
+        }
+        .await;
         if outcome.is_err() {
             let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
         }
@@ -900,11 +917,11 @@ impl PostgresMemory {
     ) -> Result<Value, StoreError> {
         let prepared = prepare_append(args, env).map_err(StoreError::Request)?;
         let mut conn = self.acquire().await?;
-        sqlx::query("BEGIN")
-            .execute(&mut *conn)
-            .await
-            .map_err(append_failed)?;
         let outcome = async {
+            sqlx::query("BEGIN")
+                .execute(&mut *conn)
+                .await
+                .map_err(append_failed)?;
             sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))")
                 .bind(&prepared.session_id)
                 .execute(&mut *conn)
@@ -1209,18 +1226,20 @@ impl PostgresMemory {
             &input.env,
         );
         let mut conn = self.acquire().await?;
-        sqlx::query("BEGIN")
-            .execute(&mut *conn)
-            .await
-            .map_err(append_failed)?;
-        sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))")
-            .bind(&session_id)
-            .execute(&mut *conn)
-            .await
-            .map_err(append_failed)?;
-        let outcome = self
-            .ingest_locked(&mut conn, input, &session_id, &tags)
-            .await;
+        if let Err(err) = sqlx::query("BEGIN").execute(&mut *conn).await {
+            let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
+            return Err(append_failed(err));
+        }
+        let outcome = async {
+            sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))")
+                .bind(&session_id)
+                .execute(&mut *conn)
+                .await
+                .map_err(append_failed)?;
+            self.ingest_locked(&mut conn, input, &session_id, &tags)
+                .await
+        }
+        .await;
         match &outcome {
             Ok(_) => {
                 if let Err(err) = sqlx::query("COMMIT").execute(&mut *conn).await {
@@ -1513,10 +1532,7 @@ impl MemoryStore for PostgresMemory {
         Ok(())
     }
 
-    async fn load_session_settings(
-        &self,
-        session_id: &str,
-    ) -> Result<Option<Map<String, Value>>, StoreError> {
+    async fn load_session_settings(&self, session_id: &str) -> Result<Option<Value>, StoreError> {
         let row = sqlx::query(
             "SELECT settings FROM ros_conversations
        WHERE session_key = $1 AND active = true
@@ -1531,7 +1547,8 @@ impl MemoryStore for PostgresMemory {
         };
         let settings: Value = row.try_get("settings").map_err(query_failed)?;
         Ok(match settings {
-            Value::Object(map) => Some(map),
+            Value::Null => None,
+            Value::Object(_) | Value::Array(_) => Some(settings),
             _ => None,
         })
     }
@@ -1541,8 +1558,10 @@ impl MemoryStore for PostgresMemory {
         batch: &CaptureBatch,
         options: &CaptureOptions,
     ) -> Result<CaptureResult, StoreError> {
+        let project = Self::planned_project(batch, options);
         let mut conn = self.acquire().await?;
-        self.capture_on_connection(&mut conn, batch, options).await
+        self.capture_in_transaction(&mut conn, batch, options, project.as_ref())
+            .await
     }
 
     async fn browse(&self, filter: &BrowseFilter) -> Result<Value, StoreError> {
@@ -1621,7 +1640,7 @@ impl MemoryStore for PostgresMemory {
     }
 
     async fn stats(&self) -> Result<StatsReport, StoreError> {
-        match self.stats_report().await {
+        match self.stats_report(None).await {
             Ok(report) => Ok(report),
             Err(err) => Ok(StatsReport {
                 dashboard: Value::Null,
@@ -1740,24 +1759,45 @@ impl MemoryStore for PostgresMemory {
             ToolDescriptor {
                 name: "memory_browse".to_string(),
                 description: "Browse conversation messages chronologically. Unlike memory_search (which ranks by relevance), this returns messages in time order. By default excludes role=tool rows so limit budget goes to user/assistant/system (pass include_tools=true to see tool calls/results). Use to review what happened in a session, catch up on recent activity, or read a specific conversation. For time-bounded questions (\"today\", \"yesterday\", \"this morning\"), prefer window= over raw since/before so local-timezone midnights convert correctly to UTC. Display-truncated or capture-truncated payloads: call memory_get_full with the row id.".to_string(),
+                parameters: memory_tool_parameters("memory_browse"),
             },
             ToolDescriptor {
                 name: "memory_stats".to_string(),
                 description: "Memory system health check — alerts first (stuck jobs, orphans, per-task queue health), then embedding queue, compaction status, then census breakdowns by agent/role/kind. Use to diagnose memory issues or check if background jobs are keeping up.".to_string(),
+                parameters: memory_tool_parameters("memory_stats"),
             },
             ToolDescriptor {
                 name: "memory_get_full".to_string(),
                 description: "Fetch the complete, untruncated payload for a memory row whose content or tool_result was elided at capture time (rows marked \"…[truncated]\" by memory_search/memory_browse). Reads the original line back from the capture JSONL (or OpenCode SQLite part) on disk. Capture paths are host-local — if the file is not on this machine, the tool explains multi-host recovery instead of claiming the data is gone.".to_string(),
+                parameters: memory_tool_parameters("memory_get_full"),
             },
             ToolDescriptor {
                 name: "memory_append".to_string(),
                 description: "Append one message to RivetOS memory. Tags source/agent/persona from args or env. Optional event_id for idempotency. Content and tool_result are capped at 16,000 chars; the elided tail is unrecoverable. Returns truncated+full_content_length when truncation occurs.".to_string(),
+                parameters: memory_tool_parameters("memory_append"),
             },
             ToolDescriptor {
                 name: "memory_ingest_session".to_string(),
                 description: "Ingest a session into RivetOS memory. Skips ordinals and event_ids already stored for that session. Content is capped at 16,000 chars; the elided tail is unrecoverable. Returns truncated+full_content_length when truncation occurs.".to_string(),
+                parameters: memory_tool_parameters("memory_ingest_session"),
             },
         ]
+    }
+
+    async fn call_tool(&self, name: &str, args: &Value) -> Result<String, StoreError> {
+        let empty = Map::new();
+        let args = args.as_object().unwrap_or(&empty);
+        match name {
+            "memory_browse" => self.call_browse(args).await,
+            "memory_stats" => self.call_stats(args).await,
+            "memory_get_full" => {
+                let id = args.get("id").and_then(Value::as_str).unwrap_or("");
+                self.get_full(id).await
+            }
+            "memory_append" => self.call_append(args).await,
+            "memory_ingest_session" => self.call_ingest(args).await,
+            _ => Err(StoreError::Request(format!("unknown tool: {name}"))),
+        }
     }
 
     async fn tags(&self) -> Result<(), StoreError> {
@@ -1776,15 +1816,11 @@ impl MemoryStore for PostgresMemory {
         if id.is_empty() {
             return Ok("memory_get_full: id is required (string).".to_string());
         }
-        let parsed = match uuid::Uuid::parse_str(id) {
-            Ok(value) => value,
-            Err(err) => return Ok(format!("memory_get_full failed: {err}")),
-        };
         let row = match sqlx::query(
             "SELECT id, content, tool_name, tool_result, agent, metadata
            FROM ros_messages WHERE id = $1::uuid",
         )
-        .bind(parsed)
+        .bind(id)
         .fetch_optional(&self.pool)
         .await
         {
@@ -1817,10 +1853,10 @@ impl MemoryStore for PostgresMemory {
                     "Source SQLite is gone or invalid ({sqlite_path}) — the elided tail is unrecoverable."
                 ));
             }
-            if !path_exists(sqlite_path) {
+            if !path_exists_async(sqlite_path).await {
                 return Ok(file_missing_message(sqlite_path, agent.as_deref()));
             }
-            let Some(extracted) = read_opencode_part(sqlite_path, part_id) else {
+            let Some(extracted) = read_opencode_part_async(sqlite_path, part_id).await else {
                 return Ok(format!(
                     "Part {part_id} not found in {sqlite_path} (db rotated/rewritten?)."
                 ));
@@ -1843,10 +1879,10 @@ impl MemoryStore for PostgresMemory {
                 "Source JSONL is gone or invalid ({file}) — the elided tail is unrecoverable."
             ));
         }
-        if !path_exists(file) {
+        if !path_exists_async(file).await {
             return Ok(file_missing_message(file, agent.as_deref()));
         }
-        let raw = match read_jsonl_line(file, line) {
+        let raw = match read_jsonl_line_async(file, line).await {
             Ok(value) => value,
             Err(message) => {
                 if permission_denied(&message) {
@@ -1881,6 +1917,163 @@ impl MemoryStore for PostgresMemory {
 }
 
 impl PostgresMemory {
+    fn tool_env() -> std::collections::BTreeMap<String, String> {
+        let mut env = std::collections::BTreeMap::new();
+        for key in [
+            "RIVETOS_MEMORY_SOURCE",
+            "RIVETOS_MEMORY_AGENT",
+            "RIVETOS_MEMORY_PERSONA",
+            "RIVETOS_MEMORY_CHANNEL",
+        ] {
+            if let Ok(value) = std::env::var(key) {
+                env.insert(key.to_string(), value);
+            }
+        }
+        env
+    }
+
+    async fn call_browse(&self, args: &Map<String, Value>) -> Result<String, StoreError> {
+        let built = match browse_tool_sql(args, chrono::Local::now()) {
+            Ok(built) => built,
+            Err(message) => {
+                if message.starts_with("Browse failed:") {
+                    return Ok(message);
+                }
+                return Ok(format!("Browse failed: {message}"));
+            }
+        };
+        let rows = match self.fetch_browse_rows(&built.sql, &built.params).await {
+            Ok(rows) => rows,
+            Err(message) => return Ok(message),
+        };
+        Ok(render_browse_tool(&rows, &built))
+    }
+
+    async fn fetch_browse_rows(
+        &self,
+        sql: &str,
+        params: &[String],
+    ) -> Result<Vec<BrowseToolRow>, String> {
+        let mut query = sqlx::query(sqlx::AssertSqlSafe(sql.to_string()));
+        for param in params {
+            query = query.bind(param);
+        }
+        let rows = query
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|err| format!("Browse failed: {}", db_message(&err)))?;
+        let mut decoded = Vec::new();
+        let mut ids = Vec::new();
+        for row in rows {
+            let id: uuid::Uuid = row
+                .try_get("id")
+                .map_err(|err| format!("Browse failed: {}", db_message(&err)))?;
+            let conversation_id: uuid::Uuid = row
+                .try_get("conversation_id")
+                .map_err(|err| format!("Browse failed: {}", db_message(&err)))?;
+            let created: DateTime<Utc> = row
+                .try_get("created_at")
+                .map_err(|err| format!("Browse failed: {}", db_message(&err)))?;
+            let metadata: Value = row
+                .try_get("metadata")
+                .map_err(|err| format!("Browse failed: {}", db_message(&err)))?;
+            ids.push(conversation_id);
+            decoded.push(BrowseToolRow {
+                id: id.to_string(),
+                role: row
+                    .try_get("role")
+                    .map_err(|err| format!("Browse failed: {}", db_message(&err)))?,
+                agent: row
+                    .try_get("agent")
+                    .map_err(|err| format!("Browse failed: {}", db_message(&err)))?,
+                content: row
+                    .try_get("content")
+                    .map_err(|err| format!("Browse failed: {}", db_message(&err)))?,
+                created_at: created,
+                conversation_id: conversation_id.to_string(),
+                tool_name: row
+                    .try_get("tool_name")
+                    .map_err(|err| format!("Browse failed: {}", db_message(&err)))?,
+                tool_result: row
+                    .try_get("tool_result")
+                    .map_err(|err| format!("Browse failed: {}", db_message(&err)))?,
+                metadata: metadata.as_object().cloned(),
+                tags: Vec::new(),
+            });
+        }
+        let tags = match self.conversation_tags(&ids).await {
+            Ok(tags) => tags,
+            Err(err) => {
+                let message = err.to_string();
+                let lower = message.to_ascii_lowercase();
+                if lower.contains("does not exist") || lower.contains("relation") {
+                    HashMap::new()
+                } else {
+                    return Err(format!("Browse failed: {message}"));
+                }
+            }
+        };
+        for row in &mut decoded {
+            if let Some(found) = tags.get(&row.conversation_id) {
+                row.tags.clone_from(found);
+            }
+        }
+        Ok(decoded)
+    }
+
+    async fn call_stats(&self, args: &Map<String, Value>) -> Result<String, StoreError> {
+        let agent = args
+            .get("agent")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty());
+        match self.stats_report(agent).await {
+            Ok(report) => Ok(report.markdown),
+            Err(err) => Ok(format!("Stats query failed: {err}")),
+        }
+    }
+
+    async fn call_append(&self, args: &Map<String, Value>) -> Result<String, StoreError> {
+        let value = self.append_locked(args, &Self::tool_env()).await?;
+        Ok(serde_json::to_string(&value).unwrap_or_else(|_| "{}".to_string()))
+    }
+
+    async fn call_ingest(&self, args: &Map<String, Value>) -> Result<String, StoreError> {
+        let session_id =
+            protocol::js::js_trim(args.get("session_id").and_then(Value::as_str).unwrap_or(""))
+                .to_string();
+        if session_id.is_empty() {
+            return Err(StoreError::Request(
+                "memory_ingest_session: session_id is required".to_string(),
+            ));
+        }
+        let messages = validate_ingest_messages(args.get("messages").unwrap_or(&Value::Null))
+            .map_err(StoreError::Request)?;
+        let input = IngestInput {
+            session_id,
+            messages,
+            source: args
+                .get("source")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            agent: args
+                .get("agent")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            persona: args
+                .get("persona")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            channel: args
+                .get("channel")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            env: Self::tool_env(),
+        };
+        let output = self.ingest_session(&input).await?;
+        Ok(serde_json::to_string(&ingest_result_value(&output))
+            .unwrap_or_else(|_| "{}".to_string()))
+    }
+
     async fn conversation_tags(
         &self,
         ids: &[uuid::Uuid],
@@ -1928,12 +2121,24 @@ impl PostgresMemory {
         Ok(out)
     }
 
-    async fn stats_report(&self) -> Result<StatsReport, sqlx::Error> {
-        let totals = sqlx::query(
-            "SELECT COUNT(*) AS total, MIN(created_at) AS oldest, MAX(created_at) AS newest FROM ros_messages",
-        )
-        .fetch_one(&self.pool)
-        .await?;
+    async fn stats_report(&self, agent: Option<&str>) -> Result<StatsReport, sqlx::Error> {
+        let totals = match agent {
+            Some(agent) => {
+                sqlx::query(
+                    "SELECT COUNT(*) AS total, MIN(created_at) AS oldest, MAX(created_at) AS newest FROM ros_messages WHERE agent = $1",
+                )
+                .bind(agent)
+                .fetch_one(&self.pool)
+                .await?
+            }
+            None => {
+                sqlx::query(
+                    "SELECT COUNT(*) AS total, MIN(created_at) AS oldest, MAX(created_at) AS newest FROM ros_messages",
+                )
+                .fetch_one(&self.pool)
+                .await?
+            }
+        };
         let total: i64 = totals.try_get("total")?;
         let oldest: Option<DateTime<Utc>> = totals.try_get("oldest")?;
         let newest: Option<DateTime<Utc>> = totals.try_get("newest")?;
@@ -1943,11 +2148,23 @@ impl PostgresMemory {
             fmt_date(oldest.map(format_js_iso).as_deref()),
             fmt_date(newest.map(format_js_iso).as_deref())
         );
-        let by_agent_rows = sqlx::query(
-            "SELECT agent, COUNT(*) AS count FROM ros_messages GROUP BY agent ORDER BY count DESC",
-        )
-        .fetch_all(&self.pool)
-        .await?;
+        let by_agent_rows = match agent {
+            Some(agent) => {
+                sqlx::query(
+                    "SELECT agent, COUNT(*) AS count FROM ros_messages WHERE agent = $1 GROUP BY agent ORDER BY count DESC",
+                )
+                .bind(agent)
+                .fetch_all(&self.pool)
+                .await?
+            }
+            None => {
+                sqlx::query(
+                    "SELECT agent, COUNT(*) AS count FROM ros_messages GROUP BY agent ORDER BY count DESC",
+                )
+                .fetch_all(&self.pool)
+                .await?
+            }
+        };
         let by_agent = if by_agent_rows.is_empty() {
             None
         } else {
@@ -1959,11 +2176,23 @@ impl PostgresMemory {
             }
             Some(lines.join("\n"))
         };
-        let by_role_rows = sqlx::query(
-            "SELECT role, COUNT(*) AS count FROM ros_messages GROUP BY role ORDER BY count DESC",
-        )
-        .fetch_all(&self.pool)
-        .await?;
+        let by_role_rows = match agent {
+            Some(agent) => {
+                sqlx::query(
+                    "SELECT role, COUNT(*) AS count FROM ros_messages WHERE agent = $1 GROUP BY role ORDER BY count DESC",
+                )
+                .bind(agent)
+                .fetch_all(&self.pool)
+                .await?
+            }
+            None => {
+                sqlx::query(
+                    "SELECT role, COUNT(*) AS count FROM ros_messages GROUP BY role ORDER BY count DESC",
+                )
+                .fetch_all(&self.pool)
+                .await?
+            }
+        };
         let by_role = if by_role_rows.is_empty() {
             None
         } else {

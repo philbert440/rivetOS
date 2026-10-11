@@ -79,9 +79,22 @@ fn strip_byte_arrays(value: &Value, depth: usize) -> Value {
     }
 }
 
+fn js_json(value: &Value, fallback: &str) -> String {
+    let Ok(text) = serde_json::to_string(value) else {
+        return fallback.to_string();
+    };
+    match protocol::js::parse(&text) {
+        Ok(parsed) => protocol::js::stringify(&parsed),
+        Err(_) => text,
+    }
+}
+
 fn json_string(value: &Value) -> String {
-    serde_json::to_string(&strip_byte_arrays(value, 0))
-        .unwrap_or_else(|_| "[unserializable tool result]".to_string())
+    js_json(value, "[unserializable tool result]")
+}
+
+fn json_string_stripped(value: &Value) -> String {
+    js_json(&strip_byte_arrays(value, 0), "[unserializable tool result]")
 }
 
 pub fn extract_text(content: &Value) -> String {
@@ -180,7 +193,7 @@ fn format_tool_result(update: &Value) -> Option<String> {
             return Some(format!("{header} ERROR\n{err}"));
         }
         if let Some(output) = output {
-            return Some(format!("{header}\n{}", json_string(output)));
+            return Some(format!("{header}\n{}", json_string_stripped(output)));
         }
     } else if kind == "ListDir" {
         if let Some(content) = map
@@ -200,7 +213,7 @@ fn format_tool_result(update: &Value) -> Option<String> {
     {
         return Some(summary.to_string());
     }
-    Some(json_string(out))
+    Some(json_string_stripped(out))
 }
 
 pub fn format_missing_jsonl_message(file: &str, agent: Option<&str>, home: &str) -> String {
@@ -884,7 +897,7 @@ fn stringify_args(args: Option<&Value>) -> Option<String> {
     match args {
         None | Some(Value::Null) => None,
         Some(Value::String(text)) => Some(text.clone()),
-        Some(other) => Some(json_string(other)),
+        Some(other) => Some(js_json(other, "[unserializable arguments]")),
     }
 }
 
@@ -1098,25 +1111,64 @@ fn extract_dsh(value: &Value, event_type: &str) -> ExtractedFull {
 }
 
 pub fn read_jsonl_line(file: &str, line_index: usize) -> Result<Option<String>, String> {
-    let text = if file.ends_with(".jsonl.zstd") || file.ends_with(".jsonl.zst") {
+    if file.ends_with(".jsonl.zstd") || file.ends_with(".jsonl.zst") {
         let bytes = std::fs::read(file).map_err(|err| err.to_string())?;
         let decoded = zstd::stream::decode_all(bytes.as_slice()).map_err(|err| err.to_string())?;
-        String::from_utf8(decoded).map_err(|err| err.to_string())?
-    } else {
-        std::fs::read_to_string(file).map_err(|err| err.to_string())?
-    };
-    Ok(line_at(&text, line_index))
+        let text = String::from_utf8(decoded).map_err(|err| err.to_string())?;
+        return Ok(text.split('\n').nth(line_index).map(str::to_string));
+    }
+    let mut reader = std::fs::File::open(file).map_err(|err| err.to_string())?;
+    let mut buf = [0u8; 8192];
+    let mut current = Vec::new();
+    let mut index = 0usize;
+    loop {
+        let n = reader.read(&mut buf).map_err(|err| err.to_string())?;
+        if n == 0 {
+            if index == line_index {
+                let line = String::from_utf8(current).map_err(|err| err.to_string())?;
+                return Ok(Some(line));
+            }
+            return Ok(None);
+        }
+        for &byte in &buf[..n] {
+            if byte == b'\n' {
+                if index == line_index {
+                    let line = String::from_utf8(current).map_err(|err| err.to_string())?;
+                    return Ok(Some(line));
+                }
+                index += 1;
+                current.clear();
+            } else if index == line_index {
+                current.push(byte);
+            }
+        }
+    }
 }
 
-fn line_at(text: &str, line_index: usize) -> Option<String> {
-    let mut lines = Vec::new();
-    for line in text.split('\n') {
-        lines.push(line);
+pub async fn read_jsonl_line_async(
+    file: &str,
+    line_index: usize,
+) -> Result<Option<String>, String> {
+    let file = file.to_string();
+    match tokio::task::spawn_blocking(move || read_jsonl_line(&file, line_index)).await {
+        Ok(result) => result,
+        Err(err) => Err(err.to_string()),
     }
-    if lines.last().is_some_and(|line| line.is_empty()) {
-        lines.pop();
-    }
-    lines.get(line_index).map(|line| (*line).to_string())
+}
+
+pub async fn read_opencode_part_async(db_path: &str, part_id: &str) -> Option<ExtractedFull> {
+    let db_path = db_path.to_string();
+    let part_id = part_id.to_string();
+    tokio::task::spawn_blocking(move || read_opencode_part(&db_path, &part_id))
+        .await
+        .unwrap_or_default()
+}
+
+pub async fn path_exists_async(file: &str) -> bool {
+    let file = file.to_string();
+    tokio::task::spawn_blocking(move || path_exists(&file))
+        .await
+        .unwrap_or_default()
 }
 
 pub fn render_stored_row(
@@ -1235,4 +1287,51 @@ pub fn read_prefix<R: Read>(reader: &mut R, limit: usize) -> Result<Vec<u8>, std
     let n = reader.read(&mut buf)?;
     buf.truncate(n);
     Ok(buf)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::read_jsonl_line;
+
+    fn write_temp(name: &str, bytes: &[u8]) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!("rr2a-{}-{name}", std::process::id()));
+        std::fs::write(&path, bytes).unwrap();
+        path
+    }
+
+    #[test]
+    fn plain_jsonl_keeps_split_lines_including_a_trailing_empty_line() {
+        let path = write_temp("plain.jsonl", b"alpha\n\n");
+        let file = path.to_str().unwrap();
+        assert_eq!(read_jsonl_line(file, 0).unwrap().as_deref(), Some("alpha"));
+        assert_eq!(read_jsonl_line(file, 1).unwrap().as_deref(), Some(""));
+        assert_eq!(read_jsonl_line(file, 2).unwrap().as_deref(), Some(""));
+        assert_eq!(read_jsonl_line(file, 3).unwrap(), None);
+        std::fs::write(&path, b"alpha\nbeta").unwrap();
+        assert_eq!(read_jsonl_line(file, 1).unwrap().as_deref(), Some("beta"));
+        std::fs::write(&path, b"").unwrap();
+        assert_eq!(read_jsonl_line(file, 0).unwrap().as_deref(), Some(""));
+        assert_eq!(read_jsonl_line(file, 1).unwrap(), None);
+        std::fs::write(&path, b"a\n").unwrap();
+        assert_eq!(read_jsonl_line(file, 0).unwrap().as_deref(), Some("a"));
+        assert_eq!(read_jsonl_line(file, 1).unwrap().as_deref(), Some(""));
+        std::fs::write(&path, b"\n").unwrap();
+        assert_eq!(read_jsonl_line(file, 0).unwrap().as_deref(), Some(""));
+        assert_eq!(read_jsonl_line(file, 1).unwrap().as_deref(), Some(""));
+        std::fs::write(&path, b"a\r\n").unwrap();
+        assert_eq!(read_jsonl_line(file, 0).unwrap().as_deref(), Some("a\r"));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn zstd_jsonl_keeps_the_trailing_empty_line() {
+        let encoded = zstd::stream::encode_all(&b"alpha\n\n"[..], 0).unwrap();
+        let path = write_temp("plain.jsonl.zst", &encoded);
+        let file = path.to_str().unwrap();
+        assert_eq!(read_jsonl_line(file, 0).unwrap().as_deref(), Some("alpha"));
+        assert_eq!(read_jsonl_line(file, 1).unwrap().as_deref(), Some(""));
+        assert_eq!(read_jsonl_line(file, 2).unwrap().as_deref(), Some(""));
+        assert_eq!(read_jsonl_line(file, 3).unwrap(), None);
+        let _ = std::fs::remove_file(&path);
+    }
 }

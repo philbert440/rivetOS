@@ -121,12 +121,13 @@ impl<S: MemoryStore + Send + Sync> MemoryStore for RoutingMemory<S> {
             .await
     }
 
-    async fn load_session_settings(
-        &self,
-        session_id: &str,
-    ) -> Result<Option<Map<String, Value>>, StoreError> {
+    async fn load_session_settings(&self, session_id: &str) -> Result<Option<Value>, StoreError> {
         let handle = self.for_user(user_from_session_key(session_id))?;
         self.live(handle)?.load_session_settings(session_id).await
+    }
+
+    async fn call_tool(&self, name: &str, args: &Value) -> Result<String, StoreError> {
+        self.live(&self.main)?.call_tool(name, args).await
     }
 
     async fn capture(

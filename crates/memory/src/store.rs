@@ -154,10 +154,11 @@ pub struct HealthReport {
     pub body: Value,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ToolDescriptor {
     pub name: String,
     pub description: String,
+    pub parameters: Value,
 }
 
 pub trait MemoryStore: Send + Sync {
@@ -200,7 +201,13 @@ pub trait MemoryStore: Send + Sync {
     fn load_session_settings(
         &self,
         session_id: &str,
-    ) -> impl std::future::Future<Output = Result<Option<Map<String, Value>>, StoreError>> + Send;
+    ) -> impl std::future::Future<Output = Result<Option<Value>, StoreError>> + Send;
+
+    fn call_tool(
+        &self,
+        name: &str,
+        args: &Value,
+    ) -> impl std::future::Future<Output = Result<String, StoreError>> + Send;
 
     fn capture(
         &self,

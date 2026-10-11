@@ -1,6 +1,6 @@
 use std::sync::OnceLock;
 
-use chrono::{DateTime, Datelike, Duration, Local, TimeZone};
+use chrono::{DateTime, Datelike, Duration, Local, NaiveDate, TimeZone, Utc};
 use regex::Regex;
 
 pub const MS_PER_DAY: i64 = 86_400_000;
@@ -119,6 +119,58 @@ fn iso(dt: DateTime<Local>) -> String {
     dt.to_utc().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()
 }
 
+fn local_midnight(date: NaiveDate) -> Option<DateTime<Local>> {
+    let naive = date.and_hms_opt(0, 0, 0)?;
+    match Local.from_local_datetime(&naive) {
+        chrono::LocalResult::Single(dt) => Some(dt),
+        chrono::LocalResult::Ambiguous(earliest, _) => Some(earliest),
+        chrono::LocalResult::None => None,
+    }
+}
+
+fn rfc3339(raw: &str) -> Option<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(raw)
+        .ok()
+        .map(|dt| dt.with_timezone(&Utc))
+}
+
+fn space_to_t(raw: &str) -> Option<String> {
+    let idx = raw.find(' ')?;
+    let mut owned = raw.to_string();
+    owned.replace_range(idx..idx + 1, "T");
+    Some(owned)
+}
+
+fn naive_local(raw: &str) -> Option<DateTime<Utc>> {
+    let naive = chrono::NaiveDateTime::parse_from_str(raw, "%Y-%m-%dT%H:%M:%S%.f")
+        .or_else(|_| chrono::NaiveDateTime::parse_from_str(raw, "%Y-%m-%dT%H:%M:%S"))
+        .ok()?;
+    match Local.from_local_datetime(&naive) {
+        chrono::LocalResult::Single(dt) => Some(dt.with_timezone(&Utc)),
+        chrono::LocalResult::Ambiguous(earliest, _) => Some(earliest.with_timezone(&Utc)),
+        chrono::LocalResult::None => None,
+    }
+}
+
+pub fn parse_js_date(raw: &str) -> Option<DateTime<Utc>> {
+    if let Some(dt) = rfc3339(raw) {
+        return Some(dt);
+    }
+    let spaced = space_to_t(raw);
+    if let Some(fixed) = spaced.as_deref()
+        && let Some(dt) = rfc3339(fixed)
+    {
+        return Some(dt);
+    }
+    if let Ok(date) = NaiveDate::parse_from_str(raw, "%Y-%m-%d") {
+        return date.and_hms_opt(0, 0, 0).map(|naive| naive.and_utc());
+    }
+    if let Some(dt) = naive_local(raw) {
+        return Some(dt);
+    }
+    spaced.as_deref().and_then(naive_local)
+}
+
 pub fn resolve_window(
     window: &str,
     now: DateTime<Local>,
@@ -140,20 +192,25 @@ pub fn resolve_window(
             format_window_choices()
         ));
     }
-    let today = Local
-        .with_ymd_and_hms(now.year(), now.month(), now.day(), 0, 0, 0)
-        .single()
-        .unwrap_or(now);
+    let today = local_midnight(now.date_naive()).unwrap_or(now);
     match normalized.as_str() {
         "today" | "this_morning" => Ok((Some(iso(today)), None)),
         "yesterday" => {
-            let yest = today - Duration::days(1);
+            let yest = today
+                .date_naive()
+                .checked_sub_days(chrono::Days::new(1))
+                .and_then(local_midnight)
+                .unwrap_or(today);
             Ok((Some(iso(yest)), Some(iso(today))))
         }
         "this_week" => {
             let day = today.weekday().num_days_from_sunday();
             let from_monday = if day == 0 { 6 } else { day - 1 };
-            let monday = today - Duration::days(i64::from(from_monday));
+            let monday = today
+                .date_naive()
+                .checked_sub_days(chrono::Days::new(u64::from(from_monday)))
+                .and_then(local_midnight)
+                .unwrap_or(today);
             Ok((Some(iso(monday)), None))
         }
         "last_24h" => Ok((Some(iso(now - Duration::hours(24))), None)),

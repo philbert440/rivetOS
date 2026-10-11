@@ -1,21 +1,24 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use chrono::{TimeZone, Timelike};
+use chrono::{Datelike, TimeZone, Timelike};
 use memory::columns::WidthMigrationDecision;
 use memory::columns::decide_width_migration;
 use memory::cowork_hash::{CoworkHookRow, cowork_content_hash, pick_cowork_hook_rewrite};
-use memory::full::{extract_text, file_missing_message, missing_pointer_message, truncation_hint};
+use memory::full::{
+    extract_full_from_line, extract_opencode_from_part, extract_text, file_missing_message,
+    missing_pointer_message, truncation_hint,
+};
 use memory::names::{normalize_tag_value, parse_tag_literal};
 use memory::prepare::{append_result_value, prepare_append, validate_ingest_messages};
 use memory::rules::{
     MapFs, PROJECT_RULE_MAX_WALK, origin_url_from_config, plan_project_rule_tag,
     repo_name_from_remote, resolve_project_from_cwd, sanitize_remote,
 };
-use memory::spans::{apply_window_args, resolve_window};
+use memory::spans::{apply_window_args, parse_js_date, resolve_window};
 use memory::sql_report::{
-    QueueRow, browse_sql, en_us, format_embedding_queue, format_js_iso, format_queue_health,
-    health_cached,
+    QueueRow, browse_sql, browse_tool_sql, en_us, format_embedding_queue, format_js_iso,
+    format_queue_health, health_cached, memory_tool_parameters,
 };
 use memory::{
     CAPTURE_POOL_MAX, CaptureOptions, HistoryMessage, IDLE_IN_TRANSACTION_TIMEOUT, IngestInput,
@@ -388,6 +391,154 @@ fn write_tool_validation_and_sql_shapes() {
     assert!(browse.sql.contains("::timestamptz"));
     assert!(browse.sql.contains("LIMIT 50"));
     assert!(!browse.sql.contains("LIMIT $"));
+    let now = chrono::Local
+        .with_ymd_and_hms(2026, 10, 11, 15, 0, 0)
+        .single()
+        .expect("now");
+    let mut tool_args = Map::new();
+    tool_args.insert(
+        "conversation_id".to_string(),
+        Value::String("11111111-1111-4111-8111-111111111111".to_string()),
+    );
+    tool_args.insert("order".to_string(), Value::String("asc".to_string()));
+    tool_args.insert("include_tools".to_string(), Value::Bool(false));
+    tool_args.insert("tag".to_string(), Value::String("project:demo".to_string()));
+    tool_args.insert("limit".to_string(), json!(10));
+    let tool = browse_tool_sql(&tool_args, now).expect("tool browse");
+    assert!(tool.sql.contains("m.role <> 'tool'"));
+    assert!(tool.sql.contains("ORDER BY m.created_at ASC"));
+    assert!(tool.sql.contains("$1::uuid"));
+    assert!(tool.sql.contains("m.tool_result"));
+    assert!(tool.sql.contains("m.metadata"));
+    assert!(!tool.sql.contains("session_key"));
+    assert!(tool.sql.contains("LIMIT 10"));
+    assert!(!tool.sql.contains("LIMIT $"));
+    tool_args.insert("tag".to_string(), Value::String("not a tag".to_string()));
+    let err = browse_tool_sql(&tool_args, now).expect_err("tag");
+    assert_eq!(
+        err,
+        "Browse failed: tag must be key:value (got \"not a tag\")"
+    );
+    let browse_schema = memory_tool_parameters("memory_browse");
+    let keys: Vec<_> = browse_schema["properties"]
+        .as_object()
+        .expect("props")
+        .keys()
+        .cloned()
+        .collect();
+    assert_eq!(
+        keys,
+        [
+            "conversation_id",
+            "since",
+            "before",
+            "window",
+            "agent",
+            "tag",
+            "include_tools",
+            "limit",
+            "order"
+        ]
+    );
+    assert_eq!(
+        browse_schema["properties"]["order"]["description"],
+        json!("Chronological order — asc (oldest first) or desc (newest first, default)")
+    );
+    assert_eq!(
+        memory_tool_parameters("memory_get_full")["required"],
+        json!(["id"])
+    );
+    assert_eq!(
+        memory_tool_parameters("memory_stats")["properties"]["agent"]["description"],
+        json!("Filter stats to a specific agent (optional)")
+    );
+    assert_eq!(memory_tool_parameters("memory_append"), json!({}));
+    assert_eq!(memory_tool_parameters("memory_ingest_session"), json!({}));
+}
+
+#[test]
+fn calendar_windows_and_js_dates() {
+    for (year, month, day) in [(2026, 3, 9), (2026, 11, 2), (2026, 10, 11)] {
+        let now = chrono::Local
+            .with_ymd_and_hms(year, month, day, 15, 0, 0)
+            .single()
+            .expect("local noon");
+        let (since, before) = resolve_window("yesterday", now).expect("yesterday");
+        let since = chrono::DateTime::parse_from_rfc3339(&since.expect("since"))
+            .expect("since iso")
+            .with_timezone(&chrono::Local);
+        let before = chrono::DateTime::parse_from_rfc3339(&before.expect("before"))
+            .expect("before iso")
+            .with_timezone(&chrono::Local);
+        let midnight = chrono::NaiveTime::from_hms_opt(0, 0, 0).expect("midnight");
+        assert_eq!(since.time(), midnight);
+        assert_eq!(before.time(), midnight);
+        assert_eq!(before.date_naive(), now.date_naive());
+        assert_eq!(
+            since.date_naive(),
+            now.date_naive()
+                .checked_sub_days(chrono::Days::new(1))
+                .expect("yesterday")
+        );
+        let (week, open) = resolve_window("this_week", now).expect("week");
+        assert!(open.is_none());
+        let week = chrono::DateTime::parse_from_rfc3339(&week.expect("week"))
+            .expect("week iso")
+            .with_timezone(&chrono::Local);
+        assert_eq!(week.time(), midnight);
+        assert_eq!(week.weekday(), chrono::Weekday::Mon);
+    }
+    let utc = |raw: &str| {
+        chrono::DateTime::parse_from_rfc3339(raw)
+            .expect(raw)
+            .with_timezone(&chrono::Utc)
+    };
+    assert_eq!(
+        parse_js_date("2026-10-11T12:00:00Z"),
+        Some(utc("2026-10-11T12:00:00Z"))
+    );
+    assert_eq!(
+        parse_js_date("2026-10-11 12:00:00Z"),
+        Some(utc("2026-10-11T12:00:00Z"))
+    );
+    assert_eq!(
+        parse_js_date("2026-10-11"),
+        Some(utc("2026-10-11T00:00:00Z"))
+    );
+    assert!(parse_js_date("not-a-date").is_none());
+    assert!(parse_js_date("2026-10-11T12:00:00Z trailing").is_none());
+    let local = chrono::Local
+        .with_ymd_and_hms(2026, 10, 11, 15, 4, 5)
+        .single()
+        .expect("local");
+    assert_eq!(
+        parse_js_date("2026-10-11T15:04:05"),
+        Some(local.with_timezone(&chrono::Utc))
+    );
+    let noon = chrono::Local
+        .with_ymd_and_hms(2026, 10, 11, 12, 0, 0)
+        .single()
+        .expect("noon");
+    assert_eq!(
+        parse_js_date("2026-10-11 12:00:00"),
+        Some(noon.with_timezone(&chrono::Utc))
+    );
+}
+
+#[test]
+fn opencode_json_matches_javascript_stringify() {
+    let raw = r#"{"type":"tool","tool":"sample","state":{"input":{"n":1.0,"0":"idx","b":2,"samples":[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]}}}"#;
+    let value: Value = serde_json::from_str(raw).expect("part");
+    let extracted = extract_opencode_from_part(&value);
+    assert_eq!(
+        extracted.tool_args.as_deref(),
+        Some(r#"{"0":"idx","n":1,"b":2,"samples":[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]}"#)
+    );
+    let line = r#"{"params":{"update":{"rawOutput":{"type":"MCP","server_name":"s","tool_name":"t","output":[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]}}}}"#;
+    let full = extract_full_from_line(line, None);
+    let tool_result = full.tool_result.expect("mcp");
+    assert!(!tool_result.contains("[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]"));
+    assert!(tool_result.contains("\\u0000"));
 }
 
 #[test]
@@ -491,11 +642,11 @@ impl MemoryStore for Stub {
     ) -> Result<(), StoreError> {
         Ok(())
     }
-    async fn load_session_settings(
-        &self,
-        _session_id: &str,
-    ) -> Result<Option<Map<String, Value>>, StoreError> {
+    async fn load_session_settings(&self, _session_id: &str) -> Result<Option<Value>, StoreError> {
         Ok(None)
+    }
+    async fn call_tool(&self, _name: &str, _args: &Value) -> Result<String, StoreError> {
+        Ok(self.0.to_string())
     }
     async fn capture(
         &self,
@@ -672,6 +823,11 @@ async fn deferred_methods_do_not_open_a_database() {
             .contains("tags")
     );
     assert!(store.wiki().is_none());
+    let err = store
+        .call_tool("memory_nope", &json!({}))
+        .await
+        .expect_err("unknown");
+    assert!(err.to_string().contains("unknown tool: memory_nope"));
     let names: Vec<_> = store.tools().into_iter().map(|tool| tool.name).collect();
     assert_eq!(
         names,

@@ -20,6 +20,13 @@ enum Setup {
     Fail(String),
 }
 
+pub fn skip_missing_extension(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("extension")
+        && (lower.contains("is not available")
+            || lower.contains("could not open extension control file"))
+}
+
 pub fn scoped_search_path(url: &str, path: &str) -> String {
     let sep = if url.contains('?') { '&' } else { '?' };
     format!("{url}{sep}options[search_path]={path}")
@@ -132,10 +139,7 @@ async fn prepare(
             let _ = sqlx::raw_sql(sqlx::AssertSqlSafe(drop_sql))
                 .execute(&mut conn)
                 .await;
-            if message.contains("extension")
-                || message.contains("vector")
-                || message.contains("pg_trgm")
-            {
+            if skip_missing_extension(&message) {
                 return Err(Setup::Skip(format!(
                     "migration needs an extension ({})",
                     err.message

@@ -143,6 +143,33 @@ pub fn append_result_value(prepared: &PreparedAppend, id: &str, skipped: bool) -
     Value::Object(map)
 }
 
+pub fn ingest_result_value(output: &crate::store::IngestOutput) -> Value {
+    let mut map = Map::new();
+    map.insert(
+        "session_id".to_string(),
+        Value::String(output.session_id.clone()),
+    );
+    map.insert("ingested".to_string(), Value::from(output.ingested));
+    map.insert("skipped".to_string(), Value::from(output.skipped));
+    map.insert(
+        "ids".to_string(),
+        Value::Array(output.ids.iter().cloned().map(Value::String).collect()),
+    );
+    map.insert("source".to_string(), Value::String(output.source.clone()));
+    map.insert("agent".to_string(), Value::String(output.agent.clone()));
+    map.insert("channel".to_string(), Value::String(output.channel.clone()));
+    if let Some(persona) = &output.persona {
+        map.insert("persona".to_string(), Value::String(persona.clone()));
+    }
+    if output.truncated {
+        map.insert("truncated".to_string(), Value::Bool(true));
+        if let Some(len) = output.full_content_length {
+            map.insert("full_content_length".to_string(), Value::from(len));
+        }
+    }
+    Value::Object(map)
+}
+
 pub fn validate_ingest_messages(raw: &Value) -> Result<Vec<crate::store::IngestMessage>, String> {
     let Some(items) = raw.as_array() else {
         return Err("memory_ingest_session: messages must be a non-empty array".to_string());

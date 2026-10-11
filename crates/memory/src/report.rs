@@ -1,4 +1,5 @@
-use serde_json::{Map, Value};
+use chrono::{DateTime, Local, Utc};
+use serde_json::{Map, Value, json};
 
 pub const FULL_WINDOW: i64 = 10;
 pub const IDLE_MINUTES: i64 = 15;
@@ -154,7 +155,7 @@ pub fn fmt_queue_age(minutes: f64) -> String {
     format!("{}d", (minutes / 60.0 / 24.0).floor() as i64)
 }
 
-pub fn format_js_iso(dt: chrono::DateTime<chrono::Utc>) -> String {
+pub fn format_js_iso(dt: DateTime<Utc>) -> String {
     let ms = dt.timestamp_subsec_millis();
     format!("{}.{:03}Z", dt.format("%Y-%m-%dT%H:%M:%S"), ms)
 }
@@ -403,4 +404,302 @@ pub fn browse_sql(
 
 pub fn empty_object() -> Value {
     Value::Object(Map::new())
+}
+
+#[derive(Debug)]
+pub struct BrowseToolSql {
+    pub sql: String,
+    pub params: Vec<String>,
+    pub since: Option<String>,
+    pub before: Option<String>,
+    pub include_tools: bool,
+    pub order_desc: bool,
+    pub limit: i64,
+    pub window_label: Option<String>,
+}
+
+#[derive(Debug)]
+pub struct BrowseToolRow {
+    pub id: String,
+    pub role: String,
+    pub agent: String,
+    pub content: String,
+    pub created_at: DateTime<Utc>,
+    pub conversation_id: String,
+    pub tool_name: Option<String>,
+    pub tool_result: Option<String>,
+    pub metadata: Option<Map<String, Value>>,
+    pub tags: Vec<String>,
+}
+
+pub fn fmt_local_ts(dt: DateTime<Utc>) -> String {
+    let local = dt.with_timezone(&Local);
+    let body = local.format("%Y-%m-%d %H:%M:%S").to_string();
+    let zone = local.format("%Z").to_string();
+    if zone.is_empty() {
+        body
+    } else {
+        format!("{body} {zone}")
+    }
+}
+
+pub fn browse_tool_sql(
+    args: &Map<String, Value>,
+    now: DateTime<Local>,
+) -> Result<BrowseToolSql, String> {
+    let include_tools = args.get("include_tools") == Some(&Value::Bool(true));
+    let window_label = args
+        .get("window")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let since_arg = args.get("since").and_then(Value::as_str);
+    let before_arg = args.get("before").and_then(Value::as_str);
+    let mut conditions = Vec::new();
+    let mut params = Vec::new();
+    let mut pi = 1usize;
+    if let Some(conversation_id) = args
+        .get("conversation_id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+    {
+        conditions.push(format!("m.conversation_id = ${pi}::uuid"));
+        pi += 1;
+        params.push(conversation_id.to_string());
+    }
+    if let Some(agent) = args
+        .get("agent")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+    {
+        conditions.push(format!("m.agent = ${pi}"));
+        pi += 1;
+        params.push(agent.to_string());
+    }
+    if let Some(tag) = args.get("tag").and_then(Value::as_str) {
+        let trimmed = protocol::js::js_trim(tag);
+        if !trimmed.is_empty() {
+            let Some((key, value)) = crate::slug::parse_tag_literal(tag) else {
+                return Err(format!(
+                    "Browse failed: tag must be key:value (got \"{tag}\")"
+                ));
+            };
+            conditions.push(format!(
+                "m.conversation_id IN {}",
+                tagged_conversations_sql(pi, pi + 1)
+            ));
+            pi += 2;
+            params.push(key);
+            params.push(value);
+        }
+    }
+    if !include_tools {
+        conditions.push("m.role <> 'tool'".to_string());
+    }
+    let (since, before) =
+        crate::window::apply_window_args(window_label.as_deref(), since_arg, before_arg, now)?;
+    if let Some(since) = &since {
+        conditions.push(format!("m.created_at >= ${pi}::timestamptz"));
+        pi += 1;
+        params.push(since.clone());
+    }
+    if let Some(before) = &before {
+        conditions.push(format!("m.created_at < ${pi}::timestamptz"));
+        pi += 1;
+        params.push(before.clone());
+    }
+    let limit = browse_limit(args.get("limit").and_then(Value::as_i64));
+    let order_desc = args.get("order").and_then(Value::as_str) != Some("asc");
+    let order = if order_desc { "DESC" } else { "ASC" };
+    let where_sql = if conditions.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", conditions.join(" AND "))
+    };
+    let sql = format!(
+        "SELECT m.id, m.role, m.agent, m.content, m.created_at,
+            m.conversation_id, m.tool_name, m.tool_result, m.metadata
+       FROM ros_messages m
+       {where_sql}
+       ORDER BY m.created_at {order}
+       LIMIT {limit}"
+    );
+    let _ = pi;
+    Ok(BrowseToolSql {
+        sql,
+        params,
+        since,
+        before,
+        include_tools,
+        order_desc,
+        limit,
+        window_label,
+    })
+}
+
+fn browse_filter_note(built: &BrowseToolSql) -> String {
+    let mut parts = Vec::new();
+    let window = built
+        .window_label
+        .as_deref()
+        .filter(|value| !value.is_empty());
+    if window.is_some() && (built.since.is_some() || built.before.is_some()) {
+        if let Some(window) = window {
+            parts.push(format!("window=\"{window}\""));
+        }
+        if let Some(since) = &built.since {
+            parts.push(format!("since={since}"));
+        }
+        if let Some(before) = &built.before {
+            parts.push(format!("before={before}"));
+        }
+    } else if built.since.is_some() || built.before.is_some() {
+        if let Some(since) = &built.since {
+            parts.push(format!("since={since}"));
+        }
+        if let Some(before) = &built.before {
+            parts.push(format!("before={before}"));
+        }
+    }
+    if !built.include_tools {
+        parts.push("tools excluded (include_tools=true to show)".to_string());
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!("\n_{}_", parts.join(" "))
+    }
+}
+
+pub fn render_browse_tool(rows: &[BrowseToolRow], built: &BrowseToolSql) -> String {
+    let note = browse_filter_note(built);
+    if rows.is_empty() {
+        return format!(
+            "No messages found.{note}\n_Try a wider window, drop agent/conversation filters, flip order, pass include_tools=true, or use memory_search for topic recall._"
+        );
+    }
+    let which = if built.order_desc { "newest" } else { "oldest" };
+    let mut header = format!("## Messages ({} returned, {which} first)", rows.len());
+    header.push_str(&note);
+    if rows.len() as i64 >= built.limit {
+        header.push_str(&format!(
+            "\n_Hit limit={}. Flip order, raise limit (max 200), or narrow since/before/window._",
+            built.limit
+        ));
+    }
+    let lines = rows.iter().map(|row| {
+        let ts = fmt_local_ts(row.created_at);
+        let tool = match row.tool_name.as_deref() {
+            Some(name) if !name.is_empty() => format!(" [tool: {name}]"),
+            _ => String::new(),
+        };
+        let tag_note = if row.tags.is_empty() {
+            String::new()
+        } else {
+            format!(" tags: {}", row.tags.join(", "))
+        };
+        let body = crate::get_full::format_browse_message_body(
+            &row.id,
+            &row.content,
+            row.tool_name.as_deref(),
+            row.tool_result.as_deref(),
+            row.metadata.as_ref(),
+            BROWSE_CONTENT_LIMIT,
+            BROWSE_TOOL_RESULT_LIMIT,
+        );
+        format!("[{ts}] {}/{}{tool}{tag_note}\n{body}", row.agent, row.role)
+    });
+    format!(
+        "{header}\n\n{}",
+        lines.collect::<Vec<_>>().join("\n\n---\n\n")
+    )
+}
+
+pub fn memory_tool_parameters(name: &str) -> Value {
+    match name {
+        "memory_browse" => {
+            let mut params = json!({
+                "type": "object",
+                "properties": {
+                    "conversation_id": {
+                        "type": "string",
+                        "description": "Browse a specific conversation by ID"
+                    },
+                    "since": {
+                        "type": "string",
+                        "description": "Show messages after this time (ISO timestamp, e.g. 2025-03-15T10:00:00Z). Must be UTC — bare dates like \"2025-03-15\" are UTC midnight (= previous evening US local). Prefer window=."
+                    },
+                    "before": {
+                        "type": "string",
+                        "description": "Show messages before this time (ISO timestamp, e.g. 2025-03-16). Same UTC gotcha as since. Prefer window=."
+                    },
+                    "window": {
+                        "type": "string",
+                        "enum": [],
+                        "description": "Shortcut for time-bounded windows (today, yesterday, this_morning, this_week, last_24h, last_7d, last_14d). last_7d/last_14d are rolling (prefer over this_week early in the week). Resolves to (since, before) in the SERVER local timezone — no TZ math required. Used only when neither since nor before is provided."
+                    },
+                    "agent": {
+                        "type": "string",
+                        "description": "Filter by agent (opus, grok, etc.)"
+                    },
+                    "tag": {
+                        "type": "string",
+                        "description": "Only conversations carrying this accepted key:value tag (e.g. project:acmeapp). See memory_tags."
+                    },
+                    "include_tools": {
+                        "type": "boolean",
+                        "description": "Include role=tool rows (tool calls/results). Default false — browse returns user/assistant/system only so a limit=50 window is not flooded by tool noise. Set true when debugging capture, harness wiring, or tool failures."
+                    },
+                    "limit": {
+                        "type": "number",
+                        "description": "Max messages to return (default: 50, max: 200)"
+                    },
+                    "order": {
+                        "type": "string",
+                        "enum": ["asc", "desc"],
+                        "description": "Chronological order — asc (oldest first) or desc (newest first, default)"
+                    }
+                },
+                "required": []
+            });
+            if let Some(window) = params
+                .get_mut("properties")
+                .and_then(Value::as_object_mut)
+                .and_then(|props| props.get_mut("window"))
+                .and_then(Value::as_object_mut)
+            {
+                window.insert(
+                    "enum".to_string(),
+                    Value::Array(
+                        crate::window::WINDOW_CHOICES
+                            .iter()
+                            .map(|choice| Value::String((*choice).to_string()))
+                            .collect(),
+                    ),
+                );
+            }
+            params
+        }
+        "memory_stats" => json!({
+            "type": "object",
+            "properties": {
+                "agent": {
+                    "type": "string",
+                    "description": "Filter stats to a specific agent (optional)"
+                }
+            },
+            "required": []
+        }),
+        "memory_get_full" => json!({
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string",
+                    "description": "Row id, as shown by memory_search / memory_browse truncation hints"
+                }
+            },
+            "required": ["id"]
+        }),
+        _ => Value::Object(Map::new()),
+    }
 }

@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use chrono::{DateTime, Utc};
 use memory::{
     BrowseFilter, CaptureBatch, CaptureMessage, CaptureOptions, IngestInput, IngestMessage,
     MemoryEntry, MemoryStore, MigrateClient, MigrateFault, MigrateRows, PostgresMemory, StoreError,
@@ -623,7 +624,7 @@ async fn append_ingest_settings_and_forced_rollbacks() {
             let loaded = MemoryStore::load_session_settings(&plain, "ingest-1")
                 .await
                 .map_err(|err| err.to_string())?;
-            assert_eq!(loaded, Some(settings));
+            assert_eq!(loaded.as_ref().and_then(Value::as_object), Some(&settings));
             sqlx::query("UPDATE ros_conversations SET settings = '[]'::jsonb WHERE session_key = 'ingest-1'")
                 .execute(&db.pool)
                 .await
@@ -631,12 +632,59 @@ async fn append_ingest_settings_and_forced_rollbacks() {
             let cleared = MemoryStore::load_session_settings(&plain, "ingest-1")
                 .await
                 .map_err(|err| err.to_string())?;
-            assert_eq!(cleared, None);
+            assert_eq!(cleared, Some(json!([])));
 
             let mut bad = entry("append-bad-time", "append-agent", "dated");
             bad.created_at = Some("not-a-date".to_string());
             let failed = MemoryStore::append(&plain, &bad).await;
             assert!(failed.unwrap_err().to_string().contains("invalid created_at"));
+            let dated = IngestInput {
+                session_id: "ingest-dates".to_string(),
+                messages: vec![
+                    IngestMessage {
+                        role: "user".to_string(),
+                        content: "spaced".to_string(),
+                        created_at: Some("2026-10-11 12:00:00Z".to_string()),
+                        tool_calls: Vec::new(),
+                    },
+                    IngestMessage {
+                        role: "user".to_string(),
+                        content: "day".to_string(),
+                        created_at: Some("2026-10-11".to_string()),
+                        tool_calls: Vec::new(),
+                    },
+                ],
+                source: Some("mcp".to_string()),
+                agent: Some("date-agent".to_string()),
+                persona: None,
+                channel: Some("cli".to_string()),
+                env: BTreeMap::new(),
+            };
+            let dated_out = MemoryStore::ingest_session(&plain, &dated)
+                .await
+                .map_err(|err| err.to_string())?;
+            assert_eq!(dated_out.ingested, 2);
+            let stored = sqlx::query(
+                "SELECT m.content, m.created_at FROM ros_messages m JOIN ros_conversations c ON c.id = m.conversation_id WHERE c.session_key = 'ingest-dates' ORDER BY m.content",
+            )
+            .fetch_all(&db.pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            let instant = |raw: &str| {
+                DateTime::parse_from_rfc3339(raw)
+                    .map_err(|err| err.to_string())
+                    .map(|dt| dt.with_timezone(&Utc))
+            };
+            assert_eq!(stored.len(), 2);
+            let day: DateTime<Utc> = stored[0]
+                .try_get("created_at")
+                .map_err(|err| err.to_string())?;
+            let spaced: DateTime<Utc> = stored[1]
+                .try_get("created_at")
+                .map_err(|err| err.to_string())?;
+            assert_eq!(stored[0].try_get::<String, _>("content").map_err(|err| err.to_string())?, "day");
+            assert_eq!(day, instant("2026-10-11T00:00:00Z")?);
+            assert_eq!(spaced, instant("2026-10-11T12:00:00Z")?);
             MemoryStore::append(&plain, &entry("append-after-rollback", "append-agent", "recovered"))
                 .await
                 .map_err(|err| err.to_string())?;
@@ -768,6 +816,64 @@ async fn browse_stats_health_bump_and_get_full() {
                 .and_then(Value::as_array)
                 .ok_or_else(|| "window messages".to_string())?;
             assert!(windowed.iter().any(|row| row["content"] == json!("browse me")));
+            let mut tool_row = entry("browse-session", "browse-agent", "tool noise");
+            tool_row.role = "tool".to_string();
+            MemoryStore::append(&store, &tool_row)
+                .await
+                .map_err(|err| err.to_string())?;
+            MemoryStore::append(
+                &store,
+                &entry("other-session", "other-agent", "other body"),
+            )
+            .await
+            .map_err(|err| err.to_string())?;
+            let hidden = store
+                .call_tool(
+                    "memory_browse",
+                    &json!({
+                        "conversation_id": conversation_id,
+                        "include_tools": false,
+                        "order": "asc",
+                        "limit": 10
+                    }),
+                )
+                .await
+                .map_err(|err| err.to_string())?;
+            assert!(hidden.contains("browse me"));
+            assert!(hidden.contains("oldest first"));
+            assert!(hidden.contains("tools excluded"));
+            assert!(!hidden.contains("tool noise"));
+            let shown = store
+                .call_tool(
+                    "memory_browse",
+                    &json!({
+                        "conversation_id": conversation_id,
+                        "include_tools": true,
+                        "order": "desc"
+                    }),
+                )
+                .await
+                .map_err(|err| err.to_string())?;
+            assert!(shown.contains("tool noise"));
+            assert!(shown.contains("newest first"));
+            assert!(!shown.contains("tools excluded"));
+            let all_stats = store
+                .call_tool("memory_stats", &json!({}))
+                .await
+                .map_err(|err| err.to_string())?;
+            assert!(all_stats.contains("browse-agent"));
+            assert!(all_stats.contains("other-agent"));
+            let filtered = store
+                .call_tool("memory_stats", &json!({"agent": "browse-agent"}))
+                .await
+                .map_err(|err| err.to_string())?;
+            assert!(filtered.contains("browse-agent"));
+            assert!(!filtered.contains("other-agent"));
+            let empty_agent = store
+                .call_tool("memory_stats", &json!({"agent": ""}))
+                .await
+                .map_err(|err| err.to_string())?;
+            assert!(empty_agent.contains("other-agent"));
 
             let summary_id: String = sqlx::query_scalar(
                 "INSERT INTO ros_summaries (conversation_id, content) VALUES ($1::uuid, 'leaf body') RETURNING id::text",
@@ -837,6 +943,13 @@ async fn browse_stats_health_bump_and_get_full() {
             .await
             .map_err(|err| err.to_string())?;
             assert!(missing.contains("No message with id"));
+            let bad_id = MemoryStore::get_full(&store, "not-a-uuid")
+                .await
+                .map_err(|err| err.to_string())?;
+            assert!(
+                bad_id.contains("invalid input syntax for type uuid"),
+                "{bad_id}"
+            );
             let complete = MemoryStore::get_full(&store, &message_id)
                 .await
                 .map_err(|err| err.to_string())?;
@@ -1152,6 +1265,133 @@ async fn unimplemented_reads_and_borrowed_pool_close() {
                 .await
                 .map_err(|err| err.to_string())?;
             assert_eq!(n, 1);
+            Ok(())
+        },
+    )
+    .await;
+}
+
+#[test]
+fn extension_skip_ignores_a_vector_mention() {
+    assert!(common::skip_missing_extension(
+        "extension \"vector\" is not available"
+    ));
+    assert!(common::skip_missing_extension(
+        "could not open extension control file \"/usr/share/postgresql/16/extension/vector.control\""
+    ));
+    assert!(!common::skip_missing_extension(
+        "column \"vector\" does not exist"
+    ));
+    assert!(!common::skip_missing_extension(
+        "syntax error at or near \"vector\""
+    ));
+    assert!(!common::skip_missing_extension(
+        "type \"pg_trgm\" does not exist"
+    ));
+}
+
+#[tokio::test]
+async fn advisory_lock_timeout_returns_the_connection() {
+    common::with_db(
+        "advisory_lock_timeout_returns_the_connection",
+        "rr2a_lock",
+        true,
+        4,
+        |db| async move {
+            let store = PostgresMemory::from_pool(db.pool.clone(), false);
+            let key = format!("lock-{}", db.name);
+            let mut holder = PgConnection::connect(&db.scoped_url)
+                .await
+                .map_err(|err| err.to_string())?;
+            let pin = format!("SET search_path TO {}, public", db.name);
+            sqlx::query(sqlx::AssertSqlSafe(pin.clone()))
+                .execute(&mut holder)
+                .await
+                .map_err(|err| err.to_string())?;
+            sqlx::query("BEGIN")
+                .execute(&mut holder)
+                .await
+                .map_err(|err| err.to_string())?;
+            sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))")
+                .bind(&key)
+                .execute(&mut holder)
+                .await
+                .map_err(|err| err.to_string())?;
+            let mut worker = PgConnection::connect(&db.scoped_url)
+                .await
+                .map_err(|err| err.to_string())?;
+            sqlx::query(sqlx::AssertSqlSafe(pin))
+                .execute(&mut worker)
+                .await
+                .map_err(|err| err.to_string())?;
+            sqlx::query("SET statement_timeout = '500ms'")
+                .execute(&mut worker)
+                .await
+                .map_err(|err| err.to_string())?;
+            let failed = store
+                .capture_on_connection(
+                    &mut worker,
+                    &batch(&key, "lock-agent", vec![msg("e1", "user", "held")]),
+                    &CaptureOptions::default(),
+                )
+                .await;
+            let message = failed.expect_err("lock timeout").to_string();
+            assert!(
+                message.contains("canceling statement due to statement timeout"),
+                "{message}"
+            );
+            sqlx::query("SELECT 1")
+                .execute(&mut worker)
+                .await
+                .map_err(|err| err.to_string())?;
+            let mut held = Vec::new();
+            for _ in 0..4 {
+                let mut conn = db.pool.acquire().await.map_err(|err| err.to_string())?;
+                sqlx::query("SET statement_timeout = '500ms'")
+                    .execute(&mut *conn)
+                    .await
+                    .map_err(|err| err.to_string())?;
+                held.push(conn);
+            }
+            drop(held);
+            let blocked = IngestInput {
+                session_id: key.clone(),
+                messages: vec![IngestMessage {
+                    role: "user".to_string(),
+                    content: "blocked".to_string(),
+                    created_at: None,
+                    tool_calls: Vec::new(),
+                }],
+                source: None,
+                agent: Some("lock-agent".to_string()),
+                persona: None,
+                channel: None,
+                env: BTreeMap::new(),
+            };
+            let ingest_failed = MemoryStore::ingest_session(&store, &blocked).await;
+            let ingest_message = ingest_failed.expect_err("ingest lock").to_string();
+            assert!(
+                ingest_message.contains("canceling statement due to statement timeout"),
+                "{ingest_message}"
+            );
+            let mut check = db.pool.acquire().await.map_err(|err| err.to_string())?;
+            sqlx::query("SELECT 1")
+                .execute(&mut *check)
+                .await
+                .map_err(|err| err.to_string())?;
+            drop(check);
+            sqlx::query("ROLLBACK")
+                .execute(&mut holder)
+                .await
+                .map_err(|err| err.to_string())?;
+            store
+                .capture_on_connection(
+                    &mut worker,
+                    &batch(&key, "lock-agent", vec![msg("e2", "user", "released")]),
+                    &CaptureOptions::default(),
+                )
+                .await
+                .map_err(|err| err.to_string())?;
             Ok(())
         },
     )
