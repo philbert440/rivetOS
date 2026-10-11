@@ -36,6 +36,6 @@ pub fn load_str(yaml: &str) -> Result<LoadedConfig, ConfigError> {
 }
 
 pub fn load(path: impl AsRef<Path>) -> Result<LoadedConfig, ConfigError> {
-    let text = std::fs::read_to_string(path)?;
+    let text = protocol::host::read_text(path.as_ref()).map_err(std::io::Error::other)?;
     load_str(&text)
 }

@@ -999,6 +999,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "nix",
  "parking_lot",
  "protocol",
  "rcgen",

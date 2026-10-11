@@ -14,6 +14,7 @@ hostname = { workspace = true }
 http-body-util = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true }
+nix = { workspace = true, features = ["user"] }
 parking_lot = { workspace = true }
 protocol = { path = "../protocol" }
 reqwest = { workspace = true }

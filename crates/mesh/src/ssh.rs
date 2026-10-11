@@ -297,15 +297,7 @@ pub fn remote_mesh_hosts_script(root: Option<&str>) -> String {
 }
 
 pub fn is_process_root() -> bool {
-    match std::fs::read_to_string("/proc/self/status") {
-        Ok(text) => text.lines().any(|line| {
-            let Some(rest) = line.strip_prefix("Uid:") else {
-                return false;
-            };
-            rest.split_whitespace().next() == Some("0")
-        }),
-        Err(_) => false,
-    }
+    nix::unistd::getuid().is_root()
 }
 
 pub fn build_local_mesh_hosts_command(
