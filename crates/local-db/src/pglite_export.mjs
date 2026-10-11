@@ -426,6 +426,7 @@ async function seed(pg, migrationsDir, manifestPath) {
   }
   await seedWorkerQueue(pg)
   await seedHierarchies(pg)
+  await seedBacklog(pg)
   const recounted = await listTables(pg)
   const manifest = { tables: {}, links: {} }
   for (const table of recounted) {
@@ -484,36 +485,156 @@ function qualifyType(typeSchema, formatted) {
 }
 
 function isExportedSchema(schema) {
-  return schema !== 'public' && schema !== 'information_schema' && !String(schema).startsWith('pg_')
+  return (
+    schema !== 'public' &&
+    schema !== 'graphile_worker' &&
+    schema !== 'information_schema' &&
+    !String(schema).startsWith('pg_')
+  )
+}
+
+function identityColumn(type, sequenceName, named) {
+  const base = type + ' PRIMARY KEY GENERATED ALWAYS AS IDENTITY'
+  if (!named) {
+    return base
+  }
+  return base + ' (SEQUENCE NAME graphile_worker.' + sequenceName + ')'
+}
+
+function workerSchemaSql(named) {
+  return (
+    'CREATE SCHEMA graphile_worker;' +
+    'CREATE TABLE graphile_worker._private_job_queues (' +
+    'id ' +
+    identityColumn('integer', 'job_queues_id_seq', named) +
+    ', queue_name text NOT NULL UNIQUE);' +
+    'CREATE TABLE graphile_worker._private_tasks (' +
+    'id ' +
+    identityColumn('integer', 'tasks_id_seq', named) +
+    ', identifier text NOT NULL UNIQUE);' +
+    'CREATE TABLE graphile_worker._private_jobs (' +
+    'id ' +
+    identityColumn('bigint', 'jobs_id_seq1', named) +
+    ', task_id integer NOT NULL REFERENCES graphile_worker._private_tasks (id), ' +
+    'job_queue_id integer REFERENCES graphile_worker._private_job_queues (id), ' +
+    'payload json NOT NULL, priority integer NOT NULL DEFAULT 0, run_at timestamptz, ' +
+    'attempts integer NOT NULL DEFAULT 0, max_attempts integer NOT NULL, key text, flags jsonb);'
+  )
+}
+
+async function createWorkerSchema(pg) {
+  await pg.exec('BEGIN')
+  try {
+    await pg.exec(workerSchemaSql(true))
+    await pg.exec('COMMIT')
+  } catch (namedError) {
+    try {
+      await pg.exec('ROLLBACK')
+    } catch (rollbackError) {
+      console.error(rollbackError && rollbackError.stack ? rollbackError.stack : String(rollbackError))
+    }
+    try {
+      await pg.exec(workerSchemaSql(false))
+      await pg.exec('ALTER SEQUENCE graphile_worker._private_jobs_id_seq RENAME TO jobs_id_seq1')
+      await pg.exec('ALTER SEQUENCE graphile_worker._private_tasks_id_seq RENAME TO tasks_id_seq')
+      await pg.exec('ALTER SEQUENCE graphile_worker._private_job_queues_id_seq RENAME TO job_queues_id_seq')
+    } catch (plainError) {
+      throw new Error(String(namedError && namedError.stack ? namedError.stack : namedError) + '\n' + String(plainError && plainError.stack ? plainError.stack : plainError))
+    }
+  }
+  const expected = [
+    ['_private_jobs', 'id', 'graphile_worker.jobs_id_seq1'],
+    ['_private_tasks', 'id', 'graphile_worker.tasks_id_seq'],
+    ['_private_job_queues', 'id', 'graphile_worker.job_queues_id_seq'],
+  ]
+  for (const [table, column, name] of expected) {
+    const rows = rowsOf(
+      await pg.query('SELECT pg_get_serial_sequence($1, $2) AS name', ['graphile_worker.' + table, column]),
+    )
+    const found = rows[0] && rows[0].name != null ? String(rows[0].name) : ''
+    if (found !== name) {
+      throw new Error('identity sequence for ' + table + '.' + column + ' is ' + found)
+    }
+  }
 }
 
 async function seedWorkerQueue(pg) {
-  await pg.exec(
-    'CREATE SCHEMA graphile_worker;' +
-      "CREATE TYPE graphile_worker.job_state AS ENUM ('created', 'running');" +
-      'CREATE TABLE graphile_worker._private_job_queues (' +
-      'id integer PRIMARY KEY GENERATED ALWAYS AS IDENTITY, ' +
-      'queue_name text NOT NULL UNIQUE);' +
-      'CREATE TABLE graphile_worker._private_tasks (' +
-      'id integer PRIMARY KEY GENERATED ALWAYS AS IDENTITY, ' +
-      'identifier text NOT NULL UNIQUE);' +
-      'CREATE TABLE graphile_worker._private_jobs (' +
-      'id bigint PRIMARY KEY GENERATED ALWAYS AS IDENTITY, ' +
-      'task_id integer NOT NULL REFERENCES graphile_worker._private_tasks (id), ' +
-      "state graphile_worker.job_state NOT NULL DEFAULT 'created', " +
-      'payload json NOT NULL);' +
-      'CREATE INDEX jobs_state ON graphile_worker._private_jobs (state);' +
-      'CREATE FUNCTION graphile_worker.job_count() RETURNS bigint LANGUAGE sql STABLE AS $$ SELECT count(*)::bigint FROM graphile_worker._private_jobs $$;' +
-      'CREATE VIEW graphile_worker.jobs AS SELECT id, payload, state FROM graphile_worker._private_jobs;',
+  await createWorkerSchema(pg)
+  const jobs = [
+    {
+      identifier: 'suggest-tags',
+      payload: '{"summaryId":"44444444-4444-4444-8444-000000000001","marker":"suggest-tags-kept"}',
+      key: 'tags-44444444-4444-4444-8444-000000000001',
+      attempts: 0,
+      maxAttempts: 2,
+      priority: 6,
+    },
+    {
+      identifier: 'extract-wiki',
+      payload: '{"summaryId":"55555555-5555-4555-8555-000000000001","task":"extract-wiki"}',
+      key: 'wiki-ext-55555555-5555-4555-8555-000000000001',
+      attempts: 0,
+      maxAttempts: 2,
+      priority: 10,
+    },
+    {
+      identifier: 'embed-target',
+      payload: '{"copied":"should-not-survive"}',
+      key: 'embed-copied-sentinel',
+      attempts: 0,
+      maxAttempts: 5,
+      priority: 0,
+    },
+    {
+      identifier: 'enqueue-unembedded',
+      payload: '{}',
+      key: 'cron-enqueue-unembedded',
+      attempts: 0,
+      maxAttempts: 25,
+      priority: 0,
+    },
+    {
+      identifier: 'synthesize-tool-call',
+      payload: '{"dead":true}',
+      key: 'dead-synthesize',
+      attempts: 1,
+      maxAttempts: 1,
+      priority: 0,
+    },
+  ]
+  for (const job of jobs) {
+    await pg.query('INSERT INTO graphile_worker._private_tasks (identifier) VALUES ($1)', [job.identifier])
+    await pg.query(
+      'INSERT INTO graphile_worker._private_jobs (task_id, payload, priority, attempts, max_attempts, key) SELECT id, $2::json, $3::integer, $4::integer, $5::integer, $6 FROM graphile_worker._private_tasks WHERE identifier = $1',
+      [job.identifier, job.payload, job.priority, job.attempts, job.maxAttempts, job.key],
+    )
+  }
+  await pg.exec("SELECT setval('graphile_worker.jobs_id_seq1', 50, true)")
+  await pg.exec("SELECT setval('graphile_worker.tasks_id_seq', 50, true)")
+  await pg.exec("SELECT setval('graphile_worker.job_queues_id_seq', 50, true)")
+}
+
+async function seedBacklog(pg) {
+  const conversations = rowsOf(
+    await pg.query('SELECT id::text AS id FROM public.ros_conversations WHERE session_key = $1', ['sample-session']),
   )
-  await pg.query(
-    'INSERT INTO graphile_worker._private_tasks (identifier) VALUES ($1) ON CONFLICT (identifier) DO UPDATE SET identifier = EXCLUDED.identifier',
-    ['extract-wiki'],
-  )
-  await pg.query(
-    'INSERT INTO graphile_worker._private_jobs (task_id, payload) SELECT id, $1::json FROM graphile_worker._private_tasks WHERE identifier = $2',
-    ['{"task":"extract-wiki"}', 'extract-wiki'],
-  )
+  if (!conversations[0] || conversations[0].id == null) {
+    throw new Error('sample conversation is missing')
+  }
+  const conversationId = String(conversations[0].id)
+  await withUserTriggersDisabled(pg, 'public.ros_messages', async () => {
+    await pg.query(
+      'INSERT INTO public.ros_messages (conversation_id, agent, channel, role, content) VALUES ($1::uuid, $2, $3, $4, $5)',
+      [conversationId, 'sample-agent', 'sample-channel', 'user', 'unembedded backlog message text'],
+    )
+    await pg.query(
+      'INSERT INTO public.ros_messages (conversation_id, agent, channel, role, content) VALUES ($1::uuid, $2, $3, $4, $5)',
+      [conversationId, 'sample-agent', 'sample-channel', 'user', 'stale tail text'],
+    )
+  })
+  await pg.query("UPDATE public.ros_conversations SET updated_at = now() - interval '5 days' WHERE id = $1::uuid", [
+    conversationId,
+  ])
 }
 
 async function seedHierarchies(pg) {
@@ -968,11 +1089,69 @@ async function triggerStatements(pg, schema) {
   return rows.map((row) => oneStatement(row.def))
 }
 
+const DERIVED_JOBS = new Set(['embed-target', 'compact-conversation'])
+const CRON_JOBS = new Set([
+  'enqueue-unembedded',
+  'enqueue-unchunked',
+  'enqueue-idle',
+  'enqueue-wiki-backfill',
+  'enqueue-stale-compaction',
+  'enqueue-stale-wiki',
+  'reap-dead-jobs',
+])
+
+async function exportJobs(pg, stream) {
+  const present = rowsOf(await pg.query("SELECT to_regclass('graphile_worker._private_jobs') AS rel"))
+  if (!present[0] || present[0].rel == null) {
+    return
+  }
+  const jobs = rowsOf(
+    await pg.query(
+      'SELECT t.identifier AS identifier, j.payload::text AS payload, j.key AS job_key, ' +
+        'j.max_attempts::text AS max_attempts, j.priority::text AS priority, q.queue_name AS queue_name, ' +
+        'j.run_at::text AS run_at, CASE WHEN j.flags IS NULL THEN NULL ELSE (' +
+        'SELECT json_agg(flag)::text FROM jsonb_object_keys(j.flags) AS flag) END AS flags ' +
+        'FROM graphile_worker._private_jobs j ' +
+        'JOIN graphile_worker._private_tasks t ON t.id = j.task_id ' +
+        'LEFT JOIN graphile_worker._private_job_queues q ON q.id = j.job_queue_id ' +
+        'WHERE j.attempts < j.max_attempts ORDER BY j.id',
+    ),
+  )
+  for (const job of jobs) {
+    const identifier = String(job.identifier)
+    if (DERIVED_JOBS.has(identifier) || CRON_JOBS.has(identifier)) {
+      continue
+    }
+    let flags = null
+    if (job.flags != null) {
+      const parsed = JSON.parse(String(job.flags))
+      if (!Array.isArray(parsed)) {
+        throw new Error('job flags are not an array')
+      }
+      flags = parsed
+    }
+    await writeLine(stream, {
+      op: 'job',
+      identifier,
+      payload: job.payload == null ? null : String(job.payload),
+      job_key: job.job_key == null ? null : String(job.job_key),
+      max_attempts: job.max_attempts == null ? null : String(job.max_attempts),
+      priority: job.priority == null ? null : String(job.priority),
+      queue_name: job.queue_name == null ? null : String(job.queue_name),
+      run_at: job.run_at == null ? null : String(job.run_at),
+      flags,
+    })
+  }
+}
+
 async function exportRows(pg, stream) {
   await exportSchemas(pg, stream)
   const tables = await listTables(pg)
   const ordered = await orderedTables(pg, tables)
   for (const table of ordered) {
+    if (table.schema === 'graphile_worker') {
+      continue
+    }
     const insertCols = table.columns.filter((column) => !column.generated)
     const qual = quoteIdent(table.schema) + '.' + quoteIdent(table.name)
     const counted = rowsOf(await pg.query('SELECT count(*)::bigint AS n FROM ' + qual))
@@ -1026,6 +1205,9 @@ async function exportRows(pg, stream) {
     ),
   )
   for (const row of sequences) {
+    if (String(row.schema) === 'graphile_worker') {
+      continue
+    }
     const called = row.last != null
     const last = called ? String(row.last) : '1'
     await writeLine(stream, {
@@ -1036,6 +1218,7 @@ async function exportRows(pg, stream) {
       called,
     })
   }
+  await exportJobs(pg, stream)
   await writeLine(stream, { op: 'done' })
 }
 

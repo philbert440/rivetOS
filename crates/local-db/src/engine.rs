@@ -18,10 +18,11 @@ use crate::lock::{
     probe_lock_pid, read_embedded_pg_lock, release_owner_lock,
 };
 use crate::migrate::{
-    BoundInsert, DestColumn, ExportAction, MigrationPlan, SkipReason, TypedName, clear_store_work,
-    copy_this_table, export_pglite_source, mask_self_link_columns, missing_relation_message,
-    parse_export_line, pending_marker, pgdata_dir, plan_insert, plan_migration,
-    plan_self_link_updates, record_migrated_sources, setval_statement, source_is_migrated,
+    BoundInsert, CopiedJob, DestColumn, ExportAction, MigrationPlan, SkipReason, TypedName,
+    clear_store_work, copy_this_table, export_pglite_source, install_graphile_schema,
+    keep_copied_job, mask_self_link_columns, missing_relation_message, parse_export_line,
+    pending_marker, pgdata_dir, plan_insert, plan_migration, plan_self_link_updates,
+    record_migrated_sources, setval_statement, source_is_migrated,
 };
 use crate::paths::{
     backups_dir, cluster_dir_for, expand_tilde, lexical_absolute, real_of_nearest, rivet_dir,
@@ -377,7 +378,7 @@ async fn boot_owned(
         }
     };
     let url = embedded_pg_url(i64::from(port));
-    if let Err(failure) = configure_started(&url, &resolved, export.as_deref(), log).await {
+    if let Err(failure) = configure_started(&url, &resolved, export.as_deref(), env, log).await {
         abandon(owned, failure.wipe_pgdata, &lock_path).await;
         return Err(failure.error);
     }
@@ -556,6 +557,7 @@ async fn configure_started(
     url: &str,
     resolved: &ResolvedEmbeddedPg,
     export_path: Option<&Path>,
+    env: &dyn Env,
     log: &dyn EmbeddedPgLog,
 ) -> std::result::Result<(), ConfigureFailure> {
     let mut client = match PgClient::connect(url).await {
@@ -566,7 +568,7 @@ async fn configure_started(
         return Err(configure_failure(error, export_path.is_some()));
     }
     if let Some(path) = export_path {
-        finish_migration(&mut client, resolved, path, log).await?;
+        finish_migration(&mut client, resolved, path, url, env, log).await?;
     }
     Ok(())
 }
@@ -586,12 +588,30 @@ async fn finish_migration(
     client: &mut PgClient,
     resolved: &ResolvedEmbeddedPg,
     export_path: &Path,
+    url: &str,
+    env: &dyn Env,
     log: &dyn EmbeddedPgLog,
 ) -> std::result::Result<(), ConfigureFailure> {
     if let Err(error) = apply_product_schema(client).await {
         return Err(configure_failure(error, true));
     }
-    if let Err(error) = apply_export(client, export_path, &resolved.data_dir, log).await {
+    let jobs = match apply_export(client, export_path, &resolved.data_dir, log).await {
+        Ok(jobs) => jobs,
+        Err(error) => return Err(configure_failure(error, true)),
+    };
+    let root = env.var("RIVETOS_ROOT");
+    if let Err(error) = install_graphile_schema(
+        &resolved.home,
+        &resolved.data_dir,
+        root.as_deref(),
+        url,
+        log,
+    )
+    .await
+    {
+        return Err(configure_failure(error, true));
+    }
+    if let Err(error) = restore_worker_backlog(client, &jobs, wiki_extraction_enabled(env)).await {
         return Err(configure_failure(error, true));
     }
     if let Err(error) =
@@ -604,6 +624,283 @@ async fn finish_migration(
     let pending = pending_marker(&resolved.engine_data_dir);
     if let Err(error) = remove_file_if(&pending).await {
         return Err(configure_failure(error, false));
+    }
+    Ok(())
+}
+
+fn wiki_extraction_enabled(env: &dyn Env) -> bool {
+    env.var("WIKI_EXTRACTION").as_deref() == Some("1")
+}
+
+const ADD_JOB_SQL: &str = "SELECT graphile_worker.add_job(\
+     $1::text, \
+     $2::text::json, \
+     $3::text, \
+     CASE WHEN $4::text IS NULL THEN NULL::timestamptz ELSE $4::text::timestamptz END, \
+     CASE WHEN $5::text IS NULL THEN NULL::integer ELSE $5::text::integer END, \
+     $6::text, \
+     CASE WHEN $7::text IS NULL THEN NULL::integer ELSE $7::text::integer END, \
+     CASE WHEN $8::text IS NULL THEN NULL::text[] \
+          ELSE ARRAY(SELECT item FROM json_array_elements_text($8::text::json) AS item) END, \
+     $9::text)";
+
+const NULL_EMBED_ERROR: &str = "Embedding returned null";
+const EMBED_SWEEP_LIMIT: i64 = 200;
+const EMBED_MAX_ATTEMPTS: i64 = 5;
+const COMPACT_MAX_ATTEMPTS: i64 = 3;
+const WIKI_MAX_ATTEMPTS: i64 = 2;
+const WIKI_PRIORITY: i64 = 10;
+const WIKI_PIPELINE_VERSION: i64 = 4;
+
+struct EmbedSweep {
+    table: &'static str,
+    id_column: &'static str,
+    predicate: &'static str,
+}
+
+const EMBED_SWEEPS: &[EmbedSweep] = &[
+    EmbedSweep {
+        table: "ros_messages",
+        id_column: "id",
+        predicate: "(content IS NOT NULL AND LENGTH(content) > 20) OR (tool_result IS NOT NULL AND LENGTH(tool_result) > 20)",
+    },
+    EmbedSweep {
+        table: "ros_summaries",
+        id_column: "id",
+        predicate: "content IS NOT NULL AND LENGTH(content) > 20",
+    },
+    EmbedSweep {
+        table: "ros_wiki_topics",
+        id_column: "slug",
+        predicate: "search_text IS NOT NULL AND LENGTH(search_text) > 20",
+    },
+];
+
+const CHUNK_SELECT_SQL: &str = "SELECT id::text FROM public.ros_message_chunks \
+     WHERE embedding IS NULL AND embed_status IS NULL \
+       AND content IS NOT NULL AND LENGTH(btrim(content)) > 0 \
+     ORDER BY created_at DESC LIMIT 200";
+
+const COMPACT_SELECT_SQL: &str = "SELECT c.id::text AS conversation_id, \
+            CASE WHEN COUNT(m.id) >= 5 THEN 'session_idle' ELSE 'session_stale' END AS trigger \
+       FROM public.ros_conversations c \
+       JOIN public.ros_messages m ON m.conversation_id = c.id \
+       LEFT JOIN public.ros_summary_sources ss ON ss.message_id = m.id \
+      WHERE ss.summary_id IS NULL \
+        AND ((m.content IS NOT NULL AND LENGTH(m.content) > 10) OR m.tool_name IS NOT NULL) \
+        AND (c.session_key IS NULL OR c.session_key NOT LIKE 'heartbeat:%') \
+      GROUP BY c.id \
+     HAVING (COUNT(m.id) >= 5 AND (COUNT(m.id) >= 10 OR c.updated_at < NOW() - (15 || ' minutes')::interval)) \
+         OR (COUNT(m.id) >= 2 AND c.updated_at < NOW() - (5760 || ' minutes')::interval) \
+      ORDER BY c.updated_at ASC \
+      LIMIT 10";
+
+fn wiki_select_sql() -> String {
+    format!(
+        "SELECT s.id::text AS id, s.conversation_id::text AS conversation_id \
+         FROM public.ros_summaries s \
+         LEFT JOIN public.ros_wiki_extractions e ON e.summary_id = s.id \
+         LEFT JOIN public.ros_conversations c ON c.id = s.conversation_id \
+         WHERE s.kind = 'leaf' \
+           AND (c.session_key IS NULL OR c.session_key NOT LIKE 'heartbeat:%') \
+           AND (e.summary_id IS NULL \
+                OR (e.status = 'failed' AND e.extracted_at < now() - interval '24 hours') \
+                OR (e.status = 'done' AND e.pipeline_version < {WIKI_PIPELINE_VERSION})) \
+         ORDER BY CASE WHEN e.summary_id IS NULL THEN 0 WHEN e.status = 'failed' THEN 1 ELSE 2 END, \
+                  s.created_at ASC \
+         LIMIT 25"
+    )
+}
+
+fn embed_heal_sql(table: &str, predicate: &str) -> String {
+    format!(
+        "UPDATE public.{table} SET embed_status = NULL, embed_error = NULL, embed_failures = 0 \
+         WHERE embedding IS NULL AND embed_status = 'failed' AND embed_error = $1::text AND ({predicate})",
+        table = quote_ident(table),
+    )
+}
+
+fn embed_select_sql(table: &str, id_column: &str, predicate: &str) -> String {
+    format!(
+        "SELECT {id}::text FROM public.{table} \
+         WHERE embedding IS NULL AND embed_status IS NULL AND ({predicate}) \
+         ORDER BY created_at DESC LIMIT {EMBED_SWEEP_LIMIT}",
+        id = quote_ident(id_column),
+        table = quote_ident(table),
+    )
+}
+
+fn embed_job(table: &str, id: &str) -> CopiedJob {
+    CopiedJob {
+        identifier: "embed-target".to_string(),
+        payload: serde_json::json!({
+            "targetTable": table,
+            "targetId": id,
+        })
+        .to_string(),
+        job_key: Some(format!("embed-{table}-{id}")),
+        max_attempts: Some(EMBED_MAX_ATTEMPTS),
+        priority: None,
+        queue_name: None,
+        run_at: None,
+        flags: None,
+    }
+}
+
+async fn enqueue_copied(client: &mut PgClient, job: &CopiedJob) -> Result<()> {
+    client
+        .exec(
+            ADD_JOB_SQL,
+            &[
+                Some(job.identifier.clone()),
+                Some(job.payload.clone()),
+                job.queue_name.clone(),
+                job.run_at.clone(),
+                job.max_attempts.map(|value| value.to_string()),
+                job.job_key.clone(),
+                job.priority.map(|value| value.to_string()),
+                job.flags.clone(),
+                Some("preserve_run_at".to_string()),
+            ],
+            SETUP_TIMEOUT,
+        )
+        .await
+}
+
+async fn rederive_embeddings(client: &mut PgClient) -> Result<()> {
+    for sweep in EMBED_SWEEPS {
+        client
+            .exec(
+                &embed_heal_sql(sweep.table, sweep.predicate),
+                &[Some(NULL_EMBED_ERROR.to_string())],
+                SETUP_TIMEOUT,
+            )
+            .await?;
+        let rows = client
+            .query_optional_columns(
+                &embed_select_sql(sweep.table, sweep.id_column, sweep.predicate),
+                &[],
+                1,
+            )
+            .await?;
+        for row in rows {
+            let Some(id) = row.first().cloned().flatten() else {
+                return Err(LocalDbError::message(format!(
+                    "embedded postgres: embed sweep for {} returned a null id",
+                    sweep.table
+                )));
+            };
+            enqueue_copied(client, &embed_job(sweep.table, &id)).await?;
+        }
+    }
+    if relation_exists(client, "public", "ros_message_chunks").await? {
+        let rows = client
+            .query_optional_columns(CHUNK_SELECT_SQL, &[], 1)
+            .await?;
+        for row in rows {
+            let Some(id) = row.first().cloned().flatten() else {
+                return Err(LocalDbError::message(
+                    "embedded postgres: chunk sweep returned a null id",
+                ));
+            };
+            enqueue_copied(client, &embed_job("ros_message_chunks", &id)).await?;
+        }
+    }
+    Ok(())
+}
+
+async fn rederive_compaction(client: &mut PgClient) -> Result<()> {
+    let rows = client
+        .query_optional_columns(COMPACT_SELECT_SQL, &[], 2)
+        .await?;
+    for row in rows {
+        let conversation_id = row.first().cloned().flatten().ok_or_else(|| {
+            LocalDbError::message(
+                "embedded postgres: compaction sweep returned a null conversation",
+            )
+        })?;
+        let trigger = row.get(1).cloned().flatten().ok_or_else(|| {
+            LocalDbError::message("embedded postgres: compaction sweep returned a null trigger")
+        })?;
+        if trigger != "session_idle" && trigger != "session_stale" {
+            return Err(LocalDbError::message(format!(
+                "embedded postgres: compaction sweep returned trigger {trigger}"
+            )));
+        }
+        enqueue_copied(
+            client,
+            &CopiedJob {
+                identifier: "compact-conversation".to_string(),
+                payload: serde_json::json!({
+                    "conversationId": conversation_id,
+                    "triggerType": trigger,
+                })
+                .to_string(),
+                job_key: Some(conversation_id),
+                max_attempts: Some(COMPACT_MAX_ATTEMPTS),
+                priority: None,
+                queue_name: None,
+                run_at: None,
+                flags: None,
+            },
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+async fn rederive_wiki(client: &mut PgClient) -> Result<()> {
+    let rows = client
+        .query_optional_columns(&wiki_select_sql(), &[], 2)
+        .await?;
+    for row in rows {
+        let summary_id = row.first().cloned().flatten().ok_or_else(|| {
+            LocalDbError::message("embedded postgres: wiki sweep returned a null summary")
+        })?;
+        let conversation_id = row.get(1).cloned().flatten();
+        let payload = match &conversation_id {
+            Some(conversation_id) => serde_json::json!({
+                "summaryId": summary_id,
+                "conversationId": conversation_id,
+            })
+            .to_string(),
+            None => serde_json::json!({
+                "summaryId": summary_id,
+            })
+            .to_string(),
+        };
+        enqueue_copied(
+            client,
+            &CopiedJob {
+                identifier: "extract-wiki".to_string(),
+                payload,
+                job_key: Some(format!("wiki-ext-{summary_id}")),
+                max_attempts: Some(WIKI_MAX_ATTEMPTS),
+                priority: Some(WIKI_PRIORITY),
+                queue_name: None,
+                run_at: None,
+                flags: None,
+            },
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+async fn restore_worker_backlog(
+    client: &mut PgClient,
+    jobs: &[CopiedJob],
+    wiki_extraction: bool,
+) -> Result<()> {
+    rederive_embeddings(client).await?;
+    rederive_compaction(client).await?;
+    if wiki_extraction {
+        rederive_wiki(client).await?;
+    }
+    for job in jobs {
+        if keep_copied_job(&job.identifier, wiki_extraction) {
+            enqueue_copied(client, job).await?;
+        }
     }
     Ok(())
 }
@@ -892,6 +1189,7 @@ struct CopyState {
     saw_done: bool,
     triggers: Option<(String, String)>,
     defer: Option<TableDefer>,
+    jobs: Vec<CopiedJob>,
 }
 
 struct TableDefer {
@@ -914,7 +1212,7 @@ async fn apply_export(
     path: &Path,
     source: &Path,
     log: &dyn EmbeddedPgLog,
-) -> Result<()> {
+) -> Result<Vec<CopiedJob>> {
     log.info(&format!(
         "embedded postgres: restoring PGlite rows from {}",
         path.display()
@@ -927,6 +1225,7 @@ async fn apply_export(
         saw_done: false,
         triggers: None,
         defer: None,
+        jobs: Vec::new(),
     };
     while let Some(line) = lines.next_line().await? {
         let Some(action) = parse_export_line(&line)? else {
@@ -955,7 +1254,7 @@ async fn apply_export(
         "embedded postgres: PGlite directory left in place at {}",
         source.display()
     ));
-    Ok(())
+    Ok(state.jobs)
 }
 
 async fn apply_action(
@@ -1077,6 +1376,10 @@ async fn apply_action(
                     SETUP_TIMEOUT,
                 )
                 .await?;
+            Ok(false)
+        }
+        ExportAction::Job(job) => {
+            state.jobs.push(job);
             Ok(false)
         }
         ExportAction::Done => {
@@ -1486,6 +1789,27 @@ impl PgClient {
                         "embedded postgres: catalog query returned null",
                     ));
                 };
+                values.push(value);
+            }
+            out.push(values);
+        }
+        Ok(out)
+    }
+
+    async fn query_optional_columns(
+        &mut self,
+        sql: &str,
+        params: &[Option<String>],
+        width: usize,
+    ) -> Result<Vec<Vec<Option<String>>>> {
+        let rows = self.query_raw(sql, params).await?;
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            let mut values = Vec::with_capacity(width);
+            for index in 0..width {
+                let value: Option<String> = row
+                    .try_get(index)
+                    .map_err(|error| LocalDbError::Postgres(error.to_string()))?;
                 values.push(value);
             }
             out.push(values);
@@ -3035,7 +3359,7 @@ mod tests {
         let search_path = client.query_text("SHOW search_path").await.expect("search");
         assert_eq!(search_path.as_deref(), Some("\"$user\", public"));
         let content = client
-            .query_text("SELECT content FROM ros_messages")
+            .query_text("SELECT content FROM ros_messages WHERE content = 'sample message'")
             .await
             .expect("content");
         assert_eq!(content.as_deref(), Some("sample message"));
@@ -3065,10 +3389,10 @@ mod tests {
             .expect("tables");
         for (key, entry) in tables {
             let name = entry.get("name").and_then(Value::as_str).expect("name");
-            if name == "_rivetos_migrations" {
+            let schema = entry.get("schema").and_then(Value::as_str).expect("schema");
+            if name == "_rivetos_migrations" || schema == "graphile_worker" {
                 continue;
             }
-            let schema = entry.get("schema").and_then(Value::as_str).expect("schema");
             let expected = entry
                 .get("count")
                 .and_then(Value::as_str)
@@ -3142,13 +3466,16 @@ mod tests {
             .await
             .expect("joined summaries");
         assert_eq!(joined, 100);
-        let definition = client
-            .query_text("SELECT pg_get_functiondef('graphile_worker.job_count()'::regprocedure)")
+        let job_count = client
+            .query_text("SELECT to_regprocedure('graphile_worker.job_count()')::text")
             .await
             .expect("job_count");
-        let definition_text = definition.expect("job_count def").to_lowercase();
-        assert!(definition_text.contains("language sql"));
-        assert!(!definition_text.contains("plpgsql"));
+        assert_eq!(job_count, None);
+        let revision = client
+            .query_text("SELECT max(id)::text FROM graphile_worker.migrations")
+            .await
+            .expect("revision");
+        assert_eq!(revision.as_deref(), Some("19"));
         let view_kind = client
             .query_text(
                 "SELECT c.relkind::text FROM pg_class c \
@@ -3158,23 +3485,33 @@ mod tests {
             .await
             .expect("jobs view");
         assert_eq!(view_kind.as_deref(), Some("v"));
-        let payload = client
-            .query_text("SELECT payload::text FROM graphile_worker.jobs")
+        let main_index = client
+            .query_text(
+                "SELECT indexname FROM pg_indexes WHERE schemaname = 'graphile_worker' AND indexname = 'jobs_main_index'",
+            )
             .await
-            .expect("payload");
-        assert!(
-            payload
-                .as_deref()
-                .is_some_and(|text| text.contains("extract-wiki"))
-        );
-        let index = client
+            .expect("jobs_main_index");
+        assert_eq!(main_index.as_deref(), Some("jobs_main_index"));
+        let old_index = client
             .query_text(
                 "SELECT indexname FROM pg_indexes WHERE schemaname = 'graphile_worker' AND indexname = 'jobs_state'",
             )
             .await
             .expect("jobs_state");
-        assert_eq!(index.as_deref(), Some("jobs_state"));
-        for table in ["_private_jobs", "_private_tasks", "_private_job_queues"] {
+        assert_eq!(old_index, None);
+        for (table, expected) in [
+            ("_private_jobs", "graphile_worker.jobs_id_seq1"),
+            ("_private_tasks", "graphile_worker.tasks_id_seq"),
+            ("_private_job_queues", "graphile_worker.job_queues_id_seq"),
+        ] {
+            let sequence = client
+                .query_one_text(
+                    "SELECT pg_get_serial_sequence(format('%I.%I', 'graphile_worker', $1::text), 'id')",
+                    &[Some(table.to_string())],
+                )
+                .await
+                .expect("sequence");
+            assert_eq!(sequence.as_deref(), Some(expected), "{table}");
             let marker = client
                 .query_text(&format!(
                     "SELECT a.attidentity::text FROM pg_attribute a \
@@ -3186,54 +3523,136 @@ mod tests {
                 .expect("identity");
             assert_eq!(marker.as_deref(), Some("a"), "{table}");
         }
-        let job_id = client
-            .query_text("SELECT id::text FROM graphile_worker._private_jobs")
-            .await
-            .expect("job id");
-        assert_eq!(job_id.as_deref(), Some("1"));
-        let task_id = client
-            .query_text(
-                "SELECT id::text FROM graphile_worker._private_tasks WHERE identifier = 'extract-wiki'",
+        for name in ["jobs_id_seq1", "tasks_id_seq", "job_queues_id_seq"] {
+            let last = client
+                .query_text(&format!(
+                    "SELECT last_value::text FROM graphile_worker.{}",
+                    quote_ident(name)
+                ))
+                .await
+                .expect("last_value");
+            assert_ne!(last.as_deref(), Some("50"), "{name}");
+            assert!(
+                last.as_deref().is_some_and(|value| !value.is_empty()),
+                "{name}"
+            );
+        }
+        let export_text =
+            std::fs::read_to_string(crate::migrate::export_file(&home, &data_dir)).expect("export");
+        assert!(export_text.contains("\"op\":\"job\""));
+        assert!(export_text.contains("suggest-tags-kept"));
+        assert!(!export_text.contains("tasks_id_seq"));
+        assert!(!export_text.contains("graphile_worker"));
+        assert!(!export_text.contains("should-not-survive"));
+        assert!(!export_text.contains("enqueue-unembedded"));
+        assert!(!export_text.contains("dead"));
+        let message_id = client
+            .query_one_text(
+                "SELECT id::text FROM ros_messages WHERE content = $1::text",
+                &[Some("unembedded backlog message text".to_string())],
             )
             .await
-            .expect("task id");
-        assert_eq!(task_id.as_deref(), Some("1"));
-        let jobs_last = client
-            .query_text("SELECT last_value::text FROM graphile_worker._private_jobs_id_seq")
+            .expect("backlog id")
+            .expect("backlog row");
+        let embed = client
+            .query_one_text(
+                "SELECT j.payload::text FROM graphile_worker._private_jobs j \
+                 JOIN graphile_worker._private_tasks t ON t.id = j.task_id \
+                 WHERE t.identifier = 'embed-target' AND position($1::text in j.payload::text) > 0",
+                &[Some(message_id.clone())],
+            )
             .await
-            .expect("jobs sequence");
-        assert_eq!(jobs_last.as_deref(), Some("1"));
-        let jobs_called = client
-            .query_text("SELECT is_called::text FROM graphile_worker._private_jobs_id_seq")
+            .expect("embed");
+        assert!(
+            embed
+                .as_deref()
+                .is_some_and(|text| text.contains(&message_id))
+        );
+        let leaked = client
+            .query_i64(
+                "SELECT count(*)::bigint FROM graphile_worker._private_jobs WHERE payload::text LIKE '%should-not-survive%'",
+            )
             .await
-            .expect("jobs called");
-        assert_eq!(jobs_called.as_deref(), Some("true"));
+            .expect("leaked embed");
+        assert_eq!(leaked, 0);
+        let dead = client
+            .query_i64(
+                "SELECT count(*)::bigint FROM graphile_worker._private_jobs WHERE payload::text LIKE '%dead%'",
+            )
+            .await
+            .expect("dead");
+        assert_eq!(dead, 0);
+        let cron = client
+            .query_i64(
+                "SELECT count(*)::bigint FROM graphile_worker._private_tasks WHERE identifier = 'enqueue-unembedded'",
+            )
+            .await
+            .expect("cron");
+        assert_eq!(cron, 0);
+        let tags = client
+            .query_one_text(
+                "SELECT j.payload::text FROM graphile_worker._private_jobs j \
+                 JOIN graphile_worker._private_tasks t ON t.id = j.task_id \
+                 WHERE t.identifier = 'suggest-tags'",
+                &[],
+            )
+            .await
+            .expect("suggest-tags")
+            .expect("suggest-tags payload");
+        assert!(tags.contains("suggest-tags-kept"));
+        let tag_priority = client
+            .query_one_text(
+                "SELECT j.priority::text FROM graphile_worker._private_jobs j \
+                 JOIN graphile_worker._private_tasks t ON t.id = j.task_id \
+                 WHERE t.identifier = 'suggest-tags'",
+                &[],
+            )
+            .await
+            .expect("suggest priority");
+        assert_eq!(tag_priority.as_deref(), Some("6"));
+        let copied_wiki = client
+            .query_one_text(
+                "SELECT j.payload::text FROM graphile_worker._private_jobs j \
+                 JOIN graphile_worker._private_tasks t ON t.id = j.task_id \
+                 WHERE t.identifier = 'extract-wiki'",
+                &[],
+            )
+            .await
+            .expect("extract-wiki")
+            .expect("extract-wiki payload");
+        assert!(copied_wiki.contains("extract-wiki"));
+        let conversation_id = client
+            .query_one_text(
+                "SELECT id::text FROM ros_conversations WHERE session_key = 'sample-session'",
+                &[],
+            )
+            .await
+            .expect("conversation")
+            .expect("conversation id");
+        let compact = client
+            .query_one_text(
+                "SELECT j.payload::text FROM graphile_worker._private_jobs j \
+                 JOIN graphile_worker._private_tasks t ON t.id = j.task_id \
+                 WHERE t.identifier = 'compact-conversation' AND j.key = $1::text",
+                &[Some(conversation_id.clone())],
+            )
+            .await
+            .expect("compact")
+            .expect("compact payload");
+        assert!(compact.contains(&conversation_id));
+        assert!(compact.contains("session_stale"));
         client
-            .batch(
-                "INSERT INTO graphile_worker._private_jobs (task_id, payload) VALUES (1, '{\"task\":\"again\"}'::json)",
+            .exec(
+                "SELECT graphile_worker.add_job($1::text, $2::text::json, NULL::text, NULL::timestamptz, 5, $3::text, NULL::integer, NULL::text[], 'preserve_run_at')",
+                &[
+                    Some("embed-target".to_string()),
+                    Some(r#"{"targetTable":"ros_messages","targetId":"second-boot"}"#.to_string()),
+                    Some("second-boot-marker".to_string()),
+                ],
                 COMMAND_TIMEOUT,
             )
             .await
-            .expect("next job");
-        let next_job = client
-            .query_text(
-                "SELECT id::text FROM graphile_worker._private_jobs WHERE payload::text LIKE '%again%'",
-            )
-            .await
-            .expect("next job id");
-        assert_eq!(next_job.as_deref(), Some("2"));
-        client
-            .batch(
-                "INSERT INTO graphile_worker._private_job_queues (queue_name) VALUES ('default')",
-                COMMAND_TIMEOUT,
-            )
-            .await
-            .expect("queue");
-        let queue_id = client
-            .query_text("SELECT id::text FROM graphile_worker._private_job_queues")
-            .await
-            .expect("queue id");
-        assert_eq!(queue_id.as_deref(), Some("1"));
+            .expect("marker");
         drop(client);
         handle.close().await.expect("close");
         assert!(source_is_migrated(&home, &data_dir).expect("recorded"));
@@ -3254,20 +3673,41 @@ mod tests {
         let mut client = PgClient::connect(again.pg_url())
             .await
             .expect("connect later");
+        let later_revision = client
+            .query_text("SELECT max(id)::text FROM graphile_worker.migrations")
+            .await
+            .expect("later revision");
+        assert_eq!(later_revision.as_deref(), Some("19"));
         let kept = client
-            .query_text("SELECT payload::text FROM graphile_worker._private_jobs WHERE id = 2")
+            .query_one_text(
+                "SELECT j.payload::text FROM graphile_worker._private_jobs j WHERE j.key = 'second-boot-marker'",
+                &[],
+            )
             .await
-            .expect("kept job");
-        assert!(kept.as_deref().is_some_and(|text| text.contains("again")));
-        let original = client
-            .query_text("SELECT payload::text FROM graphile_worker.jobs WHERE id = 1")
+            .expect("marker later")
+            .expect("marker payload");
+        assert!(kept.contains("second-boot"));
+        let kept_tags = client
+            .query_one_text(
+                "SELECT j.payload::text FROM graphile_worker._private_jobs j \
+                 JOIN graphile_worker._private_tasks t ON t.id = j.task_id \
+                 WHERE t.identifier = 'suggest-tags'",
+                &[],
+            )
             .await
-            .expect("original job");
-        assert!(
-            original
-                .as_deref()
-                .is_some_and(|text| text.contains("extract-wiki"))
-        );
+            .expect("tags later")
+            .expect("tags payload");
+        assert!(kept_tags.contains("suggest-tags-kept"));
+        let kept_embed = client
+            .query_one_text(
+                "SELECT j.payload::text FROM graphile_worker._private_jobs j \
+                 JOIN graphile_worker._private_tasks t ON t.id = j.task_id \
+                 WHERE t.identifier = 'embed-target' AND position($1::text in j.payload::text) > 0",
+                &[Some(message_id)],
+            )
+            .await
+            .expect("embed later");
+        assert!(kept_embed.is_some());
         drop(client);
         again.close().await.expect("close later");
         let _ = std::fs::remove_dir_all(&home);

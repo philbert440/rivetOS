@@ -23,6 +23,7 @@ const LEDGER_LOCK_TIMEOUT: Duration = Duration::from_secs(30);
 const LOCKFILE: &str = "rivetos-owner.lock";
 
 const EXPORT_SCRIPT: &str = include_str!("pglite_export.mjs");
+const GRAPHILE_SCRIPT: &str = include_str!("graphile_migrate.mjs");
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SkipReason {
@@ -83,6 +84,18 @@ pub struct DestColumn {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CopiedJob {
+    pub identifier: String,
+    pub payload: String,
+    pub job_key: Option<String>,
+    pub max_attempts: Option<i64>,
+    pub priority: Option<i64>,
+    pub queue_name: Option<String>,
+    pub run_at: Option<String>,
+    pub flags: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExportAction {
     Exec(String),
     Insert(RowBatch),
@@ -98,6 +111,7 @@ pub enum ExportAction {
         called: bool,
     },
     Ddl(String),
+    Job(CopiedJob),
     Done,
 }
 
@@ -134,6 +148,10 @@ pub fn work_dir(home: &Path) -> PathBuf {
 
 pub fn store_work_dir(home: &Path, source: &Path) -> PathBuf {
     work_dir(home).join(store_slug(source))
+}
+
+pub fn export_file(home: &Path, source: &Path) -> PathBuf {
+    store_work_dir(home, source).join("pglite-export.jsonl")
 }
 
 pub fn plan_migration(
@@ -215,6 +233,27 @@ pub async fn clear_store_work(home: &Path, source: &Path) -> Result<()> {
 
 pub fn copy_this_table(table: &str) -> bool {
     table != "_rivetos_migrations"
+}
+
+const DERIVED_JOBS: &[&str] = &["embed-target", "compact-conversation"];
+const CRON_JOBS: &[&str] = &[
+    "enqueue-unembedded",
+    "enqueue-unchunked",
+    "enqueue-idle",
+    "enqueue-wiki-backfill",
+    "enqueue-stale-compaction",
+    "enqueue-stale-wiki",
+    "reap-dead-jobs",
+];
+
+pub fn keep_copied_job(identifier: &str, wiki_extraction: bool) -> bool {
+    if DERIVED_JOBS.contains(&identifier) || CRON_JOBS.contains(&identifier) {
+        return false;
+    }
+    if identifier == "extract-wiki" && wiki_extraction {
+        return false;
+    }
+    true
 }
 
 pub fn missing_relation_message(schema: &str, name: &str) -> String {
@@ -457,6 +496,7 @@ pub fn parse_export_line(line: &str) -> Result<Option<ExportAction>> {
                 })?,
         },
         "ddl" => ExportAction::Ddl(required_str(&value, "sql")?),
+        "job" => ExportAction::Job(parse_job(&value)?),
         "done" => ExportAction::Done,
         other => {
             return Err(LocalDbError::message(format!(
@@ -530,6 +570,82 @@ pub fn package_entry(dir: &Path, export_key: &str) -> Result<PathBuf> {
     Ok(dir.join(relative))
 }
 
+pub fn locate_graphile(root: &Path) -> Result<PathBuf> {
+    let core_nested = join_rel(&["packages", "core", "node_modules", "graphile-worker"]);
+    let relatives = [
+        "node_modules/graphile-worker",
+        "services/embedding-worker/node_modules/graphile-worker",
+        "services/compaction-worker/node_modules/graphile-worker",
+        core_nested.as_str(),
+    ];
+    for relative in relatives {
+        let path = root.join(relative);
+        if path.join("package.json").is_file() {
+            return Ok(path);
+        }
+    }
+    Err(LocalDbError::message(format!(
+        "embedded postgres: graphile-worker was not found under {} (set RIVETOS_ROOT to the TypeScript install that contains graphile-worker)",
+        root.display()
+    )))
+}
+
+pub async fn install_graphile_schema(
+    home: &Path,
+    source: &Path,
+    rivet_root: Option<&str>,
+    pg_url: &str,
+    log: &dyn EmbeddedPgLog,
+) -> Result<()> {
+    let Some(root) = rivet_root.filter(|value| !value.is_empty()) else {
+        return Err(LocalDbError::message(
+            "embedded postgres: RIVETOS_ROOT is not set, so graphile-worker cannot be located",
+        ));
+    };
+    let package = locate_graphile(Path::new(root))?;
+    let work = store_work_dir(home, source);
+    tokio::fs::create_dir_all(&work).await?;
+    let script = work.join("graphile_migrate.mjs");
+    write_private(&script, GRAPHILE_SCRIPT.as_bytes()).await?;
+    set_mode(&script, 0o700).await?;
+    let package_json = package.join("package.json");
+    let command = format!(
+        "node {} {}",
+        shell_quote(&script.display().to_string()),
+        shell_quote(&package_json.display().to_string())
+    );
+    ensure_node(&command).await?;
+    log.info(&format!(
+        "embedded postgres: applying graphile-worker migrations from {}",
+        package.display()
+    ));
+    let mut process = tokio::process::Command::new("node");
+    process
+        .arg(&script)
+        .arg(&package_json)
+        .kill_on_drop(true)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    embedded_pg_env(pg_url).apply_to_tokio(&mut process);
+    let child = process.spawn().map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            LocalDbError::message(node_missing_message(&command))
+        } else {
+            LocalDbError::Io(error)
+        }
+    })?;
+    wait_child(child, EXPORT_TIMEOUT)
+        .await
+        .map_err(|error| match error {
+            LocalDbError::Message(text) => LocalDbError::message(format!(
+                "embedded postgres: graphile-worker migration failed ({text})"
+            )),
+            other => other,
+        })?;
+    log.info("embedded postgres: graphile-worker migrations applied");
+    Ok(())
+}
+
 pub fn locate_pglite(root: &Path) -> Result<PglitePaths> {
     let pglite_boot = join_rel(&[
         "packages",
@@ -590,7 +706,7 @@ async fn prepare_export(
     let request = ExportRequest {
         source_copy: source_copy.to_path_buf(),
         script,
-        export_out: work.join("pglite-export.jsonl"),
+        export_out: export_file(home, source),
         pglite_entry: paths.entry,
         vector_entry: paths.vector,
         trgm_entry: paths.trgm,
@@ -682,6 +798,73 @@ fn export_command(request: &ExportRequest) -> String {
         parts.push(shell_quote(&trgm.display().to_string()));
     }
     parts.join(" ")
+}
+
+fn parse_job(value: &Value) -> Result<CopiedJob> {
+    let identifier = required_str(value, "identifier")?;
+    let payload = required_str(value, "payload")?;
+    serde_json::from_str::<Value>(&payload)
+        .map_err(|_| LocalDbError::message("embedded postgres: PGlite job payload is not json"))?;
+    Ok(CopiedJob {
+        identifier,
+        payload,
+        job_key: optional_str(value, "job_key")?,
+        max_attempts: optional_int(value, "max_attempts")?,
+        priority: optional_int(value, "priority")?,
+        queue_name: optional_str(value, "queue_name")?,
+        run_at: optional_str(value, "run_at")?,
+        flags: optional_flags(value)?,
+    })
+}
+
+fn optional_str(value: &Value, key: &str) -> Result<Option<String>> {
+    match value.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(text)) => Ok(Some(text.clone())),
+        Some(_) => Err(LocalDbError::message(format!(
+            "embedded postgres: PGlite export {key} is not a string"
+        ))),
+    }
+}
+
+fn optional_int(value: &Value, key: &str) -> Result<Option<i64>> {
+    match value.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(child) => {
+            let parsed = if let Some(text) = child.as_str() {
+                text.parse::<i64>().ok()
+            } else {
+                child.as_i64()
+            };
+            parsed.map(Some).ok_or_else(|| {
+                LocalDbError::message(format!(
+                    "embedded postgres: PGlite export {key} is not an integer"
+                ))
+            })
+        }
+    }
+}
+
+fn optional_flags(value: &Value) -> Result<Option<String>> {
+    match value.get("flags") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Array(items)) if items.is_empty() => Ok(None),
+        Some(Value::Array(items)) => {
+            let mut flags = Vec::with_capacity(items.len());
+            for item in items {
+                let Some(text) = item.as_str() else {
+                    return Err(LocalDbError::message(
+                        "embedded postgres: PGlite job flags contain a non-string",
+                    ));
+                };
+                flags.push(Value::String(text.to_string()));
+            }
+            Ok(Some(Value::Array(flags).to_string()))
+        }
+        Some(_) => Err(LocalDbError::message(
+            "embedded postgres: PGlite job flags are not an array",
+        )),
+    }
 }
 
 fn parse_insert(value: &Value) -> Result<RowBatch> {
@@ -1143,10 +1326,14 @@ mod tests {
         assert!(EXPORT_SCRIPT.contains("pg_get_functiondef"));
         assert!(EXPORT_SCRIPT.contains("parent_task_id"));
         assert!(EXPORT_SCRIPT.contains("extract-wiki"));
-        assert!(EXPORT_SCRIPT.contains("job_count"));
+        assert!(EXPORT_SCRIPT.contains("tasks_id_seq"));
+        assert!(EXPORT_SCRIPT.contains("op: 'job'"));
+        assert!(EXPORT_SCRIPT.contains("schema === 'graphile_worker'"));
+        assert!(GRAPHILE_SCRIPT.contains("runMigrations"));
         assert!(EXPORT_SCRIPT.contains("GENERATED ALWAYS AS IDENTITY"));
         assert!(EXPORT_SCRIPT.contains("_private_job_queues"));
-        assert!(EXPORT_SCRIPT.contains("ON CONFLICT (identifier)"));
+        assert!(!EXPORT_SCRIPT.contains("job_count"));
+        assert!(!EXPORT_SCRIPT.contains("ON CONFLICT (identifier)"));
         assert!(!EXPORT_SCRIPT.contains("op: 'table'"));
         assert!(!EXPORT_SCRIPT.contains("pgDump"));
         assert!(!EXPORT_SCRIPT.contains("pglite-tools"));
@@ -1374,6 +1561,43 @@ mod tests {
             }
             other => panic!("unexpected {other:?}"),
         }
+        assert!(!keep_copied_job("embed-target", false));
+        assert!(!keep_copied_job("compact-conversation", true));
+        assert!(!keep_copied_job("enqueue-unembedded", false));
+        assert!(!keep_copied_job("enqueue-unchunked", false));
+        assert!(!keep_copied_job("enqueue-idle", false));
+        assert!(!keep_copied_job("enqueue-wiki-backfill", false));
+        assert!(!keep_copied_job("enqueue-stale-compaction", false));
+        assert!(!keep_copied_job("enqueue-stale-wiki", false));
+        assert!(!keep_copied_job("reap-dead-jobs", false));
+        assert!(keep_copied_job("extract-wiki", false));
+        assert!(!keep_copied_job("extract-wiki", true));
+        assert!(keep_copied_job("suggest-tags", false));
+        assert!(keep_copied_job("suggest-tags", true));
+        assert!(keep_copied_job("synthesize-tool-call", false));
+        assert!(keep_copied_job("run-task", false));
+        assert!(keep_copied_job("run-task:node-a", false));
+        assert!(keep_copied_job("consolidate-wiki", true));
+        assert!(keep_copied_job("recompile-wiki", false));
+        let job_line = r#"{"op":"job","identifier":"suggest-tags","payload":"{\"marker\":\"suggest-tags-kept\"}","job_key":"tags-1","max_attempts":"2","priority":"6","queue_name":null,"run_at":null,"flags":["keep"]}"#;
+        let job = parse_export_line(job_line).expect("job").expect("action");
+        match job {
+            ExportAction::Job(copied) => {
+                assert_eq!(copied.identifier, "suggest-tags");
+                assert_eq!(copied.payload, r#"{"marker":"suggest-tags-kept"}"#);
+                assert_eq!(copied.job_key.as_deref(), Some("tags-1"));
+                assert_eq!(copied.max_attempts, Some(2));
+                assert_eq!(copied.priority, Some(6));
+                assert_eq!(copied.queue_name, None);
+                assert_eq!(copied.run_at, None);
+                assert_eq!(copied.flags.as_deref(), Some("[\"keep\"]"));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        assert!(
+            parse_export_line(r#"{"op":"job","identifier":"suggest-tags","payload":"not-json"}"#)
+                .is_err()
+        );
         let sql = setval_statement();
         assert!(sql.contains("format('%I.%I'"));
         assert!(sql.contains("$1::text"));
