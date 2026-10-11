@@ -10,6 +10,10 @@ use mesh::{
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+fn js(value: Value) -> protocol::js::JsValue {
+    protocol::js::from_serde(&value)
+}
+
 fn plain(agent: &str) -> AgentChannelConfig {
     let mut config = AgentChannelConfig::new(agent);
     config.port = 0;
@@ -107,7 +111,7 @@ async fn delivers_the_inbound_message_and_waits_for_send() {
             seen_cb.lock().push(message.clone());
             responder.send(
                 &message.channel_id,
-                &format!("I got your message: {}", message.text),
+                format!("I got your message: {}", message.text),
             );
             Ok(())
         }
@@ -288,6 +292,48 @@ async fn from_agent_identity_and_the_response_echo_keep_the_surrogate() {
             .unwrap()
             .units(),
         peer.as_slice()
+    );
+    channel.stop().await;
+}
+
+#[tokio::test]
+async fn server_reply_keeps_a_lone_surrogate() {
+    let channel = started("opus").await;
+    let responder = channel.clone();
+    channel.on_message(move |message| {
+        let responder = responder.clone();
+        async move {
+            responder.send(&message.channel_id, message.text.clone());
+            Ok(())
+        }
+    });
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+    let response = client
+        .post(format!(
+            "http://127.0.0.1:{}/api/message",
+            channel.bound_port()
+        ))
+        .header("content-type", "application/json")
+        .body(r#"{"fromAgent":"peer","message":"hi \ud83d","waitForResponse":true}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    let raw = response.text().await.unwrap();
+    assert!(raw.contains(r#""response":"hi \ud83d""#));
+    let parsed = protocol::js::parse(&raw).unwrap();
+    let mut expected: Vec<u16> = "hi ".encode_utf16().collect();
+    expected.push(0xD83D);
+    assert_eq!(
+        parsed
+            .get("response")
+            .and_then(protocol::js::JsValue::as_js_string)
+            .unwrap()
+            .units(),
+        expected.as_slice()
     );
     channel.stop().await;
 }
@@ -584,19 +630,19 @@ async fn agent_message_tool_schema_peers_and_texts() {
             .any(|item| item == "message")
     );
     let unknown = tool
-        .execute(&json!({ "to_agent": "unknown", "message": "hi" }))
+        .execute(&js(json!({ "to_agent": "unknown", "message": "hi" })))
         .await;
     assert_eq!(
         unknown.to_utf8(),
         "Error: Unknown peer agent \"unknown\". Available peers: none"
     );
-    let missing = tool.execute(&json!({ "message": "hi" })).await;
+    let missing = tool.execute(&js(json!({ "message": "hi" }))).await;
     assert_eq!(
         missing.to_utf8(),
         "Error: Unknown peer agent \"undefined\". Available peers: none"
     );
     let null_peer = tool
-        .execute(&json!({ "to_agent": Value::Null, "message": "hi" }))
+        .execute(&js(json!({ "to_agent": Value::Null, "message": "hi" })))
         .await;
     assert_eq!(
         null_peer.to_utf8(),
@@ -607,7 +653,7 @@ async fn agent_message_tool_schema_peers_and_texts() {
     receiver.on_message(move |message| {
         let echo = echo.clone();
         async move {
-            echo.send(&message.channel_id, &format!("Grok says: {}", message.text));
+            echo.send(&message.channel_id, format!("Grok says: {}", message.text));
             Ok(())
         }
     });
@@ -622,15 +668,17 @@ async fn agent_message_tool_schema_peers_and_texts() {
     let sender = AgentChannel::new(sender_config);
     let tool = sender.create_message_tool();
     let result = tool
-        .execute(&json!({ "to_agent": "grok", "message": "Hello from opus!" }))
+        .execute(&js(
+            json!({ "to_agent": "grok", "message": "Hello from opus!" }),
+        ))
         .await;
     assert!(result.to_utf8().contains("Hello from opus"));
     let async_result = tool
-        .execute(&json!({
+        .execute(&js(json!({
             "to_agent": "grok",
             "message": "FYI notification",
             "wait_for_response": false
-        }))
+        })))
         .await;
     assert!(async_result.to_utf8().contains("Message sent to grok"));
     assert!(
@@ -659,19 +707,23 @@ async fn tool_reports_http_status_null_ids_and_bearer_undefined() {
     ];
     let tool = AgentChannel::new(config).create_message_tool();
     let missing = tool
-        .execute(&json!({ "to_agent": "missing", "message": "x", "wait_for_response": false }))
+        .execute(&js(
+            json!({ "to_agent": "missing", "message": "x", "wait_for_response": false }),
+        ))
         .await;
     assert!(missing.to_utf8().contains("Request ID: undefined"));
     let nullish = tool
-        .execute(&json!({ "to_agent": "nullish", "message": "x", "wait_for_response": false }))
+        .execute(&js(
+            json!({ "to_agent": "nullish", "message": "x", "wait_for_response": false }),
+        ))
         .await;
     assert!(nullish.to_utf8().contains("Request ID: null"));
     let empty = tool
-        .execute(&json!({ "to_agent": "empty", "message": "x" }))
+        .execute(&js(json!({ "to_agent": "empty", "message": "x" })))
         .await;
     assert_eq!(empty.to_utf8(), "[no response]");
     let failed = tool
-        .execute(&json!({ "to_agent": "failed", "message": "x" }))
+        .execute(&js(json!({ "to_agent": "failed", "message": "x" })))
         .await;
     assert!(
         failed
@@ -679,7 +731,7 @@ async fn tool_reports_http_status_null_ids_and_bearer_undefined() {
             .contains("Error sending message to failed: HTTP 500: nope")
     );
     let echoed = tool
-        .execute(&json!({ "to_agent": "echo", "message": "x" }))
+        .execute(&js(json!({ "to_agent": "echo", "message": "x" })))
         .await;
     assert_eq!(echoed.to_utf8(), "Bearer undefined");
 }
@@ -692,15 +744,48 @@ async fn peer_success_keeps_json_parse_text_with_an_unpaired_surrogate() {
     config.peers = vec![peer("emoji", response_text), peer("plain", ignored)];
     let tool = AgentChannel::new(config).create_message_tool();
     let first = tool
-        .execute(&json!({ "to_agent": "emoji", "message": "x" }))
+        .execute(&js(json!({ "to_agent": "emoji", "message": "x" })))
         .await;
     let mut expected: Vec<u16> = "done ".encode_utf16().collect();
     expected.push(0xD83D);
     assert_eq!(first.units(), expected.as_slice());
     let second = tool
-        .execute(&json!({ "to_agent": "plain", "message": "x" }))
+        .execute(&js(json!({ "to_agent": "plain", "message": "x" })))
         .await;
     assert_eq!(second.to_utf8(), "plain");
+}
+
+#[tokio::test]
+async fn outbound_text_keeps_a_lone_surrogate() {
+    let (port, seen) = serve_capture(200, r#"{"response":"ok"}"#).await;
+    let mut config = AgentChannelConfig::new("opus");
+    config.peers = vec![peer("cap", port)];
+    let tool = AgentChannel::new(config).create_message_tool();
+    let args =
+        protocol::js::parse(r#"{"to_agent":"cap","message":"hi \ud83d","wait_for_response":true}"#)
+            .unwrap();
+    let result = tool.execute(&args).await;
+    assert_eq!(result.to_utf8(), "ok");
+    let raw = seen.lock().clone();
+    let body = raw.split("\r\n\r\n").nth(1).unwrap();
+    let parsed = protocol::js::parse(body).unwrap();
+    let mut expected: Vec<u16> = "hi ".encode_utf16().collect();
+    expected.push(0xD83D);
+    assert_eq!(
+        parsed
+            .get("message")
+            .and_then(protocol::js::JsValue::as_js_string)
+            .unwrap()
+            .units(),
+        expected.as_slice()
+    );
+
+    let unknown = protocol::js::parse(r#"{"to_agent":"nope\ud83d","message":"x"}"#).unwrap();
+    let err = tool.execute(&unknown).await;
+    let mut error_units: Vec<u16> = "Error: Unknown peer agent \"nope".encode_utf16().collect();
+    error_units.push(0xD83D);
+    error_units.extend("\". Available peers: cap".encode_utf16());
+    assert_eq!(err.units(), error_units.as_slice());
 }
 
 #[tokio::test]
@@ -712,7 +797,7 @@ async fn two_channels_message_each_other_and_port_in_use_is_reported() {
         async move {
             left_send.send(
                 &message.channel_id,
-                &format!("Opus received: {}", message.text),
+                format!("Opus received: {}", message.text),
             );
             Ok(())
         }
@@ -726,7 +811,7 @@ async fn two_channels_message_each_other_and_port_in_use_is_reported() {
                 url: format!("http://127.0.0.1:{}", left.bound_port()),
                 secret: None,
             },
-            &json!({ "fromAgent": "grok", "message": "ping from grok" }),
+            &js(json!({ "fromAgent": "grok", "message": "ping from grok" })),
         )
         .await
         .unwrap();
@@ -805,7 +890,7 @@ async fn plugin_config_reads_snake_case_peers_and_rejects_partial_tls() {
     assert!(err.to_string().contains("TLS"));
     let tool = channel.create_message_tool();
     let listed = tool
-        .execute(&json!({ "to_agent": "missing", "message": "hi" }))
+        .execute(&js(json!({ "to_agent": "missing", "message": "hi" })))
         .await;
     assert!(listed.to_utf8().contains("Available peers: opus, local"));
 }
@@ -891,7 +976,10 @@ async fn join_keeps_typed_fields_and_omits_null_operators() {
     assert!(node.original().get("sshUser").unwrap().is_null());
     assert_eq!(node.port().unwrap().as_f64(), 3100.0);
     assert_eq!(node.agents().unwrap(), vec!["opus".to_string()]);
-    assert_eq!(node.status(), Some("online"));
+    assert_eq!(
+        node.status().map(protocol::js::JsString::to_utf8),
+        Some("online")
+    );
     assert_eq!(
         node.metadata()
             .unwrap()
@@ -956,7 +1044,9 @@ async fn zero_wait_is_fire_and_forget_and_the_server_still_waits() {
     config.peers = vec![peer("grok", port)];
     let tool = AgentChannel::new(config).create_message_tool();
     let result = tool
-        .execute(&json!({ "to_agent": "grok", "message": "x", "wait_for_response": 0 }))
+        .execute(&js(
+            json!({ "to_agent": "grok", "message": "x", "wait_for_response": 0 }),
+        ))
         .await;
     assert!(result.to_utf8().contains("async — no response expected"));
     assert!(result.to_utf8().contains("Request ID: abc"));
@@ -1045,11 +1135,15 @@ async fn negative_timeout_fires_and_zero_keeps_waiting() {
     config.peers = vec![peer("neg", kept_port), peer("zero", zero_port)];
     let tool = AgentChannel::new(config).create_message_tool();
     let kept = tool
-        .execute(&json!({ "to_agent": "neg", "message": "x", "timeout_ms": -1 }))
+        .execute(&js(
+            json!({ "to_agent": "neg", "message": "x", "timeout_ms": -1 }),
+        ))
         .await;
     assert_eq!(kept.to_utf8(), "kept");
     let zero = tool
-        .execute(&json!({ "to_agent": "zero", "message": "x", "timeout_ms": 0 }))
+        .execute(&js(
+            json!({ "to_agent": "zero", "message": "x", "timeout_ms": 0 }),
+        ))
         .await;
     assert_eq!(zero.to_utf8(), "zero");
     assert!(kept_body.lock().contains("\"timeoutMs\":-1"));
@@ -1061,7 +1155,9 @@ async fn negative_timeout_fires_and_zero_keeps_waiting() {
     let tool = AgentChannel::new(config).create_message_tool();
     let aborted = tokio::time::timeout(
         Duration::from_secs(2),
-        tool.execute(&json!({ "to_agent": "hung", "message": "x", "timeout_ms": -6000 })),
+        tool.execute(&js(
+            json!({ "to_agent": "hung", "message": "x", "timeout_ms": -6000 }),
+        )),
     )
     .await
     .expect("negative outbound timeout hung");

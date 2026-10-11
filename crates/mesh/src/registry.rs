@@ -9,6 +9,8 @@ use std::time::{Duration, Instant};
 
 use tokio::task::JoinHandle;
 
+use protocol::js::JsString;
+
 use crate::error::{MeshError, MeshParseErrorCode};
 use crate::model::{
     DEFAULT_HEARTBEAT_INTERVAL_MS, DEFAULT_STALE_THRESHOLD_MS, MESH_FILE_NAME, MeshFile, MeshNode,
@@ -39,7 +41,7 @@ struct Inner {
     discovery: Option<MeshDiscovery>,
     on_event: Option<Arc<dyn Fn(MeshNodeEvent) + Send + Sync>>,
     tls: Option<TlsMaterial>,
-    local_node_id: Mutex<Option<String>>,
+    local_node_id: Mutex<Option<JsString>>,
     local_node: Mutex<Option<MeshNode>>,
     warnings: Mutex<Vec<String>>,
     fail_next_save: Mutex<Option<String>>,
@@ -107,19 +109,22 @@ impl FileMeshRegistry {
     }
 
     pub async fn deregister(&self, node_id: &str) -> Result<(), MeshError> {
-        let inner = Arc::clone(&self.inner);
-        let node_id = node_id.to_string();
-        let events = blocking(self.inner.flights.clone(), move |deadline| {
-            inner.deregister_blocking(&node_id, deadline, false)
-        })
-        .await?;
-        self.emit_all(events);
-        Ok(())
+        self.deregister_units(&JsString::from_text(node_id), false)
+            .await
     }
 
     pub async fn heartbeat(&self, node_id: &str, status: Option<&str>) -> Result<(), MeshError> {
+        self.heartbeat_units(&JsString::from_text(node_id), status)
+            .await
+    }
+
+    async fn heartbeat_units(
+        &self,
+        node_id: &JsString,
+        status: Option<&str>,
+    ) -> Result<(), MeshError> {
         let inner = Arc::clone(&self.inner);
-        let node_id_owned = node_id.to_string();
+        let node_id_owned = node_id.clone();
         let status_owned = status.map(str::to_string);
         let missing = blocking(self.inner.flights.clone(), move |deadline| {
             inner.heartbeat_blocking(&node_id_owned, status_owned.as_deref(), deadline)
@@ -128,12 +133,12 @@ impl FileMeshRegistry {
         if missing {
             let local = self.inner.local_node.lock().clone();
             if let Some(mut local) = local
-                && local.id == node_id
+                && local.id == *node_id
             {
                 tracing::warn!("Local node {node_id} missing from mesh roster — re-registering");
                 local.last_seen = timestamp_ms();
                 if let Some(status) = status {
-                    local.status = status.to_string();
+                    local.status = status.into();
                 }
                 self.register(local).await?;
             }
@@ -244,7 +249,7 @@ impl FileMeshRegistry {
         self.inner.flights.wait_idle().await;
         let node_id = self.inner.local_node_id.lock().clone();
         if let Some(node_id) = node_id
-            && let Err(err) = self.deregister_offline(&node_id).await
+            && let Err(err) = self.deregister_units(&node_id, true).await
         {
             tracing::warn!("Failed to deregister on shutdown: {err}");
         }
@@ -252,18 +257,22 @@ impl FileMeshRegistry {
         Ok(())
     }
 
-    async fn deregister_offline(&self, node_id: &str) -> Result<(), MeshError> {
+    async fn deregister_units(
+        &self,
+        node_id: &JsString,
+        shutdown_write: bool,
+    ) -> Result<(), MeshError> {
         let inner = Arc::clone(&self.inner);
-        let node_id = node_id.to_string();
+        let node_id = node_id.clone();
         let events = blocking(self.inner.flights.clone(), move |deadline| {
-            inner.deregister_blocking(&node_id, deadline, true)
+            inner.deregister_blocking(&node_id, deadline, shutdown_write)
         })
         .await?;
         self.emit_all(events);
         Ok(())
     }
 
-    fn spawn_heartbeat(&self, node_id: String, interval_ms: u64) {
+    fn spawn_heartbeat(&self, node_id: JsString, interval_ms: u64) {
         if let Some(previous) = self.inner.heartbeat.lock().take() {
             previous.abort();
         }
@@ -274,7 +283,7 @@ impl FileMeshRegistry {
             let mut ticker = tokio::time::interval_at(start, period);
             loop {
                 ticker.tick().await;
-                if let Err(err) = registry.heartbeat(&node_id, Some("online")).await {
+                if let Err(err) = registry.heartbeat_units(&node_id, Some("online")).await {
                     if !err.is_stopped() {
                         tracing::error!("Mesh heartbeat failed: {err}");
                     }
@@ -370,18 +379,18 @@ impl Inner {
 
     fn deregister_blocking(
         &self,
-        node_id: &str,
+        node_id: &JsString,
         deadline: Instant,
         shutdown_write: bool,
     ) -> Result<Vec<MeshNodeEvent>, MeshError> {
         self.with_lock(deadline, || {
             let mut data = self.load_locked()?;
-            let Some(mut node) = data.get(node_id).cloned() else {
+            let Some(mut node) = data.get_by_key(node_id).cloned() else {
                 return Ok(Vec::new());
             };
-            node.status = "offline".to_string();
+            node.status = "offline".into();
             let now = timestamp_ms();
-            data.insert(node_id.to_string(), node.clone());
+            data.insert(node_id.clone(), node.clone());
             data.updated_at = now;
             self.save_locked_mode(&data, deadline, shutdown_write)?;
             tracing::info!("Node deregistered: {} ({node_id})", node.name);
@@ -395,19 +404,19 @@ impl Inner {
 
     fn heartbeat_blocking(
         &self,
-        node_id: &str,
+        node_id: &JsString,
         status: Option<&str>,
         deadline: Instant,
     ) -> Result<bool, MeshError> {
         self.with_lock(deadline, || {
             let mut data = self.load_locked()?;
-            let Some(node) = data.get_mut(node_id) else {
+            let Some(node) = data.get_mut_by_key(node_id) else {
                 return Ok(true);
             };
             let now = timestamp_ms();
             node.last_seen = now;
             if let Some(status) = status {
-                node.status = status.to_string();
+                node.status = status.into();
             }
             data.updated_at = now;
             self.save_locked(&data, deadline)?;
@@ -431,10 +440,7 @@ impl Inner {
             let mut pruned = Vec::new();
             let mut events = Vec::new();
             for (id, node) in &mut data.nodes {
-                if local_id
-                    .as_deref()
-                    .is_some_and(|local| id == &protocol::js::JsString::from_text(local))
-                {
+                if local_id.as_ref().is_some_and(|local| id == local) {
                     continue;
                 }
                 if is_infrastructure_role(node.role.as_deref()) {
@@ -442,7 +448,7 @@ impl Inner {
                 }
                 let age = now_f - node.last_seen.as_f64();
                 if age > threshold as f64 && node.status != "offline" {
-                    node.status = "offline".to_string();
+                    node.status = "offline".into();
                     let secs = (age / 1000.0).round() as i64;
                     tracing::warn!("Node stale: {} ({id}) — last seen {secs}s ago", node.name);
                     pruned.push(node.clone());
@@ -901,7 +907,7 @@ mod deadline_and_seed {
     fn seed_keeps_good_rows_when_one_element_is_bad() {
         let text = r#"[{"id":"a","name":"a","host":"h","port":1},{"id":"b","name":"b","host":"h","port":"x"},"skip",{"id":"c","name":"c","host":"h"}]"#;
         let nodes = seed_nodes_from_text(text, "http://seed").unwrap();
-        let ids: Vec<_> = nodes.iter().map(|node| node.id.as_str()).collect();
+        let ids: Vec<_> = nodes.iter().map(|node| node.id.to_utf8()).collect();
         assert_eq!(ids, vec!["a", "c"]);
     }
 
@@ -1009,7 +1015,7 @@ mod deadline_and_seed {
         .unwrap();
         let node = crate::model::mesh_node_from_value("n", &parsed, "test").unwrap();
         registry.register(node).await.unwrap();
-        *registry.inner.local_node_id.lock() = Some("n".to_string());
+        *registry.inner.local_node_id.lock() = Some("n".into());
 
         let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
         let (held_tx, held_rx) = std::sync::mpsc::channel::<()>();

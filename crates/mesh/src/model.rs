@@ -76,23 +76,23 @@ impl JsEntries {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct MeshNode {
-    pub id: String,
-    pub name: String,
-    pub role: Option<String>,
-    pub agents: Vec<String>,
-    pub host: String,
+    pub id: JsString,
+    pub name: JsString,
+    pub role: Option<JsString>,
+    pub agents: Vec<JsString>,
+    pub host: JsString,
     pub port: JsNumber,
-    pub providers: Vec<String>,
-    pub models: Vec<String>,
-    pub capabilities: Vec<String>,
-    pub status: String,
+    pub providers: Vec<JsString>,
+    pub models: Vec<JsString>,
+    pub capabilities: Vec<JsString>,
+    pub status: JsString,
     pub last_seen: JsNumber,
     pub registered_at: JsNumber,
-    pub version: String,
+    pub version: JsString,
     pub metadata: Option<JsValue>,
-    pub ssh_user: Option<String>,
-    pub install_root: Option<String>,
-    pub platform: Option<String>,
+    pub ssh_user: Option<JsString>,
+    pub install_root: Option<JsString>,
+    pub platform: Option<JsString>,
     pub extra: JsEntries,
     pub origin: Option<JsValue>,
 }
@@ -174,17 +174,25 @@ impl MeshFile {
 
     pub fn get(&self, id: &str) -> Option<&MeshNode> {
         let needle = JsString::from_text(id);
+        self.get_by_key(&needle)
+    }
+
+    pub fn get_by_key(&self, id: &JsString) -> Option<&MeshNode> {
         self.nodes
             .iter()
-            .find(|(key, _)| key == &needle)
+            .find(|(key, _)| key == id)
             .map(|(_, node)| node)
     }
 
     pub fn get_mut(&mut self, id: &str) -> Option<&mut MeshNode> {
         let needle = JsString::from_text(id);
+        self.get_mut_by_key(&needle)
+    }
+
+    pub fn get_mut_by_key(&mut self, id: &JsString) -> Option<&mut MeshNode> {
         self.nodes
             .iter_mut()
-            .find(|(key, _)| key == &needle)
+            .find(|(key, _)| key == id)
             .map(|(_, node)| node)
     }
 
@@ -203,13 +211,13 @@ impl MeshFile {
 }
 
 impl MeshNode {
-    pub fn to_value(&self) -> Value {
-        serde_json::from_str(&node_compact(self)).unwrap_or(Value::Null)
+    pub fn to_value(&self) -> JsValue {
+        JsValue::Object(node_object(self))
     }
 }
 
-pub fn mesh_file_to_value(file: &MeshFile) -> Value {
-    serde_json::from_str(&file_compact(file)).unwrap_or(Value::Null)
+pub fn mesh_file_to_value(file: &MeshFile) -> JsValue {
+    file_value(file)
 }
 
 pub fn mesh_file_to_pretty(file: &MeshFile) -> String {
@@ -333,7 +341,7 @@ pub fn assert_record_mesh_file(
                 continue;
             }
             let label = key.to_utf8();
-            match parse_mesh_node(label, value, path, false) {
+            match parse_mesh_node(key, value, path, false) {
                 Ok(node) => nodes.push((key.clone(), node)),
                 Err(err) => {
                     if options.on_invalid_node == OnInvalidNode::Skip
@@ -386,7 +394,7 @@ pub fn mesh_node_from_value(
     value: &JsValue,
     path: &str,
 ) -> Result<MeshNode, MeshParseError> {
-    parse_mesh_node(key, value, path, false)
+    parse_mesh_node(&JsString::from_text(key), value, path, false)
 }
 
 pub fn mesh_node_from_network(
@@ -394,7 +402,7 @@ pub fn mesh_node_from_network(
     value: &JsValue,
     path: &str,
 ) -> Result<MeshNode, MeshParseError> {
-    parse_mesh_node(key, value, path, true)
+    parse_mesh_node(&JsString::from_text(key), value, path, true)
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -408,18 +416,18 @@ impl JoinedMeshNode {
     }
 
     pub fn id(&self) -> &str {
-        self.string_field("id").unwrap_or("")
+        self.string_field("id").map(JsString::to_utf8).unwrap_or("")
     }
 
     pub fn port(&self) -> Option<JsNumber> {
         finite_js(self.original.get("port")).map(JsNumber::from)
     }
 
-    pub fn status(&self) -> Option<&str> {
+    pub fn status(&self) -> Option<&JsString> {
         self.string_field("status")
     }
 
-    pub fn agents(&self) -> Option<Vec<String>> {
+    pub fn agents(&self) -> Option<Vec<JsString>> {
         let value = self.original.get("agents")?;
         if is_string_array(value) {
             Some(string_array(Some(value)))
@@ -428,7 +436,7 @@ impl JoinedMeshNode {
         }
     }
 
-    pub fn ssh_user(&self) -> Option<&str> {
+    pub fn ssh_user(&self) -> Option<&JsString> {
         self.string_field("sshUser")
     }
 
@@ -444,15 +452,15 @@ impl JoinedMeshNode {
 
     pub fn into_mesh_node(self) -> MeshNode {
         let mut node = match self.original.as_object() {
-            Some(object) => assemble_node(object, ""),
+            Some(object) => assemble_node(object, &JsString::from("")),
             None => return blank_mesh_node(),
         };
         node.origin = Some(self.original);
         node
     }
 
-    fn string_field(&self, key: &str) -> Option<&str> {
-        self.original.get(key).and_then(JsValue::as_str)
+    fn string_field(&self, key: &str) -> Option<&JsString> {
+        self.original.get(key).and_then(JsValue::as_js_string)
     }
 }
 
@@ -473,19 +481,19 @@ pub fn mesh_node_from_join(value: &JsValue) -> Result<JoinedMeshNode, JoinNodeEr
 
 fn blank_mesh_node() -> MeshNode {
     MeshNode {
-        id: String::new(),
-        name: String::new(),
+        id: JsString::from(""),
+        name: JsString::from(""),
         role: None,
         agents: Vec::new(),
-        host: String::new(),
+        host: JsString::from(""),
         port: JsNumber::from(0_u32),
         providers: Vec::new(),
         models: Vec::new(),
         capabilities: Vec::new(),
-        status: "offline".to_string(),
+        status: JsString::from("offline"),
         last_seen: JsNumber::from(0_u32),
         registered_at: JsNumber::from(0_u32),
-        version: String::new(),
+        version: JsString::from(""),
         metadata: None,
         ssh_user: None,
         install_root: None,
@@ -496,48 +504,54 @@ fn blank_mesh_node() -> MeshNode {
 }
 
 fn parse_mesh_node(
-    key: &str,
+    key: &JsString,
     raw: &JsValue,
     path: &str,
     null_operators: bool,
 ) -> Result<MeshNode, MeshParseError> {
+    let label = key.to_utf8();
     let Some(object) = raw.as_object() else {
         let mut context = Map::new();
-        context.insert("nodeId".to_string(), Value::String(key.to_string()));
+        context.insert("nodeId".to_string(), Value::String(label.to_string()));
         return Err(MeshParseError::new(
             MeshParseErrorCode::NodeInvalid,
-            format!("mesh.json at {path}: node \"{key}\" is not an object"),
+            format!("mesh.json at {path}: node \"{label}\" is not an object"),
             path,
             context,
             None,
         ));
     };
-    check_string(object, path, key, "id", false)?;
-    check_string(object, path, key, "name", false)?;
-    check_string(object, path, key, "host", false)?;
-    check_finite(object, path, key, "port")?;
-    check_string(object, path, key, "role", false)?;
-    check_string(object, path, key, "status", false)?;
-    check_string(object, path, key, "version", false)?;
-    check_string(object, path, key, "sshUser", null_operators)?;
-    check_string(object, path, key, "installRoot", null_operators)?;
-    check_string(object, path, key, "platform", null_operators)?;
-    check_finite(object, path, key, "lastSeen")?;
-    check_finite(object, path, key, "registeredAt")?;
-    check_string_array(object, path, key, "agents")?;
-    check_string_array(object, path, key, "providers")?;
-    check_string_array(object, path, key, "models")?;
-    check_string_array(object, path, key, "capabilities")?;
+    check_string(object, path, label, "id", false)?;
+    check_string(object, path, label, "name", false)?;
+    check_string(object, path, label, "host", false)?;
+    check_finite(object, path, label, "port")?;
+    check_string(object, path, label, "role", false)?;
+    check_string(object, path, label, "status", false)?;
+    check_string(object, path, label, "version", false)?;
+    check_string(object, path, label, "sshUser", null_operators)?;
+    check_string(object, path, label, "installRoot", null_operators)?;
+    check_string(object, path, label, "platform", null_operators)?;
+    check_finite(object, path, label, "lastSeen")?;
+    check_finite(object, path, label, "registeredAt")?;
+    check_string_array(object, path, label, "agents")?;
+    check_string_array(object, path, label, "providers")?;
+    check_string_array(object, path, label, "models")?;
+    check_string_array(object, path, label, "capabilities")?;
     if let Some(metadata) = object.get("metadata")
         && metadata.as_object().is_none()
     {
-        return Err(node_field_error(path, key, "metadata", "must be an object"));
+        return Err(node_field_error(
+            path,
+            label,
+            "metadata",
+            "must be an object",
+        ));
     }
     Ok(assemble_node(object, key))
 }
 
-fn assemble_node(object: &JsObject, record_key: &str) -> MeshNode {
-    let id = truthy_string(object.get("id")).unwrap_or_else(|| record_key.to_string());
+fn assemble_node(object: &JsObject, record_key: &JsString) -> MeshNode {
+    let id = truthy_string(object.get("id")).unwrap_or_else(|| record_key.clone());
     let name = truthy_string(object.get("name")).unwrap_or_else(|| id.clone());
     let mut extra = JsEntries::new();
     for (key, value) in object.iter() {
@@ -552,25 +566,25 @@ fn assemble_node(object: &JsObject, record_key: &str) -> MeshNode {
         agents: string_array(object.get("agents")),
         host: object
             .get("host")
-            .and_then(JsValue::as_str)
-            .unwrap_or("")
-            .to_string(),
+            .and_then(JsValue::as_js_string)
+            .cloned()
+            .unwrap_or_else(|| JsString::from("")),
         port: finite_or_zero(object, "port"),
         providers: string_array(object.get("providers")),
         models: string_array(object.get("models")),
         capabilities: string_array(object.get("capabilities")),
         status: object
             .get("status")
-            .and_then(JsValue::as_str)
-            .unwrap_or("offline")
-            .to_string(),
+            .and_then(JsValue::as_js_string)
+            .cloned()
+            .unwrap_or_else(|| JsString::from("offline")),
         last_seen: finite_or_zero(object, "lastSeen"),
         registered_at: finite_or_zero(object, "registeredAt"),
         version: object
             .get("version")
-            .and_then(JsValue::as_str)
-            .unwrap_or("")
-            .to_string(),
+            .and_then(JsValue::as_js_string)
+            .cloned()
+            .unwrap_or_else(|| JsString::from("")),
         metadata: object
             .get("metadata")
             .filter(|value| value.as_object().is_some())
@@ -666,36 +680,29 @@ fn is_string_array(value: &JsValue) -> bool {
         .is_some_and(|items| items.iter().all(JsValue::is_string))
 }
 
-fn string_array(value: Option<&JsValue>) -> Vec<String> {
+fn string_array(value: Option<&JsValue>) -> Vec<JsString> {
     value
         .and_then(JsValue::as_array)
         .filter(|items| items.iter().all(JsValue::is_string))
         .map(|items| {
             items
                 .iter()
-                .filter_map(JsValue::as_str)
-                .map(str::to_string)
+                .filter_map(JsValue::as_js_string)
+                .cloned()
                 .collect()
         })
         .unwrap_or_default()
 }
 
-fn optional_string(object: &JsObject, key: &str) -> Option<String> {
-    object
-        .get(key)
-        .and_then(JsValue::as_str)
-        .map(str::to_string)
+fn optional_string(object: &JsObject, key: &str) -> Option<JsString> {
+    object.get(key).and_then(JsValue::as_js_string).cloned()
 }
 
-fn truthy_string(value: Option<&JsValue>) -> Option<String> {
+fn truthy_string(value: Option<&JsValue>) -> Option<JsString> {
     value
-        .and_then(JsValue::as_str)
+        .and_then(JsValue::as_js_string)
         .filter(|text| !text.is_empty())
-        .map(str::to_string)
-}
-
-fn node_compact(node: &MeshNode) -> String {
-    protocol::js::stringify(&JsValue::Object(node_object(node)))
+        .cloned()
 }
 
 fn node_object(node: &MeshNode) -> JsObject {
@@ -727,7 +734,7 @@ fn joined_object(origin: &JsValue, node: &MeshNode) -> JsObject {
         if !seen[index]
             && let Some(text) = operator_text(node, key)
         {
-            out.insert(key, JsValue::from_text(text));
+            out.insert(key, JsValue::String(text.clone()));
         }
     }
     out
@@ -742,19 +749,24 @@ fn operator_index(key: &str) -> Option<usize> {
     }
 }
 
-fn operator_text<'a>(node: &'a MeshNode, key: &str) -> Option<&'a str> {
+fn operator_text<'a>(node: &'a MeshNode, key: &str) -> Option<&'a JsString> {
     match key {
-        "sshUser" => node.ssh_user.as_deref(),
-        "installRoot" => node.install_root.as_deref(),
-        "platform" => node.platform.as_deref(),
+        "sshUser" => node.ssh_user.as_ref(),
+        "installRoot" => node.install_root.as_ref(),
+        "platform" => node.platform.as_ref(),
         _ => None,
     }
 }
 
-fn push_operator(out: &mut JsObject, key: &JsString, value: &JsValue, inherited: Option<&str>) {
+fn push_operator(
+    out: &mut JsObject,
+    key: &JsString,
+    value: &JsValue,
+    inherited: Option<&JsString>,
+) {
     if value.is_null() {
         if let Some(text) = inherited {
-            out.insert(key.clone(), JsValue::from_text(text));
+            out.insert(key.clone(), JsValue::String(text.clone()));
         }
         return;
     }
@@ -763,32 +775,32 @@ fn push_operator(out: &mut JsObject, key: &JsString, value: &JsValue, inherited:
 
 fn typed_node_object(node: &MeshNode) -> JsObject {
     let mut object = JsObject::new();
-    object.insert("id", JsValue::from_text(&node.id));
-    object.insert("name", JsValue::from_text(&node.name));
-    object.insert("host", JsValue::from_text(&node.host));
+    object.insert("id", JsValue::String(node.id.clone()));
+    object.insert("name", JsValue::String(node.name.clone()));
+    object.insert("host", JsValue::String(node.host.clone()));
     object.insert("port", js_number_value(node.port));
     object.insert("agents", js_string_array(&node.agents));
     object.insert("providers", js_string_array(&node.providers));
     object.insert("models", js_string_array(&node.models));
     object.insert("capabilities", js_string_array(&node.capabilities));
-    object.insert("status", JsValue::from_text(&node.status));
+    object.insert("status", JsValue::String(node.status.clone()));
     object.insert("lastSeen", js_number_value(node.last_seen));
     object.insert("registeredAt", js_number_value(node.registered_at));
-    object.insert("version", JsValue::from_text(&node.version));
+    object.insert("version", JsValue::String(node.version.clone()));
     if let Some(role) = &node.role {
-        object.insert("role", JsValue::from_text(role));
+        object.insert("role", JsValue::String(role.clone()));
     }
     if let Some(metadata) = &node.metadata {
         object.insert("metadata", metadata.clone());
     }
     if let Some(ssh_user) = &node.ssh_user {
-        object.insert("sshUser", JsValue::from_text(ssh_user));
+        object.insert("sshUser", JsValue::String(ssh_user.clone()));
     }
     if let Some(install_root) = &node.install_root {
-        object.insert("installRoot", JsValue::from_text(install_root));
+        object.insert("installRoot", JsValue::String(install_root.clone()));
     }
     if let Some(platform) = &node.platform {
-        object.insert("platform", JsValue::from_text(platform));
+        object.insert("platform", JsValue::String(platform.clone()));
     }
     for (key, value) in node.extra.iter() {
         object.insert(key.clone(), value.clone());
@@ -824,8 +836,13 @@ fn js_number_value(number: JsNumber) -> JsValue {
     }
 }
 
-fn js_string_array(items: &[String]) -> JsValue {
-    JsValue::Array(items.iter().map(|item| JsValue::from_text(item)).collect())
+fn js_string_array(items: &[JsString]) -> JsValue {
+    JsValue::Array(
+        items
+            .iter()
+            .map(|item| JsValue::String(item.clone()))
+            .collect(),
+    )
 }
 
 fn pretty_json(compact: &str) -> String {
@@ -1019,7 +1036,7 @@ pub fn mesh_den_origins(file: &MeshFile) -> Vec<String> {
         let id = if node.id.is_empty() {
             key.to_utf8()
         } else {
-            node.id.as_str()
+            node.id.to_utf8()
         };
         let Some(den_url) = den_url_for(id, node).url else {
             continue;
@@ -1075,19 +1092,30 @@ pub struct BuildLocalNodeArgs {
 pub fn build_local_node(args: BuildLocalNodeArgs) -> MeshNode {
     let now = timestamp_ms();
     MeshNode {
-        id: args.existing_id.unwrap_or_else(random_uuid),
-        name: args.name.unwrap_or_else(system_hostname),
-        role: args.role,
-        agents: args.agents,
-        host: args.host,
+        id: args
+            .existing_id
+            .map(JsString::from)
+            .unwrap_or_else(|| JsString::from(random_uuid())),
+        name: args
+            .name
+            .map(JsString::from)
+            .unwrap_or_else(|| JsString::from(system_hostname())),
+        role: args.role.map(JsString::from),
+        agents: args.agents.into_iter().map(JsString::from).collect(),
+        host: JsString::from(args.host),
         port: JsNumber::from(args.port),
-        providers: args.providers,
-        models: args.models,
-        capabilities: args.capabilities.unwrap_or_default(),
-        status: "online".to_string(),
+        providers: args.providers.into_iter().map(JsString::from).collect(),
+        models: args.models.into_iter().map(JsString::from).collect(),
+        capabilities: args
+            .capabilities
+            .unwrap_or_default()
+            .into_iter()
+            .map(JsString::from)
+            .collect(),
+        status: JsString::from("online"),
         last_seen: now,
         registered_at: now,
-        version: args.version,
+        version: JsString::from(args.version),
         metadata: args.metadata,
         ssh_user: None,
         install_root: None,

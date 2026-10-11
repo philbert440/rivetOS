@@ -441,3 +441,47 @@ fn unpaired_surrogate_keys_stay_distinct_from_the_replacement_character() {
         Some("b")
     );
 }
+
+#[test]
+fn known_node_strings_keep_a_lone_surrogate() {
+    let raw = concat!(
+        r#"{"version":1,"updatedAt":1,"nodes":{"a":{"id":"a","name":"hi \ud83d","host":"h","#,
+        r#""agents":["opus \ud83d"],"providers":[],"models":[],"capabilities":[],"status":"online","#,
+        r#""lastSeen":1,"registeredAt":1,"version":"1","metadata":{"note":"hi \ud83d"}}}}"#
+    );
+    let outcome = parse(raw).unwrap();
+    let node = outcome.file.get("a").unwrap();
+    let mut expected: Vec<u16> = "hi ".encode_utf16().collect();
+    expected.push(0xD83D);
+    let mut agent: Vec<u16> = "opus ".encode_utf16().collect();
+    agent.push(0xD83D);
+    assert_eq!(node.name.units(), expected.as_slice());
+    assert_eq!(node.agents[0].units(), agent.as_slice());
+    assert_eq!(
+        node.metadata
+            .as_ref()
+            .unwrap()
+            .get("note")
+            .and_then(protocol::js::JsValue::as_js_string)
+            .unwrap()
+            .units(),
+        expected.as_slice()
+    );
+    let pretty = mesh_file_to_pretty(&outcome.file);
+    assert!(pretty.contains(r"\ud83d"));
+    assert!(!pretty.contains(r"\ufffd"));
+    let again = parse(&pretty).unwrap();
+    let node = again.file.get("a").unwrap();
+    assert_eq!(node.name.units(), expected.as_slice());
+    assert_eq!(node.agents[0].units(), agent.as_slice());
+    assert_eq!(
+        node.metadata
+            .as_ref()
+            .unwrap()
+            .get("note")
+            .and_then(protocol::js::JsValue::as_js_string)
+            .unwrap()
+            .units(),
+        expected.as_slice()
+    );
+}

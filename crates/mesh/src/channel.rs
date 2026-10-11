@@ -84,7 +84,7 @@ struct ServerHandle {
 struct Inner {
     config: AgentChannelConfig,
     handler: Mutex<Option<MessageHandler>>,
-    pending: Arc<Mutex<HashMap<String, oneshot::Sender<String>>>>,
+    pending: Arc<Mutex<HashMap<String, oneshot::Sender<JsString>>>>,
     bound_port: AtomicU16,
     server: Mutex<Option<ServerHandle>>,
     connections: Arc<Mutex<Vec<JoinHandle<()>>>>,
@@ -130,13 +130,14 @@ impl AgentChannel {
         *self.inner.handler.lock() = Some(handler);
     }
 
-    pub fn send(&self, channel_id: &str, text: &str) -> Option<String> {
+    pub fn send(&self, channel_id: &str, text: impl Into<JsString>) -> Option<String> {
+        let text = text.into();
         if text.is_empty() {
             return None;
         }
         let mut pending = self.inner.pending.lock();
         let sender = pending.remove(channel_id)?;
-        let _ = sender.send(text.to_string());
+        let _ = sender.send(text);
         Some(channel_id.to_string())
     }
 
@@ -207,9 +208,9 @@ impl AgentChannel {
         }
     }
 
-    pub async fn send_to_peer(&self, peer: &PeerConfig, body: &Value) -> Result<JsValue, String> {
+    pub async fn send_to_peer(&self, peer: &PeerConfig, body: &JsValue) -> Result<JsValue, String> {
         let url = format!("{}/api/message", peer.url.trim_end_matches('/'));
-        let abort_after = scheduled_timeout(body.get("timeoutMs"), 5_000.0);
+        let abort_after = scheduled_timeout_js(body.get("timeoutMs"), 5_000.0);
         let mut builder = reqwest::Client::builder();
         if let Some(material) = &self.inner.config.tls {
             let config = client_config(material).map_err(|err| err.to_string())?;
@@ -219,7 +220,10 @@ impl AgentChannel {
             builder = builder.timeout(Duration::from_millis(ms));
         }
         let client = builder.build().map_err(|err| err.to_string())?;
-        let mut request = client.post(&url).json(body);
+        let mut request = client
+            .post(&url)
+            .header("content-type", "application/json")
+            .body(stringify(body));
         if self.inner.config.tls.is_none() {
             let secret = peer
                 .secret
@@ -246,9 +250,10 @@ impl AgentChannel {
     }
 
     fn resolve_pending(&self, text: &str) {
+        let text = JsString::from(text);
         let pending = std::mem::take(&mut *self.inner.pending.lock());
         for (_, sender) in pending {
-            let _ = sender.send(text.to_string());
+            let _ = sender.send(text.clone());
         }
     }
 }
@@ -291,58 +296,73 @@ impl AgentMessageTool {
         })
     }
 
-    pub async fn execute(&self, args: &Value) -> JsString {
+    pub async fn execute(&self, args: &JsValue) -> JsString {
         let to_agent = match args.get("to_agent") {
-            None => "undefined".to_string(),
-            Some(Value::String(text)) => text.clone(),
-            Some(Value::Null) => "null".to_string(),
-            Some(other) => other.to_string(),
+            None => JsString::from("undefined"),
+            Some(JsValue::String(text)) => text.clone(),
+            Some(JsValue::Null) => JsString::from("null"),
+            Some(other) => JsString::from(stringify(other)),
         };
-        let message = args.get("message").and_then(Value::as_str).unwrap_or("");
-        let wait = wait_flag(args.get("wait_for_response"));
-        let timeout_ms = forwarded_timeout(args.get("timeout_ms"));
+        let message = args
+            .get("message")
+            .and_then(JsValue::as_js_string)
+            .cloned()
+            .unwrap_or_else(|| JsString::from(""));
+        let wait = wait_flag_js(args.get("wait_for_response"));
+        let timeout_ms = forwarded_timeout_js(args.get("timeout_ms"));
         let Some((_, peer)) = self
             .channel
             .inner
             .config
             .peers
             .iter()
-            .find(|(name, _)| name == &to_agent)
+            .find(|(name, _)| to_agent == name.as_str())
         else {
             let available = peer_names(&self.channel.inner.config.peers);
-            return JsString::from(format!(
-                "Error: Unknown peer agent \"{to_agent}\". Available peers: {available}"
-            ));
+            return concat_units(&[
+                JsString::from("Error: Unknown peer agent \""),
+                to_agent,
+                JsString::from(format!("\". Available peers: {available}")),
+            ]);
         };
-        let mut body = Map::new();
+        let mut body = JsObject::new();
         body.insert(
-            "fromAgent".to_string(),
-            Value::String(self.channel.inner.config.agent_id.clone()),
+            "fromAgent",
+            JsValue::from_text(&self.channel.inner.config.agent_id),
         );
-        body.insert("message".to_string(), Value::String(message.to_string()));
+        body.insert("message", JsValue::String(message));
         let wait_value = match args.get("wait_for_response") {
-            None | Some(Value::Null) => Value::Bool(true),
+            None | Some(JsValue::Null) => JsValue::Bool(true),
             Some(other) => other.clone(),
         };
-        body.insert("waitForResponse".to_string(), wait_value);
+        body.insert("waitForResponse", wait_value);
         if let Some(timeout_ms) = timeout_ms {
-            body.insert("timeoutMs".to_string(), timeout_ms);
+            body.insert("timeoutMs", timeout_ms);
         }
-        match self.channel.send_to_peer(peer, &Value::Object(body)).await {
+        match self
+            .channel
+            .send_to_peer(peer, &JsValue::Object(body))
+            .await
+        {
             Ok(response) => {
                 if wait {
                     response_text(response.get("response"))
                 } else {
                     let request_id = request_id_text(response.get("requestId"));
-                    with_prefix(
-                        &format!(
-                            "Message sent to {to_agent} (async — no response expected). Request ID: "
-                        ),
-                        &request_id,
-                    )
+                    concat_units(&[
+                        JsString::from("Message sent to "),
+                        to_agent,
+                        JsString::from(" (async — no response expected). Request ID: "),
+                        request_id,
+                    ])
                 }
             }
-            Err(err) => JsString::from(format!("Error sending message to {to_agent}: {err}")),
+            Err(err) => concat_units(&[
+                JsString::from("Error sending message to "),
+                to_agent,
+                JsString::from(": "),
+                JsString::from(err),
+            ]),
         }
     }
 }
@@ -372,6 +392,14 @@ fn json_text(value: &JsValue) -> JsString {
 fn with_prefix(prefix: &str, text: &JsString) -> JsString {
     let mut units: Vec<u16> = prefix.encode_utf16().collect();
     units.extend_from_slice(text.units());
+    JsString::from_units(units)
+}
+
+fn concat_units(parts: &[JsString]) -> JsString {
+    let mut units = Vec::new();
+    for part in parts {
+        units.extend_from_slice(part.units());
+    }
     JsString::from_units(units)
 }
 
@@ -587,13 +615,14 @@ impl Inner {
                 if let Err(msg) = handler(inbound).await
                     && let Some(sender) = handler_pending.lock().remove(&request_for_handler)
                 {
-                    let _ = sender.send(format!("[error processing message: {msg}]"));
+                    let _ =
+                        sender.send(JsString::from(format!("[error processing message: {msg}]")));
                 }
             });
             let timeout_ms = scheduled_timeout_js(body.get("timeoutMs"), 0.0);
             let reply = wait_for_text(self.pending.as_ref(), &request_id, rx, timeout_ms).await;
             let mut response = JsObject::new();
-            response.insert("response", JsValue::String(JsString::from_text(&reply)));
+            response.insert("response", JsValue::String(reply));
             response.insert("agent", JsValue::from_text(&self.config.agent_id));
             response.insert("fromAgent", JsValue::String(from_agent));
             response.insert("timestamp", JsValue::Number(timestamp_ms().as_f64()));
@@ -604,15 +633,12 @@ impl Inner {
                     let _ = handler(inbound).await;
                 });
             }
-            let mut response = Map::new();
-            response.insert("status".to_string(), Value::String("accepted".to_string()));
-            response.insert("requestId".to_string(), Value::String(request_id));
-            response.insert(
-                "agent".to_string(),
-                Value::String(self.config.agent_id.clone()),
-            );
-            response.insert("timestamp".to_string(), number_value(timestamp_ms()));
-            json_reply(StatusCode::ACCEPTED, &Value::Object(response))
+            let mut response = JsObject::new();
+            response.insert("status", JsValue::from_text("accepted"));
+            response.insert("requestId", JsValue::from_text(&request_id));
+            response.insert("agent", JsValue::from_text(&self.config.agent_id));
+            response.insert("timestamp", JsValue::Number(timestamp_ms().as_f64()));
+            text_reply(StatusCode::ACCEPTED, stringify(&JsValue::Object(response)))
         }
     }
 
@@ -645,11 +671,8 @@ impl Inner {
                 &error_body("Mesh not enabled on this node"),
             );
         };
-        let text = match std::str::from_utf8(bytes) {
-            Ok(text) => text,
-            Err(_) => return invalid_json(),
-        };
-        let parsed = match protocol::js::parse(text) {
+        let text = String::from_utf8_lossy(bytes);
+        let parsed = match protocol::js::parse(&text) {
             Ok(value) => value,
             Err(_) => return invalid_json(),
         };
@@ -720,23 +743,23 @@ impl Inner {
 }
 
 async fn wait_for_text(
-    pending: &Mutex<HashMap<String, oneshot::Sender<String>>>,
+    pending: &Mutex<HashMap<String, oneshot::Sender<JsString>>>,
     request_id: &str,
-    rx: oneshot::Receiver<String>,
+    rx: oneshot::Receiver<JsString>,
     timeout_ms: Option<u64>,
-) -> String {
+) -> JsString {
     match timeout_ms {
         Some(ms) => match tokio::time::timeout(Duration::from_millis(ms), rx).await {
             Ok(Ok(text)) => text,
-            Ok(Err(_)) => "[channel shutting down]".to_string(),
+            Ok(Err(_)) => JsString::from("[channel shutting down]"),
             Err(_) => {
                 pending.lock().remove(request_id);
-                "[timeout — agent did not respond in time]".to_string()
+                JsString::from("[timeout — agent did not respond in time]")
             }
         },
         None => match rx.await {
             Ok(text) => text,
-            Err(_) => "[channel shutting down]".to_string(),
+            Err(_) => JsString::from("[channel shutting down]"),
         },
     }
 }
@@ -972,6 +995,7 @@ fn waits_for_response(body: &JsObject) -> bool {
 
 const JS_TIMEOUT_MAX_MS: f64 = 2_147_483_647.0;
 
+#[cfg(test)]
 fn scheduled_timeout(value: Option<&Value>, extra_ms: f64) -> Option<u64> {
     scheduled_millis(value.and_then(Value::as_f64), extra_ms)
 }
@@ -998,7 +1022,7 @@ fn js_timer_millis(after: f64) -> u64 {
     }
 }
 
-fn forwarded_timeout(value: Option<&Value>) -> Option<Value> {
+fn forwarded_timeout_js(value: Option<&JsValue>) -> Option<JsValue> {
     let value = value?;
     let number = value.as_f64()?;
     if !number.is_finite() {
@@ -1007,15 +1031,12 @@ fn forwarded_timeout(value: Option<&Value>) -> Option<Value> {
     Some(value.clone())
 }
 
-fn wait_flag(value: Option<&Value>) -> bool {
+fn wait_flag_js(value: Option<&JsValue>) -> bool {
     match value {
-        None | Some(Value::Null) => true,
-        Some(Value::Bool(flag)) => *flag,
-        Some(Value::Number(number)) => match number.as_f64() {
-            Some(number) => number != 0.0 && !number.is_nan(),
-            None => true,
-        },
-        Some(Value::String(text)) => !text.is_empty(),
+        None | Some(JsValue::Null) => true,
+        Some(JsValue::Bool(flag)) => *flag,
+        Some(JsValue::Number(number)) => *number != 0.0 && !number.is_nan(),
+        Some(JsValue::String(text)) => !text.is_empty(),
         Some(_) => true,
     }
 }

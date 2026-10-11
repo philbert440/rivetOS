@@ -204,7 +204,7 @@ fn den_url_for_covers_explicit_port_capability_and_rejects_non_http() {
     );
 
     let mut tagged = named("tag", "192.0.2.30");
-    tagged.capabilities = vec!["den".to_string()];
+    tagged.capabilities = vec!["den".into()];
     assert_eq!(
         den_url_for("tag", &tagged).url.as_deref(),
         Some("http://192.0.2.30:5174")
@@ -221,7 +221,7 @@ fn mesh_den_origins_lists_every_den_origin() {
     let mut port = named("port", "192.0.2.20");
     port.metadata = Some(protocol::js::parse(r#"{"denPort":"5175"}"#).unwrap());
     let mut tagged = named("tag", "192.0.2.30");
-    tagged.capabilities = vec!["den".to_string()];
+    tagged.capabilities = vec!["den".into()];
     let plain = named("plain", "192.0.2.40");
     let file = MeshFile {
         version: mesh::JsNumber::from(1_u32),
@@ -413,7 +413,7 @@ impl Drop for Scratch {
 
 fn identity_node(id: &str, host: &str, ssh_user: Option<&str>) -> MeshNode {
     let mut node = named(id, host);
-    node.ssh_user = ssh_user.map(str::to_string);
+    node.ssh_user = ssh_user.map(protocol::js::JsString::from);
     node
 }
 
@@ -431,8 +431,8 @@ fn named(id: &str, host: &str) -> MeshNode {
         metadata: None,
         version: "0.7.0".to_string(),
     });
-    node.id = id.to_string();
-    node.host = host.to_string();
+    node.id = id.into();
+    node.host = host.into();
     node
 }
 

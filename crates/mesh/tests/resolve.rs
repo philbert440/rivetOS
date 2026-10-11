@@ -6,19 +6,23 @@ use mesh::{
 };
 fn node(name: &str, agents: &[&str], status: &str, last_seen: u64) -> MeshNode {
     MeshNode {
-        id: name.to_string(),
-        name: name.to_string(),
+        id: name.into(),
+        name: name.into(),
         role: None,
-        agents: agents.iter().map(|agent| (*agent).to_string()).collect(),
-        host: "192.0.2.10".to_string(),
+        agents: agents
+            .iter()
+            .copied()
+            .map(protocol::js::JsString::from)
+            .collect(),
+        host: "192.0.2.10".into(),
         port: JsNumber::from(3100_u32),
         providers: Vec::new(),
         models: Vec::new(),
         capabilities: Vec::new(),
-        status: status.to_string(),
+        status: status.into(),
         last_seen: JsNumber::from(last_seen),
         registered_at: JsNumber::from(1_u32),
-        version: "0.7.0".to_string(),
+        version: "0.7.0".into(),
         metadata: None,
         ssh_user: None,
         install_root: None,
@@ -292,7 +296,7 @@ fn remote_take_and_mesh_host() {
     assert!(!should_take_remote(Some(&newer), &same));
     assert_eq!(mesh_host(&older), "a.mesh");
     let mut bare = older.clone();
-    bare.name.clear();
-    bare.host = "192.0.2.8".to_string();
+    bare.name = "".into();
+    bare.host = "192.0.2.8".into();
     assert_eq!(mesh_host(&bare), "192.0.2.8");
 }

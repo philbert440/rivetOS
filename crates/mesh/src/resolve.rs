@@ -76,7 +76,7 @@ pub fn sync_target(discovery: Option<&MeshDiscovery>) -> Option<(String, u16)> {
 
 pub fn mesh_host(node: &MeshNode) -> String {
     if node.name.is_empty() {
-        node.host.clone()
+        node.host.to_utf8().to_string()
     } else {
         format!("{}.mesh", node.name)
     }
@@ -123,19 +123,19 @@ pub fn resolve_delegation_route(
 
 fn local_placeholder() -> MeshNode {
     MeshNode {
-        id: "local".to_string(),
-        name: "local".to_string(),
+        id: "local".into(),
+        name: "local".into(),
         role: None,
         agents: Vec::new(),
-        host: "localhost".to_string(),
+        host: "localhost".into(),
         port: protocol::JsNumber::from(0_u32),
         providers: Vec::new(),
         models: Vec::new(),
         capabilities: Vec::new(),
-        status: "online".to_string(),
+        status: "online".into(),
         last_seen: protocol::JsNumber::from(0_u32),
         registered_at: protocol::JsNumber::from(0_u32),
-        version: String::new(),
+        version: String::new().into(),
         metadata: None,
         ssh_user: None,
         install_root: None,
@@ -156,7 +156,8 @@ pub fn resolve_runtime_agent(
     if local && node.map(|name| name == local_node_name).unwrap_or(true) {
         return Some(local_node_name.to_string());
     }
-    newest_online_node(nodes, agent_id, Some(local_node_name), node).map(|node| node.name.clone())
+    newest_online_node(nodes, agent_id, Some(local_node_name), node)
+        .map(|node| node.name.to_utf8().to_string())
 }
 
 pub fn resolve_affinity(
@@ -174,7 +175,7 @@ pub fn resolve_affinity(
     }
     if let Some(nodes) = mesh {
         if let Some(best) = newest_online_node(nodes, agent_id, Some(local_node_name), None) {
-            return Affinity::Node(best.name.clone());
+            return Affinity::Node(best.name.to_utf8().to_string());
         }
         return Affinity::Missing(format!(
             "agent \"{agent_id}\" not found locally or on the mesh"
@@ -261,18 +262,25 @@ pub fn list_reachable_agents(
             continue;
         }
         for agent_id in &node.agents {
-            if let Some(existing) = entries.iter_mut().find(|entry| entry.agent_id == *agent_id) {
+            if let Some(existing) = entries
+                .iter_mut()
+                .find(|entry| entry.agent_id == agent_id.to_utf8())
+            {
                 if existing.local {
                     continue;
                 }
-                if !existing.remote_nodes.iter().any(|name| name == &node.name) {
-                    existing.remote_nodes.push(node.name.clone());
+                if !existing
+                    .remote_nodes
+                    .iter()
+                    .any(|name| name == node.name.to_utf8())
+                {
+                    existing.remote_nodes.push(node.name.to_utf8().to_string());
                 }
             } else {
                 entries.push(RosterEntry {
-                    agent_id: agent_id.clone(),
+                    agent_id: agent_id.to_utf8().to_string(),
                     local: false,
-                    remote_nodes: vec![node.name.clone()],
+                    remote_nodes: vec![node.name.to_utf8().to_string()],
                 });
             }
         }

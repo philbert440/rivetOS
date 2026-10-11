@@ -152,6 +152,48 @@ impl std::fmt::Display for JsString {
     }
 }
 
+impl std::ops::Deref for JsString {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        self.to_utf8()
+    }
+}
+
+impl PartialEq<str> for JsString {
+    fn eq(&self, other: &str) -> bool {
+        units_eq_text(&self.units, other)
+    }
+}
+
+impl PartialEq<&str> for JsString {
+    fn eq(&self, other: &&str) -> bool {
+        units_eq_text(&self.units, other)
+    }
+}
+
+impl PartialEq<String> for JsString {
+    fn eq(&self, other: &String) -> bool {
+        units_eq_text(&self.units, other)
+    }
+}
+
+impl PartialEq<JsString> for str {
+    fn eq(&self, other: &JsString) -> bool {
+        units_eq_text(&other.units, self)
+    }
+}
+
+impl PartialEq<JsString> for String {
+    fn eq(&self, other: &JsString) -> bool {
+        units_eq_text(&other.units, self)
+    }
+}
+
+fn units_eq_text(units: &[u16], text: &str) -> bool {
+    units.iter().copied().eq(text.encode_utf16())
+}
+
 fn utf8_from_units(units: &[u16]) -> String {
     char::decode_utf16(units.iter().copied())
         .map(|item| item.unwrap_or('\u{FFFD}'))

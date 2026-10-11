@@ -116,9 +116,9 @@ async fn finds_nodes_by_agent_provider_and_capability() {
     let scratch = Scratch::new();
     let registry = registry(scratch.path());
     let mut first = sample("node-1", &["opus"], "192.168.1.101");
-    first.providers = vec!["anthropic".to_string()];
+    first.providers = vec!["anthropic".into()];
     let mut second = sample("node-2", &["grok"], "192.168.1.102");
-    second.providers = vec!["xai".to_string()];
+    second.providers = vec!["xai".into()];
     registry.register(first).await.unwrap();
     registry.register(second).await.unwrap();
     assert_eq!(
@@ -143,7 +143,7 @@ async fn finds_nodes_by_agent_provider_and_capability() {
     );
 
     let mut den = sample("den-node", &["opus"], "192.168.1.101");
-    den.capabilities = vec!["den".to_string()];
+    den.capabilities = vec!["den".into()];
     den.metadata = Some(protocol::js::parse(r#"{"denPort":5199}"#).unwrap());
     registry.register(den).await.unwrap();
     let found = registry.find_by_capability("den").await.unwrap();
@@ -204,7 +204,7 @@ async fn prunes_stale_agent_nodes_and_skips_self_and_infrastructure() {
     stale.last_seen = JsNumber::from((protocol::js::date_now() - 100_000.0).max(0.0));
     registry.register(stale.clone()).await.unwrap();
     let mut infra = sample("datahub", &[], "192.168.1.110");
-    infra.role = Some("datahub".to_string());
+    infra.role = Some("datahub".into());
     infra.last_seen = JsNumber::from((protocol::js::date_now() - 100_000.0).max(0.0));
     registry.register(infra.clone()).await.unwrap();
     let pruned = registry.prune(Some(5_000)).await.unwrap();
@@ -226,7 +226,7 @@ async fn empty_role_is_pruned_like_a_missing_role() {
     let scratch = Scratch::new();
     let registry = registry(scratch.path());
     let mut node = sample("blank-role", &["opus"], "10.0.0.4");
-    node.role = Some(String::new());
+    node.role = Some("".into());
     node.last_seen = JsNumber::from((protocol::js::date_now() - 100_000.0).max(0.0));
     registry.register(node.clone()).await.unwrap();
     let pruned = registry.prune(Some(5_000)).await.unwrap();
@@ -244,7 +244,7 @@ async fn join_register_keeps_the_supplied_object() {
     let registry = registry(scratch.path());
     let mut existing = sample("n1", &["old"], "10.0.0.9");
     existing.id = "n1".into();
-    existing.ssh_user = Some("desk".to_string());
+    existing.ssh_user = Some("desk".into());
     existing.last_seen = JsNumber::from(1_u32);
     registry.register(existing).await.unwrap();
     let parsed = protocol::js::parse(
@@ -330,12 +330,12 @@ async fn re_registration_keeps_operator_fields_and_an_explicit_value_wins() {
     node.port = JsNumber::from(3000_u32);
     registry.register(node.clone()).await.unwrap();
     let mut edited = node.clone();
-    edited.ssh_user = Some("deskuser".to_string());
-    edited.install_root = Some("/home/deskuser/rivetos".to_string());
-    edited.platform = Some("linux".to_string());
+    edited.ssh_user = Some("deskuser".into());
+    edited.install_root = Some("/home/deskuser/rivetos".into());
+    edited.platform = Some("linux".into());
     registry.register(edited).await.unwrap();
     let mut restarted = node.clone();
-    restarted.version = "0.8.0".to_string();
+    restarted.version = "0.8.0".into();
     registry.register(restarted).await.unwrap();
     let stored = registry.get_node(&node.id).await.unwrap().unwrap();
     assert_eq!(stored.ssh_user.as_deref(), Some("deskuser"));
@@ -346,7 +346,7 @@ async fn re_registration_keeps_operator_fields_and_an_explicit_value_wins() {
     assert_eq!(stored.platform.as_deref(), Some("linux"));
     assert_eq!(stored.version, "0.8.0");
     let mut named = node.clone();
-    named.ssh_user = Some("rivet".to_string());
+    named.ssh_user = Some("rivet".into());
     registry.register(named).await.unwrap();
     let mut blank = node.clone();
     blank.install_root = None;
@@ -358,7 +358,7 @@ async fn re_registration_keeps_operator_fields_and_an_explicit_value_wins() {
         Some("/home/deskuser/rivetos")
     );
     let mut empty = node.clone();
-    empty.ssh_user = Some(String::new());
+    empty.ssh_user = Some("".into());
     registry.register(empty).await.unwrap();
     assert_eq!(
         registry
@@ -401,7 +401,7 @@ async fn start_keeps_a_hand_edited_roster_entry() {
         version: "0.8.0".to_string(),
     });
     let mut edited = local.clone();
-    edited.ssh_user = Some("deskuser".to_string());
+    edited.ssh_user = Some("deskuser".into());
     registry.register(edited).await.unwrap();
     registry.start(local).await.unwrap();
     registry.stop().await.unwrap();
@@ -422,8 +422,8 @@ fn inherit_operator_fields_leaves_a_node_with_nothing_to_inherit() {
     let node = sample("n", &[], "192.168.1.60");
     assert_eq!(inherit_operator_fields(node.clone(), None), node);
     let mut existing = node.clone();
-    existing.host = "192.168.1.61".to_string();
-    existing.ssh_user = Some("deskuser".to_string());
+    existing.host = "192.168.1.61".into();
+    existing.ssh_user = Some("deskuser".into());
     let merged = inherit_operator_fields(node.clone(), Some(&existing));
     assert_eq!(merged.ssh_user.as_deref(), Some("deskuser"));
     assert!(merged.platform.is_none());
@@ -544,7 +544,7 @@ async fn skips_a_malformed_node_instead_of_failing_the_load() {
     assert_eq!(
         nodes
             .iter()
-            .map(|node| node.id.as_str())
+            .map(|node| node.id.to_utf8())
             .collect::<Vec<_>>(),
         vec!["good"]
     );
