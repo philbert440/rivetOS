@@ -356,6 +356,7 @@ fn write_tool_validation_and_sql_shapes() {
         "memory_ingest_session: messages must be a non-empty array"
     );
     let sql = capture_conversation_upsert_sql(true);
+    assert!(sql.contains("$6::uuid"));
     assert!(sql.contains("ON CONFLICT (session_key, agent) DO UPDATE"));
     assert!(sql.contains(
         "owner_user_id = COALESCE(ros_conversations.owner_user_id, EXCLUDED.owner_user_id)"

@@ -91,7 +91,7 @@ fn spool_name(name: &str) -> bool {
 pub fn capture_conversation_upsert_sql(owner: bool) -> &'static str {
     if owner {
         "INSERT INTO ros_conversations (session_key, agent, channel, title, settings, task_id, created_at, updated_at, owner_user_id)
-       VALUES ($1, $2, $3, $4, COALESCE($5::jsonb, '{}'::jsonb), $6, COALESCE($10::timestamptz, now()), COALESCE($11::timestamptz, now()), $12)
+       VALUES ($1, $2, $3, $4, COALESCE($5::jsonb, '{}'::jsonb), $6::uuid, COALESCE($10::timestamptz, now()), COALESCE($11::timestamptz, now()), $12)
        ON CONFLICT (session_key, agent) DO UPDATE SET
          updated_at = GREATEST(ros_conversations.updated_at, EXCLUDED.updated_at),
          owner_user_id = COALESCE(ros_conversations.owner_user_id, EXCLUDED.owner_user_id),
@@ -101,7 +101,7 @@ pub fn capture_conversation_upsert_sql(owner: bool) -> &'static str {
        RETURNING id"
     } else {
         "INSERT INTO ros_conversations (session_key, agent, channel, title, settings, task_id, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, COALESCE($5::jsonb, '{}'::jsonb), $6, COALESCE($10::timestamptz, now()), COALESCE($11::timestamptz, now()))
+       VALUES ($1, $2, $3, $4, COALESCE($5::jsonb, '{}'::jsonb), $6::uuid, COALESCE($10::timestamptz, now()), COALESCE($11::timestamptz, now()))
        ON CONFLICT (session_key, agent) DO UPDATE SET
          updated_at = GREATEST(ros_conversations.updated_at, EXCLUDED.updated_at),
          title = CASE WHEN $7 THEN EXCLUDED.title ELSE ros_conversations.title END,
@@ -115,11 +115,11 @@ pub fn capture_message_insert_sql(owner: bool) -> &'static str {
     if owner {
         "INSERT INTO ros_messages
           (conversation_id, agent, channel, role, content, tool_name, tool_args, tool_result, metadata, created_at, owner_user_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9::jsonb, COALESCE($10::timestamptz, now()), $11)"
+         VALUES ($1::uuid, $2, $3, $4, $5, $6, $7::jsonb, $8, $9::jsonb, COALESCE($10::timestamptz, now()), $11)"
     } else {
         "INSERT INTO ros_messages
           (conversation_id, agent, channel, role, content, tool_name, tool_args, tool_result, metadata, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9::jsonb, COALESCE($10::timestamptz, now()))"
+         VALUES ($1::uuid, $2, $3, $4, $5, $6, $7::jsonb, $8, $9::jsonb, COALESCE($10::timestamptz, now()))"
     }
 }
 
@@ -160,13 +160,13 @@ fn append_insert_sql(owner: bool) -> &'static str {
         "INSERT INTO ros_messages
            (conversation_id, agent, channel, role, content,
             tool_name, tool_args, tool_result, metadata, created_at, owner_user_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, COALESCE($10, NOW()), $11)
+         VALUES ($1::uuid, $2, $3, $4, $5, $6, $7::jsonb, $8, $9::jsonb, COALESCE($10::timestamptz, NOW()), $11)
          RETURNING id"
     } else {
         "INSERT INTO ros_messages
            (conversation_id, agent, channel, role, content,
             tool_name, tool_args, tool_result, metadata, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, COALESCE($10, NOW()))
+         VALUES ($1::uuid, $2, $3, $4, $5, $6, $7::jsonb, $8, $9::jsonb, COALESCE($10::timestamptz, NOW()))
          RETURNING id"
     }
 }
@@ -524,7 +524,7 @@ impl PostgresMemory {
                 "UPDATE ros_conversations
             SET active=false,
                 updated_at = GREATEST(updated_at, COALESCE($2::timestamptz, now()))
-          WHERE id=$1 AND active=true",
+          WHERE id=$1::uuid AND active=true",
             )
             .bind(conversation_id)
             .bind(batch.updated_at.as_deref())
@@ -606,7 +606,7 @@ impl PostgresMemory {
             .collect();
         let rows = sqlx::query(
             "SELECT metadata->>'event_id' AS event_id FROM ros_messages
-      WHERE conversation_id = $1 AND metadata->>'event_id' = ANY($2::text[])",
+      WHERE conversation_id = $1::uuid AND metadata->>'event_id' = ANY($2::text[])",
         )
         .bind(conversation_id)
         .bind(&ids)
@@ -630,7 +630,7 @@ impl PostgresMemory {
         let rows = sqlx::query(
             "SELECT id, role, content, metadata->>'event_id' AS hook_event_id
            FROM ros_messages
-          WHERE conversation_id = $1
+          WHERE conversation_id = $1::uuid
             AND role IN ('user', 'assistant')
             AND metadata->>'source' = 'cowork-hook'
           ORDER BY created_at, id",
@@ -682,7 +682,7 @@ impl PostgresMemory {
                     metadata = COALESCE(metadata, '{}'::jsonb) || $5::jsonb,
                     tool_name = COALESCE(tool_name, $6),
                     tool_args = COALESCE(tool_args, $7::jsonb)
-              WHERE conversation_id = $1
+              WHERE conversation_id = $1::uuid
                 AND metadata->>'event_id' = $2
                 AND (tool_result IS NULL OR tool_result = '')",
                 )
@@ -720,7 +720,7 @@ impl PostgresMemory {
             sqlx::query(
                 "UPDATE ros_messages
               SET metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('event_id', $2::text, 'source', 'cowork-transcript')
-            WHERE id = $1",
+            WHERE id = $1::uuid",
             )
             .bind(uuid::Uuid::parse_str(&claim.id).map_err(|err| StoreError::Request(err.to_string()))?)
             .bind(&message.event_id)
@@ -804,7 +804,7 @@ impl PostgresMemory {
         let wrote = async {
             let existing = sqlx::query(
                 "SELECT 1 FROM ros_tags
-        WHERE entity_type = 'conversation' AND entity_id = $1
+        WHERE entity_type = 'conversation' AND entity_id = $1::uuid
           AND key = $2 AND (source = 'rule' OR proposed_by = $3)
         LIMIT 1",
             )
@@ -818,7 +818,7 @@ impl PostgresMemory {
             }
             let vocab = sqlx::query(
                 "SELECT value, display, state FROM ros_tag_taxonomy
-          WHERE key = $1 AND (value = $2 OR $2 = ANY(aliases))
+          WHERE key = $1 AND (value = $2::text OR $2::text = ANY(aliases))
           ORDER BY (state = 'accepted') DESC, (value = $2) DESC, value
           LIMIT 1",
             )
@@ -845,7 +845,7 @@ impl PostgresMemory {
                 "INSERT INTO ros_tags
              (entity_type, entity_id, key, value, display, source, state,
               proposed_by, reason, decided_by, decided_at)
-           VALUES ('conversation', $1, $2, $3, $4, 'rule', 'accepted', $5, $6, $5, now())
+           VALUES ('conversation', $1::uuid, $2, $3, $4, 'rule', 'accepted', $5, $6, $5, now())
            ON CONFLICT (entity_type, entity_id, key, value) DO NOTHING",
             )
             .bind(conversation_id)
@@ -1019,7 +1019,7 @@ impl PostgresMemory {
                 created,
             )
             .await?;
-        sqlx::query("UPDATE ros_conversations SET updated_at = NOW() WHERE id = $1")
+        sqlx::query("UPDATE ros_conversations SET updated_at = NOW() WHERE id = $1::uuid")
             .bind(conversation_id)
             .execute(&mut *conn)
             .await
@@ -1142,7 +1142,7 @@ impl PostgresMemory {
         if let Some(id) = existing {
             if let Some(owner) = owner {
                 sqlx::query(
-                    "UPDATE ros_conversations SET owner_user_id = $2 WHERE id = $1 AND owner_user_id IS NULL",
+                    "UPDATE ros_conversations SET owner_user_id = $2 WHERE id = $1::uuid AND owner_user_id IS NULL",
                 )
                 .bind(id)
                 .bind(owner)
@@ -1502,7 +1502,7 @@ impl MemoryStore for PostgresMemory {
         settings: &Map<String, Value>,
     ) -> Result<(), StoreError> {
         sqlx::query(
-            "UPDATE ros_conversations SET settings = $1
+            "UPDATE ros_conversations SET settings = $1::jsonb
        WHERE session_key = $2 AND active = true",
         )
         .bind(Value::Object(settings.clone()))
@@ -1782,7 +1782,7 @@ impl MemoryStore for PostgresMemory {
         };
         let row = match sqlx::query(
             "SELECT id, content, tool_name, tool_result, agent, metadata
-           FROM ros_messages WHERE id = $1",
+           FROM ros_messages WHERE id = $1::uuid",
         )
         .bind(parsed)
         .fetch_optional(&self.pool)
