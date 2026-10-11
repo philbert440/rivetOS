@@ -11,7 +11,8 @@ use std::time::Duration;
 use agents::{
     AgentPreset, AgentPresetInput, AgentPresetPatch, AgentPresetStore, AgentRegistryBackend,
     BoxFuture, FallbackPresetStore, FallbackPresetStoreOptions, FileAgentPresetStore,
-    ImportLegacyAgentsArgs, PresetError, create_fallback_preset_store, import_legacy_agents_json,
+    ImportLegacyAgentsArgs, JsString, PresetError, create_fallback_preset_store,
+    import_legacy_agents_json,
 };
 use tokio::sync::oneshot;
 
@@ -109,7 +110,10 @@ impl AgentPresetStore for Fake {
             }
         })
     }
-    fn find_by_handle(&self, _: &str) -> BoxFuture<'_, Result<Option<AgentPreset>, PresetError>> {
+    fn find_by_handle(
+        &self,
+        _: &JsString,
+    ) -> BoxFuture<'_, Result<Option<AgentPreset>, PresetError>> {
         self.calls.lock().push(format!("{}:find", self.marker));
         Box::pin(async { Ok(None) })
     }
@@ -263,7 +267,7 @@ impl AgentPresetStore for ReadyStore {
     }
     fn find_by_handle(
         &self,
-        handle: &str,
+        handle: &JsString,
     ) -> BoxFuture<'_, Result<Option<AgentPreset>, PresetError>> {
         self.inner.find_by_handle(handle)
     }
@@ -306,7 +310,13 @@ async fn a_throwing_primary_check_is_not_ready_inside_the_window() {
             logged.lock().push(message.to_string())
         })),
     );
-    assert!(store.find_by_handle("x").await.unwrap().is_none());
+    assert!(
+        store
+            .find_by_handle(&JsString::from_text("x"))
+            .await
+            .unwrap()
+            .is_none()
+    );
     assert_eq!(fallback.calls(), ["fallback:find"]);
     assert_eq!(store.backend(), AgentRegistryBackend::File);
     assert!(logs.lock().join("\n").contains("ros_agent_presets"));
@@ -661,7 +671,7 @@ impl AgentPresetStore for SlowFile {
     }
     fn find_by_handle(
         &self,
-        handle: &str,
+        handle: &JsString,
     ) -> BoxFuture<'_, Result<Option<AgentPreset>, PresetError>> {
         self.inner.find_by_handle(handle)
     }
@@ -716,7 +726,10 @@ impl AgentPresetStore for MemoryPrimary {
         let rows = self.rows.lock().clone();
         Box::pin(async move { Ok(rows.into_iter().find(|row| row.id.to_utf8() == id)) })
     }
-    fn find_by_handle(&self, _: &str) -> BoxFuture<'_, Result<Option<AgentPreset>, PresetError>> {
+    fn find_by_handle(
+        &self,
+        _: &JsString,
+    ) -> BoxFuture<'_, Result<Option<AgentPreset>, PresetError>> {
         Box::pin(async { Ok(None) })
     }
     fn create(&self, input: AgentPresetInput) -> BoxFuture<'_, Result<AgentPreset, PresetError>> {

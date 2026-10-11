@@ -1,4 +1,4 @@
-use std::path::{Component, Path, PathBuf};
+use std::path::Path;
 
 use protocol::js::{JsObject, JsString, JsValue, parse, stringify};
 
@@ -97,7 +97,7 @@ pub(crate) fn stringify_pretty(value: &JsValue) -> String {
 }
 
 pub(crate) fn file_identity(file: &str) -> String {
-    let lexical = lexical_absolute(file);
+    let lexical = crate::validate::resolve_fs(file);
     let path = Path::new(&lexical);
     if let Ok(canon) = std::fs::canonicalize(path) {
         return canon.to_string_lossy().into_owned();
@@ -108,29 +108,6 @@ pub(crate) fn file_identity(file: &str) -> String {
         return parent.join(name).to_string_lossy().into_owned();
     }
     lexical
-}
-
-fn lexical_absolute(file: &str) -> String {
-    let path = Path::new(file);
-    let absolute = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        match std::env::current_dir() {
-            Ok(cwd) => cwd.join(path),
-            Err(_) => path.to_path_buf(),
-        }
-    };
-    let mut out = PathBuf::new();
-    for component in absolute.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                out.pop();
-            }
-            other => out.push(other.as_os_str()),
-        }
-    }
-    out.to_string_lossy().into_owned()
 }
 
 fn write_pretty(value: &JsValue, depth: usize, out: &mut String) {
@@ -214,26 +191,9 @@ fn array_index(key: &JsString) -> Option<u32> {
     u32::try_from(value).ok()
 }
 
-pub(crate) fn serde_to_js(value: &serde_json::Value) -> JsValue {
-    match value {
-        serde_json::Value::Null => JsValue::Null,
-        serde_json::Value::Bool(item) => JsValue::Bool(*item),
-        serde_json::Value::Number(number) => JsValue::Number(number.as_f64().unwrap_or(0.0)),
-        serde_json::Value::String(text) => js_string(text),
-        serde_json::Value::Array(items) => JsValue::Array(items.iter().map(serde_to_js).collect()),
-        serde_json::Value::Object(map) => {
-            let pairs = map
-                .iter()
-                .map(|(key, child)| (key.as_str(), serde_to_js(child)))
-                .collect();
-            object_from_pairs(pairs).unwrap_or(JsValue::Null)
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{js_string, object_from_pairs, stringify_pretty};
+    use super::{file_identity, js_string, object_from_pairs, stringify_pretty};
     use protocol::js::{parse, stringify};
 
     #[test]
@@ -262,5 +222,13 @@ mod tests {
             r#"{"name":"\ud83d","displayMetadata":{"k":1}}"#
         );
         assert!(stringify_pretty(&parsed).contains(r"\ud83d"));
+    }
+
+    #[test]
+    fn file_identity_collapses_dot_segments_with_posix_resolve() {
+        let direct = file_identity("agents.json");
+        let dotted = file_identity("./foo/../agents.json");
+        assert_eq!(direct, dotted);
+        assert!(direct.ends_with("/agents.json"));
     }
 }

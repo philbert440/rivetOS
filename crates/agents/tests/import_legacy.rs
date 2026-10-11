@@ -8,7 +8,7 @@ use parking_lot::Mutex;
 
 use agents::{
     AgentPreset, AgentPresetInput, AgentPresetPatch, AgentPresetStore, AgentRegistryBackend,
-    BoxFuture, FallbackPresetStoreOptions, FileAgentPresetStore, ImportLegacyAgentsArgs,
+    BoxFuture, FallbackPresetStoreOptions, FileAgentPresetStore, ImportLegacyAgentsArgs, JsString,
     PresetError, import_legacy_agents_json,
 };
 use serde_json::{Value, json};
@@ -247,7 +247,10 @@ impl AgentPresetStore for ConflictStore {
         let rows = self.rows.lock().clone();
         Box::pin(async move { Ok(rows.into_iter().find(|row| row.id.to_utf8() == id)) })
     }
-    fn find_by_handle(&self, _: &str) -> BoxFuture<'_, Result<Option<AgentPreset>, PresetError>> {
+    fn find_by_handle(
+        &self,
+        _: &JsString,
+    ) -> BoxFuture<'_, Result<Option<AgentPreset>, PresetError>> {
         Box::pin(async { Ok(None) })
     }
     fn create(&self, input: AgentPresetInput) -> BoxFuture<'_, Result<AgentPreset, PresetError>> {
@@ -497,7 +500,10 @@ impl AgentPresetStore for NeverReady {
     fn get(&self, _: &str) -> BoxFuture<'_, Result<Option<AgentPreset>, PresetError>> {
         Box::pin(async { Ok(None) })
     }
-    fn find_by_handle(&self, _: &str) -> BoxFuture<'_, Result<Option<AgentPreset>, PresetError>> {
+    fn find_by_handle(
+        &self,
+        _: &JsString,
+    ) -> BoxFuture<'_, Result<Option<AgentPreset>, PresetError>> {
         Box::pin(async { Ok(None) })
     }
     fn create(&self, _: AgentPresetInput) -> BoxFuture<'_, Result<AgentPreset, PresetError>> {

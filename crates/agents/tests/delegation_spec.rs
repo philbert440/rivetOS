@@ -1,6 +1,6 @@
 use agents::{
     ConfigAgentRef, DEFAULT_MAX_CHAIN_DEPTH, DEFAULT_WAIT_MS, DELEGATION_CACHE_TTL_MS,
-    DelegationResolver, DelegationTarget, MESH_REFRESH_TTL_MS, NO_MESH_REGISTRY,
+    DelegationResolver, DelegationTarget, JsString, MESH_REFRESH_TTL_MS, NO_MESH_REGISTRY,
     PresetTaskSpecOptions, ROSTER_READ_BOUND_MS, chain_depth_limit_message, chain_depth_limited,
     gap_message, hosting_node_offline_message, no_harness_message, no_hosting_node_message,
     no_mesh_registry_reach_message, no_shared_queue_message, non_task_effort_message,
@@ -45,18 +45,20 @@ fn resolve_prefers_a_config_id_then_preset_handle_order() {
         preset("reviewer", "reviewer"),
     ];
     assert!(matches!(
-        resolve_delegation_target("grok", &config, &presets),
+        resolve_delegation_target(&JsString::from_text("grok"), &config, &presets),
         Some(DelegationTarget::ConfigAgent { id }) if id == "grok"
     ));
     assert!(matches!(
-        resolve_delegation_target("beta", &config, &presets),
+        resolve_delegation_target(&JsString::from_text("beta"), &config, &presets),
         Some(DelegationTarget::Preset(row)) if row.id.to_utf8() == "beta"
     ));
     assert!(matches!(
-        resolve_delegation_target("reviewer", &[], &presets),
+        resolve_delegation_target(&JsString::from_text("reviewer"), &[], &presets),
         Some(DelegationTarget::Preset(row)) if row.id.to_utf8() == "reviewer"
     ));
-    assert!(resolve_delegation_target("missing", &config, &presets).is_none());
+    assert!(
+        resolve_delegation_target(&JsString::from_text("missing"), &config, &presets).is_none()
+    );
     assert_eq!(
         unknown_agent_message(
             "nonexistent",

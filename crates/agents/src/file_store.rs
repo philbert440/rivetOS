@@ -95,10 +95,10 @@ impl AgentPresetStore for FileAgentPresetStore {
 
     fn find_by_handle(
         &self,
-        handle: &str,
+        handle: &JsString,
     ) -> BoxFuture<'_, Result<Option<AgentPreset>, PresetError>> {
         let file = self.file.clone();
-        let handle = handle.to_string();
+        let handle = handle.clone();
         Box::pin(async move {
             let rows = load_blocking(&file).await?;
             let mut presets = Vec::new();

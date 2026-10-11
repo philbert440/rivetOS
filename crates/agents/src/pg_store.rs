@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use protocol::JsNumber;
+use protocol::js::JsString;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{PgPool, Row};
 
@@ -413,11 +414,12 @@ impl AgentPresetStore for PgAgentPresetStore {
 
     fn find_by_handle(
         &self,
-        handle: &str,
+        handle: &JsString,
     ) -> BoxFuture<'_, Result<Option<AgentPreset>, PresetError>> {
-        let handle = protocol::js::js_trim(handle).to_string();
+        let needle = JsString::from_units(protocol::js::js_trim_units(handle.units()).to_vec());
+        let sql_text = needle.to_utf8().to_string();
         Box::pin(async move {
-            let args = vec![SqlArg::Text(handle.clone())];
+            let args = vec![SqlArg::Text(sql_text)];
             let rows = fetch_all(
                 &self.pool,
                 "SELECT * FROM ros_agent_presets WHERE id = $1::text OR name = $1::text OR lower(name) = lower($1::text)",
@@ -428,7 +430,7 @@ impl AgentPresetStore for PgAgentPresetStore {
             for row in &rows {
                 presets.push(row_to_preset(row)?);
             }
-            Ok(find_preset_by_handle(&presets, &handle).cloned())
+            Ok(find_preset_by_handle(&presets, &needle).cloned())
         })
     }
 

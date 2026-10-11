@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use agents::{
     AgentPreset, AgentPresetInput, AgentPresetPatch, AgentPresetStore, AgentRegistryBackend,
-    BoxFuture, CachedPresetResolver, CachedPresetResolverOptions, PresetError,
+    BoxFuture, CachedPresetResolver, CachedPresetResolverOptions, JsString, PresetError,
     create_cached_preset_resolver,
 };
 use tokio::sync::oneshot;
@@ -67,7 +67,10 @@ impl AgentPresetStore for SeqStore {
     fn get(&self, _: &str) -> BoxFuture<'_, Result<Option<AgentPreset>, PresetError>> {
         Box::pin(async { Ok(None) })
     }
-    fn find_by_handle(&self, _: &str) -> BoxFuture<'_, Result<Option<AgentPreset>, PresetError>> {
+    fn find_by_handle(
+        &self,
+        _: &JsString,
+    ) -> BoxFuture<'_, Result<Option<AgentPreset>, PresetError>> {
         self.find_calls.fetch_add(1, Ordering::SeqCst);
         Box::pin(async { Err(PresetError::message("findByHandle must not be called")) })
     }
@@ -194,10 +197,39 @@ async fn finds_by_handle_on_the_cached_list() {
         preset("id-c", "Gamma"),
     ])]));
     let resolver = resolver(store.clone(), fixed_now(0), 30_000, None);
-    assert_eq!(resolver.find("beta").await.unwrap().id.to_utf8(), "beta");
-    assert_eq!(resolver.find("Alpha").await.unwrap().id.to_utf8(), "beta");
-    assert_eq!(resolver.find("gamma").await.unwrap().id.to_utf8(), "id-c");
-    assert!(resolver.find("missing").await.is_none());
+    assert_eq!(
+        resolver
+            .find(&JsString::from_text("beta"))
+            .await
+            .unwrap()
+            .id
+            .to_utf8(),
+        "beta"
+    );
+    assert_eq!(
+        resolver
+            .find(&JsString::from_text("Alpha"))
+            .await
+            .unwrap()
+            .id
+            .to_utf8(),
+        "beta"
+    );
+    assert_eq!(
+        resolver
+            .find(&JsString::from_text("gamma"))
+            .await
+            .unwrap()
+            .id
+            .to_utf8(),
+        "id-c"
+    );
+    assert!(
+        resolver
+            .find(&JsString::from_text("missing"))
+            .await
+            .is_none()
+    );
     assert_eq!(store.calls.load(Ordering::SeqCst), 1);
     assert_eq!(store.find_calls.load(Ordering::SeqCst), 0);
 }
@@ -351,7 +383,10 @@ impl AgentPresetStore for CountingInvalidate {
     fn get(&self, _: &str) -> BoxFuture<'_, Result<Option<AgentPreset>, PresetError>> {
         Box::pin(async { Ok(None) })
     }
-    fn find_by_handle(&self, _: &str) -> BoxFuture<'_, Result<Option<AgentPreset>, PresetError>> {
+    fn find_by_handle(
+        &self,
+        _: &JsString,
+    ) -> BoxFuture<'_, Result<Option<AgentPreset>, PresetError>> {
         Box::pin(async { Ok(None) })
     }
     fn create(&self, _: AgentPresetInput) -> BoxFuture<'_, Result<AgentPreset, PresetError>> {

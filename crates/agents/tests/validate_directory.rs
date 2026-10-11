@@ -237,17 +237,59 @@ fn ensure_rejects_an_existing_file_and_a_dangling_symlink() {
     let file = root.path_str("notes.txt");
     std::fs::write(&file, "x").unwrap();
     let err = ensure_agent_directory(Some(&file), Some(false), &empty_opts()).unwrap_err();
-    assert!(err.to_string().contains("EEXIST") || err.to_string().contains("exist"));
+    assert_eq!(
+        err.to_string(),
+        format!("EEXIST: file already exists, mkdir '{file}'")
+    );
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "x");
     let dangling = root.path_str("dangling");
     symlink(root.join("missing-target"), &dangling).unwrap();
     let err = ensure_agent_directory(Some(&dangling), Some(false), &empty_opts()).unwrap_err();
-    assert!(err.to_string().contains("EEXIST") || err.to_string().contains("exist"));
+    assert_eq!(
+        err.to_string(),
+        format!("EEXIST: file already exists, mkdir '{dangling}'")
+    );
     assert!(
         std::fs::symlink_metadata(&dangling)
             .unwrap()
             .file_type()
             .is_symlink()
+    );
+}
+
+#[test]
+fn ensure_reports_node_eacces_when_the_parent_is_not_searchable() {
+    let root = TempDir::new("agent-registry-dir");
+    let parent = root.join("locked");
+    std::fs::create_dir(&parent).unwrap();
+    let directory = root.path_str("locked/agent");
+    let mut perms = std::fs::metadata(&parent).unwrap().permissions();
+    perms.set_mode(0o000);
+    std::fs::set_permissions(&parent, perms).unwrap();
+    let probed = std::fs::create_dir(&directory);
+    let mut restore = std::fs::metadata(&parent).unwrap().permissions();
+    restore.set_mode(0o700);
+    std::fs::set_permissions(&parent, restore).unwrap();
+    let probe_err = match probed {
+        Ok(()) => {
+            let _ = std::fs::remove_dir(&directory);
+            return;
+        }
+        Err(err) => err,
+    };
+    if probe_err.kind() != std::io::ErrorKind::PermissionDenied {
+        return;
+    }
+    let mut perms = std::fs::metadata(&parent).unwrap().permissions();
+    perms.set_mode(0o000);
+    std::fs::set_permissions(&parent, perms).unwrap();
+    let err = ensure_agent_directory(Some(&directory), Some(false), &empty_opts()).unwrap_err();
+    let mut restore = std::fs::metadata(&parent).unwrap().permissions();
+    restore.set_mode(0o700);
+    std::fs::set_permissions(&parent, restore).unwrap();
+    assert_eq!(
+        err.to_string(),
+        format!("EACCES: permission denied, mkdir '{directory}'")
     );
 }
 

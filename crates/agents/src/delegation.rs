@@ -71,11 +71,14 @@ pub enum DelegationTarget {
 }
 
 pub fn resolve_delegation_target(
-    to_agent: &str,
+    to_agent: &JsString,
     config_agents: &[ConfigAgentRef],
     presets: &[AgentPreset],
 ) -> Option<DelegationTarget> {
-    if let Some(agent) = config_agents.iter().find(|agent| agent.id == to_agent) {
+    if let Some(agent) = config_agents
+        .iter()
+        .find(|agent| JsString::from_text(&agent.id).units() == to_agent.units())
+    {
         return Some(DelegationTarget::ConfigAgent {
             id: agent.id.clone(),
         });

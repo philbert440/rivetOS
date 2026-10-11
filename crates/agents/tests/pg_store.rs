@@ -5,7 +5,9 @@ pub use common::*;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use agents::{AgentPresetPatch, AgentPresetStore, HarnessPatch, PgAgentPresetStore, SortPatch};
+use agents::{
+    AgentPresetPatch, AgentPresetStore, HarnessPatch, JsString, PgAgentPresetStore, SortPatch,
+};
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
@@ -391,7 +393,7 @@ async fn resolves_find_by_handle(store: &PgAgentPresetStore) {
     store.create(id_c).await.unwrap();
     assert_eq!(
         store
-            .find_by_handle("beta")
+            .find_by_handle(&JsString::from_text("beta"))
             .await
             .unwrap()
             .unwrap()
@@ -401,7 +403,7 @@ async fn resolves_find_by_handle(store: &PgAgentPresetStore) {
     );
     assert_eq!(
         store
-            .find_by_handle("Alpha")
+            .find_by_handle(&JsString::from_text("Alpha"))
             .await
             .unwrap()
             .unwrap()
@@ -411,7 +413,7 @@ async fn resolves_find_by_handle(store: &PgAgentPresetStore) {
     );
     assert_eq!(
         store
-            .find_by_handle("gamma")
+            .find_by_handle(&JsString::from_text("gamma"))
             .await
             .unwrap()
             .unwrap()
@@ -421,7 +423,7 @@ async fn resolves_find_by_handle(store: &PgAgentPresetStore) {
     );
     assert_eq!(
         store
-            .find_by_handle("  gamma  ")
+            .find_by_handle(&JsString::from_text("  gamma  "))
             .await
             .unwrap()
             .unwrap()
@@ -429,7 +431,13 @@ async fn resolves_find_by_handle(store: &PgAgentPresetStore) {
             .to_utf8(),
         "id-c"
     );
-    assert!(store.find_by_handle("missing").await.unwrap().is_none());
+    assert!(
+        store
+            .find_by_handle(&JsString::from_text("missing"))
+            .await
+            .unwrap()
+            .is_none()
+    );
 }
 
 async fn maps_unique_violations(store: &PgAgentPresetStore) {

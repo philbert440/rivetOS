@@ -172,18 +172,12 @@ pub fn mkdir_p_700(path: &Path) -> io::Result<()> {
     match std::fs::metadata(path) {
         Ok(meta) if meta.is_dir() => return Ok(()),
         Ok(_) => {
-            return Err(io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                "EEXIST: file already exists",
-            ));
+            return Err(mkdir_error(path, &io::Error::from_raw_os_error(17)));
         }
         Err(_) => {}
     }
     if std::fs::symlink_metadata(path).is_ok() {
-        return Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            "EEXIST: file already exists",
-        ));
+        return Err(mkdir_error(path, &io::Error::from_raw_os_error(17)));
     }
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
@@ -197,8 +191,15 @@ pub fn mkdir_p_700(path: &Path) -> io::Result<()> {
         Ok(()) => Ok(()),
         Err(err) if err.kind() == io::ErrorKind::AlreadyExists => match std::fs::metadata(path) {
             Ok(meta) if meta.is_dir() => Ok(()),
-            _ => Err(err),
+            _ => Err(mkdir_error(path, &err)),
         },
-        Err(err) => Err(err),
+        Err(err) => Err(mkdir_error(path, &err)),
     }
+}
+
+fn mkdir_error(path: &Path, err: &io::Error) -> io::Error {
+    io::Error::new(
+        err.kind(),
+        protocol::host::fs_error("mkdir", Some(path), None, err).to_string(),
+    )
 }

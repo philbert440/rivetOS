@@ -4,7 +4,10 @@ pub use common::*;
 
 use std::sync::Arc;
 
-use agents::{AgentPresetStore, FileAgentPresetStore};
+use agents::{
+    AgentPresetStore, DelegationTarget, FileAgentPresetStore, JsString, JsValue, ValidateCtx,
+    resolve_delegation_target, validate_create,
+};
 use serde_json::{Value, json};
 
 struct FileHooks {
@@ -230,7 +233,7 @@ async fn resolves_find_by_handle_in_priority_order() {
     registry.create(gamma).await.unwrap();
     assert_eq!(
         registry
-            .find_by_handle("beta")
+            .find_by_handle(&JsString::from_text("beta"))
             .await
             .unwrap()
             .unwrap()
@@ -240,7 +243,7 @@ async fn resolves_find_by_handle_in_priority_order() {
     );
     assert_eq!(
         registry
-            .find_by_handle("Alpha")
+            .find_by_handle(&JsString::from_text("Alpha"))
             .await
             .unwrap()
             .unwrap()
@@ -250,7 +253,7 @@ async fn resolves_find_by_handle_in_priority_order() {
     );
     assert_eq!(
         registry
-            .find_by_handle("gamma")
+            .find_by_handle(&JsString::from_text("gamma"))
             .await
             .unwrap()
             .unwrap()
@@ -260,7 +263,7 @@ async fn resolves_find_by_handle_in_priority_order() {
     );
     assert_eq!(
         registry
-            .find_by_handle("  gamma  ")
+            .find_by_handle(&JsString::from_text("  gamma  "))
             .await
             .unwrap()
             .unwrap()
@@ -268,7 +271,13 @@ async fn resolves_find_by_handle_in_priority_order() {
             .to_utf8(),
         "id-c"
     );
-    assert!(registry.find_by_handle("missing").await.unwrap().is_none());
+    assert!(
+        registry
+            .find_by_handle(&JsString::from_text("missing"))
+            .await
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[tokio::test]
@@ -341,6 +350,83 @@ async fn clash_keeps_submitted_casing_and_distinct_truncated_surrogates() {
     second.directory = "/tmp/agents/sur-2".into();
     let created = registry.create(second).await.unwrap();
     assert_eq!(created.name.units()[127], 0xD83E);
+}
+
+#[tokio::test]
+async fn handle_lookup_keeps_a_capped_surrogate_and_rejects_the_lookalike() {
+    let ctx = ValidateCtx {
+        node_name: "node-f",
+        directory_root: "/home/agents",
+        home: "/home/user",
+        shared_dir: None,
+        allow_harness: None,
+        model_list: None,
+    };
+    let mut units = vec![u16::from(b'a'); 127];
+    units.extend("😀".encode_utf16());
+    let mut object = protocol::js::JsObject::new();
+    object.insert("name", JsValue::String(JsString::from_units(units)));
+    let validated = validate_create(&JsValue::Object(object), &ctx).unwrap();
+    assert_eq!(validated.name.len(), 128);
+    assert_eq!(validated.name.units()[127], 0xD83D);
+    let dir = TempDir::new("agent-registry-file");
+    let registry = FileAgentPresetStore::new(dir.path_str("agents.json"));
+    let mut first = validated.input;
+    first.id = Some("sur-1".into());
+    first.directory = "/tmp/agents/sur-1".into();
+    let stored = registry.create(first).await.unwrap();
+    assert_eq!(stored.name.units(), validated.name.units());
+    let found = registry
+        .find_by_handle(&stored.name)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(found.id.to_utf8(), "sur-1");
+    let mut replacement = vec![u16::from(b'a'); 127];
+    replacement.push(0xFFFD);
+    let replacement = JsString::from_units(replacement);
+    assert!(
+        registry
+            .find_by_handle(&replacement)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(matches!(
+        resolve_delegation_target(&stored.name, &[], std::slice::from_ref(&stored)),
+        Some(DelegationTarget::Preset(row)) if row.id.to_utf8() == "sur-1"
+    ));
+    assert!(resolve_delegation_target(&replacement, &[], &[stored]).is_none());
+    let mut other = vec![u16::from(b'a'); 127];
+    other.push(0xD83E);
+    let mut second = input("placeholder");
+    second.name = JsString::from_units(other);
+    second.id = Some("sur-2".into());
+    second.directory = "/tmp/agents/sur-2".into();
+    let created = registry.create(second).await.unwrap();
+    let found_other = registry
+        .find_by_handle(&created.name)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(found_other.id.to_utf8(), "sur-2");
+    let rows = registry.list(None).await.unwrap();
+    assert!(
+        registry
+            .find_by_handle(&replacement)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(matches!(
+        resolve_delegation_target(&created.name, &[], &rows),
+        Some(DelegationTarget::Preset(row)) if row.id.to_utf8() == "sur-2"
+    ));
+    assert!(resolve_delegation_target(&replacement, &[], &rows).is_none());
+    assert!(matches!(
+        resolve_delegation_target(&validated.name, &[], &rows),
+        Some(DelegationTarget::Preset(row)) if row.id.to_utf8() == "sur-1"
+    ));
 }
 
 #[tokio::test]

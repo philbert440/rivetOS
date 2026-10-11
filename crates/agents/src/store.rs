@@ -63,19 +63,15 @@ fn compare_presets(left: &AgentPreset, right: &AgentPreset) -> Ordering {
 
 pub fn find_preset_by_handle<'a>(
     presets: &'a [AgentPreset],
-    handle: &str,
+    handle: &JsString,
 ) -> Option<&'a AgentPreset> {
-    let trimmed = protocol::js::js_trim(handle);
+    let trimmed = protocol::js::js_trim_units(handle.units());
     presets
         .iter()
-        .find(|preset| preset.id.to_utf8() == trimmed)
+        .find(|preset| preset.id.units() == trimmed)
+        .or_else(|| presets.iter().find(|preset| preset.name.units() == trimmed))
         .or_else(|| {
-            presets
-                .iter()
-                .find(|preset| preset.name.to_utf8() == trimmed)
-        })
-        .or_else(|| {
-            let key = name_key_text(&JsString::from_text(trimmed));
+            let key = name_key_text(handle);
             presets
                 .iter()
                 .find(|preset| name_key_text(&preset.name) == key)
@@ -157,7 +153,7 @@ pub trait AgentPresetStore: Send + Sync {
     fn get(&self, id: &str) -> BoxFuture<'_, Result<Option<AgentPreset>, PresetError>>;
     fn find_by_handle(
         &self,
-        handle: &str,
+        handle: &JsString,
     ) -> BoxFuture<'_, Result<Option<AgentPreset>, PresetError>>;
     fn create(&self, input: AgentPresetInput) -> BoxFuture<'_, Result<AgentPreset, PresetError>>;
     fn update(

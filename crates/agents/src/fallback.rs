@@ -5,6 +5,8 @@ use std::time::Duration;
 use parking_lot::{Mutex, MutexGuard};
 use tokio::sync::{oneshot, watch};
 
+use protocol::js::JsString;
+
 use crate::error::PresetError;
 use crate::preset::{AgentPreset, AgentPresetInput, AgentPresetPatch, AgentRegistryBackend};
 use crate::store::{AgentPresetStore, BoxFuture, LogCallback, system_now_ms};
@@ -24,6 +26,12 @@ struct FallbackState {
     drainers: Vec<oneshot::Sender<()>>,
     inflight: Option<watch::Receiver<Option<bool>>>,
     drain_hook: Option<Arc<dyn Fn() + Send + Sync>>,
+    admit_gate: Option<Arc<AdmitGate>>,
+}
+
+struct AdmitGate {
+    arrived: tokio::sync::Notify,
+    release: tokio::sync::Notify,
 }
 
 struct Shared {
@@ -69,6 +77,7 @@ pub fn create_fallback_preset_store(opts: FallbackPresetStoreOptions) -> Fallbac
                 drainers: Vec::new(),
                 inflight: None,
                 drain_hook: None,
+                admit_gate: None,
             }),
         }),
     }
@@ -156,15 +165,26 @@ async fn using_fallback(shared: &Arc<Shared>) -> bool {
         return true;
     }
     let ready = use_primary(Arc::clone(shared)).await;
-    let serving = lock(&shared.state).serving_primary;
-    if ready || serving {
-        return false;
+    if !ready {
+        let gate = {
+            let mut state = lock(&shared.state);
+            state.admit_gate.take()
+        };
+        if let Some(gate) = gate {
+            let release = gate.release.notified();
+            gate.arrived.notify_one();
+            release.await;
+        }
     }
     {
         let mut state = lock(&shared.state);
-        state.fallback_ops += 1;
+        if ready || state.serving_primary {
+            false
+        } else {
+            state.fallback_ops += 1;
+            true
+        }
     }
-    true
 }
 
 impl AgentPresetStore for FallbackPresetStore {
@@ -213,10 +233,10 @@ impl AgentPresetStore for FallbackPresetStore {
 
     fn find_by_handle(
         &self,
-        handle: &str,
+        handle: &JsString,
     ) -> BoxFuture<'_, Result<Option<AgentPreset>, PresetError>> {
         let shared = Arc::clone(&self.shared);
-        let handle = handle.to_string();
+        let handle = handle.clone();
         Box::pin(dispatch(shared, move |store| async move {
             store.find_by_handle(&handle).await
         }))
@@ -455,4 +475,173 @@ fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
         return message.clone();
     }
     "unknown error".to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    use parking_lot::Mutex;
+    use protocol::JsNumber;
+    use protocol::js::JsString;
+
+    use super::{AdmitGate, create_fallback_preset_store, lock};
+    use crate::FallbackPresetStoreOptions;
+    use crate::error::PresetError;
+    use crate::preset::{AgentPreset, AgentPresetInput, AgentPresetPatch, AgentRegistryBackend};
+    use crate::store::{AgentPresetStore, BoxFuture, system_now_ms};
+
+    struct Recording {
+        marker: &'static str,
+        fail_first: usize,
+        checks: AtomicUsize,
+        creates: Mutex<Vec<String>>,
+    }
+
+    impl Recording {
+        fn new(marker: &'static str, fail_first: usize) -> Self {
+            Self {
+                marker,
+                fail_first,
+                checks: AtomicUsize::new(0),
+                creates: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    fn named(name: &str) -> AgentPreset {
+        AgentPreset {
+            id: JsString::from_text(name),
+            name: JsString::from_text(name),
+            color: JsString::from_text(""),
+            harness_id: None,
+            model: JsString::from_text(""),
+            effort: JsString::from_text("medium"),
+            system_prompt: JsString::from_text(""),
+            node: Some(JsString::from_text("n")),
+            directory: Some(JsString::from_text("/d")),
+            shared_link: Some(true),
+            node_base_url: Some(JsString::from_text("")),
+            sort_order: None,
+            created_at: JsNumber::from(1),
+            updated_at: JsNumber::from(1),
+            document: None,
+        }
+    }
+
+    fn input_named(name: &str) -> AgentPresetInput {
+        AgentPresetInput {
+            name: JsString::from_text(name),
+            color: None,
+            harness_id: None,
+            model: None,
+            effort: None,
+            system_prompt: None,
+            node: JsString::from_text("n"),
+            directory: JsString::from_text("/d"),
+            shared_link: None,
+            node_base_url: None,
+            id: None,
+            created_at: None,
+            source: None,
+        }
+    }
+
+    impl AgentPresetStore for Recording {
+        fn backend(&self) -> AgentRegistryBackend {
+            if self.marker == "primary" {
+                AgentRegistryBackend::Postgres
+            } else {
+                AgentRegistryBackend::File
+            }
+        }
+        fn file(&self) -> Option<String> {
+            None
+        }
+        fn is_ready(&self) -> BoxFuture<'_, Result<bool, PresetError>> {
+            let n = self.checks.fetch_add(1, Ordering::SeqCst);
+            let ready = n >= self.fail_first;
+            Box::pin(async move { Ok(ready) })
+        }
+        fn list(&self, _: Option<&str>) -> BoxFuture<'_, Result<Vec<AgentPreset>, PresetError>> {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+        fn get(&self, _: &str) -> BoxFuture<'_, Result<Option<AgentPreset>, PresetError>> {
+            Box::pin(async { Ok(None) })
+        }
+        fn find_by_handle(
+            &self,
+            _: &JsString,
+        ) -> BoxFuture<'_, Result<Option<AgentPreset>, PresetError>> {
+            Box::pin(async { Ok(None) })
+        }
+        fn create(
+            &self,
+            input: AgentPresetInput,
+        ) -> BoxFuture<'_, Result<AgentPreset, PresetError>> {
+            self.creates.lock().push(input.name.to_utf8().to_string());
+            let row = named(input.name.to_utf8());
+            Box::pin(async move { Ok(row) })
+        }
+        fn update(
+            &self,
+            _: &str,
+            _: AgentPresetPatch,
+        ) -> BoxFuture<'_, Result<Option<AgentPreset>, PresetError>> {
+            Box::pin(async { Ok(None) })
+        }
+        fn delete(&self, _: &str) -> BoxFuture<'_, Result<bool, PresetError>> {
+            Box::pin(async { Ok(false) })
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_fallback_admit_cannot_follow_primary_readiness() {
+        let primary = Arc::new(Recording::new("primary", 1));
+        let fallback = Arc::new(Recording::new("fallback", 0));
+        let store = Arc::new(create_fallback_preset_store(FallbackPresetStoreOptions {
+            primary: Arc::clone(&primary) as Arc<dyn AgentPresetStore>,
+            fallback: Arc::clone(&fallback) as Arc<dyn AgentPresetStore>,
+            recheck_ms: Some(0),
+            probe_timeout_ms: None,
+            now: Some(Arc::new(system_now_ms)),
+            log: None,
+        }));
+        let announced = Arc::new(AtomicBool::new(false));
+        let announced_flag = Arc::clone(&announced);
+        store.on_primary_ready(Box::new(move || {
+            announced_flag.store(true, Ordering::SeqCst);
+        }));
+        let gate = Arc::new(AdmitGate {
+            arrived: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+        });
+        lock(&store.shared.state).admit_gate = Some(Arc::clone(&gate));
+        let late = Arc::clone(&store);
+        let late_task = tokio::spawn(async move { late.create(input_named("Late")).await });
+        tokio::time::timeout(Duration::from_secs(5), gate.arrived.notified())
+            .await
+            .expect("late worker reaches the admit gate");
+        assert!(!announced.load(Ordering::SeqCst));
+        let flip = Arc::clone(&store);
+        let flip_task = tokio::spawn(async move { flip.create(input_named("Flip")).await });
+        tokio::time::timeout(Duration::from_secs(5), flip_task)
+            .await
+            .expect("flip worker")
+            .expect("join")
+            .expect("flip create");
+        assert!(announced.load(Ordering::SeqCst));
+        assert!(fallback.creates.lock().is_empty());
+        gate.release.notify_one();
+        tokio::time::timeout(Duration::from_secs(5), late_task)
+            .await
+            .expect("late worker")
+            .expect("join")
+            .expect("late create");
+        assert!(announced.load(Ordering::SeqCst));
+        assert!(fallback.creates.lock().is_empty());
+        assert_eq!(primary.creates.lock().as_slice(), ["Flip", "Late"]);
+    }
 }

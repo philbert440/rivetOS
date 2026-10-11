@@ -10,7 +10,7 @@ use serde_json::{Map, Number, Value};
 use crate::error::PresetError;
 use crate::js_row::{
     entries_of, js_f64, js_from, js_i64, js_string, js_text, js_text_opt, object_from_entries,
-    object_from_pairs, remove_key, serde_to_js, upsert,
+    object_from_pairs, remove_key, upsert,
 };
 use crate::validate::is_harness_id;
 
@@ -215,7 +215,7 @@ pub fn number_to_i64(number: &Number) -> Option<i64> {
 }
 
 pub fn preset_from_map(map: &Map<String, Value>) -> Result<AgentPreset, PresetError> {
-    preset_from_js(&serde_to_js(&Value::Object(map.clone())))
+    preset_from_js(&protocol::js::from_serde(&Value::Object(map.clone())))
 }
 
 pub fn preset_from_js(row: &JsValue) -> Result<AgentPreset, PresetError> {

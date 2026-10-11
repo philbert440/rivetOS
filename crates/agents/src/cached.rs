@@ -120,7 +120,7 @@ impl CachedPresetResolver {
         }
     }
 
-    pub async fn find(&self, handle: &str) -> Option<AgentPreset> {
+    pub async fn find(&self, handle: &protocol::js::JsString) -> Option<AgentPreset> {
         let rows = self.list().await;
         find_preset_by_handle(&rows, handle).cloned()
     }
@@ -287,7 +287,7 @@ mod tests {
 
         fn find_by_handle(
             &self,
-            _: &str,
+            _: &protocol::js::JsString,
         ) -> BoxFuture<'_, Result<Option<AgentPreset>, PresetError>> {
             Box::pin(async { Ok(None) })
         }
