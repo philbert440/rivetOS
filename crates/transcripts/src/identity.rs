@@ -1,7 +1,7 @@
 use std::sync::OnceLock;
 
+use crate::reutil::Regex;
 use protocol::{HARNESS_IDS, parse_session_id_str};
-use regex::Regex;
 
 pub const TRANSCRIPT_PROBE: &[&str] = &[
     "claude", "grok", "codex", "hermes", "kimi", "opencode", "pi", "qwen", "cursor", "cowork",

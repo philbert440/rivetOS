@@ -3,7 +3,7 @@ use std::io::Read;
 use std::path::Path;
 use std::sync::OnceLock;
 
-use regex::Regex;
+use crate::reutil::Regex;
 use serde::Serialize;
 use serde_json::{Map, Value};
 
@@ -112,14 +112,14 @@ where
 }
 
 pub trait ReadText {
-    fn read_text(&mut self, path: &str) -> Result<String, String>;
+    fn load_utf8(&mut self, path: &str) -> Result<String, String>;
 }
 
 impl<F> ReadText for F
 where
     F: FnMut(&str) -> Result<String, String>,
 {
-    fn read_text(&mut self, path: &str) -> Result<String, String> {
+    fn load_utf8(&mut self, path: &str) -> Result<String, String> {
         self(path)
     }
 }
@@ -393,10 +393,10 @@ pub fn apply_sheet_override(
 }
 
 pub fn claude_global_config_path(home: &str, env: Option<&HashMap<String, String>>) -> String {
-    if let Some(dir) = env_trimmed(env, "CLAUDE_CONFIG_DIR") {
-        return join_path(&dir, ".claude.json");
+    if let Some(dir) = sheet_var(env, "CLAUDE_CONFIG_DIR") {
+        return path_join(&dir, ".claude.json");
     }
-    join_path(home, ".claude.json")
+    path_join(home, ".claude.json")
 }
 
 pub fn claude_sheet(
@@ -434,7 +434,7 @@ pub fn claude_sheet(
 
 pub fn grok_sheet(read_json: &mut Option<&mut dyn ReadJson>, home: &str) -> ModelSheet {
     let fallback = grok_fallback();
-    let path = join_path(home, ".grok/models_cache.json");
+    let path = path_join(home, ".grok/models_cache.json");
     let Ok(raw) = call_json(read_json, &path) else {
         return fallback;
     };
@@ -556,9 +556,9 @@ pub fn parse_kimi_toml(text: &str) -> Vec<ModelOption> {
 
 pub fn kimi_sheet(read_text: &mut Option<&mut dyn ReadText>, home: &str) -> ModelSheet {
     let paths = [
-        join_path(home, ".kimi/config.toml"),
-        join_path(home, ".config/kimi/config.toml"),
-        join_path(home, ".kimi-code/config.toml"),
+        path_join(home, ".kimi/config.toml"),
+        path_join(home, ".config/kimi/config.toml"),
+        path_join(home, ".kimi-code/config.toml"),
     ];
     for path in paths {
         if let Ok(text) = call_text(read_text, &path) {
@@ -634,7 +634,7 @@ pub fn hermes_sheet(
     now: i64,
     log: &mut Option<&mut dyn FnMut(&str)>,
 ) -> ModelSheet {
-    let config = call_text(read_text, &join_path(home, ".hermes/config.yaml"))
+    let config = call_text(read_text, &path_join(home, ".hermes/config.yaml"))
         .map(|text| parse_hermes_model_config(&text))
         .unwrap_or_default();
     let mut ids = Vec::new();
@@ -676,7 +676,7 @@ pub fn hermes_sheet(
 }
 
 pub fn codex_home(home: &str, env: Option<&HashMap<String, String>>) -> String {
-    env_trimmed(env, "CODEX_HOME").unwrap_or_else(|| join_path(home, ".codex"))
+    sheet_var(env, "CODEX_HOME").unwrap_or_else(|| path_join(home, ".codex"))
 }
 
 pub fn parse_codex_catalog(raw: &Value) -> Vec<ModelOption> {
@@ -784,13 +784,13 @@ pub fn codex_sheet(state: &mut SheetState, deps: &mut CodexDeps<'_>) -> ModelShe
     if let Some(rows) = listed {
         push_unique(&mut models, rows);
     } else {
-        let path = join_path(&root, "models_cache.json");
+        let path = path_join(&root, "models_cache.json");
         push_unique(
             &mut models,
             file_rows(state, deps.read_json, &path, parse_codex_catalog),
         );
     }
-    let configured = call_text(deps.read_text, &join_path(&root, "config.toml"))
+    let configured = call_text(deps.read_text, &path_join(&root, "config.toml"))
         .ok()
         .and_then(|text| parse_codex_config_model(&text));
     if let Some(id) = configured.clone()
@@ -855,10 +855,10 @@ pub fn opencode_sheet(
     env: Option<&HashMap<String, String>>,
 ) -> ModelSheet {
     let config_root =
-        env_trimmed(env, "XDG_CONFIG_HOME").unwrap_or_else(|| join_path(home, ".config"));
+        sheet_var(env, "XDG_CONFIG_HOME").unwrap_or_else(|| path_join(home, ".config"));
     let paths = [
-        join_path(&config_root, "opencode/opencode.json"),
-        join_path(&config_root, "opencode/opencode.jsonc"),
+        path_join(&config_root, "opencode/opencode.json"),
+        path_join(&config_root, "opencode/opencode.jsonc"),
     ];
     for path in paths {
         if let Ok(raw) = call_json(read_json, &path) {
@@ -870,9 +870,9 @@ pub fn opencode_sheet(
 }
 
 pub fn pi_sheet(read_json: &mut Option<&mut dyn ReadJson>, home: &str) -> ModelSheet {
-    let agent = join_path(home, ".pi/agent");
+    let agent = path_join(home, ".pi/agent");
     let mut default_id = "deepseek/deepseek-v4-flash".to_string();
-    if let Ok(settings) = call_json(read_json, &join_path(&agent, "settings.json"))
+    if let Ok(settings) = call_json(read_json, &path_join(&agent, "settings.json"))
         && let Some(record) = settings.as_object()
     {
         let provider = record
@@ -891,7 +891,7 @@ pub fn pi_sheet(read_json: &mut Option<&mut dyn ReadJson>, home: &str) -> ModelS
             default_id = model;
         }
     }
-    let from_store = pi_models_from_store(read_json, &join_path(&agent, "models-store.json"));
+    let from_store = pi_models_from_store(read_json, &path_join(&agent, "models-store.json"));
     let discovered = !from_store.is_empty();
     let mut models = if from_store.is_empty() {
         if model_token_ok(&default_id) {
@@ -945,7 +945,7 @@ pub fn qwen_sheet(read_json: &mut Option<&mut dyn ReadJson>, home: &str) -> Mode
         effort_arg_values: None,
         effort_arg_prefix: None,
     };
-    let Ok(raw) = call_json(read_json, &join_path(home, ".qwen/settings.json")) else {
+    let Ok(raw) = call_json(read_json, &path_join(home, ".qwen/settings.json")) else {
         return empty;
     };
     let Some(record) = raw.as_object() else {
@@ -1139,7 +1139,7 @@ pub fn append_model_effort_argv(
         } else {
             "the harness takes no model flag".into()
         };
-        let shown = protocol::js::stringify(&Value::String(id.to_string()));
+        let shown = crate::value::stringify_json(&Value::String(id.to_string()));
         log(&format!(
             "[den-server] spawn: omitting model {shown}{where_} ({why})"
         ));
@@ -1155,7 +1155,7 @@ pub fn append_model_effort_argv(
     } else if let Some(id) = effort
         && let Some(log) = log.as_mut()
     {
-        let shown = protocol::js::stringify(&Value::String(id.to_string()));
+        let shown = crate::value::stringify_json(&Value::String(id.to_string()));
         log(&format!(
             "[den-server] spawn: omitting effort {shown}{where_} (unknown or no flag)"
         ));
@@ -1583,7 +1583,7 @@ fn codex_argv() -> Vec<String> {
 }
 
 fn codex_catalog_run(out: &str) -> DiscoveryRun<Vec<ModelOption>> {
-    let raw = protocol::js::parse(out).unwrap_or(Value::Null);
+    let raw = crate::value::parse_json(out).unwrap_or(Value::Null);
     let rows = parse_codex_catalog(&raw);
     if rows.is_empty() {
         DiscoveryRun::Ready(Err("codex debug models returned no listed models".into()))
@@ -2336,9 +2336,9 @@ fn call_json(read_json: &mut Option<&mut dyn ReadJson>, path: &str) -> Result<Va
 
 fn call_text(read_text: &mut Option<&mut dyn ReadText>, path: &str) -> Result<String, String> {
     if let Some(reader) = read_text.as_mut() {
-        reader.read_text(path)
+        reader.load_utf8(path)
     } else {
-        fsutil::read_lossy(Path::new(path)).ok_or_else(|| "unreadable".into())
+        protocol::host::read_text(Path::new(path)).map_err(|_| "unreadable".to_string())
     }
 }
 
@@ -2371,13 +2371,13 @@ fn call_fetch(
 }
 
 fn read_json_file(path: &str) -> Result<Value, String> {
-    let text = fsutil::read_lossy(Path::new(path)).ok_or_else(|| "unreadable".to_string())?;
-    protocol::js::parse(&text).map_err(|err| err.to_string())
+    let text = protocol::host::read_text(Path::new(path)).map_err(|_| "unreadable".to_string())?;
+    crate::value::parse_json(&text).map_err(|err| err.to_string())
 }
 
 fn discovery_env(env: Option<&HashMap<String, String>>, home: &str) -> HashMap<String, String> {
     let mut out = env.cloned().unwrap_or_else(process_env);
-    let local_bin = join_path(home, ".local/bin");
+    let local_bin = path_join(home, ".local/bin");
     let mut parts: Vec<String> = out
         .get("PATH")
         .map(|text| {
@@ -2398,33 +2398,25 @@ fn process_env() -> HashMap<String, String> {
     std::env::vars().collect()
 }
 
-fn env_trimmed(env: Option<&HashMap<String, String>>, key: &str) -> Option<String> {
-    let raw = if let Some(env) = env {
-        env.get(key).cloned()
-    } else {
-        std::env::var(key).ok()
-    }?;
-    let trimmed = jtrim(&raw);
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
+struct SheetEnv<'a> {
+    vars: Option<&'a HashMap<String, String>>,
+}
+
+impl protocol::host::Env for SheetEnv<'_> {
+    fn var(&self, name: &str) -> Option<String> {
+        match self.vars {
+            Some(vars) => vars.get(name).cloned(),
+            None => std::env::var(name).ok(),
+        }
     }
 }
 
-fn join_path(base: &str, rest: &str) -> String {
-    if base.is_empty() {
-        return rest.to_string();
-    }
-    let mut path = base.trim_end_matches('/').to_string();
-    for part in rest.split('/') {
-        if part.is_empty() {
-            continue;
-        }
-        path.push('/');
-        path.push_str(part);
-    }
-    path
+fn sheet_var(env: Option<&HashMap<String, String>>, key: &str) -> Option<String> {
+    protocol::host::env_trimmed(&SheetEnv { vars: env }, key).filter(|value| !value.is_empty())
+}
+
+fn path_join(base: &str, rest: &str) -> String {
+    protocol::js::posix_join(&[base, rest])
 }
 
 fn memo_of(stamp: &FileStamp, models: Vec<ModelOption>) -> Memo {
@@ -2640,7 +2632,7 @@ fn fetch_openai_models(base: &str, api_key: Option<&str>) -> Result<Vec<String>,
     }
     let bytes = read_bounded_body(response)?;
     let text = String::from_utf8_lossy(&bytes);
-    let raw = protocol::js::parse(&text).map_err(|err| err.to_string())?;
+    let raw = crate::value::parse_json(&text).map_err(|err| err.to_string())?;
     let Some(rows) = raw.get("data").and_then(Value::as_array) else {
         return Ok(Vec::new());
     };
@@ -2680,10 +2672,14 @@ mod fetch_tests {
         let key = rustls::pki_types::PrivateKeyDer::Pkcs8(
             rustls::pki_types::PrivatePkcs8KeyDer::from(certified.key_pair.serialize_der()),
         );
-        let config = rustls::ServerConfig::builder()
-            .with_no_client_auth()
-            .with_single_cert(vec![cert_der], key)
-            .expect("server config");
+        let config = rustls::ServerConfig::builder_with_provider(std::sync::Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .expect("versions")
+        .with_no_client_auth()
+        .with_single_cert(vec![cert_der], key)
+        .expect("server config");
         let config = std::sync::Arc::new(config);
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let port = listener.local_addr().expect("addr").port();

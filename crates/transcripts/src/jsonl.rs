@@ -94,7 +94,7 @@ pub fn parse_lines_at(text: &str, index_base: usize, offset_base: u64) -> Vec<Pa
         let line = raw.strip_suffix('\r').unwrap_or(raw);
         let trimmed = jtrim(line);
         if trimmed.starts_with('{')
-            && let Ok(value) = protocol::js::parse(trimmed)
+            && let Ok(value) = crate::value::parse_json(trimmed)
             && value.is_object()
         {
             out.push(ParsedLine {
@@ -138,6 +138,6 @@ pub fn split_lines(text: &str) -> Vec<String> {
 }
 
 pub fn parse_object(text: &str) -> Option<Obj> {
-    let value = protocol::js::parse(text).ok()?;
+    let value = crate::value::parse_json(text).ok()?;
     value.as_object().cloned()
 }

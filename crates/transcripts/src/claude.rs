@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-use regex::Regex;
+use crate::reutil::Regex;
 use serde_json::Value;
 
 use crate::text::{
@@ -298,7 +298,7 @@ fn prompt_result_text(block: &Obj, tool_use_result: Option<&Value>) -> String {
     let text = if let Some(text) = raw.as_str() {
         text.to_string()
     } else {
-        protocol::js::stringify(raw)
+        crate::value::stringify_json(raw)
     };
     crate::turn::cap_result(&text)
 }

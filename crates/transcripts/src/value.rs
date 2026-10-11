@@ -66,29 +66,14 @@ pub fn field_is_nullish_empty(value: Option<&Value>) -> bool {
     }
 }
 
-pub fn js_slice(text: &str, start: isize, end: Option<isize>) -> String {
-    let units: Vec<u16> = text.encode_utf16().collect();
-    let len = units.len() as isize;
-    let from = if start < 0 {
-        (len + start).max(0)
-    } else {
-        start.min(len)
-    } as usize;
-    let to = match end {
-        Some(end) if end < 0 => (len + end).max(0) as usize,
-        Some(end) => (end as usize).min(units.len()),
-        None => units.len(),
-    };
-    let to = to.max(from).min(units.len());
-    String::from_utf16_lossy(&units[from..to])
-}
-
-pub fn js_len(text: &str) -> usize {
-    text.encode_utf16().count()
+pub fn slice_text(text: &str, start: isize, end: Option<isize>) -> String {
+    protocol::js::js_slice(text, Some(start as f64), end.map(|value| value as f64))
+        .to_utf8()
+        .to_string()
 }
 
 pub fn clip(text: &str, max: usize) -> String {
-    js_slice(text, 0, Some(max as isize))
+    slice_text(text, 0, Some(max as isize))
 }
 
 pub fn arr<'a>(obj: &'a Obj, key: &str) -> Option<&'a Vec<Value>> {
@@ -103,8 +88,49 @@ pub fn jtrim(text: &str) -> &str {
     protocol::js::js_trim(text)
 }
 
+pub fn parse_json(text: &str) -> Result<Value, protocol::js::ParseError> {
+    protocol::js::parse(text).map(|value| value_from_js(&value))
+}
+
+pub fn stringify_json(value: &Value) -> String {
+    protocol::js::stringify(&protocol::js::from_serde(value))
+}
+
 pub fn js_norm(value: &Value) -> Value {
-    protocol::js::parse(&protocol::js::stringify(value)).unwrap_or_else(|_| value.clone())
+    parse_json(&stringify_json(value)).unwrap_or_else(|_| value.clone())
+}
+
+fn value_from_js(value: &protocol::js::JsValue) -> Value {
+    match value {
+        protocol::js::JsValue::Null => Value::Null,
+        protocol::js::JsValue::Bool(flag) => Value::Bool(*flag),
+        protocol::js::JsValue::Number(number) => number_value(*number),
+        protocol::js::JsValue::String(text) => Value::String(text.to_utf8().to_string()),
+        protocol::js::JsValue::Array(items) => {
+            Value::Array(items.iter().map(value_from_js).collect())
+        }
+        protocol::js::JsValue::Object(object) => {
+            let mut map = Map::new();
+            for (key, child) in object.iter() {
+                map.insert(key.to_utf8().to_string(), value_from_js(child));
+            }
+            Value::Object(map)
+        }
+    }
+}
+
+fn number_value(number: f64) -> Value {
+    if number.is_finite()
+        && number.fract() == 0.0
+        && number >= i64::MIN as f64
+        && number < 9223372036854775808.0
+    {
+        Value::Number((number as i64).into())
+    } else {
+        serde_json::Number::from_f64(number)
+            .map(Value::Number)
+            .unwrap_or(Value::Null)
+    }
 }
 
 pub fn whitespace_collapse(text: &str) -> String {

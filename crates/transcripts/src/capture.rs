@@ -606,7 +606,7 @@ fn kimi_resume(
             } else {
                 hint_owned.as_str()
             });
-        let tuple = protocol::js::stringify(&Value::Array(vec![
+        let tuple = crate::value::stringify_json(&Value::Array(vec![
             Value::String("assistant".into()),
             Value::String(content.clone()),
             Value::Null,
@@ -1321,7 +1321,7 @@ pub fn cowork_capture_lines_for(lines: &[String], hint: Option<&str>) -> Vec<Cap
         .iter()
         .enumerate()
         .filter_map(|(index, line)| {
-            let value = protocol::js::parse(line).ok()?;
+            let value = crate::value::parse_json(line).ok()?;
             value.is_object().then_some(ParsedLine {
                 index,
                 offset: 0,
@@ -1765,7 +1765,7 @@ fn pi_tool_result_text(message: &Obj) -> Option<String> {
     match message.get("result").or_else(|| message.get("content")) {
         Some(Value::String(text)) => Some(text.clone()),
         Some(value) if !value.is_null() && !value.is_array() => {
-            Some(protocol::js::stringify(value))
+            Some(crate::value::stringify_json(value))
         }
         _ => None,
     }
@@ -1856,13 +1856,13 @@ fn js_text(value: &Value) -> String {
     if let Some(text) = value.as_str() {
         text.to_string()
     } else {
-        protocol::js::stringify(value)
+        crate::value::stringify_json(value)
     }
 }
 
 fn parse_tool_input(value: &Value) -> Value {
     if let Some(text) = value.as_str() {
-        return protocol::js::parse(text).unwrap_or_else(|_| Value::String(text.to_string()));
+        return crate::value::parse_json(text).unwrap_or_else(|_| Value::String(text.to_string()));
     }
     js_norm(value)
 }
@@ -1911,7 +1911,7 @@ fn format_tool_result(update: &Obj) -> Option<String> {
                         if number.fract() == 0.0 {
                             format!("{}", number as i64)
                         } else {
-                            protocol::js::stringify(&Value::from(number))
+                            crate::value::stringify_json(&Value::from(number))
                         }
                     })
                     .unwrap_or_else(|| "?".into());
@@ -1982,7 +1982,7 @@ fn format_tool_result(update: &Obj) -> Option<String> {
             }
             return Some(format!(
                 "{header}\n{}",
-                protocol::js::stringify(&strip_byte_arrays(
+                crate::value::stringify_json(&strip_byte_arrays(
                     output.cloned().unwrap_or(Value::Null),
                     0
                 ))
@@ -2004,7 +2004,7 @@ fn format_tool_result(update: &Obj) -> Option<String> {
         {
             return Some(text.to_string());
         }
-        return Some(protocol::js::stringify(&strip_byte_arrays(
+        return Some(crate::value::stringify_json(&strip_byte_arrays(
             Value::Object(out.clone()),
             0,
         )));

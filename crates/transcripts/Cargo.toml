@@ -6,19 +6,20 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+parking_lot = { workspace = true }
 protocol = { path = "../protocol" }
-regex.workspace = true
-reqwest = { workspace = true }
-rusqlite = { version = "0.37", features = ["bundled"] }
+regress = { workspace = true }
+reqwest = { workspace = true, features = ["blocking"] }
+rusqlite = { workspace = true, features = ["bundled"] }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
 rcgen = { workspace = true }
-rusqlite = { version = "0.37", features = ["bundled"] }
+rusqlite = { workspace = true, features = ["bundled"] }
 rustls = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "sync", "test-util", "time"] }
 
 [lints]
 workspace = true

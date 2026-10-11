@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use regex::Regex;
+use crate::reutil::Regex;
 use serde_json::Value;
 
 use crate::fsutil::{self, birth_ms, mtime_ms};
@@ -11,7 +11,7 @@ use crate::nest::{DelegatedLink, apply_delegated_nesting, with_ancestors};
 use crate::roots::Roots;
 use crate::text::strip_pasted_content_wrapper;
 use crate::turn::SessionRow;
-use crate::value::{js_slice, jtrim};
+use crate::value::{jtrim, slice_text};
 
 struct ClaudeFile {
     id: String,
@@ -178,7 +178,7 @@ pub fn find_jsonl(roots: &Roots, id: &str, parent: Option<&str>) -> Option<PathB
 
 pub fn projects_dir(roots: &Roots) -> PathBuf {
     let base = roots
-        .env_trim("CLAUDE_CONFIG_DIR")
+        .nonempty_var("CLAUDE_CONFIG_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| roots.join_home(&[".claude"]));
     base.join("projects")
@@ -404,7 +404,7 @@ fn session_title(file: &Path) -> Option<String> {
         {
             let trimmed = jtrim(summary);
             if !trimmed.is_empty() {
-                return Some(js_slice(trimmed, 0, Some(120)));
+                return Some(slice_text(trimmed, 0, Some(120)));
             }
         }
         if kind == "user" {
@@ -416,7 +416,7 @@ fn session_title(file: &Path) -> Option<String> {
             let trimmed = jtrim(&txt);
             if !trimmed.is_empty() {
                 let stripped = strip_pasted_content_wrapper(trimmed);
-                return Some(js_slice(jtrim(&stripped), 0, Some(120)));
+                return Some(slice_text(jtrim(&stripped), 0, Some(120)));
             }
         }
     }
@@ -447,7 +447,7 @@ fn clip_label(value: Option<&Value>, max: isize) -> String {
     if trimmed.is_empty() {
         String::new()
     } else {
-        js_slice(trimmed, 0, Some(max))
+        slice_text(trimmed, 0, Some(max))
     }
 }
 

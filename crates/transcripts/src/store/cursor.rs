@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use regex::Regex;
+use crate::reutil::Regex;
 
 use crate::cursor::cursor_turns_from_objects;
 use crate::fsutil::{self, birth_ms, mtime_ms};
@@ -9,7 +9,7 @@ use crate::jsonl::parse_object;
 use crate::paths::cursor_project_slug;
 use crate::roots::Roots;
 use crate::turn::{Role, SessionRow};
-use crate::value::{js_slice, jtrim, whitespace_collapse};
+use crate::value::{jtrim, slice_text, whitespace_collapse};
 
 pub fn list(roots: &Roots, limit: usize) -> Vec<SessionRow> {
     let mut ordered: Vec<CursorFile> = Vec::new();
@@ -200,7 +200,7 @@ fn preview_title(file: &Path) -> String {
         if text.is_empty() {
             continue;
         }
-        return js_slice(&whitespace_collapse(text), 0, Some(120));
+        return slice_text(&whitespace_collapse(text), 0, Some(120));
     }
     String::new()
 }

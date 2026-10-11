@@ -1,25 +1,29 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom};
 use std::os::unix::fs::MetadataExt;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub fn system_ms(time: SystemTime) -> Option<i64> {
+fn file_clock_ms(time: SystemTime) -> Option<i64> {
     let dur = time.duration_since(UNIX_EPOCH).ok()?;
     i64::try_from(dur.as_millis()).ok()
 }
 
 pub fn mtime_ms(path: &Path) -> Option<i64> {
-    system_ms(fs::metadata(path).ok()?.modified().ok()?)
+    file_clock_ms(fs::metadata(path).ok()?.modified().ok()?)
 }
 
 pub fn birth_ms(path: &Path) -> i64 {
     let Ok(meta) = fs::metadata(path) else {
         return 0;
     };
-    let created = meta.created().ok().and_then(system_ms).filter(|ms| *ms > 0);
+    let created = meta
+        .created()
+        .ok()
+        .and_then(file_clock_ms)
+        .filter(|ms| *ms > 0);
     created
-        .or_else(|| meta.modified().ok().and_then(system_ms))
+        .or_else(|| meta.modified().ok().and_then(file_clock_ms))
         .unwrap_or(0)
 }
 
@@ -38,7 +42,7 @@ pub fn file_stamp(path: &Path) -> Option<FileStamp> {
     let meta = fs::metadata(path).ok()?;
     Some(FileStamp {
         size: meta.len(),
-        mtime_ms: system_ms(meta.modified().ok()?).unwrap_or(0),
+        mtime_ms: file_clock_ms(meta.modified().ok()?).unwrap_or(0),
         ino: meta.ino(),
         dev: meta.dev(),
     })
@@ -117,35 +121,10 @@ pub fn set_mtime(path: &Path, ms: u64) -> bool {
 }
 
 pub fn node_resolve(base: &Path, input: &str) -> PathBuf {
-    let raw = Path::new(input);
-    let joined = if input.is_empty() {
-        base.to_path_buf()
-    } else if raw.is_absolute() {
-        raw.to_path_buf()
-    } else {
-        base.join(raw)
-    };
-    normalize_path(&joined)
-}
-
-pub fn normalize_path(path: &Path) -> PathBuf {
-    let mut out = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                if !out.pop() {
-                    out.push("..");
-                }
-            }
-            other => out.push(other.as_os_str()),
-        }
-    }
-    if out.as_os_str().is_empty() {
-        PathBuf::from(".")
-    } else {
-        out
-    }
+    PathBuf::from(protocol::js::posix_resolve(
+        &base.to_string_lossy(),
+        &[input],
+    ))
 }
 
 pub fn lossy(bytes: &[u8]) -> String {

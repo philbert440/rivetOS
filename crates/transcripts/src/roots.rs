@@ -2,8 +2,6 @@ use std::collections::HashMap;
 use std::env;
 use std::path::{Path, PathBuf};
 
-use protocol::js::js_trim;
-
 use crate::turn::DEFAULT_TRANSCRIPT_MAX_BYTES;
 
 #[derive(Clone, Debug)]
@@ -76,14 +74,8 @@ impl Roots {
         }
     }
 
-    pub fn env_trim(&self, key: &str) -> Option<String> {
-        let raw = self.env_raw(key)?;
-        let trimmed = js_trim(&raw);
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed.to_string())
-        }
+    pub fn nonempty_var(&self, key: &str) -> Option<String> {
+        protocol::host::env_trimmed(self, key).filter(|value| !value.is_empty())
     }
 
     pub fn join_home(&self, parts: &[&str]) -> PathBuf {
@@ -100,5 +92,11 @@ impl Roots {
             path.push(part);
         }
         path
+    }
+}
+
+impl protocol::host::Env for Roots {
+    fn var(&self, name: &str) -> Option<String> {
+        self.env_raw(name)
     }
 }

@@ -1,8 +1,6 @@
+use serde_json::Value;
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
-
-use serde_json::Value;
 
 use crate::fsutil;
 use crate::identity::is_bare_native_uuid;
@@ -11,7 +9,7 @@ use crate::nest::with_ancestors;
 use crate::roots::Roots;
 use crate::timeutil::parse_date_ms;
 use crate::turn::SessionRow;
-use crate::value::{js_slice, jtrim};
+use crate::value::{jtrim, slice_text};
 
 const LOCATE_TTL_MS: i64 = 30_000;
 const LOCATE_MISS_TTL_MS: i64 = 5_000;
@@ -89,7 +87,7 @@ pub fn list(roots: &Roots, index: &mut GrokIndex, limit: usize) -> Vec<SessionRo
             .iter()
             .map(|path| path.to_string_lossy().into_owned())
             .collect(),
-        now_ms(),
+        instant_ms(),
     ));
     let parents = sync_parents(index, &updates);
     let mut rows = stamp_parents(reads, &parents);
@@ -121,7 +119,7 @@ pub fn describe(roots: &Roots, index: &mut GrokIndex, id: &str) -> Option<Sessio
                 index,
                 id,
                 Located {
-                    at: now_ms(),
+                    at: instant_ms(),
                     dir: None,
                     absent: true,
                 },
@@ -133,7 +131,7 @@ pub fn describe(roots: &Roots, index: &mut GrokIndex, id: &str) -> Option<Sessio
                 index,
                 id,
                 Located {
-                    at: now_ms(),
+                    at: instant_ms(),
                     dir: Some(dir),
                     absent: false,
                 },
@@ -171,7 +169,7 @@ pub fn find_chat_history(roots: &Roots, id: &str) -> Option<PathBuf> {
 
 pub fn sessions_dir(roots: &Roots) -> PathBuf {
     let base = roots
-        .env_trim("GROK_HOME")
+        .nonempty_var("GROK_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| roots.join_home(&[".grok"]));
     base.join("sessions")
@@ -230,7 +228,7 @@ fn empty_row() -> SessionRow {
 
 fn update_files(index: &mut GrokIndex, root: &Path) -> Vec<PathBuf> {
     if let Some((paths, at)) = &index.update_files
-        && now_ms() - *at < LOCATE_TTL_MS
+        && instant_ms() - *at < LOCATE_TTL_MS
     {
         return paths.iter().map(PathBuf::from).collect();
     }
@@ -254,7 +252,7 @@ fn update_files(index: &mut GrokIndex, root: &Path) -> Vec<PathBuf> {
             .iter()
             .map(|path| path.to_string_lossy().into_owned())
             .collect(),
-        now_ms(),
+        instant_ms(),
     ));
     paths
 }
@@ -322,7 +320,7 @@ fn read_summary(dir: &Path, fallback_id: &str) -> Option<SummaryRead> {
         if trimmed.is_empty() {
             id.clone()
         } else {
-            js_slice(trimmed, 0, Some(120))
+            slice_text(trimmed, 0, Some(120))
         }
     };
     let mut row = SessionRow {
@@ -358,7 +356,7 @@ fn clip(value: Option<&Value>, max: isize) -> String {
     if trimmed.is_empty() {
         String::new()
     } else {
-        js_slice(trimmed, 0, Some(max))
+        slice_text(trimmed, 0, Some(max))
     }
 }
 
@@ -514,6 +512,10 @@ fn spawn_id(value: Option<&Value>) -> Option<String> {
     is_bare_native_uuid(id).then(|| id.to_string())
 }
 
+fn instant_ms() -> i64 {
+    protocol::js::date_now() as i64
+}
+
 fn cached_location(index: &mut GrokIndex, id: &str) -> Option<Located> {
     let pos = index.locations.iter().position(|(key, _)| key == id)?;
     let (_, hit) = index.locations.get(pos)?.clone();
@@ -522,7 +524,7 @@ fn cached_location(index: &mut GrokIndex, id: &str) -> Option<Located> {
     } else {
         LOCATE_MISS_TTL_MS
     };
-    if now_ms() - hit.at > ttl {
+    if instant_ms() - hit.at > ttl {
         index.locations.remove(pos);
         return None;
     }
@@ -535,13 +537,6 @@ fn remember(index: &mut GrokIndex, id: &str, located: Located) {
     while index.locations.len() > LOCATE_MAX {
         index.locations.pop_front();
     }
-}
-
-fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|dur| i64::try_from(dur.as_millis()).unwrap_or(i64::MAX))
-        .unwrap_or(0)
 }
 
 impl Clone for Located {

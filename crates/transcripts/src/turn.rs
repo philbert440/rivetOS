@@ -139,10 +139,10 @@ pub fn turns_json(turns: &[Turn]) -> Value {
 }
 
 pub fn cap_thinking(raw: &str) -> String {
-    if raw.encode_utf16().count() > THINKING_TAIL_CHARS {
+    if protocol::js::utf16_len(raw) > THINKING_TAIL_CHARS {
         format!(
             "…{}",
-            crate::value::js_slice(raw, -(THINKING_TAIL_CHARS as isize), None)
+            crate::value::slice_text(raw, -(THINKING_TAIL_CHARS as isize), None)
         )
     } else {
         raw.to_string()
@@ -307,8 +307,8 @@ pub fn is_prompt_tool_name(name: &str) -> bool {
 }
 
 pub fn prompt_input(raw: &Value) -> Value {
-    let text = protocol::js::stringify(raw);
-    if crate::value::js_len(&text) > PROMPT_INPUT_MAX {
+    let text = crate::value::stringify_json(raw);
+    if protocol::js::utf16_len(&text) > PROMPT_INPUT_MAX {
         serde_json::json!({ "truncated": true })
     } else {
         raw.clone()
@@ -316,8 +316,8 @@ pub fn prompt_input(raw: &Value) -> Value {
 }
 
 pub fn cap_result(text: &str) -> String {
-    if crate::value::js_len(text) > PROMPT_RESULT_MAX {
-        crate::value::js_slice(text, 0, Some(PROMPT_RESULT_MAX as isize))
+    if protocol::js::utf16_len(text) > PROMPT_RESULT_MAX {
+        crate::value::slice_text(text, 0, Some(PROMPT_RESULT_MAX as isize))
     } else {
         text.to_string()
     }

@@ -1,14 +1,14 @@
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use regex::Regex;
+use crate::reutil::Regex;
 use serde_json::Value;
 
 use crate::fsutil::{self, birth_ms, mtime_ms};
 use crate::jsonl::parse_object;
 use crate::roots::Roots;
 use crate::turn::SessionRow;
-use crate::value::{js_slice, jtrim, whitespace_collapse};
+use crate::value::{jtrim, slice_text, whitespace_collapse};
 
 pub fn list(roots: &Roots, limit: usize) -> Vec<SessionRow> {
     let mut found = rollouts(roots);
@@ -172,7 +172,7 @@ pub fn sessions_dir(roots: &Roots) -> PathBuf {
 
 pub fn home(roots: &Roots) -> PathBuf {
     roots
-        .env_trim("CODEX_HOME")
+        .nonempty_var("CODEX_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| roots.join_home(&[".codex"]))
 }
@@ -242,7 +242,7 @@ fn session_row(path: &Path, id: &str, mtime: i64, birth: i64) -> SessionRow {
         title: if collapsed.is_empty() {
             id.to_string()
         } else {
-            js_slice(collapsed, 0, Some(120))
+            slice_text(collapsed, 0, Some(120))
         },
         updated_at: mtime,
         created_at: Some(birth),
@@ -285,7 +285,7 @@ fn rollout_title(file: &Path) -> String {
         {
             continue;
         }
-        return js_slice(trimmed, 0, Some(120));
+        return slice_text(trimmed, 0, Some(120));
     }
     String::new()
 }

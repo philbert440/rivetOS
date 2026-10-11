@@ -1,5 +1,6 @@
 use std::path::PathBuf;
-use std::sync::Mutex;
+
+use parking_lot::Mutex;
 
 use crate::capture::{capture_parsed, capture_snapshot, project_turns};
 use crate::identity::{den_session_ref, path_unsafe};
@@ -36,9 +37,7 @@ impl Store {
     }
 
     pub fn reset_grok(&self) {
-        if let Ok(mut index) = self.grok.lock() {
-            index.reset();
-        }
+        self.grok.lock().reset();
     }
 
     pub fn list(
@@ -51,10 +50,8 @@ impl Store {
         if commands.contains(&"claude") {
             all.extend(claude::list(&self.roots, limit, links));
         }
-        if commands.contains(&"grok")
-            && let Ok(mut index) = self.grok.lock()
-        {
-            all.extend(grok::list(&self.roots, &mut index, limit));
+        if commands.contains(&"grok") {
+            all.extend(grok::list(&self.roots, &mut self.grok.lock(), limit));
         }
         if commands.contains(&"hermes") {
             all.extend(hermes::list(&self.roots, limit));
@@ -89,10 +86,7 @@ impl Store {
     }
 
     pub fn describe_grok(&self, id: &str) -> Option<SessionRow> {
-        self.grok
-            .lock()
-            .ok()
-            .and_then(|mut index| grok::describe(&self.roots, &mut index, id))
+        grok::describe(&self.roots, &mut self.grok.lock(), id)
     }
 
     pub fn describe_hermes(&self, id: &str) -> Option<SessionRow> {

@@ -1,10 +1,10 @@
 use std::sync::OnceLock;
 
-use regex::Regex;
+use crate::reutil::Regex;
 use serde_json::Value;
 
 use crate::turn::Usage;
-use crate::value::{Obj, finite, js_len, js_slice, jtrim};
+use crate::value::{Obj, finite, jtrim, slice_text};
 
 pub fn objects_from_lines(lines: &[String]) -> Vec<Obj> {
     let mut out = Vec::new();
@@ -25,7 +25,7 @@ pub fn object_from_line(line: &str) -> Option<Obj> {
     if !trimmed.starts_with('{') {
         return None;
     }
-    protocol::js::parse(trimmed)
+    crate::value::parse_json(trimmed)
         .ok()
         .and_then(|value| value.as_object().cloned())
 }
@@ -40,8 +40,8 @@ pub fn summarize_turn_args(raw: &Value) -> Option<Obj> {
             break;
         }
         if let Some(text) = value.as_str() {
-            let stored = if js_len(text) > 200 {
-                format!("{}…", js_slice(text, 0, Some(200)))
+            let stored = if protocol::js::utf16_len(text) > 200 {
+                format!("{}…", slice_text(text, 0, Some(200)))
             } else {
                 text.to_string()
             };
@@ -254,8 +254,8 @@ pub fn strip_ansi(text: &str) -> String {
     };
     let stripped = csi.replace_all(text, "");
     match osc_re() {
-        Some(osc) => osc.replace_all(&stripped, "").into_owned(),
-        None => stripped.into_owned(),
+        Some(osc) => osc.replace_all(&stripped, ""),
+        None => stripped,
     }
 }
 
@@ -308,7 +308,7 @@ fn body_matches(text: &str) -> bool {
 
 fn strip_body(text: &str) -> String {
     match body_strip_re() {
-        Some(re) => re.replace(text, "").into_owned(),
+        Some(re) => re.replace(text, ""),
         None => text.to_string(),
     }
 }

@@ -8,7 +8,7 @@ use crate::roots::Roots;
 use crate::text::extract_turn_text;
 use crate::timeutil::{kimi_time_number, parse_date_ms};
 use crate::turn::SessionRow;
-use crate::value::{js_slice, jtrim, whitespace_collapse};
+use crate::value::{jtrim, slice_text, whitespace_collapse};
 
 const PREFIX: &str = "session_";
 const SCAN_MAX: u64 = 1024 * 1024;
@@ -91,7 +91,7 @@ pub fn wire_path(dir: &Path) -> PathBuf {
 
 pub fn home(roots: &Roots) -> PathBuf {
     roots
-        .env_trim("KIMI_CODE_HOME")
+        .nonempty_var("KIMI_CODE_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| roots.join_home(&[".kimi-code"]))
 }
@@ -140,7 +140,7 @@ fn read_session(dir: &Path, id: &str) -> Option<SessionRow> {
     let title = if collapsed.is_empty() {
         id.to_string()
     } else {
-        js_slice(collapsed, 0, Some(120))
+        slice_text(collapsed, 0, Some(120))
     };
     let updated = time_of(obj.get("updatedAt"));
     let mut row = SessionRow {
@@ -229,7 +229,7 @@ fn title_from_line(line: &str) -> Option<String> {
         return None;
     }
     let text = extract_turn_text(msg.get("content").unwrap_or(&Value::Null), "user")?;
-    let clipped = js_slice(&text, 0, Some(120));
+    let clipped = slice_text(&text, 0, Some(120));
     if clipped.is_empty() {
         None
     } else {

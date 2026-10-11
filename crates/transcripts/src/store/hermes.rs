@@ -7,7 +7,7 @@ use crate::hermes::hermes_turns_from_rows;
 use crate::roots::Roots;
 use crate::timeutil::{parse_date_ms, to_epoch_ms_number};
 use crate::turn::{SessionRow, Turn};
-use crate::value::{js_slice, jtrim};
+use crate::value::{jtrim, slice_text};
 
 pub fn list(roots: &Roots, limit: usize) -> Vec<SessionRow> {
     let Some(conn) = db::open_readonly(&db_path(roots)) else {
@@ -73,7 +73,7 @@ pub fn load(roots: &Roots, id: &str) -> (Vec<Turn>, Vec<crate::turn::CaptureMess
 
 pub fn db_path(roots: &Roots) -> PathBuf {
     let base = roots
-        .env_trim("HERMES_HOME")
+        .nonempty_var("HERMES_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| roots.join_home(&[".hermes"]));
     base.join("state.db")
@@ -87,7 +87,7 @@ fn row_from(row: &serde_json::Map<String, Value>) -> SessionRow {
         if trimmed.is_empty() {
             id.clone()
         } else {
-            js_slice(trimmed, 0, Some(120))
+            slice_text(trimmed, 0, Some(120))
         }
     };
     let updated = epoch_of(row.get("ended").or_else(|| row.get("started")));
