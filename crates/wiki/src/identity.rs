@@ -52,7 +52,11 @@ pub fn find_stem_match(proposed: &str, existing: &[&str]) -> Option<String> {
     if variants.is_empty() {
         return None;
     }
-    variants.sort_by(|left, right| left.len().cmp(&right.len()).then_with(|| left.cmp(right)));
+    variants.sort_by(|left, right| {
+        left.len()
+            .cmp(&right.len())
+            .then_with(|| slug_order(left, right))
+    });
     variants.into_iter().next()
 }
 
@@ -78,6 +82,15 @@ pub fn cluster_slugs_by_stem(slugs: &[&str]) -> Vec<(String, Vec<String>)> {
         }
     }
     keys.into_iter().zip(groups).collect()
+}
+
+fn slug_order(left: &str, right: &str) -> std::cmp::Ordering {
+    match protocol::js::locale_compare(left, right) {
+        Ok(sign) if sign < 0 => std::cmp::Ordering::Less,
+        Ok(sign) if sign > 0 => std::cmp::Ordering::Greater,
+        Ok(_) => std::cmp::Ordering::Equal,
+        Err(_) => left.cmp(right),
+    }
 }
 
 pub fn entities_overlap(left: &[&str], right: &[&str]) -> bool {

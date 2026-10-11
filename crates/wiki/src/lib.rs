@@ -28,6 +28,7 @@ pub use page::{
 };
 pub use read::{WIKI_READ_VERBATIM_MAX_CHARS, format_wiki_read};
 pub use slug::{extract_wiki_links, is_read_slug, normalize_slug, read_slug_error};
+pub use text::JsText;
 pub use wire::{
     WikiIndexEntry, WikiIndexResponse, WikiPageResponse, WikiSourceKind, WikiSourceRef,
 };

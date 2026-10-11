@@ -1,187 +1,220 @@
-pub(crate) fn is_js_whitespace(ch: char) -> bool {
-    matches!(
-        ch,
-        '\u{0009}'
-            | '\u{000A}'
-            | '\u{000B}'
-            | '\u{000C}'
-            | '\u{000D}'
-            | '\u{0020}'
-            | '\u{00A0}'
-            | '\u{1680}'
-            | '\u{2000}'
-            | '\u{2001}'
-            | '\u{2002}'
-            | '\u{2003}'
-            | '\u{2004}'
-            | '\u{2005}'
-            | '\u{2006}'
-            | '\u{2007}'
-            | '\u{2008}'
-            | '\u{2009}'
-            | '\u{200A}'
-            | '\u{2028}'
-            | '\u{2029}'
-            | '\u{202F}'
-            | '\u{205F}'
-            | '\u{3000}'
-            | '\u{FEFF}'
-    )
+use serde::de::Deserializer;
+use serde::{Deserialize, Serialize, Serializer};
+
+#[derive(Clone, Debug)]
+pub struct JsText {
+    inner: protocol::js::JsString,
 }
 
-pub(crate) fn js_trim(text: &str) -> &str {
-    protocol::js::js_trim(text)
+impl PartialEq for JsText {
+    fn eq(&self, other: &Self) -> bool {
+        self.inner.units() == other.inner.units()
+    }
 }
 
-pub(crate) fn js_trim_end(text: &str) -> &str {
-    let mut end = text.len();
-    while end > 0 {
-        let Some(ch) = text[..end].chars().next_back() else {
-            break;
-        };
-        if !is_js_whitespace(ch) {
-            break;
+impl Eq for JsText {}
+
+impl PartialEq<str> for JsText {
+    fn eq(&self, other: &str) -> bool {
+        self.inner.units() == other.encode_utf16().collect::<Vec<_>>()
+    }
+}
+
+impl PartialEq<&str> for JsText {
+    fn eq(&self, other: &&str) -> bool {
+        *self == **other
+    }
+}
+
+impl PartialEq<String> for JsText {
+    fn eq(&self, other: &String) -> bool {
+        self == other.as_str()
+    }
+}
+
+impl From<&str> for JsText {
+    fn from(text: &str) -> Self {
+        Self {
+            inner: protocol::js::JsString::from_text(text),
         }
-        end -= ch.len_utf8();
-    }
-    &text[..end]
-}
-
-pub(crate) fn js_len(text: &str) -> usize {
-    if text.is_ascii() {
-        text.len()
-    } else {
-        text.encode_utf16().count()
     }
 }
 
-pub(crate) fn split_utf16(text: &str, index: usize) -> (String, String) {
-    if index == 0 {
-        return (String::new(), text.to_string());
+impl From<String> for JsText {
+    fn from(text: String) -> Self {
+        Self::from(text.as_str())
     }
-    if text.is_ascii() {
-        let index = index.min(text.len());
-        let (left, right) = text.split_at(index);
-        return (left.to_string(), right.to_string());
+}
+
+impl std::fmt::Display for JsText {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.utf8())
     }
-    let units: Vec<u16> = text.encode_utf16().collect();
-    if index >= units.len() {
-        return (text.to_string(), String::new());
+}
+
+impl std::ops::Deref for JsText {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        self.utf8()
     }
-    if splits_surrogate_pair(&units, index) {
-        return (
-            units_as_text(&units[..index]),
-            units_as_text(&units[index..]),
-        );
+}
+
+impl Serialize for JsText {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        self.inner.serialize(serializer)
     }
-    let mut seen = 0usize;
-    for (byte, ch) in text.char_indices() {
-        if seen == index {
-            return (text[..byte].to_string(), text[byte..].to_string());
+}
+
+impl<'de> Deserialize<'de> for JsText {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let inner = protocol::js::JsString::deserialize(deserializer)?;
+        Ok(Self { inner })
+    }
+}
+
+impl JsText {
+    pub fn from_units(units: Vec<u16>) -> Self {
+        Self {
+            inner: protocol::js::JsString::from_units(units),
         }
-        seen += ch.len_utf16();
     }
-    (text.to_string(), String::new())
-}
 
-fn splits_surrogate_pair(units: &[u16], index: usize) -> bool {
-    index > 0
-        && index < units.len()
-        && (0xD800..=0xDBFF).contains(&units[index - 1])
-        && (0xDC00..=0xDFFF).contains(&units[index])
-}
+    pub fn units(&self) -> &[u16] {
+        self.inner.units()
+    }
 
-fn units_as_text(units: &[u16]) -> String {
-    let mut json = String::from("\"");
-    let mut index = 0usize;
-    while index < units.len() {
-        let unit = units[index];
-        if (0xD800..=0xDBFF).contains(&unit) {
-            if let Some(low) = units.get(index + 1)
-                && (0xDC00..=0xDFFF).contains(low)
-            {
-                let scalar =
-                    0x10000 + (((u32::from(unit) - 0xD800) << 10) | (u32::from(*low) - 0xDC00));
-                if let Some(ch) = char::from_u32(scalar) {
-                    push_json_char(&mut json, ch);
-                    index += 2;
-                    continue;
-                }
+    pub fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+
+    pub fn utf8(&self) -> &str {
+        self.inner.to_utf8()
+    }
+
+    pub fn trimmed(&self) -> Self {
+        Self::from_units(protocol::js::js_trim_units(self.units()).to_vec())
+    }
+
+    pub fn trimmed_end(&self) -> Self {
+        Self::from_units(protocol::js::js_trim_end_units(self.units()).to_vec())
+    }
+
+    pub fn slice(&self, start: usize, end: Option<usize>) -> Self {
+        let end = end.map(|value| value as f64);
+        Self::from_units(protocol::js::js_slice_units(
+            self.units(),
+            Some(start as f64),
+            end,
+        ))
+    }
+
+    pub fn last_index_of(&self, needle: &str, from: usize) -> Option<usize> {
+        last_index_units(
+            self.units(),
+            &needle.encode_utf16().collect::<Vec<_>>(),
+            from,
+        )
+    }
+
+    pub fn concat(parts: &[JsText]) -> JsText {
+        let mut units = Vec::new();
+        for part in parts {
+            units.extend_from_slice(part.units());
+        }
+        Self::from_units(units)
+    }
+
+    pub fn join(parts: &[JsText], separator: &str) -> JsText {
+        let sep: Vec<u16> = separator.encode_utf16().collect();
+        let mut units = Vec::new();
+        for (index, part) in parts.iter().enumerate() {
+            if index > 0 {
+                units.extend_from_slice(&sep);
             }
-            json.push_str(&format!("\\u{unit:04x}"));
-            index += 1;
-            continue;
+            units.extend_from_slice(part.units());
         }
-        if (0xDC00..=0xDFFF).contains(&unit) {
-            json.push_str(&format!("\\u{unit:04x}"));
-            index += 1;
-            continue;
-        }
-        if let Some(ch) = char::from_u32(u32::from(unit)) {
-            push_json_char(&mut json, ch);
-        }
-        index += 1;
-    }
-    json.push('"');
-    match protocol::js::parse(&json) {
-        Ok(value) => value.as_str().unwrap_or("").to_string(),
-        Err(_) => String::new(),
+        Self::from_units(units)
     }
 }
 
-fn push_json_char(out: &mut String, ch: char) {
-    match ch {
-        '"' => out.push_str("\\\""),
-        '\\' => out.push_str("\\\\"),
-        '\u{0008}' => out.push_str("\\b"),
-        '\u{000c}' => out.push_str("\\f"),
-        '\n' => out.push_str("\\n"),
-        '\r' => out.push_str("\\r"),
-        '\t' => out.push_str("\\t"),
-        c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-        c => out.push(c),
+pub(crate) fn demote_h2(text: &JsText) -> JsText {
+    let mut in_fence = false;
+    let mut lines = Vec::new();
+    for line in split_lines(text.units()) {
+        let trimmed = protocol::js::js_trim_units(line);
+        if units_start(trimmed, "```") {
+            in_fence = !in_fence;
+        }
+        if !in_fence && bare_h2(line) {
+            let mut next = Vec::with_capacity(line.len() + 1);
+            next.push(u16::from(b'#'));
+            next.extend_from_slice(line);
+            lines.push(next);
+        } else {
+            lines.push(line.to_vec());
+        }
     }
+    JsText::from_units(join_lines(&lines))
 }
 
-pub(crate) fn js_slice(text: &str, start: usize, end: usize) -> String {
-    let (rest, _) = split_utf16(text, end);
-    let (_, kept) = split_utf16(&rest, start.min(end));
-    kept
+fn bare_h2(line: &[u16]) -> bool {
+    if !units_start(line, "## ") {
+        return false;
+    }
+    line.get(3).is_none_or(|unit| *unit != u16::from(b'#'))
 }
 
-pub(crate) fn js_prefix(text: &str, len: usize) -> String {
-    split_utf16(text, len).0
+fn units_start(units: &[u16], prefix: &str) -> bool {
+    let prefix: Vec<u16> = prefix.encode_utf16().collect();
+    units.starts_with(&prefix)
 }
 
-pub(crate) fn js_last_index_of(hay: &str, needle: &str, from: usize) -> Option<usize> {
+fn split_lines(units: &[u16]) -> Vec<&[u16]> {
+    let mut lines = Vec::new();
+    let mut start = 0usize;
+    for (index, unit) in units.iter().enumerate() {
+        if *unit == u16::from(b'\n') {
+            lines.push(&units[start..index]);
+            start = index + 1;
+        }
+    }
+    lines.push(&units[start..]);
+    lines
+}
+
+fn join_lines(lines: &[Vec<u16>]) -> Vec<u16> {
+    let mut out = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
+        if index > 0 {
+            out.push(u16::from(b'\n'));
+        }
+        out.extend_from_slice(line);
+    }
+    out
+}
+
+fn last_index_units(hay: &[u16], needle: &[u16], from: usize) -> Option<usize> {
     if needle.is_empty() {
-        return Some(from.min(js_len(hay)));
+        return Some(from.min(hay.len()));
     }
-    if hay.is_ascii() && needle.is_ascii() {
-        let mut found = None;
-        let mut offset = 0usize;
-        while offset < hay.len() {
-            let Some(rel) = hay[offset..].find(needle) else {
-                break;
-            };
-            let at = offset + rel;
-            if at > from {
-                break;
-            }
-            found = Some(at);
-            offset = at + 1;
-        }
-        return found;
-    }
-    let hay16: Vec<u16> = hay.encode_utf16().collect();
-    let needle16: Vec<u16> = needle.encode_utf16().collect();
-    if needle16.len() > hay16.len() {
+    if needle.len() > hay.len() {
         return None;
     }
-    let last = from.min(hay16.len().saturating_sub(needle16.len()));
+    let last = from.min(hay.len().saturating_sub(needle.len()));
     let mut index = last;
     loop {
-        if hay16[index..index + needle16.len()] == needle16[..] {
+        if hay[index..index + needle.len()] == needle[..] {
             return Some(index);
         }
         if index == 0 {
@@ -192,58 +225,232 @@ pub(crate) fn js_last_index_of(hay: &str, needle: &str, from: usize) -> Option<u
 }
 
 pub(crate) fn fmt_count(n: usize) -> String {
-    let raw = n.to_string();
-    let mut out = String::new();
-    for (index, ch) in raw.chars().enumerate() {
-        if index > 0 && (raw.len() - index).is_multiple_of(3) {
-            out.push(',');
-        }
-        out.push(ch);
-    }
-    out
+    protocol::js::number_to_locale_string_en_us(n as f64)
 }
 
 pub(crate) fn fmt_kb(chars: usize) -> String {
-    let scaled = (chars as f64) / 1024.0 * 10.0;
-    let tenths = if (scaled - scaled.floor() - 0.5).abs() < 1e-9 {
-        scaled.floor() + 1.0
-    } else {
-        scaled.round()
-    } as u64;
-    format!("{}.{}", tenths / 10, tenths % 10)
-}
-
-pub(crate) fn utc_day() -> String {
-    let Ok(duration) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) else {
-        return "1970-01-01".to_string();
-    };
-    civil_from_unix_days(duration.as_secs() / 86_400)
-}
-
-pub(crate) fn civil_from_unix_days(unix_days: u64) -> String {
-    let z = unix_days as i64 + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = (z - era * 146_097) as u64;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let mut year = yoe as i64 + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    if month <= 2 {
-        year += 1;
+    match protocol::js::to_fixed(chars as f64 / 1024.0, 1.0) {
+        Ok(text) => text,
+        Err(_) => "0.0".to_string(),
     }
-    format!("{year:04}-{month:02}-{day:02}")
 }
 
 #[cfg(test)]
 mod tests {
-    use super::civil_from_unix_days;
+    use super::{JsText, fmt_count, fmt_kb};
+    use serde::Deserialize;
+
+    #[derive(Deserialize)]
+    struct Golden {
+        utf16: Utf16Golden,
+        trim: Vec<TrimCase>,
+        to_fixed: Vec<FixedCase>,
+        iso: Vec<IsoCase>,
+        number_locale: Vec<LocaleCase>,
+        locale_compare: LocaleCompare,
+    }
+
+    #[derive(Deserialize)]
+    struct Utf16Golden {
+        length: Vec<LengthCase>,
+        slice: Vec<SliceCase>,
+    }
+
+    #[derive(Deserialize)]
+    struct LengthCase {
+        text: Vec<u16>,
+        length: usize,
+    }
+
+    #[derive(Deserialize)]
+    struct SliceCase {
+        text: Vec<u16>,
+        start: Option<f64>,
+        start_undefined: bool,
+        end: Option<f64>,
+        end_undefined: bool,
+        result: Vec<u16>,
+    }
+
+    #[derive(Deserialize)]
+    struct TrimCase {
+        text: Vec<u16>,
+        trim: Vec<u16>,
+        trim_end: Vec<u16>,
+    }
+
+    #[derive(Deserialize)]
+    struct FixedCase {
+        value: serde_json::Value,
+        #[serde(default)]
+        neg_zero: bool,
+        digits: f64,
+        #[serde(default)]
+        result: Option<String>,
+        #[serde(default)]
+        error: Option<String>,
+    }
+
+    #[derive(Deserialize)]
+    struct IsoCase {
+        ms: serde_json::Value,
+        #[serde(default)]
+        day: Option<String>,
+        #[serde(default)]
+        error: Option<String>,
+    }
+
+    #[derive(Deserialize)]
+    struct LocaleCase {
+        value: serde_json::Value,
+        neg_zero: bool,
+        en_us: String,
+    }
+
+    #[derive(Deserialize)]
+    struct LocaleCompare {
+        pairs: Vec<PairCase>,
+    }
+
+    #[derive(Deserialize)]
+    struct PairCase {
+        a: String,
+        b: String,
+        sign: i32,
+    }
+
+    fn golden() -> Golden {
+        serde_json::from_str(include_str!("../tests/golden/js-semantics.json")).expect("golden")
+    }
+
+    fn signed_number(value: &serde_json::Value, neg_zero: bool) -> f64 {
+        let number = match value.as_f64() {
+            Some(number) => number,
+            None => match value.as_str() {
+                Some("NaN") => f64::NAN,
+                Some("Infinity") => f64::INFINITY,
+                Some("-Infinity") => f64::NEG_INFINITY,
+                Some(text) => text.parse::<f64>().unwrap_or(f64::NAN),
+                None => f64::NAN,
+            },
+        };
+        if neg_zero { -number } else { number }
+    }
 
     #[test]
-    fn unix_epoch_and_known_days() {
-        assert_eq!(civil_from_unix_days(0), "1970-01-01");
-        assert_eq!(civil_from_unix_days(10957), "2000-01-01");
-        assert_eq!(civil_from_unix_days(20736), "2026-10-10");
+    fn utf16_length_slice_and_trim_match_node() {
+        let golden = golden();
+        for case in &golden.utf16.length {
+            assert_eq!(JsText::from_units(case.text.clone()).len(), case.length);
+        }
+        for case in &golden.utf16.slice {
+            let start = if case.start_undefined {
+                None
+            } else {
+                case.start
+            };
+            let end = if case.end_undefined { None } else { case.end };
+            let sliced = protocol::js::js_slice_units(&case.text, start, end);
+            assert_eq!(sliced, case.result);
+        }
+        for case in &golden.trim {
+            let text = JsText::from_units(case.text.clone());
+            assert_eq!(text.trimmed().units(), case.trim.as_slice());
+            assert_eq!(text.trimmed_end().units(), case.trim_end.as_slice());
+            if let Ok(text) = String::from_utf16(&case.text) {
+                assert_eq!(
+                    protocol::js::js_trim(&text)
+                        .encode_utf16()
+                        .collect::<Vec<_>>(),
+                    case.trim
+                );
+                assert_eq!(
+                    protocol::js::js_trim_end(&text)
+                        .encode_utf16()
+                        .collect::<Vec<_>>(),
+                    case.trim_end
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn counts_kilobytes_and_utc_days_match_node() {
+        let golden = golden();
+        for case in &golden.number_locale {
+            let value = signed_number(&case.value, case.neg_zero);
+            assert_eq!(
+                protocol::js::number_to_locale_string_en_us(value),
+                case.en_us
+            );
+            if !case.neg_zero
+                && let Some(value) = case.value.as_f64()
+                && value >= 0.0
+                && value.fract() == 0.0
+                && value <= usize::MAX as f64
+            {
+                assert_eq!(fmt_count(value as usize), case.en_us);
+            }
+        }
+        for case in &golden.to_fixed {
+            let value = signed_number(&case.value, case.neg_zero);
+            match protocol::js::to_fixed(value, case.digits) {
+                Ok(text) => assert_eq!(Some(text), case.result),
+                Err(err) => assert_eq!(Some(err.to_string()), case.error),
+            }
+        }
+        assert_eq!(fmt_kb(0), "0.0");
+        assert_eq!(fmt_kb(1024), "1.0");
+        assert_eq!(fmt_kb(1536), "1.5");
+        let one = golden
+            .to_fixed
+            .iter()
+            .find(|case| !case.neg_zero && case.value.as_f64() == Some(1.0) && case.digits == 1.0)
+            .expect("1.0");
+        assert_eq!(fmt_kb(1024), one.result.as_deref().expect("result"));
+        for case in &golden.iso {
+            let ms = match case.ms.as_f64() {
+                Some(ms) => ms,
+                None => match case.ms.as_str() {
+                    Some("NaN") => f64::NAN,
+                    Some(text) => text.parse::<f64>().unwrap_or(f64::NAN),
+                    None => f64::NAN,
+                },
+            };
+            match protocol::js::utc_day(ms) {
+                Ok(day) => assert_eq!(Some(day), case.day),
+                Err(err) => assert_eq!(Some(err.to_string()), case.error),
+            }
+        }
+    }
+
+    #[test]
+    fn locale_compare_pairs_match_node() {
+        let golden = golden();
+        for case in &golden.locale_compare.pairs {
+            let sign = protocol::js::locale_compare(&case.a, &case.b).expect("collator");
+            assert_eq!(
+                sign.signum(),
+                case.sign.signum(),
+                "{} vs {}",
+                case.a,
+                case.b
+            );
+        }
+    }
+
+    #[test]
+    fn slice_keeps_an_unpaired_surrogate_until_json() {
+        let text = JsText::from(format!("{}😀", "a".repeat(3)));
+        let kept = text.slice(0, Some(4));
+        let rest = text.slice(4, None);
+        assert_eq!(
+            kept.units(),
+            &[b'a' as u16, b'a' as u16, b'a' as u16, 0xD83D]
+        );
+        assert_eq!(rest.units(), &[0xDE00]);
+        let json = serde_json::to_string(&kept).expect("json");
+        assert!(json.contains("\\ud83d"), "{json}");
+        assert!(!json.contains("\\ufffd"), "{json}");
     }
 }

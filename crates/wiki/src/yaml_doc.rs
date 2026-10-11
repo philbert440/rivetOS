@@ -61,25 +61,28 @@ impl EmitCtx {
 }
 
 fn emit_value(value: &Passthrough, ctx: &EmitCtx) -> String {
-    match value {
-        Passthrough::Value(protocol::js::JsValue::Null) => "null".to_string(),
-        Passthrough::Value(protocol::js::JsValue::Bool(true)) => "true".to_string(),
-        Passthrough::Value(protocol::js::JsValue::Bool(false)) => "false".to_string(),
-        Passthrough::Value(protocol::js::JsValue::Number(number)) => format_yaml_number(*number),
-        Passthrough::Value(protocol::js::JsValue::String(text)) => emit_string(text.to_utf8(), ctx),
-        Passthrough::Value(protocol::js::JsValue::Array(items)) => {
-            let docs: Vec<Passthrough> = items.iter().cloned().map(Passthrough::Value).collect();
+    match value.js() {
+        protocol::js::JsValue::Null => "null".to_string(),
+        protocol::js::JsValue::Bool(true) => "true".to_string(),
+        protocol::js::JsValue::Bool(false) => "false".to_string(),
+        protocol::js::JsValue::Number(number) => format_yaml_number(*number),
+        protocol::js::JsValue::String(text) => emit_string(text.to_utf8(), ctx),
+        protocol::js::JsValue::Array(items) => {
+            let docs: Vec<Passthrough> = items.iter().cloned().map(Passthrough::from_js).collect();
             emit_seq(&docs, ctx)
         }
-        Passthrough::Value(protocol::js::JsValue::Object(object)) => {
+        protocol::js::JsValue::Object(object) => {
             let entries: Vec<(String, Passthrough)> = object
                 .iter()
-                .map(|(key, item)| (key.to_utf8().to_string(), Passthrough::Value(item.clone())))
+                .map(|(key, item)| {
+                    (
+                        key.to_utf8().to_string(),
+                        Passthrough::from_js(item.clone()),
+                    )
+                })
                 .collect();
             emit_map(&entries, ctx)
         }
-        Passthrough::Array(items) => emit_seq(items, ctx),
-        Passthrough::Object(entries) => emit_map(entries, ctx),
     }
 }
 
@@ -1021,21 +1024,15 @@ fn emit_pair(key: &str, value: &Passthrough, ctx: &EmitCtx) -> String {
 
 fn is_collection(value: &Passthrough) -> bool {
     matches!(
-        value,
-        Passthrough::Array(_)
-            | Passthrough::Object(_)
-            | Passthrough::Value(
-                protocol::js::JsValue::Array(_) | protocol::js::JsValue::Object(_)
-            )
+        value.js(),
+        protocol::js::JsValue::Array(_) | protocol::js::JsValue::Object(_)
     )
 }
 
 fn is_empty_collection(value: &Passthrough) -> bool {
-    match value {
-        Passthrough::Array(items) => items.is_empty(),
-        Passthrough::Object(entries) => entries.is_empty(),
-        Passthrough::Value(protocol::js::JsValue::Array(items)) => items.is_empty(),
-        Passthrough::Value(protocol::js::JsValue::Object(object)) => object.iter().next().is_none(),
+    match value.js() {
+        protocol::js::JsValue::Array(items) => items.is_empty(),
+        protocol::js::JsValue::Object(object) => object.is_empty(),
         _ => false,
     }
 }
@@ -1158,14 +1155,15 @@ fn lower(text: &str, node: &Marked) -> Passthrough {
             None => Passthrough::string(value),
         },
         Provisional::Array(items) => {
-            Passthrough::Array(items.iter().map(|item| lower(text, item)).collect())
+            Passthrough::array(items.iter().map(|item| lower(text, item)).collect())
         }
-        Provisional::Object(entries) => Passthrough::Object(
-            entries
-                .iter()
-                .map(|(key, value)| (key.clone(), lower(text, value)))
-                .collect(),
-        ),
+        Provisional::Object(entries) => {
+            let mut object = protocol::js::JsObject::new();
+            for (key, value) in entries {
+                object.insert(key.clone(), lower(text, value).into_js());
+            }
+            Passthrough::from_object(object)
+        }
     }
 }
 
@@ -1259,8 +1257,7 @@ mod tests {
                 .get("output")
                 .and_then(serde_json::Value::as_str)
                 .expect("output");
-            let doc =
-                Passthrough::Object(vec![("value".to_string(), Passthrough::from_json(input))]);
+            let doc = Passthrough::object([("value", Passthrough::from_json(input))]);
             assert_eq!(emit_yaml(&doc), output, "{input}");
         }
         for case in cases
@@ -1273,8 +1270,7 @@ mod tests {
                 .get("output")
                 .and_then(serde_json::Value::as_str)
                 .expect("output");
-            let doc =
-                Passthrough::Object(vec![("list".to_string(), Passthrough::from_json(input))]);
+            let doc = Passthrough::object([("list", Passthrough::from_json(input))]);
             assert_eq!(emit_yaml(&doc), output, "{input}");
         }
         for case in cases
@@ -1313,7 +1309,7 @@ mod tests {
                 output,
                 "{index}"
             );
-            let doc = Passthrough::Object(vec![("n".to_string(), Passthrough::number(*value))]);
+            let doc = Passthrough::object([("n", Passthrough::number(*value))]);
             assert_eq!(emit_yaml(&doc), output, "emit {index}");
         }
     }
@@ -1323,6 +1319,7 @@ mod tests {
         let nan = parse_yaml_value("metric: .nan\n").expect("nan");
         assert!(
             nan.get("metric")
+                .as_ref()
                 .and_then(Passthrough::as_f64)
                 .expect("number")
                 .is_nan()
@@ -1330,22 +1327,23 @@ mod tests {
         assert_eq!(emit_yaml(&nan), "metric: .nan\n");
         let quoted = parse_yaml_value("metric: \".nan\"\n").expect("quoted");
         assert_eq!(
-            quoted.get("metric").and_then(Passthrough::as_str),
+            quoted.get("metric").as_ref().and_then(Passthrough::as_str),
             Some(".nan")
         );
         let inf = parse_yaml_value("metric: .inf\n").expect("inf");
         assert_eq!(
-            inf.get("metric").and_then(Passthrough::as_f64),
+            inf.get("metric").as_ref().and_then(Passthrough::as_f64),
             Some(f64::INFINITY)
         );
         let neg = parse_yaml_value("metric: -.inf\n").expect("neg");
         assert_eq!(
-            neg.get("metric").and_then(Passthrough::as_f64),
+            neg.get("metric").as_ref().and_then(Passthrough::as_f64),
             Some(f64::NEG_INFINITY)
         );
         let neg_zero = parse_yaml_value("n: -0.0\n").expect("neg zero");
         let zero = neg_zero
             .get("n")
+            .as_ref()
             .and_then(Passthrough::as_f64)
             .expect("zero");
         assert!(zero == 0.0 && zero.is_sign_negative());
@@ -1353,6 +1351,7 @@ mod tests {
         let again = parse_yaml_value("n: -0\n").expect("signed zero");
         let signed = again
             .get("n")
+            .as_ref()
             .and_then(Passthrough::as_f64)
             .expect("signed");
         assert!(signed == 0.0 && signed.is_sign_negative());

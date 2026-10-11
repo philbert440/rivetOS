@@ -4,10 +4,7 @@ use crate::model::{
     WikiFrontmatter, WikiHistoryEntry, WikiPage, WikiPatch, WikiSection, WikiSource,
 };
 use crate::slug::{extract_wiki_links, normalize_slug};
-use crate::text::{
-    is_js_whitespace, js_last_index_of, js_len, js_prefix, js_slice, js_trim, js_trim_end,
-    split_utf16, utc_day,
-};
+use crate::text::{JsText, demote_h2};
 use crate::yaml_doc::{emit_yaml, parse_yaml_value};
 
 pub const SUMMARY_SHRINK_FLOOR: f64 = 0.6;
@@ -68,7 +65,7 @@ pub fn parse_wiki_page(input: &str) -> Result<WikiPage, WikiParseError> {
         .filter(|section| !is_core_heading(&section.heading))
         .map(|section| WikiSection {
             heading: section.heading.clone(),
-            body: js_trim(&section.body).to_string(),
+            body: protocol::js::js_trim(&section.body).to_string(),
         })
         .collect();
     let see_from = see_also_sec
@@ -77,7 +74,7 @@ pub fn parse_wiki_page(input: &str) -> Result<WikiPage, WikiParseError> {
     let see_also = union_slices(&[&meta.related, &see_from]);
     meta.related = union_slices(&[&meta.related, &see_also]);
     let preamble = {
-        let trimmed = js_trim(&preamble);
+        let trimmed = protocol::js::js_trim(&preamble);
         if trimmed.is_empty() {
             None
         } else {
@@ -86,9 +83,11 @@ pub fn parse_wiki_page(input: &str) -> Result<WikiPage, WikiParseError> {
     };
     Ok(WikiPage {
         meta,
-        current_state: js_trim(summary.map(|section| section.body.as_str()).unwrap_or(""))
+        current_state: JsText::from(protocol::js::js_trim(
+            summary.map(|section| section.body.as_str()).unwrap_or(""),
+        )),
+        article: protocol::js::js_trim(article.map(|section| section.body.as_str()).unwrap_or(""))
             .to_string(),
-        article: js_trim(article.map(|section| section.body.as_str()).unwrap_or("")).to_string(),
         history: history
             .map(|section| parse_history(&section.body))
             .unwrap_or_default(),
@@ -101,7 +100,7 @@ pub fn parse_wiki_page(input: &str) -> Result<WikiPage, WikiParseError> {
     })
 }
 
-pub fn serialize_wiki_page(page: &WikiPage) -> String {
+pub fn serialize_wiki_page(page: &WikiPage) -> JsText {
     let related = cap_list(
         &union_slices(&[&page.meta.related, &page.see_also])
             .into_iter()
@@ -109,34 +108,38 @@ pub fn serialize_wiki_page(page: &WikiPage) -> String {
             .collect::<Vec<_>>(),
         RELATED_MAX,
     );
-    let yaml = js_trim_end(&emit_yaml(&frontmatter_value(page, &related))).to_string();
+    let yaml_text = emit_yaml(&frontmatter_value(page, &related));
+    let yaml = protocol::js::js_trim_end(&yaml_text);
     let mut parts = Vec::new();
-    parts.push(format!("---\n{yaml}\n---"));
+    parts.push(JsText::from(format!("---\n{yaml}\n---")));
     if let Some(preamble) = &page.preamble
         && !preamble.is_empty()
     {
-        parts.push(String::new());
-        parts.push(preamble.clone());
+        parts.push(JsText::from(""));
+        parts.push(JsText::from(preamble.as_str()));
     }
-    parts.push(String::new());
-    parts.push("## Summary".to_string());
-    parts.push(String::new());
-    parts.push(js_trim(&demote_h2_headings(&page.current_state)).to_string());
-    parts.push(article_block(&page.article));
-    parts.push(see_also_block(&related));
-    parts.push(String::new());
-    parts.push("## History".to_string());
-    parts.push(String::new());
-    parts.push(js_trim_end(&history_block(&cap_list(&page.history, HISTORY_MAX))).to_string());
-    parts.push(citation_block(&cap_list(&page.citations, CITATIONS_MAX)));
+    parts.push(JsText::from(""));
+    parts.push(JsText::from("## Summary"));
+    parts.push(JsText::from(""));
+    parts.push(demote_h2(&page.current_state).trimmed());
+    parts.push(JsText::from(article_block(&page.article)));
+    parts.push(JsText::from(see_also_block(&related)));
+    parts.push(JsText::from(""));
+    parts.push(JsText::from("## History"));
+    parts.push(JsText::from(""));
+    parts.push(history_block(&cap_list(&page.history, HISTORY_MAX)).trimmed_end());
+    parts.push(JsText::from(citation_block(&cap_list(
+        &page.citations,
+        CITATIONS_MAX,
+    ))));
     for section in &page.extra_sections {
-        parts.push(String::new());
-        parts.push(format!("## {}", section.heading));
-        parts.push(String::new());
-        parts.push(section.body.clone());
+        parts.push(JsText::from(""));
+        parts.push(JsText::from(format!("## {}", section.heading)));
+        parts.push(JsText::from(""));
+        parts.push(JsText::from(section.body.as_str()));
     }
-    parts.push(String::new());
-    parts.join("\n")
+    parts.push(JsText::from(""));
+    JsText::join(&parts, "\n")
 }
 
 pub fn apply_patch(existing: Option<&WikiPage>, patch: &WikiPatch) -> WikiPage {
@@ -177,32 +180,33 @@ pub fn apply_patch(existing: Option<&WikiPage>, patch: &WikiPatch) -> WikiPage {
             page.meta.sources.push(source.clone());
         }
     }
-    let day = js_prefix(&patch.verified_at, 10);
+    let day = stamp_prefix(&patch.verified_at);
     if let Some(delta) = &patch.summary_delta
-        && !js_trim(delta).is_empty()
+        && !protocol::js::js_trim(delta).is_empty()
     {
-        let folded = demote_h2_headings(js_trim(delta));
-        page.current_state = merge_summary_text(&page.current_state, &folded);
+        let folded = demote_h2_headings(protocol::js::js_trim(delta));
+        page.current_state = JsText::from(merge_summary_text(&page.current_state, &folded));
     }
     if let Some(incoming) = &patch.current_state {
-        let incoming_trim = js_trim(incoming);
-        if incoming_trim != js_trim(&page.current_state) {
+        let incoming_trim = protocol::js::js_trim(incoming);
+        if incoming_trim != protocol::js::js_trim(&page.current_state) {
             let next = demote_h2_headings(incoming_trim);
-            let prev = js_trim(&page.current_state).to_string();
+            let prev = protocol::js::js_trim(&page.current_state).to_string();
             let would_shrink = !prev.is_empty()
                 && !next.is_empty()
-                && (js_len(&next) as f64) < (js_len(&prev) as f64) * SUMMARY_SHRINK_FLOOR
+                && (protocol::js::utf16_len(&next) as f64)
+                    < (protocol::js::utf16_len(&prev) as f64) * SUMMARY_SHRINK_FLOOR
                 && !patch.allow_shrink;
             if would_shrink {
-                if js_len(&prev) < SUMMARY_MAX_CHARS {
-                    page.current_state = merge_summary_text(&prev, &next);
+                if protocol::js::utf16_len(&prev) < SUMMARY_MAX_CHARS {
+                    page.current_state = JsText::from(merge_summary_text(&prev, &next));
                 } else {
                     page.history.insert(
                         0,
                         WikiHistoryEntry {
                             date: day.clone(),
                             title: "Summary thrash refused (v7 cap)".to_string(),
-                            body: next,
+                            body: JsText::from(next),
                         },
                     );
                 }
@@ -213,15 +217,15 @@ pub fn apply_patch(existing: Option<&WikiPage>, patch: &WikiPatch) -> WikiPage {
                         WikiHistoryEntry {
                             date: day.clone(),
                             title: "Superseded current state".to_string(),
-                            body: prev,
+                            body: JsText::from(prev),
                         },
                     );
                 }
-                page.current_state = next;
+                page.current_state = JsText::from(next);
             }
         }
     }
-    let capped = cap_summary(&page.current_state, SUMMARY_MAX_CHARS);
+    let capped = cap_units(&page.current_state, SUMMARY_MAX_CHARS);
     page.current_state = capped.kept;
     if !capped.overflow.is_empty() {
         page.history.insert(
@@ -234,15 +238,17 @@ pub fn apply_patch(existing: Option<&WikiPage>, patch: &WikiPatch) -> WikiPage {
         );
     }
     if let Some(incoming) = &patch.article {
-        let next = demote_h2_headings(js_trim(incoming));
-        if next != js_trim(&page.article) {
-            if !js_trim(&page.article).is_empty() && next != js_trim(&page.article) {
+        let next = demote_h2_headings(protocol::js::js_trim(incoming));
+        if next != protocol::js::js_trim(&page.article) {
+            if !protocol::js::js_trim(&page.article).is_empty()
+                && next != protocol::js::js_trim(&page.article)
+            {
                 page.history.insert(
                     0,
                     WikiHistoryEntry {
                         date: day.clone(),
                         title: "Superseded article".to_string(),
-                        body: js_trim(&page.article).to_string(),
+                        body: JsText::from(protocol::js::js_trim(&page.article)),
                     },
                 );
             }
@@ -262,9 +268,9 @@ pub fn apply_patch(existing: Option<&WikiPage>, patch: &WikiPatch) -> WikiPage {
         page.article = apply_article_patches(&page.article, &demoted);
     }
     if let Some(entry) = &patch.history_entry {
-        let body = js_trim(&demote_h2_headings(&entry.body)).to_string();
+        let body = demote_h2(&entry.body).trimmed();
         let dup = page.history.iter().any(|have| {
-            have.date == entry.date && have.title == entry.title && js_trim(&have.body) == body
+            have.date == entry.date && have.title == entry.title && have.body.trimmed() == body
         });
         if !dup {
             page.history.insert(
@@ -338,45 +344,48 @@ pub fn merge_pages(canonical: &WikiPage, losers: &[WikiPage]) -> WikiPage {
                 out.meta.sources.push(source.clone());
             }
         }
-        let loser_state = js_trim(&loser.current_state);
-        if js_trim(&out.current_state).is_empty() && !loser_state.is_empty() {
-            out.current_state = loser_state.to_string();
+        let loser_state = loser.current_state.trimmed();
+        let current_state = out.current_state.trimmed();
+        if current_state.is_empty() && !loser_state.is_empty() {
+            out.current_state = loser_state;
         } else if !loser_state.is_empty()
-            && loser_state != js_trim(&out.current_state)
-            && (js_len(&loser.current_state) as f64) > (js_len(&out.current_state) as f64) * 1.25
+            && loser_state != current_state
+            && (loser.current_state.len() as f64) > (out.current_state.len() as f64) * 1.25
         {
             out.history.insert(
                 0,
                 WikiHistoryEntry {
                     date: stamp_day(out.meta.last_verified.as_deref()),
                     title: "Superseded current state (consolidation)".to_string(),
-                    body: js_trim(&out.current_state).to_string(),
+                    body: current_state,
                 },
             );
-            out.current_state = loser_state.to_string();
-        } else if !loser_state.is_empty() && loser_state != js_trim(&out.current_state) {
+            out.current_state = loser_state;
+        } else if !loser_state.is_empty() && loser_state != current_state {
             out.history.insert(
                 0,
                 WikiHistoryEntry {
                     date: stamp_day(loser.meta.last_verified.as_deref()),
                     title: format!("Merged from {}", loser.meta.slug),
-                    body: loser_state.to_string(),
+                    body: loser_state.clone(),
                 },
             );
-            out.current_state = merge_summary_text(&out.current_state, loser_state);
+            out.current_state = JsText::from(merge_summary_text(&out.current_state, &loser_state));
         }
-        let loser_article = js_trim(&loser.article).to_string();
+        let loser_article = protocol::js::js_trim(&loser.article).to_string();
         if !loser_article.is_empty() {
-            if js_trim(&out.article).is_empty() {
+            if protocol::js::js_trim(&out.article).is_empty() {
                 out.article = demote_h2_headings(&loser_article);
-            } else if loser_article != js_trim(&out.article) {
-                if (js_len(&loser_article) as f64) > (js_len(&out.article) as f64) * 1.25 {
+            } else if loser_article != protocol::js::js_trim(&out.article) {
+                if (protocol::js::utf16_len(&loser_article) as f64)
+                    > (protocol::js::utf16_len(&out.article) as f64) * 1.25
+                {
                     out.history.insert(
                         0,
                         WikiHistoryEntry {
                             date: stamp_day(out.meta.last_verified.as_deref()),
                             title: "Superseded article (consolidation)".to_string(),
-                            body: js_trim(&out.article).to_string(),
+                            body: JsText::from(protocol::js::js_trim(&out.article)),
                         },
                     );
                     out.article = demote_h2_headings(&loser_article);
@@ -387,9 +396,9 @@ pub fn merge_pages(canonical: &WikiPage, losers: &[WikiPage]) -> WikiPage {
             }
         }
         for entry in &loser.history {
-            let body = js_trim(&entry.body).to_string();
+            let body = entry.body.trimmed();
             let dup = out.history.iter().any(|have| {
-                have.date == entry.date && have.title == entry.title && js_trim(&have.body) == body
+                have.date == entry.date && have.title == entry.title && have.body.trimmed() == body
             });
             if !dup {
                 out.history.push(WikiHistoryEntry {
@@ -411,7 +420,7 @@ pub fn merge_pages(canonical: &WikiPage, losers: &[WikiPage]) -> WikiPage {
     }
     out.history
         .sort_by(|left, right| right.date.cmp(&left.date));
-    let capped = cap_summary(&out.current_state, SUMMARY_MAX_CHARS);
+    let capped = cap_units(&out.current_state, SUMMARY_MAX_CHARS);
     out.current_state = capped.kept;
     if !capped.overflow.is_empty() {
         out.history.insert(
@@ -440,8 +449,8 @@ pub fn merge_pages(canonical: &WikiPage, losers: &[WikiPage]) -> WikiPage {
 }
 
 pub fn merge_summary_text(existing: &str, delta: &str) -> String {
-    let left = js_trim(existing);
-    let right = js_trim(delta);
+    let left = protocol::js::js_trim(existing);
+    let right = protocol::js::js_trim(delta);
     if right.is_empty() {
         return left.to_string();
     }
@@ -452,62 +461,56 @@ pub fn merge_summary_text(existing: &str, delta: &str) -> String {
             left.to_string()
         };
     }
-    if right.contains(left) && js_len(right) > js_len(left) {
+    if right.contains(left) && protocol::js::utf16_len(right) > protocol::js::utf16_len(left) {
         return right.to_string();
     }
     format!("{left}\n\n{right}")
 }
 
 pub fn cap_summary(text: &str, max_chars: usize) -> SummaryCap {
-    let trimmed = js_trim(text);
-    if js_len(trimmed) <= max_chars {
+    cap_units(&JsText::from(text), max_chars)
+}
+
+fn cap_units(text: &JsText, max_chars: usize) -> SummaryCap {
+    let trimmed = text.trimmed();
+    if trimmed.len() <= max_chars {
         return SummaryCap {
-            kept: trimmed.to_string(),
-            overflow: String::new(),
+            kept: trimmed,
+            overflow: JsText::from(""),
         };
     }
     let mut cut = max_chars;
-    if let Some(newline) = js_last_index_of(trimmed, "\n\n", max_chars)
+    if let Some(newline) = trimmed.last_index_of("\n\n", max_chars)
         && (newline as f64) > (max_chars as f64) * 0.5
     {
         cut = newline;
     }
-    let (kept, rest) = split_utf16(trimmed, cut);
     SummaryCap {
-        kept: js_trim_end(&kept).to_string(),
-        overflow: js_trim(&rest).to_string(),
+        kept: trimmed.slice(0, Some(cut)).trimmed_end(),
+        overflow: trimmed.slice(cut, None).trimmed(),
     }
 }
 
 pub fn demote_h2_headings(markdown: &str) -> String {
-    let mut in_fence = false;
-    let mut lines = Vec::new();
-    for line in markdown.split('\n') {
-        if js_trim(line).starts_with("```") {
-            in_fence = !in_fence;
-        }
-        if !in_fence && is_bare_h2(line) {
-            lines.push(format!("#{line}"));
-        } else {
-            lines.push(line.to_string());
-        }
-    }
-    lines.join("\n")
+    demote_h2(&JsText::from(markdown)).utf8().to_string()
 }
 
-pub fn build_wiki_search_text(page: &WikiPage) -> String {
-    let article = js_slice(js_trim(&page.article), 0, SEARCH_ARTICLE_EXCERPT_CHARS);
+pub fn build_wiki_search_text(page: &WikiPage) -> JsText {
+    let article = JsText::from(protocol::js::js_trim(&page.article))
+        .slice(0, Some(SEARCH_ARTICLE_EXCERPT_CHARS));
     let aliases = cap_list(&page.meta.aliases, ALIASES_MAX).join(" ");
     let related = cap_list(&page.meta.related, RELATED_MAX).join(" ");
-    let joined = [
-        page.meta.title.as_str(),
-        aliases.as_str(),
-        page.current_state.as_str(),
-        article.as_str(),
-        related.as_str(),
-    ]
-    .join(" ");
-    js_prefix(&joined, 8_000)
+    let joined = JsText::join(
+        &[
+            JsText::from(page.meta.title.as_str()),
+            JsText::from(aliases.as_str()),
+            page.current_state.clone(),
+            article,
+            JsText::from(related.as_str()),
+        ],
+        " ",
+    );
+    joined.slice(0, Some(8_000))
 }
 
 pub fn cap_list<T: Clone>(list: &[T], max: usize) -> Vec<T> {
@@ -552,20 +555,20 @@ pub fn split_article_sections(article: &str) -> (String, Vec<WikiArticleSection>
         if let Some(heading) = heading.take() {
             sections.push(WikiArticleSection {
                 heading,
-                body: js_trim(&buf.join("\n")).to_string(),
+                body: protocol::js::js_trim(&buf.join("\n")).to_string(),
             });
         } else {
-            *lead = js_trim(&buf.join("\n")).to_string();
+            *lead = protocol::js::js_trim(&buf.join("\n")).to_string();
         }
         buf.clear();
     };
     for line in text.split('\n') {
-        if js_trim(line).starts_with("```") {
+        if protocol::js::js_trim(line).starts_with("```") {
             in_fence = !in_fence;
         }
         if !in_fence && let Some(title) = h3_title(line) {
             flush(&mut heading, &mut buf, &mut lead, &mut sections);
-            heading = Some(js_trim(title).to_string());
+            heading = Some(protocol::js::js_trim(title).to_string());
             continue;
         }
         buf.push(line.to_string());
@@ -576,27 +579,27 @@ pub fn split_article_sections(article: &str) -> (String, Vec<WikiArticleSection>
 
 pub fn join_article_sections(lead: &str, sections: &[WikiArticleSection]) -> String {
     let mut parts = Vec::new();
-    if !js_trim(lead).is_empty() {
-        parts.push(js_trim(lead).to_string());
+    if !protocol::js::js_trim(lead).is_empty() {
+        parts.push(protocol::js::js_trim(lead).to_string());
     }
     for section in sections {
         parts.push(format!(
             "### {}\n\n{}",
             section.heading,
-            js_trim(&section.body)
+            protocol::js::js_trim(&section.body)
         ));
     }
-    js_trim(&parts.join("\n\n")).to_string()
+    protocol::js::js_trim(&parts.join("\n\n")).to_string()
 }
 
 pub fn apply_article_patches(article: &str, patches: &[WikiArticlePatch]) -> String {
     let (lead, mut sections) = split_article_sections(article);
     for patch in patches {
-        let heading = js_trim(&patch.heading);
+        let heading = protocol::js::js_trim(&patch.heading);
         if heading.is_empty() {
             continue;
         }
-        let body = js_trim(&patch.body);
+        let body = protocol::js::js_trim(&patch.body);
         if body.is_empty() {
             continue;
         }
@@ -608,15 +611,16 @@ pub fn apply_article_patches(article: &str, patches: &[WikiArticlePatch]) -> Str
                 sections[index].body = body.to_string();
             } else {
                 let prev = sections[index].body.clone();
-                sections[index].body = if js_trim(&prev).is_empty() || prev.contains(body) {
-                    if prev.is_empty() {
-                        body.to_string()
+                sections[index].body =
+                    if protocol::js::js_trim(&prev).is_empty() || prev.contains(body) {
+                        if prev.is_empty() {
+                            body.to_string()
+                        } else {
+                            prev
+                        }
                     } else {
-                        prev
-                    }
-                } else {
-                    format!("{}\n\n{body}", js_trim(&prev))
-                };
+                        format!("{}\n\n{body}", protocol::js::js_trim(&prev))
+                    };
             }
         } else {
             sections.push(WikiArticleSection {
@@ -646,17 +650,17 @@ pub fn merge_article_bodies(left: &str, right: &str) -> String {
     for section in right_sections {
         let key = section.heading.to_lowercase();
         if let Some(index) = order.iter().position(|have| have == &key) {
-            let incoming_len = js_len(&section.body);
-            let incoming = js_trim(&section.body).to_string();
+            let incoming_len = protocol::js::utf16_len(&section.body);
+            let incoming = protocol::js::js_trim(&section.body).to_string();
             let prev_body = bodies[index].body.clone();
             let prev_heading = bodies[index].heading.clone();
             if !incoming.is_empty() && !prev_body.contains(&incoming) {
-                let replace = js_trim(&prev_body).is_empty()
-                    || (incoming_len as f64) > (js_len(&prev_body) as f64) * 1.25;
+                let replace = protocol::js::js_trim(&prev_body).is_empty()
+                    || (incoming_len as f64) > (protocol::js::utf16_len(&prev_body) as f64) * 1.25;
                 let body = if replace {
                     incoming
                 } else {
-                    format!("{}\n\n{incoming}", js_trim(&prev_body))
+                    format!("{}\n\n{incoming}", protocol::js::js_trim(&prev_body))
                 };
                 bodies[index] = WikiArticleSection {
                     heading: prev_heading,
@@ -675,7 +679,7 @@ pub fn parse_see_also(body: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for line in body.split('\n') {
-        let trimmed = js_trim(line);
+        let trimmed = protocol::js::js_trim(line);
         if let Some(slug) = first_wiki_slug(trimmed) {
             if !slug.is_empty() && seen.insert(slug.clone()) {
                 out.push(slug);
@@ -696,19 +700,19 @@ pub fn parse_citations(body: &str) -> Vec<WikiCitation> {
     let mut out = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for line in body.split('\n') {
-        let trimmed = js_trim(line);
+        let trimmed = protocol::js::js_trim(line);
         if let Some(cells) = table_cells(trimmed) {
-            let date_cell = js_trim(cells[0]);
+            let date_cell = protocol::js::js_trim(cells[0]);
             let squashed: String = date_cell
                 .chars()
-                .filter(|ch| !is_js_whitespace(*ch))
+                .filter(|ch| !protocol::js::is_js_whitespace(*ch))
                 .collect();
             if date_cell.eq_ignore_ascii_case("date")
                 || (!squashed.is_empty() && squashed.chars().all(|ch| ch == '-'))
             {
                 continue;
             }
-            let sum_cell = js_trim(cells[2]);
+            let sum_cell = protocol::js::js_trim(cells[2]);
             let Some(summary_id) = find_loose_id(sum_cell).or_else(|| find_ticked_id(sum_cell))
             else {
                 continue;
@@ -721,13 +725,13 @@ pub fn parse_citations(body: &str) -> Vec<WikiCitation> {
             } else {
                 None
             };
-            let kind_cell = js_trim(cells[1]);
+            let kind_cell = protocol::js::js_trim(cells[1]);
             let kind = if kind_cell.is_empty() || kind_cell.eq_ignore_ascii_case("kind") {
                 None
             } else {
                 Some(kind_cell.to_string())
             };
-            let note_cell = js_trim(cells[3]);
+            let note_cell = protocol::js::js_trim(cells[3]);
             let note = if note_cell.is_empty() {
                 None
             } else {
@@ -781,7 +785,7 @@ fn blank_page(title: String, slug: String) -> WikiPage {
             sources: Vec::new(),
             extra: None,
         },
-        current_state: String::new(),
+        current_state: JsText::from(""),
         article: String::new(),
         history: Vec::new(),
         citations: Vec::new(),
@@ -798,20 +802,34 @@ fn present(value: Option<String>) -> Option<String> {
     }
 }
 
+fn stamp_prefix(stamp: &str) -> String {
+    protocol::js::js_slice(stamp, Some(0.0), Some(10.0))
+        .to_utf8()
+        .to_string()
+}
+
 fn stamp_day(stamp: Option<&str>) -> String {
     if let Some(stamp) = stamp {
-        js_prefix(stamp, 10)
+        stamp_prefix(stamp)
     } else {
-        utc_day()
+        match protocol::js::utc_day(protocol::js::date_now()) {
+            Ok(day) => day,
+            Err(_) => "1970-01-01".to_string(),
+        }
     }
 }
 
 fn source_identity(source: &WikiSource) -> (Option<String>, String) {
     let kind = source.kind().map(str::to_string);
-    let Some(items) = source.raw().get("ids").and_then(Passthrough::as_array) else {
+    let Some(items) = source
+        .raw()
+        .js()
+        .get("ids")
+        .and_then(protocol::js::JsValue::as_array)
+    else {
         return (kind, "[]".to_string());
     };
-    let mut owned: Vec<protocol::js::JsValue> = items.iter().map(Passthrough::to_js).collect();
+    let mut owned = items.to_vec();
     owned.sort_by_key(js_sort_key);
     (
         kind,
@@ -820,7 +838,10 @@ fn source_identity(source: &WikiSource) -> (Option<String>, String) {
 }
 
 fn js_sort_key(value: &protocol::js::JsValue) -> Vec<u16> {
-    js_primitive(value).encode_utf16().collect()
+    match value {
+        protocol::js::JsValue::String(text) => text.units().to_vec(),
+        other => js_primitive(other).encode_utf16().collect(),
+    }
 }
 
 fn js_primitive(value: &protocol::js::JsValue) -> String {
@@ -865,110 +886,115 @@ fn split_frontmatter(markdown: &str) -> Option<(&str, &str)> {
 }
 
 fn normalize_meta(raw: &Passthrough) -> Result<WikiFrontmatter, WikiParseError> {
-    let title = match raw.get("title").and_then(Passthrough::as_str) {
-        Some(title) if !js_trim(title).is_empty() => title.to_string(),
+    let title = match raw
+        .js()
+        .get("title")
+        .and_then(protocol::js::JsValue::as_str)
+    {
+        Some(title) if !protocol::js::js_trim(title).is_empty() => title.to_string(),
         _ => return Err(WikiParseError::new("title required")),
     };
-    let slug = match raw.get("slug").and_then(Passthrough::as_str) {
-        Some(slug) if !js_trim(slug).is_empty() => normalize_slug(slug),
+    let slug = match raw.js().get("slug").and_then(protocol::js::JsValue::as_str) {
+        Some(slug) if !protocol::js::js_trim(slug).is_empty() => normalize_slug(slug),
         _ => return Err(WikiParseError::new("slug required")),
     };
-    let mut extra = Vec::new();
     let Some(entries) = raw.as_object() else {
         return Err(WikiParseError::new("frontmatter not a map"));
     };
-    for (key, value) in entries {
-        if !KNOWN_META.contains(&key.as_str()) {
-            extra.push((key.clone(), value.clone()));
+    let mut extra = protocol::js::JsObject::new();
+    for (key, value) in entries.iter() {
+        let name = key.to_utf8();
+        if !KNOWN_META.contains(&name) {
+            extra.insert(key.clone(), value.clone());
         }
     }
     Ok(WikiFrontmatter {
         title,
         slug,
-        aliases: str_list(raw.get("aliases")),
-        tags: str_list(raw.get("tags")),
-        entities: str_list(raw.get("entities")),
-        related: str_list(raw.get("related"))
+        aliases: str_list(raw.js().get("aliases")),
+        tags: str_list(raw.js().get("tags")),
+        entities: str_list(raw.js().get("entities")),
+        related: str_list(raw.js().get("related"))
             .into_iter()
             .map(|item| normalize_slug(&item))
             .filter(|item| !item.is_empty())
             .collect(),
         last_verified: raw
+            .js()
             .get("last_verified")
-            .and_then(Passthrough::as_str)
+            .and_then(protocol::js::JsValue::as_str)
             .map(str::to_string),
-        sources: sources_of(raw.get("sources")),
+        sources: sources_of(raw.js().get("sources")),
         extra: if extra.is_empty() {
             None
         } else {
-            Some(Passthrough::Object(extra))
+            Some(Passthrough::from_object(extra))
         },
     })
 }
 
-fn str_list(value: Option<&Passthrough>) -> Vec<String> {
-    let Some(items) = value.and_then(Passthrough::as_array) else {
+fn str_list(value: Option<&protocol::js::JsValue>) -> Vec<String> {
+    let Some(items) = value.and_then(protocol::js::JsValue::as_array) else {
         return Vec::new();
     };
     items
         .iter()
-        .filter_map(Passthrough::as_str)
+        .filter_map(protocol::js::JsValue::as_str)
         .map(str::to_string)
         .collect()
 }
 
-fn sources_of(value: Option<&Passthrough>) -> Vec<WikiSource> {
-    let Some(items) = value.and_then(Passthrough::as_array) else {
+fn sources_of(value: Option<&protocol::js::JsValue>) -> Vec<WikiSource> {
+    let Some(items) = value.and_then(protocol::js::JsValue::as_array) else {
         return Vec::new();
     };
-    items
-        .iter()
-        .filter_map(WikiSource::from_passthrough)
-        .collect()
+    items.iter().filter_map(WikiSource::from_value).collect()
 }
 
 fn frontmatter_value(page: &WikiPage, related: &[String]) -> Passthrough {
-    let mut meta = Vec::new();
+    let mut meta = protocol::js::JsObject::new();
     if let Some(extra) = &page.meta.extra
         && let Some(entries) = extra.as_object()
     {
-        meta.extend(entries.iter().cloned());
+        for (key, value) in entries.iter() {
+            meta.insert(key.clone(), value.clone());
+        }
     }
-    meta.push(("title".to_string(), Passthrough::string(&page.meta.title)));
-    meta.push(("slug".to_string(), Passthrough::string(&page.meta.slug)));
-    meta.push((
-        "aliases".to_string(),
-        string_array(&cap_list(&page.meta.aliases, ALIASES_MAX)),
-    ));
-    meta.push((
-        "tags".to_string(),
-        string_array(&cap_list(&page.meta.tags, TAGS_MAX)),
-    ));
-    meta.push((
-        "entities".to_string(),
-        string_array(&cap_list(&page.meta.entities, ENTITIES_MAX)),
-    ));
-    meta.push(("related".to_string(), string_array(related)));
+    meta.insert("title", Passthrough::string(&page.meta.title).into_js());
+    meta.insert("slug", Passthrough::string(&page.meta.slug).into_js());
+    meta.insert(
+        "aliases",
+        string_array(&cap_list(&page.meta.aliases, ALIASES_MAX)).into_js(),
+    );
+    meta.insert(
+        "tags",
+        string_array(&cap_list(&page.meta.tags, TAGS_MAX)).into_js(),
+    );
+    meta.insert(
+        "entities",
+        string_array(&cap_list(&page.meta.entities, ENTITIES_MAX)).into_js(),
+    );
+    meta.insert("related", string_array(related).into_js());
     if let Some(stamp) = &page.meta.last_verified
         && !stamp.is_empty()
     {
-        meta.push(("last_verified".to_string(), Passthrough::string(stamp)));
+        meta.insert("last_verified", Passthrough::string(stamp).into_js());
     }
     let sources = cap_tail(&page.meta.sources, SOURCES_MAX);
-    meta.push((
-        "sources".to_string(),
-        Passthrough::Array(sources.iter().map(|source| source.raw().clone()).collect()),
-    ));
-    Passthrough::Object(meta)
+    meta.insert(
+        "sources",
+        Passthrough::array(sources.iter().map(|source| source.raw().clone()).collect()).into_js(),
+    );
+    Passthrough::from_object(meta)
 }
 
 fn string_array(items: &[String]) -> Passthrough {
-    Passthrough::Array(items.iter().map(Passthrough::string).collect())
+    Passthrough::array(items.iter().map(Passthrough::string).collect())
 }
 
 fn article_block(article: &str) -> String {
     let demoted = demote_h2_headings(article);
-    let article = js_trim(&demoted);
+    let article = protocol::js::js_trim(&demoted);
     if article.is_empty() {
         String::new()
     } else {
@@ -988,21 +1014,22 @@ fn see_also_block(related: &[String]) -> String {
     lines.join("\n")
 }
 
-fn history_block(history: &[WikiHistoryEntry]) -> String {
-    history
-        .iter()
-        .map(|entry| {
-            let title = if entry.title.is_empty() {
-                String::new()
-            } else {
-                format!(" — {}", entry.title)
-            };
-            let demoted = demote_h2_headings(&entry.body);
-            let body = js_trim(&demoted);
-            format!("### {}{title}\n\n{body}\n", entry.date)
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+fn history_block(history: &[WikiHistoryEntry]) -> JsText {
+    let mut pieces = Vec::new();
+    for entry in history {
+        let title = if entry.title.is_empty() {
+            String::new()
+        } else {
+            format!(" — {}", entry.title)
+        };
+        let body = demote_h2(&entry.body).trimmed();
+        pieces.push(JsText::concat(&[
+            JsText::from(format!("### {}{title}\n\n", entry.date)),
+            body,
+            JsText::from("\n"),
+        ]));
+    }
+    JsText::join(&pieces, "\n")
 }
 
 fn citation_block(citations: &[WikiCitation]) -> String {
@@ -1038,7 +1065,7 @@ fn union_slices(lists: &[&[String]]) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
     for list in lists {
         for item in *list {
-            if js_trim(item).is_empty() || !seen.insert(item.clone()) {
+            if protocol::js::js_trim(item).is_empty() || !seen.insert(item.clone()) {
                 continue;
             }
             out.push(item.clone());
@@ -1065,7 +1092,7 @@ fn split_sections(body: &str) -> (String, Vec<RawSection>) {
     let mut buf = Vec::new();
     let mut in_fence = false;
     for line in body.split('\n') {
-        if js_trim(line).starts_with("```") {
+        if protocol::js::js_trim(line).starts_with("```") {
             in_fence = !in_fence;
         }
         if !in_fence && let Some(title) = h2_title(line) {
@@ -1075,7 +1102,7 @@ fn split_sections(body: &str) -> (String, Vec<RawSection>) {
                     body: buf.join("\n"),
                 });
             }
-            heading = Some(js_trim(title).to_string());
+            heading = Some(protocol::js::js_trim(title).to_string());
             buf.clear();
             continue;
         }
@@ -1104,20 +1131,13 @@ fn h3_title(line: &str) -> Option<&str> {
     if rest.is_empty() { None } else { Some(rest) }
 }
 
-fn is_bare_h2(line: &str) -> bool {
-    let Some(rest) = line.strip_prefix("## ") else {
-        return false;
-    };
-    !rest.starts_with('#')
-}
-
 fn parse_history(body: &str) -> Vec<WikiHistoryEntry> {
     let mut entries = Vec::new();
     let mut current: Option<(String, String)> = None;
     let mut buf = Vec::new();
     let mut in_fence = false;
     for line in body.split('\n') {
-        if js_trim(line).starts_with("```") {
+        if protocol::js::js_trim(line).starts_with("```") {
             in_fence = !in_fence;
         }
         if !in_fence && let Some((date, title)) = history_heading(line) {
@@ -1125,7 +1145,7 @@ fn parse_history(body: &str) -> Vec<WikiHistoryEntry> {
                 entries.push(WikiHistoryEntry {
                     date,
                     title,
-                    body: js_trim(&buf.join("\n")).to_string(),
+                    body: JsText::from(protocol::js::js_trim(&buf.join("\n"))),
                 });
             }
             current = Some((date, title));
@@ -1140,7 +1160,7 @@ fn parse_history(body: &str) -> Vec<WikiHistoryEntry> {
         entries.push(WikiHistoryEntry {
             date,
             title,
-            body: js_trim(&buf.join("\n")).to_string(),
+            body: JsText::from(protocol::js::js_trim(&buf.join("\n"))),
         });
     }
     entries
@@ -1164,7 +1184,7 @@ fn history_title(after: &str) -> Option<String> {
     let chars: Vec<char> = after.chars().collect();
     let mut index = 0usize;
     let mut saw_space = false;
-    while index < chars.len() && is_js_whitespace(chars[index]) {
+    while index < chars.len() && protocol::js::is_js_whitespace(chars[index]) {
         saw_space = true;
         index += 1;
     }
@@ -1173,7 +1193,7 @@ fn history_title(after: &str) -> Option<String> {
     }
     index += 1;
     let mut saw_space = false;
-    while index < chars.len() && is_js_whitespace(chars[index]) {
+    while index < chars.len() && protocol::js::is_js_whitespace(chars[index]) {
         saw_space = true;
         index += 1;
     }
@@ -1220,7 +1240,7 @@ fn bare_slug_bullet(line: &str) -> Option<String> {
     }
     let mut index = 1usize;
     let mut saw_space = false;
-    while index < chars.len() && is_js_whitespace(chars[index]) {
+    while index < chars.len() && protocol::js::is_js_whitespace(chars[index]) {
         saw_space = true;
         index += 1;
     }
@@ -1234,7 +1254,7 @@ fn bare_slug_bullet(line: &str) -> Option<String> {
     if index == start {
         return None;
     }
-    while index < chars.len() && is_js_whitespace(chars[index]) {
+    while index < chars.len() && protocol::js::is_js_whitespace(chars[index]) {
         index += 1;
     }
     if index != chars.len() {
@@ -1366,7 +1386,7 @@ fn citation_note(line: &str) -> Option<String> {
         }
         let mut next = index + 1;
         let mut saw_space = false;
-        while next < chars.len() && is_js_whitespace(chars[next]) {
+        while next < chars.len() && protocol::js::is_js_whitespace(chars[next]) {
             saw_space = true;
             next += 1;
         }
@@ -1374,7 +1394,7 @@ fn citation_note(line: &str) -> Option<String> {
             continue;
         }
         let note: String = chars[next..].iter().collect();
-        let note = js_trim(&note);
+        let note = protocol::js::js_trim(&note);
         if note.is_empty() {
             return None;
         }

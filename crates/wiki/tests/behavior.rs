@@ -69,7 +69,7 @@ fn create_seeds_a_page_and_update_archives_prior_state() {
     updated_patch.history_entry = Some(WikiHistoryEntry {
         date: "2026-07-08".to_string(),
         title: "Cutover".to_string(),
-        body: "- moved to v2".to_string(),
+        body: "- moved to v2".into(),
     });
     let updated = apply_patch(Some(&created), &updated_patch);
     assert_eq!(updated.current_state, "v2 state");
@@ -92,7 +92,7 @@ fn create_seeds_a_page_and_update_archives_prior_state() {
 fn identical_state_does_not_archive_and_duplicates_dedupe() {
     let base = page();
     let mut update = patch(PatchAction::Update, &base.meta.slug, "2026-07-09T00:00:00Z");
-    update.current_state = Some(base.current_state.clone());
+    update.current_state = Some(base.current_state.to_string());
     update.history_entry = Some(WikiHistoryEntry {
         date: "2026-07-06".to_string(),
         title: "Phase 1 cutover shipped".to_string(),
@@ -242,7 +242,7 @@ fn serialize_of_bloated_provenance_writes_only_the_ceilings() {
         .map(|index| WikiHistoryEntry {
             date: format!("2026-08-{:02}", (index % 28) + 1),
             title: format!("entry-{index}"),
-            body: format!("- note {index}"),
+            body: format!("- note {index}").into(),
         })
         .collect();
     bloated.citations = (0..CITATIONS_MAX + 20)
@@ -334,7 +334,10 @@ fn preamble_extra_sections_and_unknown_keys_survive() {
     let parsed = parse_wiki_page(&md).expect("extra");
     let extra = parsed.meta.extra.clone().expect("extra map");
     assert_eq!(
-        extra.get("touched_by").and_then(|value| value.as_str()),
+        extra
+            .get("touched_by")
+            .as_ref()
+            .and_then(wiki::Passthrough::as_str),
         Some("human")
     );
     assert_eq!(parsed.extra_sections.len(), 1);
@@ -513,7 +516,7 @@ fn demotes_headings_inside_history_entries() {
     update.history_entry = Some(WikiHistoryEntry {
         date: "2026-07-27".to_string(),
         title: "Ops note".to_string(),
-        body: "- did a thing\n\n## Configuration\n\nleaked out of history".to_string(),
+        body: "- did a thing\n\n## Configuration\n\nleaked out of history".into(),
     });
     let patched = apply_patch(Some(&page()), &update);
     let round = parse_wiki_page(&serialize_wiki_page(&patched)).expect("round");
@@ -537,7 +540,7 @@ fn reapplying_the_same_history_entry_dedups() {
     let entry = WikiHistoryEntry {
         date: "2026-07-27".to_string(),
         title: "Ops note".to_string(),
-        body: "- did a thing\n\n## Configuration\n\nleaked out of history".to_string(),
+        body: "- did a thing\n\n## Configuration\n\nleaked out of history".into(),
     };
     let mut once_patch = patch(
         PatchAction::Update,
@@ -578,7 +581,7 @@ fn apply_patch_tolerates_empty_v7_fields() {
             sources: Vec::new(),
             extra: None,
         },
-        current_state: "Old lead.".to_string(),
+        current_state: "Old lead.".into(),
         article: String::new(),
         history: Vec::new(),
         citations: Vec::new(),
@@ -620,7 +623,7 @@ fn serialize_demotes_stray_headings_outside_apply_patch() {
     loser.history = vec![WikiHistoryEntry {
         date: "2026-07-01".to_string(),
         title: "legacy".to_string(),
-        body: "- x\n\n## Stray\n\nescaped".to_string(),
+        body: "- x\n\n## Stray\n\nescaped".into(),
     }];
     let merged = merge_pages(&canonical, &[loser]);
     let merged_round = parse_wiki_page(&serialize_wiki_page(&merged)).expect("merged");
@@ -638,7 +641,7 @@ fn serialize_demotes_stray_headings_outside_apply_patch() {
     );
 
     let mut hand = page();
-    hand.current_state = "Lead.\n\n## Stray\n\nescaped from the lead".to_string();
+    hand.current_state = "Lead.\n\n## Stray\n\nescaped from the lead".into();
     hand.article = "### Role\n\nA.\n\n## Stray\n\nescaped from the article".to_string();
     let hand_round = parse_wiki_page(&serialize_wiki_page(&hand)).expect("hand");
     assert!(hand_round.current_state.contains("escaped from the lead"));
@@ -1016,19 +1019,46 @@ fn source_objects_keep_original_order_and_unknown_keys() {
 }
 
 #[test]
-fn summary_cap_splits_inside_a_surrogate_pair() {
+fn summary_cap_keeps_an_unpaired_surrogate() {
     let text = format!("{}😀", "a".repeat(2399));
     let capped = cap_summary(&text, 2400);
-    assert!(capped.kept.ends_with('\u{FFFD}'));
-    assert!(capped.overflow.starts_with('\u{FFFD}'));
+    assert_eq!(capped.kept.units().last().copied(), Some(0xD83D));
+    assert_eq!(capped.overflow.units().first().copied(), Some(0xDE00));
+    let kept = serde_json::to_string(&capped.kept).expect("kept");
+    let overflow = serde_json::to_string(&capped.overflow).expect("overflow");
+    assert!(kept.contains("\\ud83d"), "{kept}");
+    assert!(overflow.contains("\\ude00"), "{overflow}");
+    assert!(!kept.contains("\\ufffd"), "{kept}");
+    assert!(!overflow.contains("\\ufffd"), "{overflow}");
 }
 
 #[test]
-fn encyclopedia_article_keeps_a_split_surrogate_as_fffd() {
+fn encyclopedia_article_keeps_a_split_surrogate() {
     let article = format!("{}😀more", "b".repeat(7999));
     let out = format_wiki_read(&fat_page(3_000, &article, 0), "example-topic", None);
-    assert!(out.contains('\u{FFFD}'));
+    assert!(out.units().contains(&0xD83D));
+    let json = serde_json::to_string(&out).expect("json");
+    assert!(json.contains("\\ud83d"), "{json}");
+    assert!(!json.contains("\\ufffd"), "{json}");
     assert!(out.contains("…[5 more chars — wiki_read slug=example-topic section=article]"));
+}
+
+#[test]
+fn integer_index_keys_precede_other_properties() {
+    let markdown = "---\n\"10\": later\n\"2\": earlier\nnote: kept\ntitle: Order\nslug: order\n---\n\n## Summary\n\nLead.\n";
+    let parsed = parse_wiki_page(markdown).expect("order");
+    let yaml = serialize_wiki_page(&parsed);
+    let two = yaml.find("\"2\":").expect("key 2");
+    let ten = yaml.find("\"10\":").expect("key 10");
+    let note = yaml.find("note:").expect("note");
+    let title = yaml.find("title:").expect("title");
+    assert!(two < ten && ten < note && note < title, "{yaml}");
+    let raw = r#"{"10":"a","note":"n","2":"b","ids":["id1"]}"#;
+    let source: WikiSource = serde_json::from_str(raw).expect("source");
+    assert_eq!(
+        serde_json::to_string(&source).expect("json"),
+        r#"{"2":"b","10":"a","note":"n","ids":["id1"]}"#
+    );
 }
 
 #[test]
@@ -1078,13 +1108,17 @@ fn nonfinite_frontmatter_survives_parse_and_serialize() {
     let parsed = parse_wiki_page(markdown).expect("page");
     let extra = parsed.meta.extra.as_ref().expect("extra");
     assert_eq!(
-        extra.get("metric").and_then(wiki::Passthrough::as_f64),
+        extra
+            .get("metric")
+            .as_ref()
+            .and_then(wiki::Passthrough::as_f64),
         Some(f64::INFINITY)
     );
     assert!(
         extra
             .get("nested")
             .and_then(|value| value.get("gap"))
+            .as_ref()
             .and_then(wiki::Passthrough::as_f64)
             .expect("nan")
             .is_nan()
@@ -1093,15 +1127,20 @@ fn nonfinite_frontmatter_survives_parse_and_serialize() {
         extra
             .get("nested")
             .and_then(|value| value.get("low"))
+            .as_ref()
             .and_then(wiki::Passthrough::as_f64),
         Some(f64::NEG_INFINITY)
     );
     assert_eq!(
-        extra.get("quoted").and_then(wiki::Passthrough::as_str),
+        extra
+            .get("quoted")
+            .as_ref()
+            .and_then(wiki::Passthrough::as_str),
         Some(".nan")
     );
     let zero = extra
         .get("zero")
+        .as_ref()
         .and_then(wiki::Passthrough::as_f64)
         .expect("zero");
     assert!(zero == 0.0 && zero.is_sign_negative());

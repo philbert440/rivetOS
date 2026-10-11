@@ -1,138 +1,129 @@
-use std::str::FromStr;
+use protocol::js::{JsObject, JsValue};
 
+use crate::text::JsText;
 use serde::de::{self, Deserializer};
 use serde::{Deserialize, Serialize, Serializer};
-use serde_json::{Map, Value};
 
-#[derive(Clone, Debug, PartialEq)]
-pub enum Passthrough {
-    Value(protocol::js::JsValue),
-    Array(Vec<Passthrough>),
-    Object(Vec<(String, Passthrough)>),
+#[derive(Clone, Debug)]
+pub struct Passthrough {
+    value: JsValue,
+}
+
+impl PartialEq for Passthrough {
+    fn eq(&self, other: &Self) -> bool {
+        self.value == other.value
+    }
 }
 
 impl Passthrough {
     pub fn null() -> Self {
-        Self::Value(protocol::js::JsValue::Null)
+        Self {
+            value: JsValue::Null,
+        }
     }
 
     pub fn bool(value: bool) -> Self {
-        Self::Value(protocol::js::JsValue::Bool(value))
+        Self {
+            value: JsValue::Bool(value),
+        }
     }
 
     pub fn number(value: f64) -> Self {
-        Self::Value(protocol::js::JsValue::Number(value))
+        Self {
+            value: JsValue::Number(value),
+        }
     }
 
     pub fn string(text: impl AsRef<str>) -> Self {
-        Self::Value(protocol::js::JsValue::from_text(text.as_ref()))
+        Self {
+            value: JsValue::from_text(text.as_ref()),
+        }
     }
 
-    pub fn get(&self, key: &str) -> Option<&Self> {
-        let Self::Object(entries) = self else {
-            return None;
-        };
-        entries
-            .iter()
-            .find(|(existing, _)| existing == key)
-            .map(|(_, value)| value)
+    pub fn array(items: Vec<Passthrough>) -> Self {
+        Self {
+            value: JsValue::Array(items.into_iter().map(|item| item.value).collect()),
+        }
+    }
+
+    pub fn object<I, K>(entries: I) -> Self
+    where
+        I: IntoIterator<Item = (K, Passthrough)>,
+        K: Into<protocol::js::JsString>,
+    {
+        let mut object = JsObject::new();
+        for (key, value) in entries {
+            object.insert(key, value.value);
+        }
+        Self::from_object(object)
+    }
+
+    pub(crate) fn from_object(object: JsObject) -> Self {
+        Self {
+            value: JsValue::Object(object),
+        }
+    }
+
+    pub(crate) fn from_js(value: JsValue) -> Self {
+        Self { value }
+    }
+
+    pub fn get(&self, key: &str) -> Option<Passthrough> {
+        self.value.get(key).cloned().map(Self::from_js)
     }
 
     pub fn as_str(&self) -> Option<&str> {
-        match self {
-            Self::Value(protocol::js::JsValue::String(text)) => Some(text.to_utf8()),
-            _ => None,
-        }
+        self.value.as_str()
     }
 
     pub fn as_f64(&self) -> Option<f64> {
-        match self {
-            Self::Value(protocol::js::JsValue::Number(value)) => Some(*value),
-            _ => None,
-        }
+        self.value.as_f64()
     }
 
-    pub fn as_array(&self) -> Option<&[Self]> {
-        match self {
-            Self::Array(items) => Some(items),
-            _ => None,
-        }
+    pub fn as_array(&self) -> Option<&[JsValue]> {
+        self.value.as_array()
     }
 
-    pub fn as_object(&self) -> Option<&[(String, Self)]> {
-        match self {
-            Self::Object(entries) => Some(entries),
-            _ => None,
-        }
+    pub fn as_object(&self) -> Option<&JsObject> {
+        self.value.as_object()
     }
 
-    pub(crate) fn from_json(value: &Value) -> Self {
-        match value {
-            Value::Null => Self::null(),
-            Value::Bool(bit) => Self::bool(*bit),
-            Value::Number(number) => Self::number(number.as_f64().unwrap_or(0.0)),
-            Value::String(text) => Self::string(text),
-            Value::Array(items) => Self::Array(items.iter().map(Self::from_json).collect()),
-            Value::Object(map) => Self::Object(
-                map.iter()
-                    .map(|(key, item)| (key.clone(), Self::from_json(item)))
-                    .collect(),
-            ),
-        }
+    pub(crate) fn as_object_mut(&mut self) -> Option<&mut JsObject> {
+        self.value.as_object_mut()
     }
 
-    pub(crate) fn to_json(&self) -> Value {
-        match self {
-            Self::Value(protocol::js::JsValue::Null) => Value::Null,
-            Self::Value(protocol::js::JsValue::Bool(bit)) => Value::Bool(*bit),
-            Self::Value(protocol::js::JsValue::Number(number)) => number_to_json(*number),
-            Self::Value(protocol::js::JsValue::String(text)) => {
-                Value::String(text.to_utf8().to_string())
-            }
-            Self::Value(protocol::js::JsValue::Array(items)) => Value::Array(
-                items
-                    .iter()
-                    .map(|item| Self::Value(item.clone()).to_json())
-                    .collect(),
-            ),
-            Self::Value(protocol::js::JsValue::Object(object)) => {
-                let mut map = Map::new();
-                for (key, value) in object.iter() {
-                    map.insert(
-                        key.to_utf8().to_string(),
-                        Self::Value(value.clone()).to_json(),
-                    );
-                }
-                Value::Object(map)
-            }
-            Self::Array(items) => Value::Array(items.iter().map(Self::to_json).collect()),
-            Self::Object(entries) => {
-                let mut map = Map::new();
-                for (key, value) in entries {
-                    map.insert(key.clone(), value.to_json());
-                }
-                Value::Object(map)
-            }
-        }
+    pub(crate) fn js(&self) -> &JsValue {
+        &self.value
     }
 
-    pub(crate) fn to_js(&self) -> protocol::js::JsValue {
-        let json = self.to_json();
-        match serde_json::to_string(&json) {
-            Ok(text) => protocol::js::parse(&text).unwrap_or(protocol::js::JsValue::Null),
-            Err(_) => protocol::js::JsValue::Null,
-        }
+    pub(crate) fn into_js(self) -> JsValue {
+        self.value
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_json(value: &serde_json::Value) -> Self {
+        Self::from_js(json_to_js(value))
     }
 }
 
-fn number_to_json(number: f64) -> Value {
-    if !number.is_finite() {
-        return Value::Null;
-    }
-    let text = protocol::JsNumber::from(number).to_string();
-    match serde_json::Number::from_str(&text) {
-        Ok(parsed) => Value::Number(parsed),
-        Err(_) => Value::Null,
+#[cfg(test)]
+fn json_to_js(value: &serde_json::Value) -> JsValue {
+    match value {
+        serde_json::Value::Null => JsValue::Null,
+        serde_json::Value::Bool(bit) => JsValue::Bool(*bit),
+        serde_json::Value::Number(number) => match number.as_f64() {
+            Some(value) => JsValue::Number(value),
+            None => JsValue::Null,
+        },
+        serde_json::Value::String(text) => JsValue::from_text(text),
+        serde_json::Value::Array(items) => JsValue::Array(items.iter().map(json_to_js).collect()),
+        serde_json::Value::Object(map) => {
+            let mut object = JsObject::new();
+            for (key, item) in map {
+                object.insert(key.clone(), json_to_js(item));
+            }
+            JsValue::Object(object)
+        }
     }
 }
 
@@ -165,19 +156,20 @@ impl WikiSource {
     pub fn summary(ids: Vec<String>) -> Self {
         let items = ids.into_iter().map(Passthrough::string).collect();
         Self {
-            raw: Passthrough::Object(vec![
-                ("kind".to_string(), Passthrough::string("summary")),
-                ("ids".to_string(), Passthrough::Array(items)),
+            raw: Passthrough::object([
+                ("kind", Passthrough::string("summary")),
+                ("ids", Passthrough::array(items)),
             ]),
         }
     }
 
-    pub(crate) fn from_passthrough(value: &Passthrough) -> Option<Self> {
-        if value.as_object().is_none() || value.get("ids").and_then(Passthrough::as_array).is_none()
-        {
+    pub(crate) fn from_value(value: &JsValue) -> Option<Self> {
+        if value.as_object().is_none() || value.get("ids").and_then(JsValue::as_array).is_none() {
             return None;
         }
-        Some(Self { raw: value.clone() })
+        Some(Self {
+            raw: Passthrough::from_js(value.clone()),
+        })
     }
 
     pub(crate) fn raw(&self) -> &Passthrough {
@@ -185,17 +177,18 @@ impl WikiSource {
     }
 
     pub fn kind(&self) -> Option<&str> {
-        self.raw.get("kind").and_then(Passthrough::as_str)
+        self.raw.js().get("kind").and_then(JsValue::as_str)
     }
 
     pub fn ids(&self) -> Vec<String> {
         self.raw
+            .js()
             .get("ids")
-            .and_then(Passthrough::as_array)
+            .and_then(JsValue::as_array)
             .map(|items| {
                 items
                     .iter()
-                    .filter_map(Passthrough::as_str)
+                    .filter_map(JsValue::as_str)
                     .map(str::to_string)
                     .collect()
             })
@@ -203,17 +196,20 @@ impl WikiSource {
     }
 
     pub fn conversation_id(&self) -> Option<&str> {
-        self.raw.get("conversationId").and_then(Passthrough::as_str)
+        self.raw
+            .js()
+            .get("conversationId")
+            .and_then(JsValue::as_str)
     }
 
     pub fn span(&self) -> Option<SourceSpan> {
-        let span = self.raw.get("span")?;
+        let span = self.raw.js().get("span")?;
         let entries = span.as_object()?;
         if entries.len() != 2 {
             return None;
         }
-        let earliest = span.get("earliest").and_then(Passthrough::as_str)?;
-        let latest = span.get("latest").and_then(Passthrough::as_str)?;
+        let earliest = span.get("earliest").and_then(JsValue::as_str)?;
+        let latest = span.get("latest").and_then(JsValue::as_str)?;
         Some(SourceSpan {
             earliest: earliest.to_string(),
             latest: latest.to_string(),
@@ -226,7 +222,7 @@ impl WikiSource {
 
     pub fn set_ids(&mut self, ids: Vec<String>) {
         let items = ids.into_iter().map(Passthrough::string).collect();
-        self.insert("ids", Passthrough::Array(items));
+        self.insert("ids", Passthrough::array(items));
     }
 
     pub fn set_conversation_id(&mut self, id: impl Into<String>) {
@@ -236,23 +232,19 @@ impl WikiSource {
     pub fn set_span(&mut self, earliest: impl Into<String>, latest: impl Into<String>) {
         self.insert(
             "span",
-            Passthrough::Object(vec![
-                ("earliest".to_string(), Passthrough::string(earliest.into())),
-                ("latest".to_string(), Passthrough::string(latest.into())),
+            Passthrough::object([
+                ("earliest", Passthrough::string(earliest.into())),
+                ("latest", Passthrough::string(latest.into())),
             ]),
         );
     }
 
     fn insert(&mut self, key: &str, value: Passthrough) {
-        let Passthrough::Object(entries) = &mut self.raw else {
-            self.raw = Passthrough::Object(vec![(key.to_string(), value)]);
+        if let Some(object) = self.raw.as_object_mut() {
+            object.insert(key, value.into_js());
             return;
-        };
-        if let Some((_, slot)) = entries.iter_mut().find(|(existing, _)| existing == key) {
-            *slot = value;
-        } else {
-            entries.push((key.to_string(), value));
         }
+        self.raw = Passthrough::object([(key, value)]);
     }
 }
 
@@ -261,7 +253,7 @@ impl Serialize for WikiSource {
     where
         S: Serializer,
     {
-        self.raw.to_json().serialize(serializer)
+        self.raw.js().serialize(serializer)
     }
 }
 
@@ -270,12 +262,11 @@ impl<'de> Deserialize<'de> for WikiSource {
     where
         D: Deserializer<'de>,
     {
-        let value = Value::deserialize(deserializer)?;
-        let raw = Passthrough::from_json(&value);
-        if raw.as_object().is_none() || raw.get("ids").and_then(Passthrough::as_array).is_none() {
-            return Err(de::Error::custom("wiki source requires an ids array"));
-        }
-        Ok(Self { raw })
+        let raw = Box::<serde_json::value::RawValue>::deserialize(deserializer)?;
+        let value = protocol::js::parse(raw.get()).map_err(de::Error::custom)?;
+        let source = Self::from_value(&value)
+            .ok_or_else(|| de::Error::custom("wiki source requires an ids array"))?;
+        Ok(source)
     }
 }
 
@@ -295,7 +286,7 @@ pub struct WikiCitation {
 pub struct WikiHistoryEntry {
     pub date: String,
     pub title: String,
-    pub body: String,
+    pub body: JsText,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -333,7 +324,7 @@ pub struct WikiFrontmatter {
 #[derive(Clone, Debug, PartialEq)]
 pub struct WikiPage {
     pub meta: WikiFrontmatter,
-    pub current_state: String,
+    pub current_state: JsText,
     pub article: String,
     pub history: Vec<WikiHistoryEntry>,
     pub citations: Vec<WikiCitation>,
@@ -409,6 +400,6 @@ impl WikiPatch {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SummaryCap {
-    pub kept: String,
-    pub overflow: String,
+    pub kept: JsText,
+    pub overflow: JsText,
 }
