@@ -17,6 +17,7 @@ use crate::types::{
     JournalEntry, Run, RunDetail, RunFinishedStatus, RunStatus, StartedBy, WorkflowDiagnostic,
     WorkflowValidateResponse,
 };
+use crate::wire::WireJson;
 
 pub async fn load_run_detail(
     engine: &WorkflowEngine,
@@ -27,9 +28,13 @@ pub async fn load_run_detail(
     let journal = read_journal(&case_dir).await?;
     let children = list_child_runs(&case_dir, &|message| tracing::warn!("{message}")).await;
     let open_gate = find_open_gate(&journal);
+    let fields = match state.document.get_raw("fields")? {
+        Some(raw) => WireJson::parse(&raw)?,
+        None => WireJson::parse("{}")?,
+    };
     Ok(RunDetail {
         run: state.run,
-        fields: state.fields,
+        fields,
         journal,
         children,
         open_gate,

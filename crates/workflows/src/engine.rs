@@ -562,8 +562,9 @@ impl WorkflowEngine {
             input_raw: fields_raw.clone(),
             fields_raw,
         };
-        let script = run_script.unwrap_or_else(|| node_script(workflow.run_path.clone()));
         let max_runtime = resolve_max_run_runtime_ms(self.inner.config.max_run_runtime_ms);
+        let script = run_script
+            .unwrap_or_else(|| node_script(workflow.run_path.clone(), runtime_budget(max_runtime)));
         let mut background = BackgroundScript {
             future: Some(Box::pin(script(step.clone(), ctx))),
         };
@@ -755,7 +756,7 @@ fn finished_result(run: Run, case_dir: &Path) -> StartRunResult {
     }
 }
 
-fn node_script(run_path: String) -> RunScript {
+fn node_script(run_path: String, sibling_limit: Duration) -> RunScript {
     Arc::new(move |step, ctx| {
         let run_path = run_path.clone();
         Box::pin(async move {
@@ -769,6 +770,7 @@ fn node_script(run_path: String) -> RunScript {
                     workflow: ctx.workflow,
                     fields: ctx.fields_raw,
                 },
+                sibling_limit,
             )
             .await
         })

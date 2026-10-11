@@ -12,9 +12,10 @@ use workflows::{
     RunFinishedStatus, RunPatch, RunScript, RunStatus, RunStepOpts, ScaffoldOptions,
     StartRunOptions, StartedBy, StartedByType, StepKind, StepOutput, StepUsage, WireJson,
     WorkflowEngine, WorkflowError, agent_handler, append_journal, branch,
-    check_run_script_determinism, is_max_concurrent_runs, journal_path, load_workflow_dir,
-    make_step_id, node_join, parse_call_ref, parse_manifest, path_text, read_case, read_journal,
-    run_handler, run_script, scaffold_workflow, update_run, validate_start_input,
+    check_run_script_determinism, is_max_concurrent_runs, journal_path, load_run_detail,
+    load_workflow_dir, make_step_id, node_join, parse_call_ref, parse_manifest, path_text,
+    read_case, read_journal, run_handler, run_script, scaffold_workflow, update_run,
+    validate_start_input,
 };
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -289,7 +290,10 @@ async fn skips_executed_steps_on_replay() {
     assert!(!resumed.suspended);
     assert_eq!(resumed.run.status, RunStatus::Done);
     assert_eq!(live.load(Ordering::SeqCst), 1);
-    assert_eq!(resumed.run.output, Some(json!({"result": "live-1"})));
+    assert_eq!(
+        resumed.run.output.as_ref().map(WireJson::value),
+        Some(&json!({"result": "live-1"}))
+    );
     let journal = read_journal(Path::new(&started.case_dir)).await.unwrap();
     let finished = journal
         .iter()
@@ -361,7 +365,7 @@ async fn gate_suspension_and_resume() {
             .run
             .output
             .as_ref()
-            .and_then(|value| value.get("approved")),
+            .and_then(|value| value.value().get("approved")),
         Some(&Value::Bool(true))
     );
     let journal = read_journal(Path::new(&started.case_dir)).await.unwrap();
@@ -1028,7 +1032,7 @@ async fn parallel_returns_results_in_branch_index_order() {
             .run
             .output
             .as_ref()
-            .and_then(|value| value.get("result"))
+            .and_then(|value| value.value().get("result"))
             .and_then(Value::as_str)
             .unwrap(),
     )
@@ -1094,7 +1098,7 @@ async fn node_parallel_failure_returns_while_a_sibling_continues() {
     let (dir, _) = load_min(&root, "wf", None).await;
     tokio::fs::write(
         dir.join("run.js"),
-        "export default async function run(step) {\n  await step.parallel('fan', [\n    async (step) => {\n      await step.run('first', { script: 'first' })\n      await step.run('second', { script: 'second' })\n      return 'kept'\n    },\n    async () => { throw new Error('branch failed fast') },\n  ])\n}\n",
+        "async function helper(step) {\n  return await step.run('first', { script: 'first' })\n}\nexport default async function run(step) {\n  await step.parallel('fan', [\n    async (step) => {\n      await helper(step)\n      await new Promise((resolve) => setTimeout(resolve, 25))\n      await step.run('second', { script: 'second' })\n      return 'kept'\n    },\n    async () => { throw new Error('branch failed fast') },\n  ])\n}\n",
     )
     .await
     .unwrap();
@@ -1179,6 +1183,163 @@ async fn node_parallel_failure_returns_while_a_sibling_continues() {
         continued.is_ok(),
         "sibling did not run its second step after the failure was reported"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn node_sibling_blocked_in_an_executor_is_bounded_by_max_runtime() {
+    let root = temp_root("par-bound");
+    let (dir, _) = load_min(&root, "wf", None).await;
+    tokio::fs::write(
+        dir.join("run.js"),
+        "export default async function run(step) {\n  await step.parallel('fan', [\n    async (step) => {\n      await step.run('parked', { script: 'parked' })\n      return 'kept'\n    },\n    async () => { throw new Error('branch failed fast') },\n  ])\n}\n",
+    )
+    .await
+    .unwrap();
+    let workflow = load_workflow_dir(&dir).await.unwrap();
+    let (mut release_tx, release_rx) = tokio::sync::oneshot::channel::<Value>();
+    let release_rx = Arc::new(Mutex::new(Some(release_rx)));
+    let started_exec = Arc::new(AtomicUsize::new(0));
+    let started_flag = started_exec.clone();
+    let mut config = EngineConfig::new(arc_exec(MockExecutorRegistry::with_run(run_handler(
+        move |opts| {
+            let release_rx = release_rx.clone();
+            let started_flag = started_flag.clone();
+            async move {
+                if opts.script.as_deref() == Some("parked") {
+                    started_flag.fetch_add(1, Ordering::SeqCst);
+                    let rx = release_rx.lock().unwrap().take();
+                    if let Some(rx) = rx {
+                        let _ = rx.await;
+                    }
+                }
+                Ok(json!({"ok": true}))
+            }
+        },
+    ))));
+    config.case_dir_root = Some(root.join("runs"));
+    config.workflow_dirs = vec![("test-wf".to_string(), dir)];
+    config.max_run_runtime_ms = Some(8000.0);
+    let engine = WorkflowEngine::new(config);
+    let started = Instant::now();
+    let result = tokio::time::timeout(
+        Duration::from_secs(12),
+        engine.start_run(
+            "test-wf",
+            message_input("x"),
+            human(),
+            StartRunOptions {
+                workflow: Some(workflow),
+                ..StartRunOptions::default()
+            },
+        ),
+    )
+    .await;
+    let result = match result {
+        Ok(Ok(result)) => result,
+        Ok(Err(err)) => {
+            let text = err.to_string();
+            if node_skip(&text) {
+                eprintln!("skipping node sibling bound test: {text}");
+                return;
+            }
+            panic!("{text}");
+        }
+        Err(_) => panic!("parallel failure waited on the blocked sibling"),
+    };
+    assert!(started.elapsed() < Duration::from_secs(12));
+    assert_eq!(
+        result.run.status,
+        RunStatus::Failed,
+        "{:?}",
+        result.run.error
+    );
+    let error = result.run.error.unwrap_or_default();
+    assert!(error.contains("branch failed fast"), "{error}");
+    let saw = tokio::time::timeout(Duration::from_secs(2), async {
+        while started_exec.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    assert!(saw.is_ok(), "parked executor did not start");
+    assert!(!release_tx.is_closed());
+    let bound = Instant::now();
+    let closed = tokio::time::timeout(Duration::from_secs(12), release_tx.closed()).await;
+    assert!(
+        closed.is_ok(),
+        "blocked executor outlived max_run_runtime_ms"
+    );
+    assert!(bound.elapsed() < Duration::from_secs(12));
+}
+
+#[tokio::test]
+async fn load_run_detail_keeps_raw_payloads() {
+    let root = temp_root("detail-raw");
+    let (dir, workflow) = load_min(&root, "wf", None).await;
+    let engine = engine_for(
+        &root.join("runs"),
+        arc_exec(MockExecutorRegistry::new()),
+        vec![("test-wf", dir.as_path())],
+    );
+    let script = run_script(|step, _ctx| async move {
+        step.human(
+            "gate",
+            HumanStepOpts::fields(vec!["ok".to_string()])
+                .with_prompt_wire(WireJson::parse(r#""\ud800""#).unwrap()),
+        )
+        .await?;
+        step.done_wire(WireJson::parse(r#"{"result":"\ud800"}"#).unwrap())
+            .await
+    });
+    let started = engine
+        .start_run(
+            "test-wf",
+            message_input("x"),
+            human(),
+            start_opts(script.clone(), workflow.clone(), None),
+        )
+        .await
+        .unwrap();
+    assert!(started.suspended);
+    let paused = load_run_detail(&engine, &started.run.id).await.unwrap();
+    let prompt = paused
+        .open_gate
+        .as_ref()
+        .and_then(|gate| gate.prompt.as_ref())
+        .map(WireJson::raw)
+        .unwrap_or("");
+    assert_eq!(prompt, r#""\ud800""#);
+    let paused_bytes = serde_json::to_string(&paused).unwrap();
+    assert!(paused_bytes.contains(r#"\ud800"#), "{paused_bytes}");
+    assert!(!paused_bytes.contains('\u{FFFD}'), "{paused_bytes}");
+    let resumed = engine
+        .resume_run(
+            &started.run.id,
+            resume_opts(script, workflow, Some(bool_map("ok", true))),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resumed.run.status,
+        RunStatus::Done,
+        "{:?}",
+        resumed.run.error
+    );
+    let output = resumed.run.output.as_ref().map(WireJson::raw).unwrap_or("");
+    assert!(output.contains(r#"\ud800"#), "{output}");
+    assert!(!output.contains('\u{FFFD}'), "{output}");
+    let detail = load_run_detail(&engine, &started.run.id).await.unwrap();
+    let detail_output = detail.run.output.as_ref().map(WireJson::raw).unwrap_or("");
+    assert!(detail_output.contains(r#"\ud800"#), "{detail_output}");
+    assert!(
+        detail.fields.raw().contains(r#"\ud800"#),
+        "{}",
+        detail.fields.raw()
+    );
+    let bytes = serde_json::to_string(&detail).unwrap();
+    assert!(bytes.contains(r#"\ud800"#), "{bytes}");
+    assert!(!bytes.contains('\u{FFFD}'), "{bytes}");
+    assert!(bytes.contains(r#""output":{"result":"\ud800"}"#), "{bytes}");
 }
 
 fn node_skip(text: &str) -> bool {
@@ -1585,7 +1746,7 @@ async fn replay_skips_completed_branch_steps() {
             .run
             .output
             .as_ref()
-            .and_then(|value| value.get("result")),
+            .and_then(|value| value.value().get("result")),
         Some(&Value::String("live-b0,live-b1".to_string()))
     );
 }
@@ -2207,7 +2368,7 @@ async fn resume_recovers_crash_between_gate_resolved_and_status_flip() {
             .run
             .output
             .as_ref()
-            .and_then(|value| value.get("ok")),
+            .and_then(|value| value.value().get("ok")),
         Some(&Value::Bool(true))
     );
 }

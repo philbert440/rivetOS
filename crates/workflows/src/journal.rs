@@ -52,7 +52,10 @@ pub async fn append_journal(case_dir: &Path, entry: &JournalEntry) -> Result<(),
         if !path.exists() {
             std::fs::write(&path, b"").map_err(|err| WorkflowError::io(&path, err))?;
         }
-        io_fs::repair_torn_tail(&path)?;
+        io_fs::repair_torn_tail(&path, |tail| {
+            let trimmed = js_trim(tail);
+            !trimmed.is_empty() && parse_entry(trimmed).is_ok()
+        })?;
         io_fs::append_line_blocking(&path, line.as_bytes())
     });
     match task.await {
@@ -362,9 +365,7 @@ pub fn find_open_gate(entries: &[JournalEntry]) -> Option<OpenGate> {
                 label: label.clone(),
                 seq: *seq,
                 fields: fields.clone(),
-                prompt: prompt
-                    .as_ref()
-                    .and_then(|wire| wire.value().as_str().map(str::to_string)),
+                prompt: prompt.clone(),
             }),
             JournalEntry::GateResolved { step_id, .. } => resolved.push(step_id.clone()),
             _ => {}

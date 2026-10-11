@@ -140,7 +140,7 @@ async fn hello_world_suspends_at_gate_and_replays() {
         .run
         .output
         .as_ref()
-        .and_then(|value| value.get("greeting"))
+        .and_then(|value| value.value().get("greeting"))
         .and_then(Value::as_str)
         .unwrap_or("");
     assert!(greeting.contains("Ada"), "{greeting}");
@@ -336,7 +336,7 @@ async fn hello_world_run_ts_journal_matches_the_typescript_recipe() {
             .run
             .output
             .as_ref()
-            .and_then(|value| value.get("greeting"))
+            .and_then(|value| value.value().get("greeting"))
             .and_then(Value::as_str),
         Some(greeting)
     );

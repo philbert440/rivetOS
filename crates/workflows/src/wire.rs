@@ -96,7 +96,11 @@ impl Serialize for WireJson {
     where
         S: serde::Serializer,
     {
-        self.value.serialize(serializer)
+        use serde::ser::SerializeStruct;
+        const TOKEN: &str = "$serde_json::private::RawValue";
+        let mut state = serializer.serialize_struct(TOKEN, 1)?;
+        state.serialize_field(TOKEN, &self.raw)?;
+        state.end()
     }
 }
 

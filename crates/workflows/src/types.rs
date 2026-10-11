@@ -264,8 +264,8 @@ pub struct Run {
     pub workflow_dir: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub output: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none", skip_deserializing)]
+    pub output: Option<WireJson>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -651,13 +651,15 @@ pub struct CaseState {
     pub document: WireJson,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct OpenGate {
     pub step_id: String,
     pub label: String,
     pub seq: i64,
     pub fields: Vec<String>,
-    pub prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<WireJson>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -700,7 +702,8 @@ impl CachedStep {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RunSummary {
     pub id: String,
     pub workflow_id: String,
@@ -714,12 +717,14 @@ pub struct RunSummary {
     pub version: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RunDetail {
     pub run: Run,
-    pub fields: Map<String, Value>,
+    pub fields: WireJson,
     pub journal: Vec<JournalEntry>,
     pub children: Vec<RunSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub open_gate: Option<OpenGate>,
 }
 

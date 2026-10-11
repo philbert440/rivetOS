@@ -74,14 +74,22 @@ pub fn parse_case(raw: &str) -> Result<CaseState, WorkflowError> {
 }
 
 fn case_from_document(document: WireJson) -> Result<CaseState, WorkflowError> {
-    let view = document.to_value();
-    let run_value = view
-        .get("run")
-        .cloned()
+    let run_raw = document
+        .get_raw("run")?
         .ok_or_else(|| WorkflowError::message("case.json missing run"))?;
-    let run: Run =
-        serde_json::from_value(run_value).map_err(|err| WorkflowError::message(err.to_string()))?;
-    let fields = match view.get("fields") {
+    let run_doc = WireJson::parse(&run_raw)?;
+    let output = match run_doc.get_raw("output")? {
+        Some(raw) => Some(WireJson::parse(&raw)?),
+        None => None,
+    };
+    let mut run_view = run_doc.to_value();
+    if let Some(object) = run_view.as_object_mut() {
+        object.remove("output");
+    }
+    let mut run: Run =
+        serde_json::from_value(run_view).map_err(|err| WorkflowError::message(err.to_string()))?;
+    run.output = output;
+    let fields = match document.value().get("fields") {
         Some(Value::Object(fields)) => fields.clone(),
         _ => Map::new(),
     };

@@ -261,6 +261,55 @@ async fn torn_tail_is_truncated_before_the_next_append() {
     assert!(parse_journal(&glued).is_err());
 }
 
+#[tokio::test]
+async fn valid_final_record_without_newline_is_kept_on_append() {
+    let single = temp_root("valid-tail-one");
+    let single_path = journal_path(&single);
+    let good = r#"{"type":"step_finished","ts":"t","stepId":"a#1","label":"a","seq":1,"kind":"run","result":1}"#;
+    std::fs::write(&single_path, good).unwrap();
+    assert_eq!(read_journal(&single).await.unwrap().len(), 1);
+    append_started(&single).await;
+    let raw = std::fs::read_to_string(&single_path).unwrap();
+    assert!(raw.ends_with('\n'), "{raw}");
+    assert!(raw.contains("a#1"), "{raw}");
+    assert!(!raw.contains("step_fin{"), "{raw}");
+    let again = read_journal(&single).await.unwrap();
+    assert_eq!(again.len(), 2);
+    assert_eq!(again[0].entry_type(), "step_finished");
+    assert_eq!(again[1].entry_type(), "step_started");
+
+    let multi = temp_root("valid-tail-two");
+    let multi_path = journal_path(&multi);
+    let second = r#"{"type":"step_finished","ts":"t2","stepId":"b#1","label":"b","seq":1,"kind":"run","result":2}"#;
+    std::fs::write(&multi_path, format!("{good}\n{second}")).unwrap();
+    assert_eq!(read_journal(&multi).await.unwrap().len(), 2);
+    append_started(&multi).await;
+    let raw = std::fs::read_to_string(&multi_path).unwrap();
+    assert!(raw.ends_with('\n'), "{raw}");
+    assert!(raw.contains("a#1"), "{raw}");
+    assert!(raw.contains("b#1"), "{raw}");
+    let again = read_journal(&multi).await.unwrap();
+    assert_eq!(again.len(), 3);
+    assert_eq!(again[0].entry_type(), "step_finished");
+    assert_eq!(again[1].entry_type(), "step_finished");
+    assert_eq!(again[2].entry_type(), "step_started");
+}
+
+async fn append_started(dir: &std::path::Path) {
+    append_journal(
+        dir,
+        &JournalEntry::StepStarted {
+            ts: "t3".to_string(),
+            step_id: "c#1".to_string(),
+            label: "c".to_string(),
+            seq: 1,
+            kind: StepKind::Run,
+        },
+    )
+    .await
+    .unwrap();
+}
+
 #[test]
 fn absent_result_is_not_null() {
     let absent =

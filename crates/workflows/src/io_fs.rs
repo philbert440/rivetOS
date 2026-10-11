@@ -44,8 +44,11 @@ pub async fn read_string(path: &Path) -> Result<String, WorkflowError> {
     .await
 }
 
-pub fn repair_torn_tail(path: &Path) -> Result<(), WorkflowError> {
-    use std::io::{Read, Seek, SeekFrom};
+pub fn repair_torn_tail(
+    path: &Path,
+    tail_parses: impl FnOnce(&str) -> bool,
+) -> Result<(), WorkflowError> {
+    use std::io::{Read, Seek, SeekFrom, Write};
     let mut file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -66,30 +69,50 @@ pub fn repair_torn_tail(path: &Path) -> Result<(), WorkflowError> {
     if last[0] == b'\n' {
         return Ok(());
     }
+    let tail_at = last_line_start(&mut file, path, len)?;
+    let tail_len = usize::try_from(len - tail_at).map_err(|_| {
+        WorkflowError::message(format!("journal tail is too large: {}", path.display()))
+    })?;
+    let mut tail = vec![0u8; tail_len];
+    file.seek(SeekFrom::Start(tail_at))
+        .map_err(|err| WorkflowError::io(path, err))?;
+    file.read_exact(&mut tail)
+        .map_err(|err| WorkflowError::io(path, err))?;
+    if let Ok(text) = std::str::from_utf8(&tail)
+        && tail_parses(text)
+    {
+        file.seek(SeekFrom::End(0))
+            .map_err(|err| WorkflowError::io(path, err))?;
+        file.write_all(b"\n")
+            .map_err(|err| WorkflowError::io(path, err))?;
+        file.flush().map_err(|err| WorkflowError::io(path, err))?;
+        return Ok(());
+    }
+    file.set_len(tail_at)
+        .map_err(|err| WorkflowError::io(path, err))
+}
+
+fn last_line_start(file: &mut std::fs::File, path: &Path, len: u64) -> Result<u64, WorkflowError> {
+    use std::io::{Read, Seek, SeekFrom};
     let mut end = len;
     let mut buf = [0u8; 8192];
     loop {
         let start = end.saturating_sub(buf.len() as u64);
-        let want = usize::try_from(end - start).unwrap_or(0);
+        let want = usize::try_from(end - start).map_err(|_| {
+            WorkflowError::message(format!("journal tail is too large: {}", path.display()))
+        })?;
         if want == 0 {
-            file.set_len(0)
-                .map_err(|err| WorkflowError::io(path, err))?;
-            return Ok(());
+            return Ok(0);
         }
         file.seek(SeekFrom::Start(start))
             .map_err(|err| WorkflowError::io(path, err))?;
         file.read_exact(&mut buf[..want])
             .map_err(|err| WorkflowError::io(path, err))?;
         if let Some(index) = buf[..want].iter().rposition(|byte| *byte == b'\n') {
-            let keep = start + index as u64 + 1;
-            file.set_len(keep)
-                .map_err(|err| WorkflowError::io(path, err))?;
-            return Ok(());
+            return Ok(start + index as u64 + 1);
         }
         if start == 0 {
-            file.set_len(0)
-                .map_err(|err| WorkflowError::io(path, err))?;
-            return Ok(());
+            return Ok(0);
         }
         end = start;
     }

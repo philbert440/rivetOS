@@ -55,10 +55,20 @@ function write(obj) {
   }
 }
 const pending = new Map()
+let branchesLive = 0
 let seq = 0
 let settled = false
 function maybeExit() {
-  if (settled && pending.size === 0) process.exit(0)
+  if (settled && pending.size === 0 && branchesLive === 0) process.exit(0)
+}
+function watchBranch(promise) {
+  branchesLive++
+  const done = () => {
+    branchesLive--
+    queueMicrotask(maybeExit)
+  }
+  promise.then(done, done)
+  return promise
 }
 function rpc(op, payload) {
   const id = ++seq
@@ -78,7 +88,7 @@ function makeStep(scope) {
       const prep = await rpc('parallel_begin', { label, count: branches.length, scope })
       if (prep.replay) return prep.result
       try {
-        const results = await Promise.all(branches.map((fn, i) => fn(makeStep(prep.branches[i].scope))))
+        const results = await Promise.all(branches.map((fn, i) => watchBranch(Promise.resolve().then(() => fn(makeStep(prep.branches[i].scope))))))
         await rpc('parallel_end', { token: prep.token, results, scope })
         return results
       } catch (err) {
@@ -195,6 +205,8 @@ struct SiblingDrain {
     writer: tokio::task::JoinHandle<()>,
     child: tokio::process::Child,
     stderr_task: Option<tokio::task::JoinHandle<()>>,
+    rpcs: Arc<Mutex<Vec<tokio::task::AbortHandle>>>,
+    sibling_limit: Duration,
 }
 
 enum ProtocolEvent {
@@ -203,7 +215,12 @@ enum ProtocolEvent {
     Io(String),
 }
 
-pub async fn drive_node(run_path: &str, step: Step, ctx: HostContext) -> Result<(), WorkflowError> {
+pub async fn drive_node(
+    run_path: &str,
+    step: Step,
+    ctx: HostContext,
+    sibling_limit: Duration,
+) -> Result<(), WorkflowError> {
     let run_path = absolute_text(run_path);
     let plan = launch_plan(&run_path).await?;
     tracing::info!(
@@ -281,6 +298,7 @@ pub async fn drive_node(run_path: &str, step: Step, ctx: HostContext) -> Result<
     let (frame_tx, mut frame_rx) = tokio::sync::mpsc::unbounded_channel();
     tokio::spawn(async move { read_protocol(protocol, frame_tx).await });
     let inflight = Arc::new(AtomicUsize::new(0));
+    let rpcs = Arc::new(Mutex::new(Vec::new()));
     let (idle_tx, mut idle_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
     let silence = tokio::time::sleep(SILENCE);
     tokio::pin!(silence);
@@ -317,6 +335,7 @@ pub async fn drive_node(run_path: &str, step: Step, ctx: HostContext) -> Result<
                             Arc::clone(&inflight),
                             write_tx.clone(),
                             idle_tx.clone(),
+                            Arc::clone(&rpcs),
                         );
                     }
                     Some(ProtocolEvent::Eof) | None => {
@@ -353,6 +372,8 @@ pub async fn drive_node(run_path: &str, step: Step, ctx: HostContext) -> Result<
             writer,
             child,
             stderr_task,
+            rpcs,
+            sibling_limit,
         }));
         return outcome;
     }
@@ -378,6 +399,9 @@ pub async fn drive_node(run_path: &str, step: Step, ctx: HostContext) -> Result<
 async fn drain_siblings(mut drain: SiblingDrain) {
     let silence = tokio::time::sleep(SILENCE);
     tokio::pin!(silence);
+    let limit = tokio::time::sleep(drain.sibling_limit);
+    tokio::pin!(limit);
+    let mut timed_out = false;
     loop {
         tokio::select! {
             biased;
@@ -400,6 +424,7 @@ async fn drain_siblings(mut drain: SiblingDrain) {
                             Arc::clone(&drain.inflight),
                             drain.write_tx.clone(),
                             drain.idle_tx.clone(),
+                            Arc::clone(&drain.rpcs),
                         );
                     }
                     _ => break,
@@ -411,7 +436,14 @@ async fn drain_siblings(mut drain: SiblingDrain) {
             _ = &mut silence, if drain.inflight.load(Ordering::SeqCst) == 0 => {
                 break;
             }
+            _ = &mut limit => {
+                timed_out = true;
+                break;
+            }
         }
+    }
+    if timed_out {
+        abort_rpcs(&drain.rpcs);
     }
     drop(drain.write_tx);
     let _ = tokio::time::timeout(Duration::from_secs(5), drain.writer).await;
@@ -487,9 +519,10 @@ fn spawn_rpc(
     inflight: Arc<AtomicUsize>,
     write_tx: tokio::sync::mpsc::UnboundedSender<String>,
     idle_tx: tokio::sync::mpsc::UnboundedSender<()>,
+    rpcs: Arc<Mutex<Vec<tokio::task::AbortHandle>>>,
 ) {
     inflight.fetch_add(1, Ordering::SeqCst);
-    tokio::spawn(async move {
+    let task = tokio::spawn(async move {
         let id_raw = frame.id_raw.clone();
         let line = match dispatch(&step, &frame).await {
             Ok(result) => response_ok_line(&id_raw, result.as_deref()),
@@ -500,6 +533,16 @@ fn spawn_rpc(
             let _ = idle_tx.send(());
         }
     });
+    rpcs.lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .push(task.abort_handle());
+}
+
+fn abort_rpcs(rpcs: &Mutex<Vec<tokio::task::AbortHandle>>) {
+    let guard = rpcs.lock().unwrap_or_else(|err| err.into_inner());
+    for handle in guard.iter() {
+        handle.abort();
+    }
 }
 
 fn start_line(ctx: &HostContext) -> Result<String, WorkflowError> {
