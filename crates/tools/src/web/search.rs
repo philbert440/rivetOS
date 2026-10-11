@@ -127,8 +127,16 @@ impl WebSearchTool {
     }
 
     pub fn with_http(config: WebSearchConfig, http: Arc<dyn HttpClient>) -> Self {
+        Self::with_http_env(config, http, &protocol::host::ProcessEnv)
+    }
+
+    pub fn with_http_env(
+        config: WebSearchConfig,
+        http: Arc<dyn HttpClient>,
+        env: &dyn protocol::host::Env,
+    ) -> Self {
         let mut providers = Vec::new();
-        let xai_key = resolve_optional(config.xai_api_key.as_deref(), &["XAI_API_KEY"]);
+        let xai_key = resolve_optional(config.xai_api_key.as_deref(), &["XAI_API_KEY"], env);
         if !xai_key.is_empty() {
             providers.push(Provider::Xai {
                 key: xai_key,
@@ -141,8 +149,9 @@ impl WebSearchTool {
         let google_key = resolve_optional(
             config.google_api_key.as_deref(),
             &["GOOGLE_CSE_API_KEY", "GOOGLE_API_KEY"],
+            env,
         );
-        let cse = resolve_optional(config.google_cse_id.as_deref(), &["GOOGLE_CSE_ID"]);
+        let cse = resolve_optional(config.google_cse_id.as_deref(), &["GOOGLE_CSE_ID"], env);
         if !google_key.is_empty() && !cse.is_empty() {
             providers.push(Provider::Google {
                 key: google_key,
@@ -687,12 +696,16 @@ fn scrub_message(message: &str, secrets: &[String]) -> String {
     out
 }
 
-fn resolve_optional(explicit: Option<&str>, env_names: &[&str]) -> String {
+fn resolve_optional(
+    explicit: Option<&str>,
+    env_names: &[&str],
+    env: &dyn protocol::host::Env,
+) -> String {
     if let Some(value) = explicit {
         return value.to_string();
     }
     for name in env_names {
-        if let Ok(value) = std::env::var(name) {
+        if let Some(value) = env.var(name) {
             return value;
         }
     }

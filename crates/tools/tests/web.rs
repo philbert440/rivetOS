@@ -483,6 +483,144 @@ async fn fetch_negative_max_chars_drops_last_unit() {
 }
 
 #[tokio::test]
+async fn fetch_truncation_keeps_utf16_units_on_the_wire() {
+    let client =
+        RecordingClient::new(|_: &HttpRequest| Ok(response(200, "OK", "text/plain", "A😀B")));
+    let http: Arc<dyn tools::HttpClient> = client.clone();
+    let tool = WebFetchTool::with_http(WebFetchConfig::default(), http);
+    let args = json!({"url": "https://test.com/emoji", "max_chars": 2});
+    let first = tool
+        .execute(
+            args.clone(),
+            &CancellationToken::new(),
+            &ToolContext::default(),
+        )
+        .await;
+    let second = tool
+        .execute(args, &CancellationToken::new(), &ToolContext::default())
+        .await;
+    let first_json = serde_json::to_string(&first).unwrap();
+    let second_json = serde_json::to_string(&second).unwrap();
+    assert_eq!(first_json, second_json);
+    assert_eq!(client.calls().len(), 1);
+    assert!(first_json.contains(r"\ud83d"), "{first_json}");
+    assert!(!first_json.contains(r"\ude00"), "{first_json}");
+    assert!(!first_json.contains('\u{FFFD}'), "{first_json}");
+    assert!(first_json.contains("Truncated at 2 chars"), "{first_json}");
+}
+
+#[tokio::test]
+async fn fetch_user_agent_comes_from_the_injected_env() {
+    let client =
+        RecordingClient::new(|_: &HttpRequest| Ok(response(200, "OK", "text/plain", "hi")));
+    let http: Arc<dyn tools::HttpClient> = client.clone();
+    let mut env = protocol::host::MapEnv::new();
+    env.set("RIVETOS_USER_AGENT", "SyntheticAgent/9");
+    let tool = WebFetchTool::with_http_env(WebFetchConfig::default(), http, &env);
+    let result = run(&tool, json!({"url": "https://test.com/agent"})).await;
+    assert_eq!(result, "hi");
+    let calls = client.calls();
+    assert_eq!(
+        header_of(&calls[0], "User-Agent").as_deref(),
+        Some("SyntheticAgent/9")
+    );
+    let explicit =
+        RecordingClient::new(|_: &HttpRequest| Ok(response(200, "OK", "text/plain", "hi")));
+    let http: Arc<dyn tools::HttpClient> = explicit.clone();
+    let tool = WebFetchTool::with_http_env(
+        WebFetchConfig {
+            user_agent: Some("Explicit/1".to_string()),
+            ..WebFetchConfig::default()
+        },
+        http,
+        &env,
+    );
+    let _ = run(&tool, json!({"url": "https://test.com/explicit"})).await;
+    assert_eq!(
+        header_of(&explicit.calls()[0], "User-Agent").as_deref(),
+        Some("Explicit/1")
+    );
+}
+
+fn header_of(call: &tools::RecordedCall, name: &str) -> Option<String> {
+    call.headers
+        .iter()
+        .find(|(key, _)| key.eq_ignore_ascii_case(name))
+        .map(|(_, value)| value.clone())
+}
+
+#[tokio::test]
+async fn google_key_precedence_uses_the_injected_env() {
+    let body = r#"{"items":[{"title":"T","snippet":"S","link":"https://example.com"}]}"#;
+    let preferred = RecordingClient::new(move |_: &HttpRequest| {
+        Ok(response(200, "OK", "application/json", body))
+    });
+    let http: Arc<dyn tools::HttpClient> = preferred.clone();
+    let mut env = protocol::host::MapEnv::new();
+    env.set("GOOGLE_CSE_API_KEY", "cse-key-preferred");
+    env.set("GOOGLE_API_KEY", "api-key-fallback");
+    env.set("GOOGLE_CSE_ID", "cse-id-value");
+    let tool = WebSearchTool::with_http_env(
+        WebSearchConfig {
+            xai_api_key: Some(String::new()),
+            google_endpoint: Some("https://google.test/search".to_string()),
+            retry_base: Duration::from_millis(1),
+            ..WebSearchConfig::default()
+        },
+        http,
+        &env,
+    );
+    let result = run(&tool, json!({"query": "widgets"})).await;
+    assert!(result.contains("example.com"), "{result}");
+    let url = preferred.calls()[0].url.clone();
+    assert!(url.contains("cse-key-preferred"), "{url}");
+    assert!(!url.contains("api-key-fallback"), "{url}");
+
+    let fallback_client = RecordingClient::new(move |_: &HttpRequest| {
+        Ok(response(200, "OK", "application/json", body))
+    });
+    let http: Arc<dyn tools::HttpClient> = fallback_client.clone();
+    let mut fallback = protocol::host::MapEnv::new();
+    fallback.set("GOOGLE_API_KEY", "api-key-fallback");
+    fallback.set("GOOGLE_CSE_ID", "cse-id-value");
+    let tool = WebSearchTool::with_http_env(
+        WebSearchConfig {
+            xai_api_key: Some(String::new()),
+            google_endpoint: Some("https://google.test/search".to_string()),
+            retry_base: Duration::from_millis(1),
+            ..WebSearchConfig::default()
+        },
+        http,
+        &fallback,
+    );
+    let _ = run(&tool, json!({"query": "widgets"})).await;
+    let url = fallback_client.calls()[0].url.clone();
+    assert!(url.contains("api-key-fallback"), "{url}");
+
+    let empty_client =
+        RecordingClient::new(move |_: &HttpRequest| Ok(response(200, "OK", "text/html", DDG_HTML)));
+    let http: Arc<dyn tools::HttpClient> = empty_client.clone();
+    let mut empty = protocol::host::MapEnv::new();
+    empty.set("GOOGLE_CSE_API_KEY", "");
+    empty.set("GOOGLE_API_KEY", "api-key-fallback");
+    empty.set("GOOGLE_CSE_ID", "cse-id-value");
+    let tool = WebSearchTool::with_http_env(
+        WebSearchConfig {
+            xai_api_key: Some(String::new()),
+            google_endpoint: Some("https://google.test/search".to_string()),
+            retry_base: Duration::from_millis(1),
+            ..WebSearchConfig::default()
+        },
+        http,
+        &empty,
+    );
+    let _ = run(&tool, json!({"query": "widgets"})).await;
+    let url = empty_client.calls()[0].url.clone();
+    assert!(!url.contains("api-key-fallback"), "{url}");
+    assert!(!url.contains("google.test"), "{url}");
+}
+
+#[tokio::test]
 async fn fetch_refused_port_redacts_userinfo() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();

@@ -1,11 +1,12 @@
+use std::path::Path;
+
 use schemars::JsonSchema;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
 use crate::args::string;
 use crate::context::{ToolContext, ToolSurface};
-use crate::fsutil::{edit_read_error, edit_write_error};
-use crate::pathutil::resolve_user_path;
+use crate::fsutil::edit_write_error;
 use crate::schema::{schema_of, set_property_description};
 use crate::textutil::js_replace_once;
 use crate::{Tool, text};
@@ -94,10 +95,10 @@ impl Tool for FileEditTool {
         if old_string.is_empty() {
             return text("Error: old_string cannot be empty");
         }
-        let resolved = resolve_user_path(file_path, context);
-        let content = match tokio::fs::read(&resolved).await {
-            Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
-            Err(err) => return text(edit_read_error(&err, &resolved)),
+        let resolved = context.resolve_user_path(file_path);
+        let content = match read_edit_file(&resolved).await {
+            Ok(content) => content,
+            Err(message) => return text(message),
         };
         let count = count_overlapping(&content, old_string);
         if count == 0 {
@@ -114,6 +115,24 @@ impl Tool for FileEditTool {
         }
         let snippet = edit_snippet(&updated, new_string, CONTEXT_LINES);
         text(format!("Edited {}\n\n{snippet}", resolved.display()))
+    }
+}
+
+async fn read_edit_file(path: &Path) -> Result<String, String> {
+    let path = path.to_path_buf();
+    let reported = path.clone();
+    match tokio::task::spawn_blocking(move || protocol::host::read_text(&path)).await {
+        Ok(Ok(text)) => Ok(text),
+        Ok(Err(err)) => Err(map_edit_read(&err, &reported)),
+        Err(err) => Err(format!("Error: {err}")),
+    }
+}
+
+fn map_edit_read(err: &protocol::host::FsError, path: &Path) -> String {
+    match err.code {
+        "ENOENT" => format!("Error: File not found: {}", path.display()),
+        "EACCES" => format!("Error: Permission denied: {}", path.display()),
+        _ => err.node_string(),
     }
 }
 

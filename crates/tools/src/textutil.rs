@@ -11,20 +11,29 @@ pub fn js_replace_once(content: &str, search: &str, replacement: &str) -> String
     .to_string()
 }
 
-pub fn truncate_middle(text: &str, max: usize) -> String {
-    let len = protocol::js::utf16_len(text);
-    if len <= max {
-        return text.to_string();
+pub fn truncate_middle(text: &str, max: usize) -> protocol::js::JsString {
+    let units: Vec<u16> = text.encode_utf16().collect();
+    if units.len() <= max {
+        return protocol::js::JsString::from_text(text);
     }
     let half = max / 2;
-    let elided = len - 2 * half;
-    let head = protocol::js::js_substring(text, Some(0.0), Some(half as f64));
-    let tail = protocol::js::js_substring(text, Some((len - half) as f64), Some(len as f64));
-    format!(
-        "{}\n\n[… {elided} bytes elided …]\n\n{}",
-        head.to_utf8(),
-        tail.to_utf8()
-    )
+    let elided = units.len() - 2 * half;
+    let head = protocol::js::js_substring_units(&units, Some(0.0), Some(half as f64));
+    let tail = protocol::js::js_substring_units(
+        &units,
+        Some((units.len() - half) as f64),
+        Some(units.len() as f64),
+    );
+    let mut out = head;
+    out.extend(format!("\n\n[… {elided} bytes elided …]\n\n").encode_utf16());
+    out.extend(tail);
+    protocol::js::JsString::from_units(out)
+}
+
+pub(crate) fn append_utf16(base: &protocol::js::JsString, extra: &str) -> protocol::js::JsString {
+    let mut units = base.units().to_vec();
+    units.extend(extra.encode_utf16());
+    protocol::js::JsString::from_units(units)
 }
 
 pub fn js_split_ws(text: &str) -> Vec<&str> {

@@ -5,7 +5,6 @@ use tokio_util::sync::CancellationToken;
 use crate::args::{self, string};
 use crate::context::{ToolContext, ToolSurface};
 use crate::fsutil::{write_copy_error, write_mkdir_error, write_open_error};
-use crate::pathutil::resolve_user_path;
 use crate::schema::{schema_of, set_property_description};
 use crate::{Tool, text};
 
@@ -89,7 +88,7 @@ impl Tool for FileWriteTool {
         }
         let content = string(&args, "content").unwrap_or("");
         let backup = args::bool_true(&args, "backup");
-        let resolved = resolve_user_path(file_path, context);
+        let resolved = context.resolve_user_path(file_path);
         let parent = resolved.parent().unwrap_or(std::path::Path::new("."));
         if let Err(err) = tokio::fs::create_dir_all(parent).await {
             return text(write_mkdir_error(&err, &resolved, parent));

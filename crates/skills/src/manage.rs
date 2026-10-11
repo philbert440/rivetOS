@@ -7,9 +7,9 @@ use serde_json::Value;
 use crate::confine::{ensure_inside, mkdir_confined, rename_confined, write_confined};
 use crate::helpers::{
     ALLOWED_SUBDIRS, SkillMeta, bump_version_in_content, check_dedup, current_iso_timestamp,
-    list_subdir, parse_patch_blocks, read_meta, scan_issues, title_case_hyphen, write_meta,
+    list_subdir, parse_patch_blocks, read_meta, read_node_text, scan_issues, title_case_hyphen,
+    write_meta,
 };
-use crate::list_tool::node_dirname;
 use crate::manager::{Skill, SkillManager};
 use crate::text;
 use tools::{
@@ -373,7 +373,7 @@ impl SkillManageTool {
         let Some(skill) = find_skill(&self.manager, name) else {
             return not_found(&self.manager, name);
         };
-        let skill_dir = node_dirname(Path::new(&skill.location));
+        let skill_dir = std::path::PathBuf::from(protocol::js::posix_dirname(&skill.location));
         let mut meta = read_meta(&skill_dir).await.unwrap_or_else(|| SkillMeta {
             created_by: "unknown".to_string(),
             created_at: current_iso_timestamp(),
@@ -398,7 +398,8 @@ impl SkillManageTool {
         if let Err(err) = write_meta(&skill_dir, &meta, &roots).await {
             return err;
         }
-        let parent = node_dirname(&skill_dir);
+        let parent =
+            std::path::PathBuf::from(protocol::js::posix_dirname(&skill_dir.to_string_lossy()));
         self.manager.rediscover(&parent.to_string_lossy()).await;
         tracing::info!("Updated skill: {name} (version {})", meta.version);
         format!("Skill \"{name}\" updated (version {})", meta.version)
@@ -420,7 +421,7 @@ impl SkillManageTool {
         if blocks.is_empty() {
             return "No valid FIND/REPLACE blocks found in content.".to_string();
         }
-        let mut current = match tokio::fs::read_to_string(&skill.location).await {
+        let mut current = match read_node_text(Path::new(&skill.location)).await {
             Ok(current) => current,
             Err(err) => return format!("Error: {err}"),
         };
@@ -438,7 +439,7 @@ impl SkillManageTool {
             }
             current = js_replace_once(&current, find, replace);
         }
-        let skill_dir = node_dirname(Path::new(&skill.location));
+        let skill_dir = std::path::PathBuf::from(protocol::js::posix_dirname(&skill.location));
         let mut meta = read_meta(&skill_dir).await.unwrap_or_else(|| SkillMeta {
             created_by: "unknown".to_string(),
             created_at: current_iso_timestamp(),
@@ -463,7 +464,8 @@ impl SkillManageTool {
         if let Err(err) = write_meta(&skill_dir, &meta, &roots).await {
             return err;
         }
-        let parent = node_dirname(&skill_dir);
+        let parent =
+            std::path::PathBuf::from(protocol::js::posix_dirname(&skill_dir.to_string_lossy()));
         self.manager.rediscover(&parent.to_string_lossy()).await;
         tracing::info!("Patched skill: {name} ({} replacements)", blocks.len());
         format!(
@@ -477,8 +479,9 @@ impl SkillManageTool {
         let Some(skill) = find_skill(&self.manager, name) else {
             return not_found(&self.manager, name);
         };
-        let skill_dir = node_dirname(Path::new(&skill.location));
-        let parent = node_dirname(&skill_dir);
+        let skill_dir = std::path::PathBuf::from(protocol::js::posix_dirname(&skill.location));
+        let parent =
+            std::path::PathBuf::from(protocol::js::posix_dirname(&skill_dir.to_string_lossy()));
         let trash_dir = parent.join(".trash");
         let trash_name = format!(
             "{name}-{}",
@@ -510,8 +513,9 @@ impl SkillManageTool {
         let Some(skill) = find_skill(&self.manager, name) else {
             return not_found(&self.manager, name);
         };
-        let skill_dir = node_dirname(Path::new(&skill.location));
-        let parent = node_dirname(&skill_dir);
+        let skill_dir = std::path::PathBuf::from(protocol::js::posix_dirname(&skill.location));
+        let parent =
+            std::path::PathBuf::from(protocol::js::posix_dirname(&skill_dir.to_string_lossy()));
         let retired_dir = Path::new(first).join("retired");
         let retired_path = retired_dir.join(name);
         let roots = self.allowed_roots();
@@ -559,11 +563,11 @@ impl SkillManageTool {
         let Some(skill) = find_skill(&self.manager, name) else {
             return not_found(&self.manager, name);
         };
-        let content = match tokio::fs::read_to_string(&skill.location).await {
+        let content = match read_node_text(Path::new(&skill.location)).await {
             Ok(content) => content,
             Err(err) => return format!("Error: {err}"),
         };
-        let skill_dir = node_dirname(Path::new(&skill.location));
+        let skill_dir = std::path::PathBuf::from(protocol::js::posix_dirname(&skill.location));
         let mut files = Vec::new();
         for subdir in ALLOWED_SUBDIRS {
             files.extend(list_subdir(&skill_dir, subdir).await);
@@ -593,7 +597,7 @@ impl SkillManageTool {
         if level >= 2.0 && !files.is_empty() {
             result.push_str("\n\n## File Contents");
             for file_path in &files {
-                match tokio::fs::read_to_string(skill_dir.join(file_path)).await {
+                match read_node_text(&skill_dir.join(file_path)).await {
                     Ok(file_content) => {
                         result.push_str(&format!("\n\n### {file_path}\n```\n{file_content}\n```"));
                     }
@@ -635,7 +639,7 @@ impl SkillManageTool {
         if let Err(issues) = scan_issues(file_content) {
             return format!("Security scan failed:\n{issues}");
         }
-        let skill_dir = node_dirname(Path::new(&skill.location));
+        let skill_dir = std::path::PathBuf::from(protocol::js::posix_dirname(&skill.location));
         let full_path = skill_dir.join(&normalized);
         let roots = self.allowed_roots();
         if let Err(err) = write_confined(&full_path, file_content, &roots).await {

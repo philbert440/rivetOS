@@ -10,7 +10,6 @@ use tokio_util::sync::CancellationToken;
 
 use crate::args::string;
 use crate::context::{ToolContext, ToolSurface};
-use crate::pathutil::resolve_user_path;
 use crate::schema::{schema_of, set_property_description};
 use crate::{Tool, text};
 
@@ -120,7 +119,7 @@ impl Tool for SearchGlobTool {
             return text("Error: No glob pattern provided");
         }
         let search_dir = match string(&args, "cwd") {
-            Some(cwd) => resolve_user_path(cwd, context),
+            Some(cwd) => context.resolve_user_path(cwd),
             None => context.base_dir(),
         };
         let (absolute, segments) = normalize_segments(pattern);

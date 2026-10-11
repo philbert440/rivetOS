@@ -102,7 +102,7 @@ fn write_here(
             place_file(&dir, final_name, content)?;
             Ok(None)
         }
-        Err(err) => Err(format!("Error: {err}")),
+        Err(err) => Err(node_errno("lstat", Some(display), err)),
     }
 }
 
@@ -135,7 +135,7 @@ fn probe_blocking(path: &Path, roots: &[String]) -> Result<(), String> {
             Err(err @ (Errno::ELOOP | Errno::ENOTDIR)) => {
                 dir = follow_symlink(&dir, name, &prepared, 0, path, err)?;
             }
-            Err(err) => return Err(format!("Error: {err}")),
+            Err(err) => return Err(node_errno("open", Some(path), err)),
         }
     }
     Ok(())
@@ -171,7 +171,7 @@ fn rename_blocking(from: &Path, to: &Path, roots: &[String]) -> Result<(), Strin
         to_dir.0.as_fd(),
         to_name.as_os_str(),
     )
-    .map_err(|err| format!("Error: {err}"))
+    .map_err(|err| node_rename(from, to, err))
 }
 
 fn open_parent(
@@ -209,20 +209,20 @@ fn ensure_into(
                 Mode::from_bits_truncate(0o755),
             ) {
                 Ok(()) | Err(Errno::EEXIST) => {}
-                Err(err) => return Err(format!("Error: {err}")),
+                Err(err) => return Err(node_errno("mkdir", Some(display), err)),
             }
             match open_child(parent, name) {
                 Ok(fd) => Ok(fd),
                 Err(err @ (Errno::ELOOP | Errno::ENOTDIR)) => {
                     follow_symlink(parent, name, roots, depth, display, err)
                 }
-                Err(err) => Err(format!("Error: {err}")),
+                Err(err) => Err(node_errno("open", Some(display), err)),
             }
         }
         Err(err @ (Errno::ELOOP | Errno::ENOTDIR)) => {
             follow_symlink(parent, name, roots, depth, display, err)
         }
-        Err(err) => Err(format!("Error: {err}")),
+        Err(err) => Err(node_errno("open", Some(display), err)),
     }
 }
 
@@ -241,7 +241,7 @@ fn step_into(
         Err(err @ (Errno::ELOOP | Errno::ENOTDIR)) => {
             follow_symlink(parent, name, roots, depth, display, err)
         }
-        Err(err) => Err(format!("Error: {err}")),
+        Err(err) => Err(node_errno("open", Some(display), err)),
     }
 }
 
@@ -262,7 +262,7 @@ fn follow_symlink(
         let target = link_target(parent, name, roots, display)?;
         return open_resolved(&target, roots, depth + 1, display);
     }
-    Err(format!("Error: {err}"))
+    Err(node_errno("open", Some(display), err))
 }
 
 fn open_resolved(
@@ -289,9 +289,10 @@ fn link_target(
     display: &Path,
 ) -> Result<PathBuf, String> {
     let raw = fcntl::readlinkat(parent.0.as_fd(), name.as_os_str())
-        .map_err(|err| format!("Error: {err}"))?;
-    let parent_real = std::fs::read_link(format!("/proc/self/fd/{}", parent.0.as_raw_fd()))
-        .map_err(|err| format!("Error: {err}"))?;
+        .map_err(|err| node_errno("readlink", Some(display), err))?;
+    let proc_fd = format!("/proc/self/fd/{}", parent.0.as_raw_fd());
+    let parent_real = std::fs::read_link(&proc_fd)
+        .map_err(|err| node_io("readlink", Some(Path::new(&proc_fd)), &err))?;
     let joined = if Path::new(&raw).is_absolute() {
         absolute_lexical(Path::new(&raw))
     } else {
@@ -321,9 +322,9 @@ fn place_file(parent: &DirFd, name: &OsString, content: &str) -> Result<(), Stri
         .create_new(true)
         .mode(0o644)
         .open(&proc_path)
-        .map_err(|err| format!("Error: {err}"))?;
+        .map_err(|err| node_io("open", Some(Path::new(&proc_path)), &err))?;
     file.write_all(content.as_bytes())
-        .map_err(|err| format!("Error: {err}"))?;
+        .map_err(|err| node_io("write", None, &err))?;
     drop(file);
     fcntl::renameat(
         parent.0.as_fd(),
@@ -331,12 +332,13 @@ fn place_file(parent: &DirFd, name: &OsString, content: &str) -> Result<(), Stri
         parent.0.as_fd(),
         name.as_os_str(),
     )
-    .map_err(|err| format!("Error: {err}"))
+    .map_err(|err| node_errno("rename", None, err))
 }
 
 fn open_root(path: &Path) -> Result<DirFd, String> {
     let flags = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC | OFlag::O_NOFOLLOW;
-    let fd = fcntl::open(path, flags, Mode::empty()).map_err(|err| format!("Error: {err}"))?;
+    let fd = fcntl::open(path, flags, Mode::empty())
+        .map_err(|err| node_errno("open", Some(path), err))?;
     Ok(DirFd(fd))
 }
 
@@ -358,7 +360,7 @@ fn prepare_roots(roots: &[String]) -> Result<Vec<PreparedRoot>, String> {
             Ok(meta) if !meta.is_dir() => return Err(refuse(Path::new(root))),
             Ok(_) => {}
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(err) => return Err(format!("Error: {err}")),
+            Err(err) => return Err(node_io("lstat", Some(&original), &err)),
         }
         let Ok(meta) = std::fs::symlink_metadata(&original) else {
             continue;
@@ -384,7 +386,7 @@ fn materialize_destination(path: &Path, roots: &[String]) -> Result<(), String> 
     match std::fs::symlink_metadata(&root) {
         Ok(_) => Ok(()),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => materialize_missing(&root),
-        Err(err) => Err(format!("Error: {err}")),
+        Err(err) => Err(node_io("lstat", Some(&root), &err)),
     }
 }
 
@@ -395,7 +397,7 @@ fn destination_missing(path: &Path, roots: &[String]) -> Result<bool, String> {
     match std::fs::symlink_metadata(&root) {
         Ok(_) => Ok(false),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(true),
-        Err(err) => Err(format!("Error: {err}")),
+        Err(err) => Err(node_io("lstat", Some(&root), &err)),
     }
 }
 
@@ -453,7 +455,7 @@ fn materialize_missing(root: &Path) -> Result<(), String> {
                     return Err(refuse(root));
                 }
             }
-            Err(err) => return Err(format!("Error: {err}")),
+            Err(err) => return Err(node_io("lstat", Some(&ancestor), &err)),
         }
     }
     if missing.is_empty() {
@@ -468,15 +470,15 @@ fn materialize_missing(root: &Path) -> Result<(), String> {
             Mode::from_bits_truncate(0o755),
         ) {
             Ok(()) | Err(Errno::EEXIST) => {}
-            Err(err) => return Err(format!("Error: {err}")),
+            Err(err) => return Err(node_errno("mkdir", Some(root), err)),
         }
         dir = match open_child(&dir, name) {
             Ok(next) => next,
             Err(Errno::ELOOP | Errno::ENOTDIR) => return Err(refuse(root)),
-            Err(err) => return Err(format!("Error: {err}")),
+            Err(err) => return Err(node_errno("open", Some(root), err)),
         };
     }
-    let meta = std::fs::symlink_metadata(root).map_err(|err| format!("Error: {err}"))?;
+    let meta = std::fs::symlink_metadata(root).map_err(|err| node_io("lstat", Some(root), &err))?;
     if meta.file_type().is_symlink() || !meta.is_dir() {
         return Err(refuse(root));
     }
@@ -529,15 +531,25 @@ fn component_names(path: &Path) -> Result<Vec<OsString>, ()> {
 }
 
 fn absolute_lexical(path: &Path) -> PathBuf {
-    let joined = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        match std::env::current_dir() {
-            Ok(cwd) => cwd.join(path),
-            Err(_) => PathBuf::from("/").join(path),
-        }
-    };
-    crate::helpers::normalize(&joined)
+    let text = path.to_string_lossy();
+    let cwd = std::env::current_dir()
+        .map(|dir| dir.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| "/".to_string());
+    PathBuf::from(protocol::js::posix_resolve(&cwd, &[text.as_ref()]))
+}
+
+fn node_io(syscall: &'static str, path: Option<&Path>, err: &std::io::Error) -> String {
+    protocol::host::fs_error(syscall, path, None, err).node_string()
+}
+
+fn node_errno(syscall: &'static str, path: Option<&Path>, err: Errno) -> String {
+    let io = std::io::Error::from_raw_os_error(err as i32);
+    node_io(syscall, path, &io)
+}
+
+fn node_rename(from: &Path, to: &Path, err: Errno) -> String {
+    let io = std::io::Error::from_raw_os_error(err as i32);
+    protocol::host::fs_error("rename", Some(from), Some(to), &io).node_string()
 }
 
 fn is_symlink(stat: &FileStat) -> bool {

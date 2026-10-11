@@ -12,7 +12,7 @@ use crate::args::{self, string};
 use crate::context::{ToolContext, ToolSurface};
 use crate::schema::{schema_of, set_property_description};
 
-use crate::{Tool, text};
+use crate::{Tool, text, text_js};
 
 use super::html::extract_markdown;
 use super::http::{HttpClient, HttpRequest, default_http, header_value};
@@ -40,7 +40,7 @@ impl Default for WebFetchConfig {
 }
 
 struct CacheEntry {
-    data: String,
+    data: protocol::js::JsString,
     expires: Instant,
 }
 
@@ -64,10 +64,19 @@ impl WebFetchTool {
     }
 
     pub fn with_http(config: WebFetchConfig, http: Arc<dyn HttpClient>) -> Self {
+        Self::with_http_env(config, http, &protocol::host::ProcessEnv)
+    }
+
+    pub fn with_http_env(
+        config: WebFetchConfig,
+        http: Arc<dyn HttpClient>,
+        env: &dyn protocol::host::Env,
+    ) -> Self {
         let user_agent = match config.user_agent {
             Some(value) => value,
-            None => std::env::var("RIVETOS_USER_AGENT")
-                .unwrap_or_else(|_| "RivetOS/0.1.0 (web-fetch)".to_string()),
+            None => env
+                .var("RIVETOS_USER_AGENT")
+                .unwrap_or_else(|| "RivetOS/0.1.0 (web-fetch)".to_string()),
         };
         Self {
             user_agent,
@@ -122,7 +131,7 @@ impl Tool for WebFetchTool {
         let max_chars = max_chars(args.get("max_chars"), self.default_max_chars);
         let cache_key = format!("{url}::{}", protocol::JsNumber::from(max_chars));
         if let Some(cached) = self.cache_get(&cache_key) {
-            return text(cached);
+            return text_js(cached);
         }
         let mut headers = vec![
             ("User-Agent".to_string(), self.user_agent.clone()),
@@ -167,28 +176,31 @@ impl Tool for WebFetchTool {
             Err(err) => return text(format!("Fetch error: {err}")),
         };
         let mut result = if content_type.contains("application/json") {
-            render_json(&body)
+            protocol::js::JsString::from_text(&render_json(&body))
         } else if content_type.contains("text/html") {
-            extract_markdown(&body)
+            protocol::js::JsString::from_text(&extract_markdown(&body))
         } else {
-            body
+            protocol::js::JsString::from_text(&body)
         };
-        if js_len_exceeds(protocol::js::utf16_len(&result), max_chars) {
-            let end = js_end_index(protocol::js::utf16_len(&result), max_chars);
+        if js_len_exceeds(result.len(), max_chars) {
+            let end = js_end_index(result.len(), max_chars);
             let shown = protocol::JsNumber::from(max_chars);
-            let head = protocol::js::js_substring(&result, Some(0.0), Some(end as f64));
-            result = format!(
-                "{}\n\n[Truncated at {shown} chars. Use max_chars parameter to see more.]",
-                head.to_utf8()
-            );
+            let head = protocol::js::JsString::from_units(protocol::js::js_substring_units(
+                result.units(),
+                Some(0.0),
+                Some(end as f64),
+            ));
+            let notice =
+                format!("\n\n[Truncated at {shown} chars. Use max_chars parameter to see more.]");
+            result = crate::textutil::append_utf16(&head, &notice);
         }
         self.cache_set(cache_key, result.clone(), FETCH_CACHE_TTL);
-        text(result)
+        text_js(result)
     }
 }
 
 impl WebFetchTool {
-    fn cache_get(&self, key: &str) -> Option<String> {
+    fn cache_get(&self, key: &str) -> Option<protocol::js::JsString> {
         let mut cache = self.cache.lock();
         let entry = cache.get(key)?;
         if Instant::now() > entry.expires {
@@ -198,7 +210,7 @@ impl WebFetchTool {
         Some(entry.data.clone())
     }
 
-    fn cache_set(&self, key: String, data: String, ttl: Duration) {
+    fn cache_set(&self, key: String, data: protocol::js::JsString, ttl: Duration) {
         self.cache.lock().insert(
             key,
             CacheEntry {

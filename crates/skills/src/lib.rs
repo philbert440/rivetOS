@@ -10,7 +10,10 @@ mod manager;
 mod security;
 
 pub use catalog::catalog_text;
-pub use dirs::{default_runtime_skill_dirs, resolve_skill_dirs};
+pub use dirs::{
+    default_runtime_skill_dirs, default_runtime_skill_dirs_from, resolve_skill_dirs,
+    resolve_skill_dirs_from,
+};
 pub use frontmatter::{ParsedFrontmatter, extract_triggers_from_description, parse_frontmatter};
 pub use helpers::{SkillMeta, cosine_similarity};
 pub use hooks::{SkillAfterContext, SkillBeforeContext, SkillHookPipeline};

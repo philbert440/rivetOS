@@ -5,7 +5,6 @@ mod file_edit;
 mod file_read;
 mod file_write;
 mod fsutil;
-mod pathutil;
 mod reutil;
 mod schema;
 mod search_glob;
@@ -64,4 +63,8 @@ pub fn result_text(result: &ToolResult) -> &str {
 
 pub(crate) fn text(value: impl Into<String>) -> ToolResult {
     ToolResult::Text(value.into().into())
+}
+
+pub(crate) fn text_js(value: protocol::js::JsString) -> ToolResult {
+    ToolResult::Text(value)
 }

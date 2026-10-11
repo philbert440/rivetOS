@@ -388,5 +388,36 @@ async fn file_edit_directory_is_eisdir_read() {
         result,
         "Error: EISDIR: illegal operation on a directory, read"
     );
+    let plain = dir.join("plain");
+    std::fs::write(&plain, "hello").unwrap();
+    let child = plain.join("child");
+    let result = run(
+        &tool,
+        json!({"path": child.display().to_string(), "old_string": "a", "new_string": "b"}),
+        &ctx,
+    )
+    .await;
+    assert_eq!(
+        result,
+        format!(
+            "Error: ENOTDIR: not a directory, open '{}'",
+            child.display()
+        )
+    );
+    let link = dir.join("loop");
+    std::os::unix::fs::symlink("loop", &link).unwrap();
+    let result = run(
+        &tool,
+        json!({"path": link.display().to_string(), "old_string": "a", "new_string": "b"}),
+        &ctx,
+    )
+    .await;
+    assert_eq!(
+        result,
+        format!(
+            "Error: ELOOP: too many symbolic links encountered, open '{}'",
+            link.display()
+        )
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -6,11 +6,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use parking_lot::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use protocol::host::MapEnv;
 use serde_json::{Value, json};
 use skills::{
     Skill, SkillHookPipeline, SkillListTool, SkillManageTool, SkillManager, catalog_text,
-    cosine_similarity, default_runtime_skill_dirs, parse_frontmatter, resolve_skill_dirs,
-    scan_skill_content,
+    cosine_similarity, default_runtime_skill_dirs, default_runtime_skill_dirs_from,
+    parse_frontmatter, resolve_skill_dirs, resolve_skill_dirs_from, scan_skill_content,
 };
 use tools::{CancellationToken, Tool, ToolContext, ToolSurface, result_text};
 
@@ -58,7 +59,49 @@ impl Drop for RestoreMode {
 }
 
 fn eacces_enforced() -> bool {
-    !nix::unistd::geteuid().is_root()
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("rr5a-dac-{}-{n}-{nanos}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    if std::fs::create_dir_all(&dir).is_err() {
+        return false;
+    }
+    struct Cleanup(PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let locked = self.0.join("locked");
+            if let Ok(meta) = std::fs::metadata(&locked) {
+                let mut perms = meta.permissions();
+                perms.set_mode(0o755);
+                let _ = std::fs::set_permissions(&locked, perms);
+            }
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = Cleanup(dir.clone());
+    let locked = dir.join("locked");
+    if std::fs::create_dir(&locked).is_err() {
+        return false;
+    }
+    let Ok(meta) = std::fs::metadata(&locked) else {
+        return false;
+    };
+    let mut perms = meta.permissions();
+    perms.set_mode(0o000);
+    if std::fs::set_permissions(&locked, perms).is_err() {
+        return false;
+    }
+    std::fs::symlink_metadata(locked.join("child"))
+        .err()
+        .is_some_and(|err| err.kind() == std::io::ErrorKind::PermissionDenied)
+}
+
+fn mentions_permission_denied(text: &str) -> bool {
+    text.to_ascii_lowercase().contains("permission denied")
 }
 
 fn write_skill(dir: &Path, name: &str, content: &str) {
@@ -78,6 +121,35 @@ async fn run(tool: &impl Tool, args: Value) -> String {
 
 fn skill_body(path: &Path) -> String {
     protocol::host::read_text(path).unwrap()
+}
+
+#[tokio::test]
+async fn lossy_utf8_skill_is_discovered_and_read() {
+    let dir = TempDir::new("lossy-skill");
+    let skill = dir.path().join("quote");
+    std::fs::create_dir_all(skill.join("references")).unwrap();
+    let mut body = b"---\nname: quote\ndescription: Keeps odd bytes\n---\n# Title\n".to_vec();
+    body.push(0x93);
+    std::fs::write(skill.join("SKILL.md"), &body).unwrap();
+    let mut note = b"see ".to_vec();
+    note.push(0x93);
+    std::fs::write(skill.join("references").join("note.txt"), &note).unwrap();
+    let manager = SkillManager::new();
+    let skills = manager
+        .discover(vec![dir.path().display().to_string()])
+        .await;
+    assert_eq!(skills.len(), 1);
+    assert_eq!(skills[0].name, "quote");
+    let tool = SkillManageTool::new(manager, vec![dir.path().display().to_string()]);
+    let read = run(
+        &tool,
+        json!({"action": "read", "name": "quote", "level": 2}),
+    )
+    .await;
+    assert!(read.contains("# Title"), "{read}");
+    assert!(read.contains("references/note.txt"), "{read}");
+    assert!(read.contains('\u{FFFD}'), "{read}");
+    assert!(!read.contains("unable to read"), "{read}");
 }
 
 #[tokio::test]
@@ -962,6 +1034,31 @@ fn catalog_and_skill_dir_resolution() {
     let runtime = default_runtime_skill_dirs();
     assert_eq!(runtime.len(), 1);
     assert!(runtime[0].ends_with("/.rivetos/workspace/skills"));
+    let mut env = MapEnv::new();
+    assert_eq!(
+        resolve_skill_dirs_from(None, &env),
+        vec!["~/.rivetos/skills".to_string()]
+    );
+    assert_eq!(
+        default_runtime_skill_dirs_from(&env),
+        vec!["~/.rivetos/workspace/skills".to_string()]
+    );
+    env.set("HOME", "/var/synthetic-home");
+    env.set("RIVETOS_SKILL_DIRS", " /skills/a : : /skills/b ");
+    assert_eq!(
+        resolve_skill_dirs_from(None, &env),
+        vec!["/skills/a".to_string(), "/skills/b".to_string()]
+    );
+    assert_eq!(resolve_skill_dirs_from(Some(&explicit), &env), explicit);
+    env.set("RIVETOS_SKILL_DIRS", "   ");
+    assert_eq!(
+        resolve_skill_dirs_from(None, &env),
+        vec!["/var/synthetic-home/.rivetos/skills".to_string()]
+    );
+    assert_eq!(
+        default_runtime_skill_dirs_from(&env),
+        vec!["/var/synthetic-home/.rivetos/workspace/skills".to_string()]
+    );
 }
 
 #[tokio::test]
@@ -1321,7 +1418,7 @@ async fn inaccessible_secondary_root_does_not_block_writes() {
     )
     .await;
     assert!(created.contains("created"), "{created}");
-    assert!(!created.contains("Permission denied"), "{created}");
+    assert!(!mentions_permission_denied(&created), "{created}");
     assert!(!created.contains("Refusing to write outside"), "{created}");
     let body = std::fs::read_to_string(root.join("first").join("SKILL.md")).unwrap();
     assert!(body.contains("name: first"), "{body}");
@@ -1336,7 +1433,7 @@ async fn inaccessible_secondary_root_does_not_block_writes() {
     )
     .await;
     assert!(written.contains("File written"), "{written}");
-    assert!(!written.contains("Permission denied"), "{written}");
+    assert!(!mentions_permission_denied(&written), "{written}");
     assert_eq!(
         std::fs::read_to_string(root.join("first").join("references").join("note.txt")).unwrap(),
         "hello"
@@ -1351,7 +1448,7 @@ async fn inaccessible_secondary_root_does_not_block_writes() {
     )
     .await;
     assert!(edited.contains("updated"), "{edited}");
-    assert!(!edited.contains("Permission denied"), "{edited}");
+    assert!(!mentions_permission_denied(&edited), "{edited}");
     std::fs::set_permissions(locked.path(), {
         let mut restored = std::fs::metadata(locked.path()).unwrap().permissions();
         restored.set_mode(original);
@@ -1386,7 +1483,8 @@ async fn inaccessible_destination_root_still_fails() {
     )
     .await;
     assert!(
-        created.contains("Permission denied") || created.contains("Refusing to write outside"),
+        created.contains("EACCES: permission denied,")
+            || created.contains("Refusing to write outside"),
         "{created}"
     );
     assert!(!created.contains("created"), "{created}");

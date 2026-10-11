@@ -7,7 +7,6 @@ use tokio_util::sync::CancellationToken;
 use crate::args::{self, string};
 use crate::context::{ToolContext, ToolSurface};
 use crate::fsutil::{fixed_digits, read_body_error, read_stat_error};
-use crate::pathutil::resolve_user_path;
 use crate::schema::{schema_of, set_property_description};
 use crate::{Tool, text};
 
@@ -113,7 +112,7 @@ impl Tool for FileReadTool {
         if file_path.is_empty() {
             return text("Error: No file path provided");
         }
-        let resolved = resolve_user_path(file_path, context);
+        let resolved = context.resolve_user_path(file_path);
         let show_line_numbers =
             args::bool_opt(&args, "line_numbers").unwrap_or(self.default_line_numbers);
         let start_line = args::finite_number(&args, "start_line");

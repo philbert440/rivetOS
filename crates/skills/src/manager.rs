@@ -7,6 +7,7 @@ use parking_lot::Mutex;
 use indexmap::IndexMap;
 
 use crate::frontmatter::{extract_triggers_from_description, parse_frontmatter};
+use crate::helpers::read_node_text;
 use crate::hooks::{SkillAfterContext, SkillBeforeContext, SkillHookPipeline};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -137,9 +138,9 @@ impl SkillManager {
                 )));
             }
         }
-        let content = tokio::fs::read_to_string(&skill.location)
+        let content = read_node_text(Path::new(&skill.location))
             .await
-            .map_err(|err| SkillError::Message(err.to_string()))?;
+            .map_err(SkillError::Message)?;
         if let Some(hooks) = &hooks {
             let after = SkillAfterContext {
                 skill_name: skill.name.clone(),
@@ -231,7 +232,7 @@ async fn scan_dir(dir: &str) -> Vec<Skill> {
         if tokio::fs::metadata(&skill_md).await.is_err() {
             continue;
         }
-        let content = match tokio::fs::read_to_string(&skill_md).await {
+        let content = match read_node_text(&skill_md).await {
             Ok(content) => content,
             Err(err) => {
                 tracing::warn!("Failed to parse skill at {}: {err}", skill_md.display());

@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ToolSurface {
@@ -31,4 +31,19 @@ impl ToolContext {
         }
         std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
     }
+
+    pub(crate) fn resolve_user_path(&self, file_path: &str) -> PathBuf {
+        if protocol::js::posix_is_absolute(file_path) {
+            return PathBuf::from(file_path);
+        }
+        resolve_against(&self.base_dir(), file_path)
+    }
+}
+
+pub(crate) fn resolve_against(base: &Path, target: &str) -> PathBuf {
+    let cwd = std::env::current_dir()
+        .map(|dir| dir.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| "/".to_string());
+    let base = base.to_string_lossy();
+    PathBuf::from(protocol::js::posix_resolve(&cwd, &[base.as_ref(), target]))
 }

@@ -1,5 +1,3 @@
-use std::path::{Path, PathBuf};
-
 use schemars::JsonSchema;
 use serde_json::Value;
 
@@ -71,7 +69,7 @@ impl Tool for SkillListTool {
         }
         let mut lines = Vec::new();
         for skill in skills {
-            let skill_dir = node_dirname(Path::new(&skill.location));
+            let skill_dir = std::path::PathBuf::from(protocol::js::posix_dirname(&skill.location));
             let version = read_meta(&skill_dir).await.map(|meta| meta.version);
             let mut file_count = 0usize;
             for subdir in ALLOWED_SUBDIRS {
@@ -96,13 +94,5 @@ impl Tool for SkillListTool {
             ));
         }
         text(lines.join("\n"))
-    }
-}
-
-pub(crate) fn node_dirname(path: &Path) -> PathBuf {
-    match path.parent() {
-        Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
-        Some(_) if path.has_root() => PathBuf::from("/"),
-        _ => PathBuf::from("."),
     }
 }

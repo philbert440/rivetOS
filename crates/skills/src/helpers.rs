@@ -218,21 +218,12 @@ pub fn title_case_hyphen(name: &str) -> String {
         .join(" ")
 }
 
-pub fn normalize(path: &Path) -> std::path::PathBuf {
-    let mut out = std::path::PathBuf::new();
-    for component in path.components() {
-        match component {
-            std::path::Component::CurDir => {}
-            std::path::Component::ParentDir => {
-                out.pop();
-            }
-            other => out.push(other.as_os_str()),
-        }
-    }
-    if out.as_os_str().is_empty() {
-        std::path::PathBuf::from(".")
-    } else {
-        out
+pub async fn read_node_text(path: &Path) -> Result<String, String> {
+    let path = path.to_path_buf();
+    match tokio::task::spawn_blocking(move || protocol::host::read_text(&path)).await {
+        Ok(Ok(text)) => Ok(text),
+        Ok(Err(err)) => Err(err.to_string()),
+        Err(err) => Err(err.to_string()),
     }
 }
 

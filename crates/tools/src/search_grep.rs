@@ -8,7 +8,6 @@ use tokio_util::sync::CancellationToken;
 use crate::args::{self, string};
 use crate::command::run_shell;
 use crate::context::{ToolContext, ToolSurface};
-use crate::pathutil::resolve_user_path;
 use crate::schema::{schema_of, set_property_description};
 use crate::{Tool, text};
 use protocol::js::js_trim;
@@ -137,7 +136,7 @@ impl Tool for SearchGrepTool {
             return text("Error: No search pattern provided");
         }
         let search_path = match string(&args, "path") {
-            Some(path) => resolve_user_path(path, context),
+            Some(path) => context.resolve_user_path(path),
             None => context.base_dir(),
         };
         let fixed = args::bool_true(&args, "fixed_strings");

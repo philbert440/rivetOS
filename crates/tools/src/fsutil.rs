@@ -8,10 +8,6 @@ pub fn read_body_error(err: &std::io::Error, path: &Path) -> String {
     read_special(err, path).unwrap_or_else(|| node_io_error(err, "read", Some(path), None))
 }
 
-pub fn edit_read_error(err: &std::io::Error, path: &Path) -> String {
-    edit_special(err, path).unwrap_or_else(|| node_io_error(err, "read", Some(path), None))
-}
-
 pub fn edit_write_error(err: &std::io::Error, path: &Path) -> String {
     edit_special(err, path).unwrap_or_else(|| node_io_error(err, "open", Some(path), None))
 }

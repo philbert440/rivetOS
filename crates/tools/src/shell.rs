@@ -9,11 +9,10 @@ use tokio_util::sync::CancellationToken;
 
 use crate::args::string;
 use crate::command::run_shell;
-use crate::context::{ToolContext, ToolSurface};
-use crate::pathutil::node_resolve;
+use crate::context::{ToolContext, ToolSurface, resolve_against};
 use crate::schema::{schema_of, set_property_description};
-use crate::textutil::{js_split_ws, strip_one_quote_pair, truncate_middle};
-use crate::{Tool, text};
+use crate::textutil::{append_utf16, js_split_ws, strip_one_quote_pair, truncate_middle};
+use crate::{Tool, text, text_js};
 use protocol::js::js_trim;
 
 const DEFAULT_BLOCKED: &[&str] = &["rm -rf /", "mkfs", ":(){:|:&};:"];
@@ -318,7 +317,7 @@ impl Tool for ShellTool {
             warnings.push(warning);
         }
         if let Some(target) = cd_target(&command) {
-            let new_cwd = node_resolve(std::path::Path::new(&cwd), &target);
+            let new_cwd = resolve_against(std::path::Path::new(&cwd), &target);
             let displayed = new_cwd.to_string_lossy().into_owned();
             match tokio::fs::metadata(&new_cwd).await {
                 Ok(meta) if meta.is_dir() => {
@@ -352,16 +351,12 @@ impl Tool for ShellTool {
                 ));
             }
             let truncated = truncate_middle(&captured, self.max_output);
-            return text(format_output(
-                &warnings,
-                &format!("{truncated}\n[output exceeded buffer]"),
-            ));
+            let body = append_utf16(&truncated, "\n[output exceeded buffer]");
+            return text_js(format_output_js(&warnings, &body));
         }
         if protocol::js::utf16_len(&captured) > self.max_output {
-            return text(format_output(
-                &warnings,
-                &truncate_middle(&captured, self.max_output),
-            ));
+            let truncated = truncate_middle(&captured, self.max_output);
+            return text_js(format_output_js(&warnings, &truncated));
         }
         if let Some(code) = output.code
             && code != 0
@@ -445,4 +440,17 @@ fn format_output(warnings: &[String], output: &str) -> String {
         return output.to_string();
     }
     format!("{}\n\n{output}", warnings.join("\n"))
+}
+
+fn format_output_js(
+    warnings: &[String],
+    output: &protocol::js::JsString,
+) -> protocol::js::JsString {
+    if warnings.is_empty() {
+        return output.clone();
+    }
+    let prefix = format!("{}\n\n", warnings.join("\n"));
+    let mut units: Vec<u16> = prefix.encode_utf16().collect();
+    units.extend(output.units());
+    protocol::js::JsString::from_units(units)
 }

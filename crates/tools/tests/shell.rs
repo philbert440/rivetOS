@@ -175,6 +175,22 @@ async fn truncates_long_output_and_empty_success() {
     });
     let result = exec(&tool, json!({"command": "seq 1 1000"})).await;
     assert!(result.contains("elided"), "{result}");
+    let split = ShellTool::new(ShellConfig {
+        max_output: 2,
+        ..ShellConfig::default()
+    });
+    let wire = split
+        .execute(
+            json!({"command": "printf '\\360\\237\\230\\200X'"}),
+            &CancellationToken::new(),
+            &ToolContext::default(),
+        )
+        .await;
+    let json = serde_json::to_string(&wire).unwrap();
+    assert!(json.contains(r"\ud83d"), "{json}");
+    assert!(!json.contains(r"\ude00"), "{json}");
+    assert!(!json.contains('\u{FFFD}'), "{json}");
+    assert!(json.contains("elided"), "{json}");
     let quiet = ShellTool::new(ShellConfig::default());
     assert_eq!(
         exec(&quiet, json!({"command": "true"})).await,
