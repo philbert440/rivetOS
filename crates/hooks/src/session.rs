@@ -2,12 +2,11 @@ use std::sync::Arc;
 
 use chrono::Timelike;
 use protocol::HookEventName;
-use serde_json::{Map, Number, Value};
+use protocol::js::{JsObject, JsValue};
 
 use crate::context::HookContext;
 use crate::files::FileWriter;
 use crate::handler::{BoxFuture, HookErrorMode, HookFailure, HookHandler, HookSignal};
-use crate::js_text::js_slice;
 use crate::pipeline::HookRegistration;
 use crate::shell::{ShellError, ShellExecutor};
 use crate::time_format::{fixed_1, group_en_us, utc_date};
@@ -148,28 +147,28 @@ async fn session_start(
     hook_ctx: &mut HookContext,
     ctx: &SessionHooksContext,
 ) -> Result<HookSignal, HookFailure> {
-    hook_ctx.metadata.insert(
-        "sessionStartTime".to_string(),
-        Value::Number(Number::from(hook_ctx.timestamp)),
+    hook_ctx.metadata.insert_key(
+        "sessionStartTime",
+        JsValue::Number(hook_ctx.timestamp as f64),
     );
     if let Some(platform) = hook_ctx.platform.clone() {
         hook_ctx
             .metadata
-            .insert("platform".to_string(), Value::String(platform));
+            .insert_key("platform", JsValue::from_text(&platform));
     }
     if let Some(user_id) = hook_ctx.user_id.clone() {
         hook_ctx
             .metadata
-            .insert("userId".to_string(), Value::String(user_id));
+            .insert_key("userId", JsValue::from_text(&user_id));
     }
     if let (Some(writer), Some(workspace)) = (ctx.file_writer.clone(), ctx.workspace_dir.clone()) {
         let path = daily_note_path(&workspace);
         if let Ok(Some(note)) = writer.read(&path).await
             && !note.is_empty()
         {
-            hook_ctx.metadata.insert(
-                "dailyContext".to_string(),
-                Value::String(js_slice(&note, 0, Some(DAILY_NOTE_CAP))),
+            hook_ctx.metadata.insert_key(
+                "dailyContext",
+                JsValue::String(protocol::js::slice_units(&note, 0, Some(DAILY_NOTE_CAP))),
             );
         }
     }
@@ -211,7 +210,7 @@ async fn session_summary(
     let written = writer.append(&path, &body).await.is_ok();
     hook_ctx
         .metadata
-        .insert("summaryWritten".to_string(), Value::Bool(written));
+        .insert_key("summaryWritten", JsValue::Bool(written));
     Ok(HookSignal::Continue)
 }
 
@@ -224,12 +223,12 @@ async fn auto_commit(
     };
     match commit_workspace(hook_ctx, shell.as_ref(), &workspace).await {
         Ok(value) => {
-            hook_ctx.metadata.insert("autoCommit".to_string(), value);
+            hook_ctx.metadata.insert_key("autoCommit", value);
         }
         Err(err) => {
-            hook_ctx.metadata.insert(
-                "autoCommit".to_string(),
-                serde_json::json!({
+            hook_ctx.metadata.insert_json(
+                "autoCommit",
+                &serde_json::json!({
                     "status": "error",
                     "message": err.message,
                 }),
@@ -243,15 +242,15 @@ async fn commit_workspace(
     hook_ctx: &HookContext,
     shell: &dyn ShellExecutor,
     workspace: &str,
-) -> Result<Value, ShellError> {
+) -> Result<JsValue, ShellError> {
     let status = shell
         .exec("git status --porcelain", Some(workspace))
         .await?;
     if protocol::js::js_trim(&status.stdout).is_empty() {
-        return Ok(serde_json::json!({
+        return Ok(protocol::js::from_json(&serde_json::json!({
             "status": "clean",
             "message": "No uncommitted changes",
-        }));
+        })));
     }
     shell.exec("git add -A", Some(workspace)).await?;
     let agent = hook_ctx.agent_id.as_deref().unwrap_or("unknown");
@@ -263,31 +262,28 @@ async fn commit_workspace(
     } else {
         "failed"
     };
-    Ok(serde_json::json!({
-        "status": status_text,
-        "output": js_slice(&commit.stdout, 0, Some(200)),
-    }))
+    let mut record = JsObject::new();
+    record.insert_key("status", JsValue::from_text(status_text));
+    record.insert_key(
+        "output",
+        JsValue::String(protocol::js::slice_units(&commit.stdout, 0, Some(200))),
+    );
+    Ok(JsValue::Object(record))
 }
 
 fn pre_compact(ctx: &mut HookContext) -> Result<HookSignal, HookFailure> {
-    let mut snapshot = Map::new();
+    let mut snapshot = JsObject::new();
     match ctx.message_count {
         Some(count) => {
-            snapshot.insert(
-                "messageCount".to_string(),
-                Value::Number(Number::from(count)),
-            );
+            snapshot.insert_key("messageCount", JsValue::Number(count as f64));
         }
         None => {
-            snapshot.insert("messageCount".to_string(), Value::Null);
+            snapshot.insert_key("messageCount", JsValue::Null);
         }
     }
-    snapshot.insert(
-        "timestamp".to_string(),
-        Value::Number(Number::from(ctx.timestamp)),
-    );
+    snapshot.insert_key("timestamp", JsValue::Number(ctx.timestamp as f64));
     ctx.metadata
-        .insert("preCompactSnapshot".to_string(), Value::Object(snapshot));
+        .insert_key("preCompactSnapshot", JsValue::Object(snapshot));
     Ok(HookSignal::Continue)
 }
 
@@ -297,8 +293,8 @@ async fn post_compact(
 ) -> Result<HookSignal, HookFailure> {
     let count = snapshot_message_count(&hook_ctx.metadata);
     let original = match count {
-        Some(value) => Value::Number(Number::from(value)),
-        None => Value::String("unknown".to_string()),
+        Some(value) => JsValue::Number(value as f64),
+        None => JsValue::from_text("unknown"),
     };
     let ratio = match count {
         Some(value) if value != 0 => match hook_ctx.remaining_messages {
@@ -310,27 +306,24 @@ async fn post_compact(
         },
         _ => "unknown".to_string(),
     };
-    let mut result = Map::new();
-    result.insert("originalMessages".to_string(), original);
+    let mut result = JsObject::new();
+    result.insert_key("originalMessages", original);
     if let Some(remaining) = hook_ctx.remaining_messages {
-        result.insert(
-            "remainingMessages".to_string(),
-            Value::Number(Number::from(remaining)),
-        );
+        result.insert_key("remainingMessages", JsValue::Number(remaining as f64));
     }
-    result.insert(
-        "summaryGenerated".to_string(),
-        Value::Bool(
+    result.insert_key(
+        "summaryGenerated",
+        JsValue::Bool(
             hook_ctx
                 .summary
                 .as_ref()
                 .is_some_and(|text| !text.is_empty()),
         ),
     );
-    result.insert("compressionRatio".to_string(), Value::String(ratio));
+    result.insert_key("compressionRatio", JsValue::from_text(&ratio));
     hook_ctx
         .metadata
-        .insert("compactionResult".to_string(), Value::Object(result));
+        .insert_key("compactionResult", JsValue::Object(result));
     if let (Some(writer), Some(workspace)) = (ctx.file_writer.clone(), ctx.workspace_dir.clone()) {
         let now = clock_hhmm().await;
         let count_text = match count {
@@ -359,12 +352,12 @@ async fn post_compact(
     Ok(HookSignal::Continue)
 }
 
-fn snapshot_message_count(metadata: &Map<String, Value>) -> Option<i64> {
+fn snapshot_message_count(metadata: &JsObject) -> Option<i64> {
     metadata
         .get("preCompactSnapshot")
-        .and_then(Value::as_object)
+        .and_then(JsValue::as_object)
         .and_then(|snapshot| snapshot.get("messageCount"))
-        .and_then(Value::as_i64)
+        .and_then(JsValue::as_i64)
 }
 
 fn daily_note_path(workspace: &str) -> String {

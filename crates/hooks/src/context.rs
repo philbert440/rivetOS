@@ -1,3 +1,4 @@
+use protocol::js::JsObject;
 use protocol::{HookEventName, ToolResult};
 use serde_json::{Map, Value};
 
@@ -65,7 +66,7 @@ pub struct HookContext {
     pub agent_id: Option<String>,
     pub session_id: Option<String>,
     pub timestamp: i64,
-    pub metadata: Map<String, Value>,
+    pub metadata: JsObject,
     pub provider_id: Option<String>,
     pub model: Option<String>,
     pub messages: Option<Vec<Value>>,
@@ -118,7 +119,7 @@ impl HookContext {
             agent_id: None,
             session_id: None,
             timestamp: epoch_ms(),
-            metadata: Map::new(),
+            metadata: JsObject::new(),
             provider_id: None,
             model: None,
             messages: None,

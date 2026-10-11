@@ -6,7 +6,12 @@ use hooks::{
     HookContext, HookErrorMode, HookEventName, HookFailure, HookHandler, HookPipeline,
     HookRegistration, HookSignal,
 };
-use serde_json::json;
+use protocol::js::JsValue;
+use serde_json::{Value, json};
+
+fn same_json(value: Option<&JsValue>, expected: Value) -> bool {
+    value.is_some_and(|got| *got == expected)
+}
 
 #[tokio::test]
 async fn runs_hooks_for_the_matching_event() {
@@ -134,7 +139,7 @@ async fn passes_mutated_context_through_the_pipeline() {
             "set-flag",
             HookEventName::ProviderBefore,
             HookHandler::from_sync(|ctx| {
-                ctx.metadata.insert("rateLimited".to_string(), json!(true));
+                ctx.metadata.insert_json("rateLimited", &json!(true));
                 Ok(HookSignal::Continue)
             }),
         )
@@ -145,7 +150,7 @@ async fn passes_mutated_context_through_the_pipeline() {
             "read-flag",
             HookEventName::ProviderBefore,
             HookHandler::from_sync(|ctx| {
-                if ctx.metadata.get("rateLimited") == Some(&json!(true)) {
+                if same_json(ctx.metadata.get("rateLimited"), json!(true)) {
                     ctx.skip = Some(true);
                 }
                 Ok(HookSignal::Continue)
@@ -154,9 +159,15 @@ async fn passes_mutated_context_through_the_pipeline() {
         .priority(20),
     );
     let mut ctx = provider_before();
-    pipeline.run(&mut ctx).await;
-    assert_eq!(ctx.metadata.get("rateLimited"), Some(&json!(true)));
+    let result = pipeline.run(&mut ctx).await;
+    assert!(same_json(ctx.metadata.get("rateLimited"), json!(true)));
     assert_eq!(ctx.skip, Some(true));
+    assert_eq!(result.context.skip, Some(true));
+    assert!(same_json(
+        result.context.metadata.get("rateLimited"),
+        json!(true)
+    ));
+    assert_eq!(result.context, ctx);
 }
 
 #[tokio::test]

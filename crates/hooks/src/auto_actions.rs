@@ -1,15 +1,16 @@
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use protocol::HookEventName;
+use protocol::js::{JsObject, JsValue};
 use regress::Regex;
 use serde_json::{Map, Value};
 use thiserror::Error;
 
 use crate::context::HookContext;
 use crate::handler::{HookErrorMode, HookFailure, HookHandler, HookSignal};
-use crate::js_text::{js_replace_all, js_slice, js_string, js_truthy};
+use crate::js_text::{js_replace_all, js_string, js_truthy};
 use crate::pipeline::HookRegistration;
-use crate::regex_util::{compile_static, compile_user_pattern, is_match};
+use crate::regex_util::{JsRegExp, compile_static, compile_user_pattern, is_match};
 use crate::shell::{ShellError, ShellExecutor, ShellOutput};
 
 #[derive(Clone)]
@@ -109,7 +110,9 @@ pub fn create_custom_action_hook(
     };
     let flags = action.file_pattern_flags.clone().unwrap_or_default();
     let pattern = match action.file_pattern.clone() {
-        Some(source) => Some(compile_user_pattern(&source, &flags).map_err(AutoActionError::new)?),
+        Some(source) => Some(Mutex::new(
+            compile_user_pattern(&source, &flags).map_err(AutoActionError::new)?,
+        )),
         None => None,
     };
     Ok(auto_registration(
@@ -123,10 +126,8 @@ pub fn create_custom_action_hook(
                 return Box::pin(async { Ok(HookSignal::Continue) });
             }
             let selected = file_value(ctx.args.as_ref()).cloned();
-            if let (Some(regex), Some(value)) = (pattern.as_ref(), selected.as_ref())
-                && js_truthy(value)
-                && !is_match(regex, &js_string(value))
-            {
+            let missed = pattern_miss(pattern.as_ref(), selected.as_ref());
+            if missed {
                 return Box::pin(async { Ok(HookSignal::Continue) });
             }
             let replacement = selected.as_ref().map(js_string).unwrap_or_default();
@@ -226,16 +227,16 @@ async fn run_format(
     let command = format!("npx prettier --write \"{file_path}\" 2>/dev/null");
     match exec_shell(config, &command).await {
         Ok(result) if result.exit_code == 0 => {
-            ctx.metadata.insert(
-                "autoFormat".to_string(),
-                serde_json::json!({ "file": file_path, "status": "formatted" }),
+            ctx.metadata.insert_json(
+                "autoFormat",
+                &serde_json::json!({ "file": file_path, "status": "formatted" }),
             );
         }
         Ok(_) => {}
         Err(_) => {
-            ctx.metadata.insert(
-                "autoFormat".to_string(),
-                serde_json::json!({
+            ctx.metadata.insert_json(
+                "autoFormat",
+                &serde_json::json!({
                     "file": file_path,
                     "status": "skipped",
                     "reason": "prettier not available",
@@ -262,25 +263,28 @@ async fn run_lint(
     let command = format!("npx eslint --fix \"{file_path}\" 2>/dev/null");
     match exec_shell(config, &command).await {
         Ok(result) if result.exit_code == 0 => {
-            ctx.metadata.insert(
-                "autoLint".to_string(),
-                serde_json::json!({ "file": file_path, "status": "linted" }),
+            ctx.metadata.insert_json(
+                "autoLint",
+                &serde_json::json!({ "file": file_path, "status": "linted" }),
             );
         }
         Ok(result) => {
-            ctx.metadata.insert(
-                "autoLint".to_string(),
-                serde_json::json!({
-                    "file": file_path,
-                    "status": "issues",
-                    "output": js_slice(&result.stderr, 0, Some(500)),
-                }),
+            ctx.metadata.insert_key(
+                "autoLint",
+                record([
+                    ("file", JsValue::from_text(&file_path)),
+                    ("status", JsValue::from_text("issues")),
+                    (
+                        "output",
+                        JsValue::String(protocol::js::slice_units(&result.stderr, 0, Some(500))),
+                    ),
+                ]),
             );
         }
         Err(_) => {
-            ctx.metadata.insert(
-                "autoLint".to_string(),
-                serde_json::json!({
+            ctx.metadata.insert_json(
+                "autoLint",
+                &serde_json::json!({
                     "file": file_path,
                     "status": "skipped",
                     "reason": "eslint not available",
@@ -315,19 +319,22 @@ async fn run_test(
             } else {
                 "failed"
             };
-            ctx.metadata.insert(
-                "autoTest".to_string(),
-                serde_json::json!({
-                    "file": file_path,
-                    "status": status,
-                    "output": js_slice(&result.stdout, -500, None),
-                }),
+            ctx.metadata.insert_key(
+                "autoTest",
+                record([
+                    ("file", JsValue::from_text(&file_path)),
+                    ("status", JsValue::from_text(status)),
+                    (
+                        "output",
+                        JsValue::String(protocol::js::slice_units(&result.stdout, -500, None)),
+                    ),
+                ]),
             );
         }
         Err(_) => {
-            ctx.metadata.insert(
-                "autoTest".to_string(),
-                serde_json::json!({
+            ctx.metadata.insert_json(
+                "autoTest",
+                &serde_json::json!({
                     "file": file_path,
                     "status": "skipped",
                     "reason": "test runner not available",
@@ -356,18 +363,21 @@ async fn run_git_check(
             } else {
                 "issues"
             };
-            ctx.metadata.insert(
-                "autoGitCheck".to_string(),
-                serde_json::json!({
-                    "status": status,
-                    "output": js_slice(&result.stdout, -300, None),
-                }),
+            ctx.metadata.insert_key(
+                "autoGitCheck",
+                record([
+                    ("status", JsValue::from_text(status)),
+                    (
+                        "output",
+                        JsValue::String(protocol::js::slice_units(&result.stdout, -300, None)),
+                    ),
+                ]),
             );
         }
         Err(_) => {
-            ctx.metadata.insert(
-                "autoGitCheck".to_string(),
-                serde_json::json!({
+            ctx.metadata.insert_json(
+                "autoGitCheck",
+                &serde_json::json!({
                     "status": "skipped",
                     "reason": "tsc not available",
                 }),
@@ -392,20 +402,23 @@ async fn finish_custom(
             } else {
                 "failed"
             };
-            ctx.metadata.insert(
-                key,
-                serde_json::json!({
-                    "status": status,
-                    "output": js_slice(&result.stdout, -300, None),
-                }),
+            ctx.metadata.insert_key(
+                &key,
+                record([
+                    ("status", JsValue::from_text(status)),
+                    (
+                        "output",
+                        JsValue::String(protocol::js::slice_units(&result.stdout, -300, None)),
+                    ),
+                ]),
             );
             Ok(HookSignal::Continue)
         }
         Err(err) => {
             let message = err.message.clone();
-            ctx.metadata.insert(
-                key,
-                serde_json::json!({
+            ctx.metadata.insert_json(
+                &key,
+                &serde_json::json!({
                     "status": "error",
                     "message": message,
                 }),
@@ -449,6 +462,29 @@ fn string_arg(args: Option<&Map<String, Value>>, key: &str) -> String {
         Some(Value::String(text)) => text.clone(),
         _ => String::new(),
     }
+}
+
+fn pattern_miss(pattern: Option<&Mutex<JsRegExp>>, value: Option<&Value>) -> bool {
+    let Some(regex) = pattern else {
+        return false;
+    };
+    let Some(value) = value else {
+        return false;
+    };
+    if !js_truthy(value) {
+        return false;
+    }
+    let text = js_string(value);
+    let mut state = regex.lock().unwrap_or_else(|err| err.into_inner());
+    !state.test(&text)
+}
+
+fn record<const N: usize>(entries: [(&str, JsValue); N]) -> JsValue {
+    let mut object = JsObject::new();
+    for (key, value) in entries {
+        object.insert_key(key, value);
+    }
+    JsValue::Object(object)
 }
 
 fn pattern_matches(pattern: Option<&Regex>, text: &str) -> bool {

@@ -24,11 +24,59 @@ pub fn is_match(regex: &Regex, text: &str) -> bool {
     regex.find(text).is_some()
 }
 
-pub fn compile_user_pattern(source: &str, flags: &str) -> Result<Regex, String> {
+#[derive(Debug)]
+pub struct JsRegExp {
+    regex: Regex,
+    global: bool,
+    sticky: bool,
+    last_index: usize,
+}
+
+impl JsRegExp {
+    pub fn test(&mut self, text: &str) -> bool {
+        let units: Vec<u16> = text.encode_utf16().collect();
+        let stateful = self.global || self.sticky;
+        let start = if stateful { self.last_index } else { 0 };
+        if start > units.len() {
+            if stateful {
+                self.last_index = 0;
+            }
+            return false;
+        }
+        let matched = self
+            .regex
+            .find_from_utf16(&units, start)
+            .next()
+            .filter(|hit| !self.sticky || hit.start() == start);
+        match matched {
+            Some(hit) => {
+                if stateful {
+                    self.last_index = hit.end();
+                }
+                true
+            }
+            None => {
+                if stateful {
+                    self.last_index = 0;
+                }
+                false
+            }
+        }
+    }
+}
+
+pub fn compile_user_pattern(source: &str, flags: &str) -> Result<JsRegExp, String> {
     if let Some(message) = flag_error(flags) {
         return Err(message);
     }
-    compile_regex(source, flags).map_err(|err| js_regexp_message(source, flags, &err))
+    let regex =
+        compile_regex(source, flags).map_err(|err| js_regexp_message(source, flags, &err))?;
+    Ok(JsRegExp {
+        regex,
+        global: flags.contains('g'),
+        sticky: flags.contains('y'),
+        last_index: 0,
+    })
 }
 
 fn flag_error(flags: &str) -> Option<String> {
@@ -220,5 +268,25 @@ mod tests {
             "Invalid flags supplied to RegExp constructor 'z'"
         );
         assert!(super::compile_user_pattern(r"\.ts$", "i").is_ok());
+        let mut global = super::compile_user_pattern(r"\.ts$", "g").expect("global");
+        assert!(global.test("a.ts"));
+        assert_eq!(global.last_index, 4);
+        assert!(!global.test("a.ts"));
+        assert_eq!(global.last_index, 0);
+        assert!(global.test("a.ts"));
+        let mut sticky_tail = super::compile_user_pattern(r"\.ts$", "y").expect("sticky");
+        assert!(!sticky_tail.test("a.ts"));
+        assert_eq!(sticky_tail.last_index, 0);
+        let mut sticky = super::compile_user_pattern("a.ts", "y").expect("sticky");
+        assert!(sticky.test("a.ts"));
+        assert!(!sticky.test("a.ts"));
+        assert!(sticky.test("a.ts"));
+        let mut plain = super::compile_user_pattern(r"\.ts$", "").expect("plain");
+        assert!(plain.test("a.ts"));
+        assert!(plain.test("a.ts"));
+        let mut wide = super::compile_user_pattern("a", "g").expect("wide");
+        assert!(wide.test("😀a"));
+        assert_eq!(wide.last_index, 3);
+        assert!(!wide.test("😀a"));
     }
 }

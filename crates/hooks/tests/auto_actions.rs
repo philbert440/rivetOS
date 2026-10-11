@@ -6,7 +6,12 @@ use hooks::{
     create_auto_action_hooks, create_auto_format_hook, create_auto_git_check_hook,
     create_auto_lint_hook, create_auto_test_hook, create_custom_action_hook,
 };
-use serde_json::json;
+use protocol::js::JsValue;
+use serde_json::{Value, json};
+
+fn same_json(value: Option<&JsValue>, expected: Value) -> bool {
+    value.is_some_and(|got| *got == expected)
+}
 
 fn config(shell: Arc<ScriptShell>) -> AutoActionConfig {
     AutoActionConfig {
@@ -39,10 +44,10 @@ async fn auto_format_matches_prettier_commands_and_soft_fail() {
         "npx prettier --write \"/opt/rivetos/src/index.ts\" 2>/dev/null"
     );
     assert_eq!(shell.calls()[0].1, None);
-    assert_eq!(
+    assert!(same_json(
         ctx.metadata.get("autoFormat"),
-        Some(&json!({"file": "/opt/rivetos/src/index.ts", "status": "formatted"}))
-    );
+        json!({"file": "/opt/rivetos/src/index.ts", "status": "formatted"})
+    ));
 
     let shell = ScriptShell::ok(0, "", "");
     let pipeline = HookPipeline::new();
@@ -77,14 +82,14 @@ async fn auto_format_matches_prettier_commands_and_soft_fail() {
     pipeline.register(create_auto_format_hook(config(shell)));
     let mut ctx = tool_after("file_write", json!({"path": "/src/test.ts"}), false);
     pipeline.run(&mut ctx).await;
-    assert_eq!(
+    assert!(same_json(
         ctx.metadata.get("autoFormat"),
-        Some(&json!({
+        json!({
             "file": "/src/test.ts",
             "status": "skipped",
             "reason": "prettier not available"
-        }))
-    );
+        })
+    ));
 
     let shell = ScriptShell::ok(2, "", "nope");
     let pipeline = HookPipeline::new();
@@ -113,24 +118,24 @@ async fn auto_lint_reports_issues_and_skips_css() {
         shell.calls()[0].0,
         "npx eslint --fix \"/src/index.ts\" 2>/dev/null"
     );
-    assert_eq!(
+    assert!(same_json(
         ctx.metadata.get("autoLint"),
-        Some(&json!({"file": "/src/index.ts", "status": "linted"}))
-    );
+        json!({"file": "/src/index.ts", "status": "linted"})
+    ));
 
     let shell = ScriptShell::sequence(vec![Ok(output(1, "", "Missing semicolon"))]);
     let pipeline = HookPipeline::new();
     pipeline.register(create_auto_lint_hook(config(shell)));
     let mut ctx = tool_after("file_write", json!({"path": "/src/index.ts"}), false);
     pipeline.run(&mut ctx).await;
-    assert_eq!(
+    assert!(same_json(
         ctx.metadata.get("autoLint"),
-        Some(&json!({
+        json!({
             "file": "/src/index.ts",
             "status": "issues",
             "output": "Missing semicolon"
-        }))
-    );
+        })
+    ));
 
     let shell = ScriptShell::ok(0, "", "");
     let pipeline = HookPipeline::new();
@@ -155,12 +160,12 @@ async fn auto_test_runs_related_tests_and_skips_specs() {
         shell.calls()[0].0,
         "npx vitest run --related \"/opt/rivetos/packages/core/src/domain/hooks.ts\" --reporter=verbose 2>&1 | tail -20"
     );
-    assert_eq!(
+    assert!(same_json(
         ctx.metadata
             .get("autoTest")
             .and_then(|value| value.get("status")),
-        Some(&json!("passed"))
-    );
+        json!("passed")
+    ));
 
     let shell = ScriptShell::sequence(vec![Ok(output(1, "FAIL: expected true to be false", ""))]);
     let pipeline = HookPipeline::new();
@@ -171,12 +176,12 @@ async fn auto_test_runs_related_tests_and_skips_specs() {
         false,
     );
     pipeline.run(&mut ctx).await;
-    assert_eq!(
+    assert!(same_json(
         ctx.metadata
             .get("autoTest")
             .and_then(|value| value.get("status")),
-        Some(&json!("failed"))
-    );
+        json!("failed")
+    ));
 
     let shell = ScriptShell::ok(0, "", "");
     let pipeline = HookPipeline::new();
@@ -201,12 +206,12 @@ async fn auto_git_check_runs_tsc_after_commit() {
     let mut ctx = tool_after("shell", json!({"command": "git commit -m \"test\""}), false);
     pipeline.run(&mut ctx).await;
     assert_eq!(shell.calls()[0].0, "npx tsc --noEmit 2>&1 | tail -10");
-    assert_eq!(
+    assert!(same_json(
         ctx.metadata
             .get("autoGitCheck")
             .and_then(|value| value.get("status")),
-        Some(&json!("passed"))
-    );
+        json!("passed")
+    ));
 
     let shell = ScriptShell::sequence(vec![Ok(output(1, "error TS2345", ""))]);
     let pipeline = HookPipeline::new();
@@ -217,12 +222,12 @@ async fn auto_git_check_runs_tsc_after_commit() {
         false,
     );
     pipeline.run(&mut ctx).await;
-    assert_eq!(
+    assert!(same_json(
         ctx.metadata
             .get("autoGitCheck")
             .and_then(|value| value.get("status")),
-        Some(&json!("issues"))
-    );
+        json!("issues")
+    ));
 
     let shell = ScriptShell::ok(0, "", "");
     let pipeline = HookPipeline::new();
@@ -255,12 +260,12 @@ async fn custom_actions_interpolate_filter_and_soft_fail() {
     let mut ctx = tool_after("file_write", json!({"path": "/test.ts"}), false);
     pipeline.run(&mut ctx).await;
     assert_eq!(shell.calls()[0].0, "echo /test.ts");
-    assert_eq!(
+    assert!(same_json(
         ctx.metadata
             .get("auto:my-action")
             .and_then(|value| value.get("status")),
-        Some(&json!("success"))
-    );
+        json!("success")
+    ));
 
     let shell = ScriptShell::ok(0, "", "");
     let pipeline = HookPipeline::new();
@@ -305,10 +310,10 @@ async fn custom_actions_interpolate_filter_and_soft_fail() {
     let mut ctx = tool_after("file_write", json!({"path": "/test.ts"}), false);
     let result = pipeline.run(&mut ctx).await;
     assert!(!result.aborted);
-    assert_eq!(
+    assert!(same_json(
         ctx.metadata.get("auto:soft"),
-        Some(&json!({"status": "error", "message": "boom"}))
-    );
+        json!({"status": "error", "message": "boom"})
+    ));
 
     let shell = ScriptShell::fail("boom");
     let pipeline = HookPipeline::new();
@@ -422,4 +427,102 @@ fn create_auto_action_hooks_is_opt_in() {
         ),
         Ok(_) => panic!("invalid filePattern must fail registration"),
     }
+}
+
+#[tokio::test]
+async fn global_file_pattern_remembers_last_index() {
+    let shell = ScriptShell::sequence(vec![
+        Ok(output(0, "ok", "")),
+        Ok(output(0, "ok", "")),
+        Ok(output(0, "ok", "")),
+    ]);
+    let pipeline = HookPipeline::new();
+    pipeline.register(
+        create_custom_action_hook(
+            AutoAction {
+                id: "global".to_string(),
+                description: "global".to_string(),
+                tools: None,
+                file_pattern: Some(r"\.ts$".to_string()),
+                file_pattern_flags: Some("g".to_string()),
+                command: "echo {{file}}".to_string(),
+                timeout_ms: None,
+                soft_fail: true,
+            },
+            config(shell.clone()),
+        )
+        .expect("hook"),
+    );
+    let mut first = tool_after("file_write", json!({"path": "a.ts"}), false);
+    pipeline.run(&mut first).await;
+    assert_eq!(shell.calls().len(), 1);
+    let mut second = tool_after("file_write", json!({"path": "a.ts"}), false);
+    pipeline.run(&mut second).await;
+    assert_eq!(shell.calls().len(), 1);
+    let mut third = tool_after("file_write", json!({"path": "a.ts"}), false);
+    pipeline.run(&mut third).await;
+    assert_eq!(shell.calls().len(), 2);
+}
+
+#[tokio::test]
+async fn sticky_file_pattern_matches_only_at_last_index() {
+    let shell = ScriptShell::ok(0, "ok", "");
+    let pipeline = HookPipeline::new();
+    pipeline.register(
+        create_custom_action_hook(
+            AutoAction {
+                id: "sticky".to_string(),
+                description: "sticky".to_string(),
+                tools: None,
+                file_pattern: Some(r"\.ts$".to_string()),
+                file_pattern_flags: Some("y".to_string()),
+                command: "echo {{file}}".to_string(),
+                timeout_ms: None,
+                soft_fail: true,
+            },
+            config(shell.clone()),
+        )
+        .expect("hook"),
+    );
+    let mut ctx = tool_after("file_write", json!({"path": "a.ts"}), false);
+    pipeline.run(&mut ctx).await;
+    assert!(shell.calls().is_empty());
+}
+
+#[tokio::test]
+async fn action_output_tail_keeps_a_split_surrogate() {
+    let stdout = format!("😀{}", "a".repeat(299));
+    let shell = ScriptShell::ok(0, &stdout, "");
+    let pipeline = HookPipeline::new();
+    pipeline.register(
+        create_custom_action_hook(
+            AutoAction {
+                id: "tail".to_string(),
+                description: "tail".to_string(),
+                tools: None,
+                file_pattern: None,
+                file_pattern_flags: None,
+                command: "echo {{file}}".to_string(),
+                timeout_ms: None,
+                soft_fail: true,
+            },
+            config(shell),
+        )
+        .expect("hook"),
+    );
+    let mut ctx = tool_after("file_write", json!({"path": "a.ts"}), false);
+    pipeline.run(&mut ctx).await;
+    let stored = ctx
+        .metadata
+        .get("auto:tail")
+        .and_then(|value| value.get("output"))
+        .expect("output");
+    let protocol::js::JsValue::String(text) = stored else {
+        panic!("output is a string");
+    };
+    assert_eq!(text.units().len(), 300);
+    assert_eq!(text.units()[0], 0xDE00);
+    let wire = protocol::js::stringify(&protocol::js::JsValue::String(text.clone()));
+    let parsed = protocol::js::parse(&wire).expect("parse");
+    assert_eq!(parsed, protocol::js::JsValue::String(text.clone()));
 }

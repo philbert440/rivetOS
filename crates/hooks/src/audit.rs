@@ -321,5 +321,21 @@ mod tests {
         assert!(!text.contains("agentId"));
         assert!(text.contains("\"isError\":false"));
         assert!(text.contains("\"args\":{}"));
+        let mut units = vec![u16::from(b'a'); 499];
+        units.push(0xD83D);
+        units.extend("… [501 chars]".encode_utf16());
+        let mut object = JsObject::new();
+        object.insert(
+            protocol::js::JsString::from_text("note"),
+            JsValue::String(protocol::js::JsString::from_units(units)),
+        );
+        let entry = super::AuditEntry {
+            args: JsValue::Object(object),
+            ..entry
+        };
+        let line = serde_json::to_string(&entry).expect("json");
+        assert!(line.contains(r"\ud83d"));
+        let parsed: super::AuditEntry = serde_json::from_str(&line).expect("parse");
+        assert_eq!(parsed.args, entry.args);
     }
 }

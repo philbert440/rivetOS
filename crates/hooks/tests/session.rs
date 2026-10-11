@@ -7,7 +7,12 @@ use hooks::{
     create_pre_compact_hook, create_session_hooks, create_session_start_hook,
     create_session_summary_hook,
 };
-use serde_json::json;
+use protocol::js::JsValue;
+use serde_json::{Value, json};
+
+fn same_json(value: Option<&JsValue>, expected: Value) -> bool {
+    value.is_some_and(|got| *got == expected)
+}
 
 fn files_with_read(note: Result<Option<String>, hooks::FileError>) -> Arc<ScriptFiles> {
     let files = ScriptFiles::new();
@@ -55,12 +60,12 @@ async fn session_start_records_metadata_and_daily_context() {
     ctx.user_id = Some("user-1".to_string());
     ctx.timestamp = 1_700_000_000_000;
     pipeline.run(&mut ctx).await;
-    assert_eq!(
+    assert!(same_json(
         ctx.metadata.get("sessionStartTime"),
-        Some(&json!(1_700_000_000_000_i64))
-    );
-    assert_eq!(ctx.metadata.get("platform"), Some(&json!("telegram")));
-    assert_eq!(ctx.metadata.get("userId"), Some(&json!("user-1")));
+        json!(1_700_000_000_000_i64)
+    ));
+    assert!(same_json(ctx.metadata.get("platform"), json!("telegram")));
+    assert!(same_json(ctx.metadata.get("userId"), json!("user-1")));
     assert!(ctx.metadata.get("dailyContext").is_none());
 
     let files = files_with_read(Ok(Some("# Today\n- Worked on hooks".to_string())));
@@ -107,6 +112,28 @@ async fn session_start_records_metadata_and_daily_context() {
         .and_then(|value| value.as_str())
         .expect("daily");
     assert_eq!(hooks::utf16_len(daily), 2000);
+
+    let split = format!("{}😀", "a".repeat(1999));
+    let files = files_with_read(Ok(Some(split)));
+    let pipeline = HookPipeline::new();
+    pipeline.register(create_session_start_hook(context(
+        None,
+        Some(files),
+        Some("/workspace"),
+    )));
+    let mut ctx = HookContext::session_start();
+    pipeline.run(&mut ctx).await;
+    let stored = ctx.metadata.get("dailyContext").expect("daily");
+    let protocol::js::JsValue::String(text) = stored else {
+        panic!("daily context is a string");
+    };
+    assert_eq!(text.units().len(), 2000);
+    assert_eq!(text.units()[1999], 0xD83D);
+    let wire = protocol::js::stringify(&protocol::js::JsValue::String(text.clone()));
+    assert!(wire.contains(r"\ud83d"));
+    assert!(!wire.contains(r"\ude00"));
+    let parsed = protocol::js::parse(&wire).expect("parse");
+    assert_eq!(parsed, protocol::js::JsValue::String(text.clone()));
 }
 
 #[tokio::test]
@@ -120,7 +147,7 @@ async fn session_summary_writes_the_daily_note_shape() {
     )));
     let mut ctx = end_ctx();
     pipeline.run(&mut ctx).await;
-    assert_eq!(ctx.metadata.get("summaryWritten"), Some(&json!(true)));
+    assert!(same_json(ctx.metadata.get("summaryWritten"), json!(true)));
     let appended = files.appends();
     assert_eq!(appended.len(), 1);
     assert!(appended[0].0.contains("/memory/"));
@@ -143,7 +170,7 @@ async fn session_summary_writes_the_daily_note_shape() {
     )));
     let mut ctx = end_ctx();
     pipeline.run(&mut ctx).await;
-    assert_eq!(ctx.metadata.get("summaryWritten"), Some(&json!(false)));
+    assert!(same_json(ctx.metadata.get("summaryWritten"), json!(false)));
 
     let pipeline = HookPipeline::new();
     pipeline.register(create_session_summary_hook(context(
@@ -206,12 +233,12 @@ async fn auto_commit_uses_the_typescript_git_commands() {
         shell.calls()[2].0,
         "git commit -m \"auto: session end (opus, 5 turns)\""
     );
-    assert_eq!(
+    assert!(same_json(
         ctx.metadata
             .get("autoCommit")
             .and_then(|value| value.get("status")),
-        Some(&json!("committed"))
-    );
+        json!("committed")
+    ));
 
     let shell = super::common::ScriptShell::ok(0, "   \n", "");
     let pipeline = HookPipeline::new();
@@ -222,10 +249,10 @@ async fn auto_commit_uses_the_typescript_git_commands() {
     )));
     let mut ctx = end_ctx();
     pipeline.run(&mut ctx).await;
-    assert_eq!(
+    assert!(same_json(
         ctx.metadata.get("autoCommit"),
-        Some(&json!({"status": "clean", "message": "No uncommitted changes"}))
-    );
+        json!({"status": "clean", "message": "No uncommitted changes"})
+    ));
 
     let shell = super::common::ScriptShell::sequence(vec![
         Ok(hooks::ShellOutput {
@@ -252,12 +279,12 @@ async fn auto_commit_uses_the_typescript_git_commands() {
     )));
     let mut ctx = end_ctx();
     pipeline.run(&mut ctx).await;
-    assert_eq!(
+    assert!(same_json(
         ctx.metadata
             .get("autoCommit")
             .and_then(|value| value.get("status")),
-        Some(&json!("failed"))
-    );
+        json!("failed")
+    ));
 
     let shell = super::common::ScriptShell::fail("git missing");
     let pipeline = HookPipeline::new();
@@ -268,10 +295,10 @@ async fn auto_commit_uses_the_typescript_git_commands() {
     )));
     let mut ctx = end_ctx();
     pipeline.run(&mut ctx).await;
-    assert_eq!(
+    assert!(same_json(
         ctx.metadata.get("autoCommit"),
-        Some(&json!({"status": "error", "message": "git missing"}))
-    );
+        json!({"status": "error", "message": "git missing"})
+    ));
     let _ = ShellError::new("git missing");
 }
 
@@ -282,10 +309,10 @@ async fn compaction_hooks_carry_the_snapshot_and_ratio() {
     let mut ctx = HookContext::compact_before(150);
     ctx.timestamp = 99;
     pipeline.run(&mut ctx).await;
-    assert_eq!(
+    assert!(same_json(
         ctx.metadata.get("preCompactSnapshot"),
-        Some(&json!({"messageCount": 150, "timestamp": 99}))
-    );
+        json!({"messageCount": 150, "timestamp": 99})
+    ));
 
     let files = ScriptFiles::new();
     let pipeline = HookPipeline::new();
@@ -296,20 +323,20 @@ async fn compaction_hooks_carry_the_snapshot_and_ratio() {
     )));
     let mut ctx = HookContext::compact_after(10);
     ctx.summary = Some("Session discussed hooks and testing.".to_string());
-    ctx.metadata.insert(
-        "preCompactSnapshot".to_string(),
-        json!({"messageCount": 100, "timestamp": 1}),
+    ctx.metadata.insert_json(
+        "preCompactSnapshot",
+        &json!({"messageCount": 100, "timestamp": 1}),
     );
     pipeline.run(&mut ctx).await;
-    assert_eq!(
+    assert!(same_json(
         ctx.metadata.get("compactionResult"),
-        Some(&json!({
+        json!({
             "originalMessages": 100,
             "remainingMessages": 10,
             "summaryGenerated": true,
             "compressionRatio": "90.0%"
-        }))
-    );
+        })
+    ));
     let logged = files.appends()[0].1.clone();
     assert!(logged.contains("Compaction"));
     assert!(logged.contains("100"));
@@ -326,12 +353,12 @@ async fn compaction_hooks_carry_the_snapshot_and_ratio() {
     let mut ctx = HookContext::compact_after(10);
     ctx.summary = Some("Session discussed hooks and testing.".to_string());
     pipeline.run(&mut ctx).await;
-    assert_eq!(
+    assert!(same_json(
         ctx.metadata
             .get("compactionResult")
             .and_then(|value| value.get("originalMessages")),
-        Some(&json!("unknown"))
-    );
+        json!("unknown")
+    ));
 
     let files = ScriptFiles::new();
     let pipeline = HookPipeline::new();
@@ -347,29 +374,31 @@ async fn compaction_hooks_carry_the_snapshot_and_ratio() {
     after.summary = Some("kept".to_string());
     after.metadata = before.metadata.clone();
     pipeline.run(&mut after).await;
-    assert_eq!(
+    assert!(same_json(
         after.metadata.get("compactionResult"),
-        Some(&json!({
+        json!({
             "originalMessages": 200,
             "remainingMessages": 15,
             "summaryGenerated": true,
             "compressionRatio": "92.5%"
-        }))
-    );
+        })
+    ));
 
     let pipeline = HookPipeline::new();
     pipeline.register(create_post_compact_hook(context(None, None, None)));
     let mut ctx = HookContext::compact_after(15);
-    ctx.metadata.insert(
-        "preCompactSnapshot".to_string(),
-        json!({"messageCount": 16, "timestamp": 1}),
+    ctx.metadata.insert_json(
+        "preCompactSnapshot",
+        &json!({"messageCount": 16, "timestamp": 1}),
     );
     pipeline.run(&mut ctx).await;
-    assert_eq!(
-        ctx.metadata
-            .get("compactionResult")
-            .and_then(|value| value.get("compressionRatio")),
-        Some(&json!("6.3%")),
+    assert!(
+        same_json(
+            ctx.metadata
+                .get("compactionResult")
+                .and_then(|value| value.get("compressionRatio")),
+            json!("6.3%")
+        ),
         "15 of 16 is exactly 6.25 percent and toFixed(1) is 6.3"
     );
 }

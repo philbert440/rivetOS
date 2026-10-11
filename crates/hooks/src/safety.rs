@@ -1,6 +1,7 @@
 use std::sync::{Arc, OnceLock};
 
 use protocol::HookEventName;
+use protocol::js::{JsObject, JsValue};
 use regress::Regex;
 use serde_json::{Map, Value};
 
@@ -209,18 +210,19 @@ fn shell_command_folded(args: &Map<String, Value>) -> String {
     protocol::js::js_trim(&raw).to_lowercase()
 }
 
-pub fn push_warning(metadata: &mut Map<String, Value>, text: &str) -> Result<(), HookFailure> {
-    let warning = Value::String(format!("⚠️ {text}"));
-    match metadata.get_mut("warnings") {
-        None => {
-            metadata.insert("warnings".to_string(), Value::Array(vec![warning]));
-            Ok(())
+pub fn push_warning(metadata: &mut JsObject, text: &str) -> Result<(), HookFailure> {
+    let warning = JsValue::from_text(&format!("⚠️ {text}"));
+    if let Some(slot) = metadata.get_mut("warnings") {
+        match slot {
+            JsValue::Array(items) => {
+                items.push(warning);
+                Ok(())
+            }
+            _ => Err(HookFailure::new("warnings is not an array")),
         }
-        Some(Value::Array(items)) => {
-            items.push(warning);
-            Ok(())
-        }
-        Some(_) => Err(HookFailure::new("warnings is not an array")),
+    } else {
+        metadata.insert_key("warnings", JsValue::Array(vec![warning]));
+        Ok(())
     }
 }
 
@@ -429,6 +431,7 @@ fn custom_rules(ctx: &mut HookContext, rules: &[SafetyRule]) -> Result<HookSigna
 mod tests {
     use super::{BLOCKED_SHELL_PATTERNS, WARN_SHELL_PATTERNS, normalize_fence_path};
     use crate::regex_util::{compile_regex, is_match};
+    use protocol::js::{JsObject, JsValue};
 
     #[test]
     fn pattern_tables_match_the_typescript_lists() {
@@ -474,11 +477,8 @@ mod tests {
             ..super::SafetyHooksConfig::default()
         });
         assert!(disabled.is_empty());
-        let mut args = serde_json::Map::new();
-        args.insert(
-            "warnings".to_string(),
-            serde_json::Value::String("nope".to_string()),
-        );
-        assert!(super::push_warning(&mut args, "x").is_err());
+        let mut metadata = JsObject::new();
+        metadata.insert_key("warnings", JsValue::from_text("nope"));
+        assert!(super::push_warning(&mut metadata, "x").is_err());
     }
 }

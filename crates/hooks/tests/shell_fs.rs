@@ -1,7 +1,9 @@
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use hooks::{
-    FileWriter, FsFileWriter, OUTPUT_CAP, ProcessShell, SHELL_TIMEOUT, ShellExecutor, ShellOutput,
+    FileWriter, FsFileWriter, HookContext, HookPipeline, OUTPUT_CAP, ProcessShell, SHELL_TIMEOUT,
+    SessionHooksContext, ShellExecutor, ShellOutput, create_session_start_hook,
 };
 
 #[tokio::test]
@@ -120,5 +122,56 @@ async fn file_writer_creates_parents_and_swallows_missing_reads() {
         .await
         .expect("missing");
     assert_eq!(missing, None);
+    let invalid = dir.join("memory").join(format!("{}.md", hooks::utc_date()));
+    let invalid_text = invalid.to_str().expect("utf8");
+    tokio::fs::write(invalid_text, b"hello \xff world")
+        .await
+        .expect("bytes");
+    let replaced = writer.read(invalid_text).await.expect("replaced");
+    assert_eq!(replaced.as_deref(), Some("hello \u{FFFD} world"));
+    let workspace = dir.to_str().expect("utf8").to_string();
+    let pipeline = HookPipeline::new();
+    pipeline.register(create_session_start_hook(SessionHooksContext {
+        shell: None,
+        file_writer: Some(Arc::new(FsFileWriter)),
+        workspace_dir: Some(workspace),
+    }));
+    let mut ctx = HookContext::session_start();
+    pipeline.run(&mut ctx).await;
+    assert_eq!(
+        ctx.metadata
+            .get("dailyContext")
+            .and_then(|value| value.as_str()),
+        Some("hello \u{FFFD} world")
+    );
+    let _ = tokio::fs::remove_dir_all(&dir).await;
+}
+
+#[tokio::test]
+async fn cancelling_a_shell_kills_the_process_group() {
+    let dir = super::common::make_temp().await;
+    let shell = ProcessShell::new(&dir).with_timeout(Duration::from_secs(30));
+    let task = tokio::spawn(async move {
+        shell
+            .exec(
+                "printf go > started; (sleep 3; printf leaked > leaked) & printf bg > bg; sleep 30",
+                None,
+            )
+            .await
+    });
+    let bg = dir.join("bg");
+    let mut saw_bg = false;
+    for _ in 0..100 {
+        if tokio::fs::metadata(&bg).await.is_ok() {
+            saw_bg = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(saw_bg);
+    task.abort();
+    let _ = task.await;
+    tokio::time::sleep(Duration::from_millis(3500)).await;
+    assert!(tokio::fs::metadata(dir.join("leaked")).await.is_err());
     let _ = tokio::fs::remove_dir_all(&dir).await;
 }

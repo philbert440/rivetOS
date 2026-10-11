@@ -13,8 +13,9 @@ pub struct HookErrorRecord {
     pub error: HookFailure,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct HookPipelineResult {
+    pub context: HookContext,
     pub aborted: bool,
     pub skipped: bool,
     pub errors: Vec<HookErrorRecord>,
@@ -176,6 +177,7 @@ impl HookPipeline {
             inner.sorted.get(&ctx.event).cloned().unwrap_or_default()
         };
         let mut result = HookPipelineResult {
+            context: ctx.clone(),
             aborted: false,
             skipped: false,
             errors: Vec::new(),
@@ -237,7 +239,7 @@ impl HookPipeline {
                                 error: failure,
                             });
                             result.aborted = true;
-                            return result;
+                            return finish(ctx, result);
                         }
                         HookErrorMode::Retry => {
                             let retrying = format!("Hook \"{}\" retrying...", hook.id);
@@ -250,11 +252,11 @@ impl HookPipeline {
                                     result.ran.push(hook.id.clone());
                                     if signal == HookSignal::Abort {
                                         result.aborted = true;
-                                        return result;
+                                        return finish(ctx, result);
                                     }
                                     if signal == HookSignal::Skip {
                                         result.skipped = true;
-                                        return result;
+                                        return finish(ctx, result);
                                     }
                                 }
                                 Err(retry_failure) => {
@@ -284,8 +286,13 @@ impl HookPipeline {
                 }
             }
         }
-        result
+        finish(ctx, result)
     }
+}
+
+fn finish(ctx: &HookContext, mut result: HookPipelineResult) -> HookPipelineResult {
+    result.context = ctx.clone();
+    result
 }
 
 impl Default for HookPipeline {

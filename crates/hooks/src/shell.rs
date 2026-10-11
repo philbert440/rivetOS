@@ -95,10 +95,13 @@ impl ProcessShell {
         let stdout_slot = std::sync::Arc::clone(&stdout_buf);
         let stderr_slot = std::sync::Arc::clone(&stderr_buf);
         let run = async move {
+            let mut guard = GroupGuard::arm(pid);
             let out = read_capped(stdout, cap, stdout_slot, pid);
             let err = read_capped(stderr, cap, stderr_slot, pid);
             let waited = child.wait();
-            tokio::join!(waited, out, err)
+            let joined = tokio::join!(waited, out, err);
+            guard.disarm();
+            joined
         };
         match tokio::time::timeout(self.timeout, run).await {
             Ok((Ok(status), _, _)) => {
@@ -183,6 +186,48 @@ fn take_text(slot: &Mutex<CapBuf>) -> (String, bool) {
         String::from_utf8_lossy(&guard.bytes).into_owned(),
         guard.overflow,
     )
+}
+
+struct GroupGuard {
+    pid: Option<u32>,
+}
+
+impl GroupGuard {
+    fn arm(pid: Option<u32>) -> Self {
+        Self { pid }
+    }
+
+    fn disarm(&mut self) {
+        self.pid = None;
+    }
+}
+
+impl Drop for GroupGuard {
+    fn drop(&mut self) {
+        if let Some(pid) = self.pid.take() {
+            kill_group_detached(pid);
+        }
+    }
+}
+
+fn kill_group_detached(pid: u32) {
+    let target = format!("-{pid}");
+    let command = target.clone();
+    let started = std::thread::Builder::new()
+        .name("hook-kill-group".to_string())
+        .spawn(move || kill_group_blocking(&command));
+    if started.is_err() {
+        kill_group_blocking(&target);
+    }
+}
+
+fn kill_group_blocking(target: &str) {
+    let _ = std::process::Command::new("kill")
+        .args(["-s", "KILL", "--", target])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
 }
 
 async fn kill_group(pid: u32) {

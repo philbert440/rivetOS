@@ -5,25 +5,9 @@ pub fn utf16_len(text: &str) -> usize {
 }
 
 pub fn js_slice(text: &str, start: i64, end: Option<i64>) -> String {
-    let units: Vec<u16> = text.encode_utf16().collect();
-    let len = units.len() as i64;
-    let start_index = clamp_index(start, len);
-    let end_index = end
-        .map(|value| clamp_index(value, len))
-        .unwrap_or(units.len());
-    if start_index >= end_index {
-        return String::new();
-    }
-    String::from_utf16_lossy(&units[start_index..end_index])
-}
-
-fn clamp_index(index: i64, len: i64) -> usize {
-    let bounded = if index < 0 {
-        (len + index).max(0)
-    } else {
-        index.min(len)
-    };
-    usize::try_from(bounded).unwrap_or(0)
+    protocol::js::slice_units(text, start, end)
+        .to_utf8()
+        .to_string()
 }
 
 pub fn js_truthy(value: &Value) -> bool {

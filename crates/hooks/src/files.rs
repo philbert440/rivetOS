@@ -55,8 +55,8 @@ impl FileWriter for FsFileWriter {
 
     fn read<'a>(&'a self, path: &'a str) -> BoxFuture<'a, Result<Option<String>, FileError>> {
         Box::pin(async move {
-            match tokio::time::timeout(IO_DEADLINE, tokio::fs::read_to_string(path)).await {
-                Ok(Ok(text)) => Ok(Some(text)),
+            match tokio::time::timeout(IO_DEADLINE, tokio::fs::read(path)).await {
+                Ok(Ok(bytes)) => Ok(Some(String::from_utf8_lossy(&bytes).into_owned())),
                 Ok(Err(_)) => Ok(None),
                 Err(_) => {
                     tracing::warn!("file read timed out");

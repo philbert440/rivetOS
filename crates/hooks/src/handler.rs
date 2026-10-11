@@ -138,13 +138,13 @@ mod tests {
     async fn sync_and_future_handlers_run() {
         let sync = HookHandler::from_sync(|ctx| {
             ctx.metadata
-                .insert("sync".to_string(), serde_json::Value::Bool(true));
+                .insert_json("sync", &serde_json::Value::Bool(true));
             Ok(HookSignal::Continue)
         });
         let future = HookHandler::from_future(|ctx| {
             Box::pin(async move {
                 ctx.metadata
-                    .insert("future".to_string(), serde_json::Value::Bool(true));
+                    .insert_json("future", &serde_json::Value::Bool(true));
                 Ok(HookSignal::Skip)
             })
         });
@@ -157,13 +157,15 @@ mod tests {
             future.invoke(&mut ctx).await.expect("future"),
             HookSignal::Skip
         );
-        assert_eq!(
-            ctx.metadata.get("sync"),
-            Some(&serde_json::Value::Bool(true))
+        assert!(
+            ctx.metadata
+                .get("sync")
+                .is_some_and(|value| *value == serde_json::Value::Bool(true))
         );
-        assert_eq!(
-            ctx.metadata.get("future"),
-            Some(&serde_json::Value::Bool(true))
+        assert!(
+            ctx.metadata
+                .get("future")
+                .is_some_and(|value| *value == serde_json::Value::Bool(true))
         );
     }
 }
