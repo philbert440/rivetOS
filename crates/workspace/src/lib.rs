@@ -21,10 +21,10 @@ pub use prompt::{
     recent_activity_message,
 };
 pub use queue::{Intake, MessageQueue, ParsedCommand, is_command, parse_command};
-pub use router::{AgentConfig, LlmProvider, Route, RouteError, Router};
+pub use router::{AgentConfig, AgentConfigError, LlmProvider, Route, RouteError, Router};
 pub use sessions::{
     LifecycleError, LoadedSessionSettings, RECENT_ACTIVITY_MAX_TOKENS, RECENT_ACTIVITY_QUERY,
     SavedSessionSettings, SessionBook, SessionEndContext, SessionLifecycle, SessionManager,
-    SessionOptions, SessionStartContext, SessionStore, SessionStoreError, TokenTotals,
-    apply_loaded_settings, session_key, session_settings_from_json,
+    SessionOptions, SessionStartContext, SessionStore, SessionStoreError, SharedSession,
+    TokenTotals, apply_loaded_settings, session_key, session_settings_from_json,
 };

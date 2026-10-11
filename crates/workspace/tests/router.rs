@@ -1,7 +1,8 @@
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use protocol::{InboundMessage, JsNumber};
+use protocol::js::{parse, stringify};
+use protocol::{InboundMessage, JsNumber, ThinkingLevel};
 use workspace::{AgentConfig, LlmProvider, ProviderError, Router};
 
 struct Stub {
@@ -21,14 +22,7 @@ impl LlmProvider for Stub {
 }
 
 fn agent(id: &str, provider: &str) -> AgentConfig {
-    AgentConfig {
-        id: id.to_string(),
-        name: id.to_string(),
-        provider: provider.to_string(),
-        model: None,
-        default_thinking: None,
-        local: false,
-    }
+    AgentConfig::new(id, id, provider, None, None, false)
 }
 
 fn provider(id: &'static str, available: Result<bool, ProviderError>) -> Arc<Stub> {
@@ -108,14 +102,14 @@ fn unknown_agent_and_provider_use_the_typescript_messages() {
 #[test]
 fn registration_keeps_insertion_order_when_replaced() {
     let router = router();
-    router.register_agent(AgentConfig {
-        id: "default-agent".to_string(),
-        name: "renamed".to_string(),
-        provider: "xai".to_string(),
-        model: Some("grok".to_string()),
-        default_thinking: None,
-        local: true,
-    });
+    router.register_agent(AgentConfig::new(
+        "default-agent",
+        "renamed",
+        "xai",
+        Some("grok".to_string()),
+        None,
+        true,
+    ));
     let agents = router.agents();
     assert_eq!(agents.len(), 2);
     assert_eq!(agents[0].id, "default-agent");
@@ -148,4 +142,44 @@ async fn health_check_preserves_order_and_treats_errors_as_down() {
         down.health_check().await,
         vec![("down".to_string(), false), ("boom".to_string(), false)]
     );
+}
+
+#[test]
+fn route_and_agents_keep_the_original_config_object() {
+    let raw = r#"{"id":"opus","name":"Opus","provider":"mock","model":"test-model","defaultThinking":"high","local":true,"workspaceFiles":["EXTRA.md"],"providerConfig":{"baseUrl":"http://example"},"hooks":[{"event":"start","command":"echo"}],"tools":{"include":["memory_search"]},"customFlag":"kept"}"#;
+    let parsed = parse(raw).unwrap();
+    let expected = stringify(&parsed);
+    let router = Router::new("opus");
+    router.register_agent(AgentConfig::from_js(parsed).unwrap());
+    router.register_provider(provider("mock", Ok(true)));
+    let route = router.route(&message(Some("opus"))).unwrap();
+    assert_eq!(route.agent.id, "opus");
+    assert_eq!(route.agent.name, "Opus");
+    assert_eq!(route.agent.provider, "mock");
+    assert_eq!(route.agent.model.as_deref(), Some("test-model"));
+    assert_eq!(route.agent.default_thinking, Some(ThinkingLevel::High));
+    assert!(route.agent.local);
+    assert_eq!(stringify(&route.agent.original), expected);
+    let agents = router.agents();
+    assert_eq!(stringify(&agents[0].original), expected);
+    assert!(expected.contains("\"workspaceFiles\""));
+    assert!(expected.contains("\"customFlag\""));
+    assert!(expected.contains("\"tools\""));
+
+    let omitted = parse(r#"{"id":"plain","name":"Plain","provider":"mock"}"#).unwrap();
+    let plain = AgentConfig::from_js(omitted).unwrap();
+    assert!(!plain.local);
+    assert!(plain.default_thinking.is_none());
+    let text = stringify(&plain.original);
+    assert!(!text.contains("local"));
+    assert!(!text.contains("defaultThinking"));
+
+    let unknown = parse(
+        r#"{"id":"odd","name":"Odd","provider":"mock","defaultThinking":"turbo","local":"yes"}"#,
+    )
+    .unwrap();
+    let odd = AgentConfig::from_js(unknown.clone()).unwrap();
+    assert!(odd.default_thinking.is_none());
+    assert!(!odd.local);
+    assert_eq!(stringify(&odd.original), stringify(&unknown));
 }

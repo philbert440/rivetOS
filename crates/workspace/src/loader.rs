@@ -4,10 +4,12 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 
+use protocol::js::JsValue;
+
 use crate::error::{PinReject, WorkspaceError};
 use crate::lock::with_lock;
 use crate::posix::{basename, is_absolute, parent_dir, posix_join, posix_resolve};
-use crate::prompt::{TurnAssembly, TurnAssemblyInput, apply_turn_extras, recent_activity_message};
+use crate::prompt::{TurnAssembly, TurnAssemblyInput, apply_turn_extras};
 use crate::text::{js_is_truthy, js_value_to_string, kib_one_decimal, slice_utf16};
 use crate::timefmt::{format_en_us_new_york, utc_day};
 
@@ -84,6 +86,7 @@ pub struct WorkspaceLoader {
     cache: Mutex<HashMap<String, String>>,
     pins: Mutex<Vec<PinnedFile>>,
     skill_catalog: Mutex<String>,
+    read_faults: Mutex<Vec<String>>,
 }
 
 impl WorkspaceLoader {
@@ -113,35 +116,41 @@ impl WorkspaceLoader {
             cache: Mutex::new(HashMap::new()),
             pins: Mutex::new(Vec::new()),
             skill_catalog: Mutex::new(String::new()),
+            read_faults: Mutex::new(Vec::new()),
         }
     }
 
     pub async fn load(&self) -> Vec<WorkspaceFile> {
         let mut files = Vec::new();
         for name in CORE_FILES {
-            if let Some(content) = self.read(name).await
-                && !content.is_empty()
-            {
-                files.push(WorkspaceFile {
-                    name: name.to_string(),
-                    path: posix_join(&self.base_dir, name),
-                    content,
-                });
+            match self.read_hit(name).await {
+                FileRead::Found(content) if !content.is_empty() => {
+                    files.push(WorkspaceFile {
+                        name: name.to_string(),
+                        path: posix_join(&self.base_dir, name),
+                        content,
+                    });
+                }
+                FileRead::Found(_) | FileRead::Missing => {}
+                FileRead::Failed(error) => self.record_fault(&error),
             }
         }
         files
     }
 
     pub async fn read(&self, filename: &str) -> Option<String> {
-        if let Some(hit) = with_lock(&self.cache, |cache| cache.get(filename).cloned()) {
-            return Some(hit);
+        match self.read_hit(filename).await {
+            FileRead::Found(content) => Some(content),
+            FileRead::Missing => None,
+            FileRead::Failed(error) => {
+                self.record_fault(&error);
+                None
+            }
         }
-        let path = posix_join(&self.base_dir, filename);
-        let content = read_utf8(&path).await?;
-        with_lock(&self.cache, |cache| {
-            cache.insert(filename.to_string(), content.clone());
-        });
-        Some(content)
+    }
+
+    pub fn read_faults(&self) -> Vec<String> {
+        with_lock(&self.read_faults, |faults| faults.clone())
     }
 
     pub async fn write(&self, filename: &str, content: &str) -> Result<(), WorkspaceError> {
@@ -155,7 +164,7 @@ impl WorkspaceLoader {
 
     pub async fn pin_file(&self, file_path: &str) -> Result<PinResult, PinReject> {
         let (resolved, name) = self.pin_location(file_path);
-        let Some(content) = read_utf8(&resolved).await else {
+        let Some(content) = self.read_pin(&resolved).await else {
             return Err(PinReject::new(format!("File not found: {file_path}")));
         };
         let size = content.len();
@@ -227,7 +236,7 @@ impl WorkspaceLoader {
             return None;
         }
         let value = protocol::js::parse(&raw).ok()?;
-        let entry = value.as_object()?.get(user_id)?;
+        let entry = profile_entry(&value, user_id)?;
         if !js_is_truthy(entry) {
             return None;
         }
@@ -244,8 +253,9 @@ impl WorkspaceLoader {
         agent_id: Option<&str>,
         user_id: Option<&str>,
     ) -> String {
+        let before = self.fault_len();
         let files = self.load().await;
-        if files.is_empty() {
+        if files.is_empty() && self.fault_len() == before {
             tracing::warn!(
                 "No workspace files loaded from {} — agent will boot without personality files",
                 self.base_dir
@@ -319,7 +329,14 @@ impl WorkspaceLoader {
         let date = utc_day((self.clock)());
         let relative = format!("memory/{date}.md");
         let path = posix_join(&self.base_dir, &relative);
-        let content = read_utf8(&path).await?;
+        let content = match read_file(&path).await {
+            FileRead::Found(content) => content,
+            FileRead::Missing => return None,
+            FileRead::Failed(error) => {
+                self.record_fault(&error);
+                return None;
+            }
+        };
         if content.is_empty() {
             return None;
         }
@@ -334,13 +351,43 @@ impl WorkspaceLoader {
             .build_system_prompt(input.agent_id, input.user_id)
             .await;
         let system_prompt = apply_turn_extras(base, input.chat_type, input.extra_system_prompt);
-        let recent_activity = input.recent_context.and_then(recent_activity_message);
-        let daily_context = self.read_daily_context().await.map(|daily| daily.content);
-        TurnAssembly {
-            system_prompt,
-            recent_activity,
-            daily_context,
+        TurnAssembly { system_prompt }
+    }
+
+    async fn read_hit(&self, filename: &str) -> FileRead {
+        if let Some(hit) = with_lock(&self.cache, |cache| cache.get(filename).cloned()) {
+            return FileRead::Found(hit);
         }
+        let path = posix_join(&self.base_dir, filename);
+        match read_file(&path).await {
+            FileRead::Found(content) => {
+                with_lock(&self.cache, |cache| {
+                    cache.insert(filename.to_string(), content.clone());
+                });
+                FileRead::Found(content)
+            }
+            other => other,
+        }
+    }
+
+    async fn read_pin(&self, path: &str) -> Option<String> {
+        match read_file(path).await {
+            FileRead::Found(content) => Some(content),
+            FileRead::Missing => None,
+            FileRead::Failed(error) => {
+                self.record_fault(&error);
+                None
+            }
+        }
+    }
+
+    fn record_fault(&self, error: &WorkspaceError) {
+        tracing::warn!("{error}");
+        with_lock(&self.read_faults, |faults| faults.push(error.to_string()));
+    }
+
+    fn fault_len(&self) -> usize {
+        with_lock(&self.read_faults, |faults| faults.len())
     }
 
     fn pin_location(&self, file_path: &str) -> (String, String) {
@@ -363,10 +410,52 @@ impl WorkspaceLoader {
     }
 }
 
-async fn read_utf8(path: &str) -> Option<String> {
+enum FileRead {
+    Found(String),
+    Missing,
+    Failed(WorkspaceError),
+}
+
+fn profile_entry<'a>(value: &'a JsValue, user_id: &str) -> Option<&'a JsValue> {
+    if let Some(object) = value.as_object() {
+        return object.get(user_id);
+    }
+    let items = value.as_array()?;
+    let index = js_array_index(user_id)?;
+    items.get(index)
+}
+
+fn js_array_index(key: &str) -> Option<usize> {
+    if key.is_empty() || key.len() > 10 {
+        return None;
+    }
+    let bytes = key.as_bytes();
+    if bytes.len() > 1 && bytes[0] == b'0' {
+        return None;
+    }
+    if !bytes.iter().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let value: u64 = key.parse().ok()?;
+    if value > 4_294_967_294 {
+        return None;
+    }
+    usize::try_from(value).ok()
+}
+
+async fn read_file(path: &str) -> FileRead {
     match tokio::time::timeout(FILE_IO_TIMEOUT, tokio::fs::read(path)).await {
-        Ok(Ok(bytes)) => Some(String::from_utf8_lossy(&bytes).into_owned()),
-        _ => None,
+        Ok(Ok(bytes)) => FileRead::Found(String::from_utf8_lossy(&bytes).into_owned()),
+        Ok(Err(source)) if source.kind() == std::io::ErrorKind::NotFound => FileRead::Missing,
+        Ok(Err(source)) => {
+            let syscall = if source.raw_os_error() == Some(21) {
+                "read"
+            } else {
+                "open"
+            };
+            FileRead::Failed(WorkspaceError::io(path, syscall, source))
+        }
+        Err(_) => FileRead::Failed(WorkspaceError::Timeout(path.to_string())),
     }
 }
 
@@ -374,12 +463,12 @@ async fn write_utf8(path: &str, content: &str) -> Result<(), WorkspaceError> {
     let parent = parent_dir(path);
     match tokio::time::timeout(FILE_IO_TIMEOUT, tokio::fs::create_dir_all(&parent)).await {
         Ok(Ok(())) => {}
-        Ok(Err(source)) => return Err(WorkspaceError::io(parent, source)),
+        Ok(Err(source)) => return Err(WorkspaceError::io(&parent, "mkdir", source)),
         Err(_) => return Err(WorkspaceError::Timeout(parent)),
     }
     match tokio::time::timeout(FILE_IO_TIMEOUT, tokio::fs::write(path, content.as_bytes())).await {
         Ok(Ok(())) => Ok(()),
-        Ok(Err(source)) => Err(WorkspaceError::io(path, source)),
+        Ok(Err(source)) => Err(WorkspaceError::io(path, "open", source)),
         Err(_) => Err(WorkspaceError::Timeout(path.to_string())),
     }
 }

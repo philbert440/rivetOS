@@ -27,14 +27,13 @@ async fn assembled_system_prompt_matches_the_byte_fixture() {
             user_id: Some("alice"),
             chat_type: None,
             extra_system_prompt: None,
-            recent_context: Some("user looked at weather"),
         })
         .await;
 
     let expected = include_bytes!("fixtures/system-prompt.txt");
     assert_eq!(turn.system_prompt.as_bytes(), expected.as_slice());
-    assert!(turn.system_prompt.contains("11:45:12\u{202f}AM"));
-    assert!(!turn.system_prompt.contains("11:45:12 AM"));
+    assert!(turn.system_prompt.contains("11:45:12 AM"));
+    assert!(!turn.system_prompt.contains('\u{202f}'));
     for marker in [
         "DAILY_NOTE_MARKER",
         "RETIRED_CORE",
@@ -49,9 +48,10 @@ async fn assembled_system_prompt_matches_the_byte_fixture() {
             "system prompt contains {marker}"
         );
     }
-    assert_eq!(turn.daily_context.as_deref(), Some("DAILY_NOTE_MARKER"));
+    let daily = loader.read_daily_context().await.expect("daily");
+    assert_eq!(daily.content, "DAILY_NOTE_MARKER");
 
-    let message = turn.recent_activity.expect("recent");
+    let message = recent_activity_message("user looked at weather").expect("recent");
     assert_eq!(message.role, MessageRole::System);
     match message.content {
         MessageContent::Text(text) => {
@@ -74,7 +74,6 @@ async fn voice_turn_appends_voice_rules_then_trimmed_extra() {
             user_id: Some("alice"),
             chat_type: Some("voice"),
             extra_system_prompt: Some("  be terse  "),
-            recent_context: None,
         })
         .await;
 
@@ -87,7 +86,6 @@ async fn voice_turn_appends_voice_rules_then_trimmed_extra() {
         turn.system_prompt.as_bytes(),
         include_bytes!("fixtures/system-prompt-voice.txt")
     );
-    assert!(turn.recent_activity.is_none());
     assert!(!turn.system_prompt.contains("DAILY_NOTE_MARKER"));
 }
 

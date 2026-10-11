@@ -177,7 +177,8 @@ async fn system_prompt_orders_core_profile_pins_runtime_and_catalog() {
     assert!(
         agent < memory && memory < user && user < pinned && pinned < runtime && runtime < skills
     );
-    assert!(prompt.contains("Agent: opus | Time: 10/10/2026, 11:45:12\u{202f}AM"));
+    assert!(prompt.contains("Agent: opus | Time: 10/10/2026, 11:45:12 AM"));
+    assert!(!prompt.contains('\u{202f}'));
     assert!(prompt.contains("Alice is a guest"));
     assert!(prompt.contains("export default {}"));
     assert!(!prompt.starts_with('\n'));
@@ -294,6 +295,15 @@ async fn malformed_or_non_object_profiles_add_nothing() {
         .await;
     assert!(!prompt.contains("## USER.md"));
     let prompt = loader.build_system_prompt(Some("opus"), Some("0")).await;
+    assert!(prompt.contains("## USER.md (alice)"));
+    assert!(prompt.contains("Alice is a guest"));
+    let prompt = loader.build_system_prompt(Some("opus"), Some("00")).await;
+    assert!(!prompt.contains("## USER.md"));
+    let prompt = loader.build_system_prompt(Some("opus"), Some("1")).await;
+    assert!(!prompt.contains("## USER.md"));
+    let prompt = loader
+        .build_system_prompt(Some("opus"), Some("4294967295"))
+        .await;
     assert!(!prompt.contains("## USER.md"));
 }
 
@@ -499,4 +509,61 @@ async fn whitespace_only_catalog_is_omitted() {
     let prompt = loader.build_system_prompt(Some("opus"), None).await;
     assert!(!prompt.contains("## Available"));
     assert!(prompt.contains("## AGENT.md\ncore"));
+}
+
+#[tokio::test]
+async fn a_directory_read_is_a_fault_and_a_missing_file_is_not() {
+    let dir = TempDir::new();
+    std::fs::create_dir_all(dir.path().join("AGENT.md")).unwrap();
+    let loader = loader(dir.path());
+    assert!(loader.read("AGENT.md").await.is_none());
+    let first = loader.read_faults();
+    assert_eq!(first.len(), 1);
+    assert!(first[0].starts_with("EISDIR:"), "{}", first[0]);
+    assert!(first[0].contains(", read '"), "{}", first[0]);
+    let path = format!("{}/AGENT.md", dir.path().to_string_lossy());
+    assert!(first[0].contains(&path), "{}", first[0]);
+    assert!(loader.read("AGENT.md").await.is_none());
+    assert_eq!(loader.read_faults().len(), 2);
+    assert!(loader.read("MEMORY.md").await.is_none());
+    assert_eq!(loader.read_faults().len(), 2);
+
+    let before = loader.read_faults().len();
+    let prompt = loader.build_system_prompt(Some("opus"), None).await;
+    assert!(!prompt.contains("## AGENT.md"));
+    assert!(loader.read_faults().len() > before);
+
+    let pinned = loader.pin_file("AGENT.md").await.unwrap_err();
+    assert_eq!(pinned.to_string(), "File not found: AGENT.md");
+    assert!(loader.read_faults().len() > before + 1);
+}
+
+#[tokio::test]
+async fn writing_through_a_file_uses_the_node_mkdir_message() {
+    let dir = TempDir::new();
+    std::fs::write(dir.path().join("notdir"), "file").unwrap();
+    let loader = loader(dir.path());
+    let err = loader.write("notdir/child.md", "x").await.unwrap_err();
+    let text = err.to_string();
+    let parent = format!("{}/notdir", dir.path().to_string_lossy());
+    assert!(
+        text.starts_with("ENOTDIR:") || text.starts_with("EEXIST:"),
+        "{text}"
+    );
+    assert!(text.contains(&format!("mkdir '{parent}'")), "{text}");
+}
+
+#[tokio::test]
+async fn a_failed_daily_read_is_a_fault_and_a_missing_note_is_not() {
+    let dir = TempDir::new();
+    let loader = WorkspaceLoader::with_unix_seconds(dir.path().to_string_lossy(), 1_791_647_112);
+    assert!(loader.read_daily_context().await.is_none());
+    assert!(loader.read_faults().is_empty());
+    std::fs::create_dir_all(dir.path().join("memory/2026-10-10.md")).unwrap();
+    assert!(loader.read_daily_context().await.is_none());
+    let faults = loader.read_faults();
+    assert_eq!(faults.len(), 1);
+    assert!(faults[0].starts_with("EISDIR:"), "{}", faults[0]);
+    assert!(loader.read_daily_context().await.is_none());
+    assert_eq!(loader.read_faults().len(), 2);
 }

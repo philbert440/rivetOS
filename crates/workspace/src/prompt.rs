@@ -18,8 +18,6 @@ Talk like a person on a phone, not like you're writing."#;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TurnAssembly {
     pub system_prompt: String,
-    pub recent_activity: Option<Message>,
-    pub daily_context: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -28,7 +26,6 @@ pub struct TurnAssemblyInput<'a> {
     pub user_id: Option<&'a str>,
     pub chat_type: Option<&'a str>,
     pub extra_system_prompt: Option<&'a str>,
-    pub recent_context: Option<&'a str>,
 }
 
 pub fn recent_activity_message(context: &str) -> Option<Message> {

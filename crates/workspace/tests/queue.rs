@@ -182,6 +182,108 @@ fn parse_command_keeps_trailing_space_and_collapses_separators() {
     assert!(parse_command("/").is_none());
 }
 
+async fn wait_until_drained(queue: &MessageQueue, order: &Mutex<Vec<String>>, expected: &str) {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        let seen = order.lock().unwrap().clone();
+        if !queue.is_processing() && queue.depth() == 0 && seen.iter().any(|text| text == expected)
+        {
+            return;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            panic!(
+                "queue stayed wedged processing={} depth={} seen={seen:?}",
+                queue.is_processing(),
+                queue.depth()
+            );
+        }
+        tokio::task::yield_now().await;
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn aborting_a_handler_clears_processing_and_drains() {
+    let queue = Arc::new(MessageQueue::new());
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let started = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    {
+        let order = Arc::clone(&order);
+        let started = Arc::clone(&started);
+        let release = Arc::clone(&release);
+        queue.set_handler(move |message| {
+            let order = Arc::clone(&order);
+            let started = Arc::clone(&started);
+            let release = Arc::clone(&release);
+            async move {
+                order.lock().unwrap().push(message.text.clone());
+                if message.text == "first" {
+                    started.notify_one();
+                    release.notified().await;
+                }
+            }
+        });
+    }
+    let running = {
+        let queue = Arc::clone(&queue);
+        tokio::spawn(async move {
+            queue.enqueue(message("first")).await;
+        })
+    };
+    started.notified().await;
+    assert!(queue.is_processing());
+    queue.enqueue(message("second")).await;
+    assert_eq!(queue.depth(), 1);
+    running.abort();
+    wait_until_drained(&queue, &order, "second").await;
+    assert!(!queue.is_processing());
+    assert_eq!(queue.depth(), 0);
+    assert!(order.lock().unwrap().iter().any(|text| text == "second"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_panicking_handler_clears_processing_and_drains() {
+    let queue = Arc::new(MessageQueue::new());
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let started = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    {
+        let order = Arc::clone(&order);
+        let started = Arc::clone(&started);
+        let release = Arc::clone(&release);
+        queue.set_handler(move |message| {
+            let order = Arc::clone(&order);
+            let started = Arc::clone(&started);
+            let release = Arc::clone(&release);
+            async move {
+                if message.text == "first" {
+                    started.notify_one();
+                    release.notified().await;
+                    panic!("handler boom");
+                }
+                order.lock().unwrap().push(message.text);
+            }
+        });
+    }
+    let running = {
+        let queue = Arc::clone(&queue);
+        tokio::spawn(async move {
+            queue.enqueue(message("first")).await;
+        })
+    };
+    started.notified().await;
+    queue.enqueue(message("second")).await;
+    assert_eq!(queue.depth(), 1);
+    release.notify_one();
+    let joined = running.await;
+    assert!(joined.is_err());
+    wait_until_drained(&queue, &order, "second").await;
+    assert!(!queue.is_processing());
+    assert_eq!(queue.depth(), 0);
+    assert_eq!(order.lock().unwrap().as_slice(), ["second"]);
+}
+
 #[test]
 fn accept_returns_a_command_without_enqueueing() {
     match MessageQueue::accept(&message("/steer go faster ")) {

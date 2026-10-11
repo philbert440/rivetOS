@@ -11,7 +11,7 @@ Alice is a guest
 export default {}
 
 ## Runtime
-Agent: opus | Time: 10/10/2026, 11:45:12 AM
+Agent: opus | Time: 10/10/2026, 11:45:12 AM
 
 ## Available skills
 - **weather**: Check current weather

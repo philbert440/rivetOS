@@ -2,14 +2,14 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use protocol::{
-    CompactionPending, InboundMessage, JsNumber, MessageContent, MessageRole, ThinkingLevel,
+    CompactionPending, InboundMessage, JsNumber, Message, MessageContent, MessageRole, ToolCall,
 };
-use serde_json::json;
+use serde_json::{Map, json};
 use workspace::{
     AgentConfig, LifecycleError, LlmProvider, LoadedSessionSettings, ProviderError,
     RECENT_ACTIVITY_MAX_TOKENS, RECENT_ACTIVITY_QUERY, RouteError, Router, SavedSessionSettings,
-    SessionLifecycle, SessionManager, SessionOptions, SessionStore, SessionStoreError, TokenTotals,
-    session_key, session_settings_from_json,
+    SessionLifecycle, SessionManager, SessionOptions, SessionStore, SessionStoreError,
+    SharedSession, TokenTotals, session_key, session_settings_from_json,
 };
 
 struct Stub;
@@ -102,14 +102,14 @@ impl SessionStore for Memory {
 }
 
 fn agent(local: bool) -> AgentConfig {
-    AgentConfig {
-        id: "opus".to_string(),
-        name: "Opus".to_string(),
-        provider: "mock".to_string(),
-        model: Some("test-model".to_string()),
-        default_thinking: None,
+    AgentConfig::new(
+        "opus",
+        "Opus",
+        "mock",
+        Some("test-model".to_string()),
+        None,
         local,
-    }
+    )
 }
 
 fn router() -> Router {
@@ -167,11 +167,11 @@ fn settings_json_uses_camel_case_and_keeps_invalid_thinking() {
         "toolsVisible": true
     }))
     .unwrap();
-    let mut thinking = ThinkingLevel::Medium;
+    let mut thinking = "medium".to_string();
     let mut reasoning = true;
     let mut tools = false;
     workspace::apply_loaded_settings(&mut thinking, &mut reasoning, &mut tools, &loaded);
-    assert_eq!(thinking, ThinkingLevel::Low);
+    assert_eq!(thinking, "low");
     assert!(!reasoning);
     assert!(tools);
 
@@ -180,13 +180,22 @@ fn settings_json_uses_camel_case_and_keeps_invalid_thinking() {
         "reasoningVisible": "yes"
     }))
     .unwrap();
-    let mut thinking = ThinkingLevel::High;
+    let mut thinking = "high".to_string();
     let mut reasoning = true;
     let mut tools = false;
     workspace::apply_loaded_settings(&mut thinking, &mut reasoning, &mut tools, &invalid);
-    assert_eq!(thinking, ThinkingLevel::High);
+    assert_eq!(thinking, "turbo");
     assert!(reasoning);
     assert!(!tools);
+
+    let not_a_string = session_settings_from_json(&json!({
+        "thinking": null
+    }))
+    .unwrap();
+    assert!(not_a_string.thinking.is_none());
+    let mut thinking = "high".to_string();
+    workspace::apply_loaded_settings(&mut thinking, &mut reasoning, &mut tools, &not_a_string);
+    assert_eq!(thinking, "high");
 
     assert!(session_settings_from_json(&json!(null)).is_none());
     assert!(session_settings_from_json(&json!(["low"])).is_none());
@@ -194,7 +203,7 @@ fn settings_json_uses_camel_case_and_keeps_invalid_thinking() {
     assert!(empty.thinking.is_none());
 
     let saved = SavedSessionSettings {
-        thinking: ThinkingLevel::High,
+        thinking: "high".to_string(),
         reasoning_visible: true,
         tools_visible: false,
     };
@@ -220,15 +229,16 @@ async fn create_session_emits_start_and_does_not_insert() {
             },
         )
         .await;
-    assert_eq!(session.id, "ch-1:user-1");
-    assert_eq!(session.thinking, ThinkingLevel::Medium);
-    assert!(!session.reasoning_visible);
-    assert!(!session.tools_visible);
-    assert!(session.history.is_empty());
-    assert!(session.system_prompt.is_none());
-    assert_eq!(session.compaction_count, 0);
-    assert!(session.compaction_pending.is_none());
-    assert!(session.nudges_fired.is_empty());
+    let state = session.snapshot();
+    assert_eq!(state.id, "ch-1:user-1");
+    assert_eq!(state.thinking, "medium");
+    assert!(!state.reasoning_visible);
+    assert!(!state.tools_visible);
+    assert!(state.history.is_empty());
+    assert!(state.system_prompt.is_none());
+    assert_eq!(state.compaction_count, 0);
+    assert!(state.compaction_pending.is_none());
+    assert!(state.nudges_fired.is_empty());
     assert!(!manager.has("ch-1:user-1"));
     let book = manager.book("ch-1:user-1").unwrap();
     assert_eq!(book.agent_id, "opus");
@@ -259,7 +269,8 @@ async fn get_or_create_emits_start_once() {
         .get_or_create_session("ch-1:user-1", &message)
         .await
         .unwrap();
-    assert_eq!(first.id, second.id);
+    assert!(SharedSession::ptr_eq(&first, &second));
+    assert_eq!(first.snapshot().id, second.snapshot().id);
     assert!(manager.has("ch-1:user-1"));
     assert_eq!(capture.starts.lock().unwrap().len(), 1);
 }
@@ -271,7 +282,7 @@ async fn start_hook_failure_still_returns_the_session() {
     let session = manager
         .create_session("ch-1:user-1", &agent(false), SessionOptions::default())
         .await;
-    assert_eq!(session.id, "ch-1:user-1");
+    assert_eq!(session.snapshot().id, "ch-1:user-1");
 }
 
 #[tokio::test]
@@ -341,7 +352,7 @@ async fn end_all_sessions_ends_inserted_sessions_in_order() {
     let orphan = manager
         .create_session("orphan", &agent(false), SessionOptions::default())
         .await;
-    assert_eq!(orphan.id, "orphan");
+    assert_eq!(orphan.snapshot().id, "orphan");
     manager.set("s1", first);
     manager.set("s2", second);
     manager.end_all_sessions().await;
@@ -397,12 +408,13 @@ async fn memory_context_and_settings_follow_the_session_manager() {
             },
         )
         .await;
-    assert_eq!(session.thinking, ThinkingLevel::High);
-    assert!(!session.reasoning_visible);
-    assert!(session.tools_visible);
-    assert_eq!(session.history.len(), 1);
-    assert_eq!(session.history[0].role, MessageRole::System);
-    match &session.history[0].content {
+    let state = session.snapshot();
+    assert_eq!(state.thinking, "high");
+    assert!(!state.reasoning_visible);
+    assert!(state.tools_visible);
+    assert_eq!(state.history.len(), 1);
+    assert_eq!(state.history[0].role, MessageRole::System);
+    match &state.history[0].content {
         MessageContent::Text(text) => {
             assert_eq!(text, "## Recent Activity (last 48h)\n  kept raw  ");
         }
@@ -426,7 +438,7 @@ async fn memory_context_and_settings_follow_the_session_manager() {
     let saved = store.saved.lock().unwrap();
     assert_eq!(saved.len(), 1);
     assert_eq!(saved[0].0, "ch-1:user-1");
-    assert_eq!(saved[0].1.thinking, ThinkingLevel::High);
+    assert_eq!(saved[0].1.thinking, "high");
     assert!(!saved[0].1.reasoning_visible);
     assert!(saved[0].1.tools_visible);
 }
@@ -439,8 +451,8 @@ async fn blank_or_failed_memory_context_leaves_history_empty() {
     let session = manager
         .create_session("s", &agent(true), SessionOptions::default())
         .await;
-    assert!(session.history.is_empty());
-    assert!(session.reasoning_visible);
+    assert!(session.snapshot().history.is_empty());
+    assert!(session.snapshot().reasoning_visible);
 
     let store = memory(Err(SessionStoreError::new("down")));
     *store.settings.lock().unwrap() = Err(SessionStoreError::new("down"));
@@ -449,8 +461,8 @@ async fn blank_or_failed_memory_context_leaves_history_empty() {
     let session = manager
         .create_session("s", &agent(false), SessionOptions::default())
         .await;
-    assert!(session.history.is_empty());
-    assert_eq!(session.thinking, ThinkingLevel::Medium);
+    assert!(session.snapshot().history.is_empty());
+    assert_eq!(session.snapshot().thinking, "medium");
 
     let store = memory(Ok(String::new()));
     *store.settings.lock().unwrap() = Ok(Some(LoadedSessionSettings {
@@ -463,7 +475,7 @@ async fn blank_or_failed_memory_context_leaves_history_empty() {
     let session = manager
         .create_session("s", &agent(false), SessionOptions::default())
         .await;
-    assert_eq!(session.thinking, ThinkingLevel::Medium);
+    assert_eq!(session.snapshot().thinking, "");
 }
 
 #[tokio::test]
@@ -480,13 +492,125 @@ async fn compaction_replaces_history_and_clears_pending_nudges() {
         .unwrap();
     assert!(manager.set_compaction_pending("s", Some(CompactionPending::Soft40)));
     assert!(manager.apply_compaction("s", Vec::new()));
-    let session = manager.get("s").unwrap();
+    let session = manager.get("s").unwrap().snapshot();
     assert!(session.history.is_empty());
     assert_eq!(session.compaction_count, 1);
     assert!(session.nudges_fired.is_empty());
-    assert!(session.compaction_pending.is_none());
+    assert_eq!(session.compaction_pending, Some(CompactionPending::Soft40));
     assert!(!manager.apply_compaction("missing", Vec::new()));
     assert!(!manager.set_compaction_pending("missing", None));
+}
+
+#[tokio::test]
+async fn compaction_drops_tool_rows_and_clears_assistant_tool_calls() {
+    let manager = SessionManager::new(router());
+    let session = manager
+        .create_session("s", &agent(false), SessionOptions::default())
+        .await;
+    manager.set("s", session);
+    assert!(manager.set_compaction_pending("s", Some(CompactionPending::Soft40)));
+    let history = vec![
+        Message {
+            role: MessageRole::System,
+            content: MessageContent::Text("sys".to_string()),
+            tool_calls: None,
+            tool_call_id: None,
+        },
+        Message {
+            role: MessageRole::User,
+            content: MessageContent::Text("hi".to_string()),
+            tool_calls: None,
+            tool_call_id: None,
+        },
+        Message {
+            role: MessageRole::Assistant,
+            content: MessageContent::Text("calling".to_string()),
+            tool_calls: Some(vec![ToolCall {
+                id: "call-1".to_string(),
+                name: "memory_search".to_string(),
+                arguments: Map::new(),
+                thought_signature: None,
+            }]),
+            tool_call_id: None,
+        },
+        Message {
+            role: MessageRole::Tool,
+            content: MessageContent::Text("result".to_string()),
+            tool_calls: None,
+            tool_call_id: Some("call-1".to_string()),
+        },
+        Message {
+            role: MessageRole::Assistant,
+            content: MessageContent::Text("empty calls".to_string()),
+            tool_calls: Some(Vec::new()),
+            tool_call_id: None,
+        },
+        Message {
+            role: MessageRole::Assistant,
+            content: MessageContent::Text("plain".to_string()),
+            tool_calls: None,
+            tool_call_id: None,
+        },
+    ];
+    assert!(manager.apply_compaction("s", history));
+    let state = manager.get("s").unwrap().snapshot();
+    assert_eq!(state.history.len(), 5);
+    assert_eq!(state.history[0].role, MessageRole::System);
+    assert_eq!(state.history[1].role, MessageRole::User);
+    assert_eq!(state.history[2].role, MessageRole::Assistant);
+    assert!(state.history[2].tool_calls.is_none());
+    assert_eq!(state.history[3].role, MessageRole::Assistant);
+    match &state.history[3].content {
+        MessageContent::Text(text) => assert_eq!(text, "empty calls"),
+        MessageContent::Parts(_) => panic!("text"),
+    }
+    assert!(state.history[3].tool_calls.is_none());
+    assert_eq!(state.history[4].role, MessageRole::Assistant);
+    assert!(state.history[4].tool_calls.is_none());
+    assert_eq!(state.compaction_count, 1);
+    assert!(state.nudges_fired.is_empty());
+    assert_eq!(state.compaction_pending, Some(CompactionPending::Soft40));
+}
+
+#[tokio::test]
+async fn session_reads_are_the_live_map_object() {
+    let store = memory(Ok(String::new()));
+    let manager = SessionManager::new(router());
+    manager.set_store(store.clone());
+    let created = manager
+        .create_session("ch-1:user-1", &agent(false), SessionOptions::default())
+        .await;
+    manager.set("ch-1:user-1", created.clone());
+    created.with_mut(|state| {
+        state.thinking = "high".to_string();
+        state.reasoning_visible = true;
+        state.history.push(Message {
+            role: MessageRole::User,
+            content: MessageContent::Text("remembered".to_string()),
+            tool_calls: None,
+            tool_call_id: None,
+        });
+    });
+    let fetched = manager.get("ch-1:user-1").unwrap();
+    assert!(SharedSession::ptr_eq(&created, &fetched));
+    let state = fetched.snapshot();
+    assert_eq!(state.thinking, "high");
+    assert!(state.reasoning_visible);
+    assert_eq!(state.history.len(), 1);
+    manager.save_session_settings(&fetched).await;
+    {
+        let saved = store.saved.lock().unwrap();
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0].1.thinking, "high");
+        assert!(saved[0].1.reasoning_visible);
+    }
+    let again = manager
+        .get_or_create_session("ch-1:user-1", &inbound())
+        .await
+        .unwrap();
+    assert!(SharedSession::ptr_eq(&created, &again));
+    again.with_mut(|state| state.tools_visible = true);
+    assert!(created.snapshot().tools_visible);
 }
 
 #[tokio::test]

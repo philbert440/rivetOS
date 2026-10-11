@@ -10,8 +10,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use thiserror::Error;
 
+use crate::loader::WorkspaceLoader;
 use crate::lock::with_lock;
-use crate::prompt::recent_activity_message;
+use crate::prompt::{VOICE_MODE_PROMPT, recent_activity_message};
 use crate::router::{AgentConfig, RouteError, Router};
 use crate::timefmt::now_millis;
 
@@ -35,7 +36,7 @@ pub struct SessionBook {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SavedSessionSettings {
-    pub thinking: ThinkingLevel,
+    pub thinking: String,
     pub reasoning_visible: bool,
     pub tools_visible: bool,
 }
@@ -160,15 +161,13 @@ pub fn session_settings_from_json(value: &Value) -> Option<LoadedSessionSettings
 }
 
 pub fn apply_loaded_settings(
-    thinking: &mut ThinkingLevel,
+    thinking: &mut String,
     reasoning_visible: &mut bool,
     tools_visible: &mut bool,
     settings: &LoadedSessionSettings,
 ) {
-    if let Some(text) = settings.thinking.as_deref()
-        && let Ok(level) = text.parse::<ThinkingLevel>()
-    {
-        *thinking = level;
+    if let Some(text) = settings.thinking.clone() {
+        *thinking = text;
     }
     if let Some(value) = settings.reasoning_visible {
         *reasoning_visible = value;
@@ -180,8 +179,37 @@ pub fn apply_loaded_settings(
 
 struct Maps {
     order: Vec<String>,
-    sessions: HashMap<String, SessionState>,
+    sessions: HashMap<String, SharedSession>,
     books: HashMap<String, SessionBook>,
+}
+
+#[derive(Clone, Debug)]
+pub struct SharedSession {
+    inner: Arc<Mutex<SessionState>>,
+}
+
+impl SharedSession {
+    fn new(state: SessionState) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(state)),
+        }
+    }
+
+    pub fn with<R>(&self, body: impl FnOnce(&SessionState) -> R) -> R {
+        with_lock(&self.inner, |state| body(state))
+    }
+
+    pub fn with_mut<R>(&self, body: impl FnOnce(&mut SessionState) -> R) -> R {
+        with_lock(&self.inner, body)
+    }
+
+    pub fn snapshot(&self) -> SessionState {
+        self.with(Clone::clone)
+    }
+
+    pub fn ptr_eq(left: &Self, right: &Self) -> bool {
+        Arc::ptr_eq(&left.inner, &right.inner)
+    }
 }
 
 pub struct SessionManager {
@@ -217,7 +245,7 @@ impl SessionManager {
         &self,
         session_key: &str,
         message: &InboundMessage,
-    ) -> Result<SessionState, RouteError> {
+    ) -> Result<SharedSession, RouteError> {
         if let Some(existing) = self.get(session_key) {
             return Ok(existing);
         }
@@ -236,11 +264,11 @@ impl SessionManager {
         Ok(session)
     }
 
-    pub fn get(&self, session_key: &str) -> Option<SessionState> {
+    pub fn get(&self, session_key: &str) -> Option<SharedSession> {
         with_lock(&self.maps, |maps| maps.sessions.get(session_key).cloned())
     }
 
-    pub fn set(&self, session_key: &str, session: SessionState) {
+    pub fn set(&self, session_key: &str, session: SharedSession) {
         with_lock(&self.maps, |maps| {
             if !maps.order.iter().any(|key| key == session_key) {
                 maps.order.push(session_key.to_string());
@@ -294,7 +322,7 @@ impl SessionManager {
         session_key: &str,
         agent: &AgentConfig,
         options: SessionOptions,
-    ) -> SessionState {
+    ) -> SharedSession {
         let mut history = Vec::new();
         let store = with_lock(&self.store, |slot| slot.clone());
         if let Some(store) = &store
@@ -311,7 +339,11 @@ impl SessionManager {
             history.push(message);
         }
 
-        let mut thinking = agent.default_thinking.unwrap_or(ThinkingLevel::Medium);
+        let mut thinking = agent
+            .default_thinking
+            .unwrap_or(ThinkingLevel::Medium)
+            .as_str()
+            .to_string();
         let mut reasoning_visible = agent.local;
         let mut tools_visible = false;
         if let Some(store) = &store
@@ -364,19 +396,58 @@ impl SessionManager {
             let _ = lifecycle.on_start(&ctx).await;
         }
 
-        session
+        SharedSession::new(session)
     }
 
-    pub async fn save_session_settings(&self, session: &SessionState) {
+    pub async fn ensure_system_prompt(
+        &self,
+        session: &SharedSession,
+        loader: &WorkspaceLoader,
+        agent_id: &str,
+        message: &InboundMessage,
+    ) -> String {
+        if let Some(existing) = session.with(|state| state.system_prompt.clone())
+            && !existing.is_empty()
+        {
+            return existing;
+        }
+        let mut prompt = loader
+            .build_system_prompt(Some(agent_id), Some(message.user_id.as_str()))
+            .await;
+        if message.chat_type == "voice" {
+            prompt.push_str(VOICE_MODE_PROMPT);
+        }
+        if let Some(metadata) = &message.metadata
+            && let Some(Value::String(extra)) = metadata.get("systemPrompt")
+        {
+            let trimmed = protocol::js::js_trim(extra);
+            if !trimmed.is_empty() {
+                prompt.push_str("\n\n");
+                prompt.push_str(trimmed);
+            }
+        }
+        session.with_mut(|state| {
+            if let Some(existing) = state.system_prompt.clone()
+                && !existing.is_empty()
+            {
+                return existing;
+            }
+            state.system_prompt = Some(prompt.clone());
+            prompt
+        })
+    }
+
+    pub async fn save_session_settings(&self, session: &SharedSession) {
         let Some(store) = with_lock(&self.store, |slot| slot.clone()) else {
             return;
         };
-        let settings = SavedSessionSettings {
-            thinking: session.thinking,
-            reasoning_visible: session.reasoning_visible,
-            tools_visible: session.tools_visible,
-        };
-        let _ = store.save_session_settings(&session.id, &settings).await;
+        let settings = session.with(|state| SavedSessionSettings {
+            thinking: state.thinking.clone(),
+            reasoning_visible: state.reasoning_visible,
+            tools_visible: state.tools_visible,
+        });
+        let session_id = session.with(|state| state.id.clone());
+        let _ = store.save_session_settings(&session_id, &settings).await;
     }
 
     pub fn with_session<R>(
@@ -384,23 +455,21 @@ impl SessionManager {
         session_key: &str,
         body: impl FnOnce(&mut SessionState) -> R,
     ) -> Option<R> {
-        with_lock(&self.maps, |maps| {
-            maps.sessions.get_mut(session_key).map(body)
-        })
+        let session = with_lock(&self.maps, |maps| maps.sessions.get(session_key).cloned());
+        session.map(|session| session.with_mut(body))
     }
 
     pub fn apply_compaction(&self, session_key: &str, history: Vec<Message>) -> bool {
-        with_lock(&self.maps, |maps| {
-            let Some(session) = maps.sessions.get_mut(session_key) else {
-                return false;
-            };
-            session.history = history;
-            let next = session.compaction_count.as_f64() + 1.0;
-            session.compaction_count = JsNumber::from(next);
-            session.nudges_fired.clear();
-            session.compaction_pending = None;
-            true
-        })
+        let Some(session) = self.get(session_key) else {
+            return false;
+        };
+        session.with_mut(|state| {
+            state.history = sanitize_compacted_history(history);
+            let next = state.compaction_count.as_f64() + 1.0;
+            state.compaction_count = JsNumber::from(next);
+            state.nudges_fired.clear();
+        });
+        true
     }
 
     pub fn set_compaction_pending(
@@ -408,13 +477,11 @@ impl SessionManager {
         session_key: &str,
         pending: Option<CompactionPending>,
     ) -> bool {
-        with_lock(&self.maps, |maps| {
-            let Some(session) = maps.sessions.get_mut(session_key) else {
-                return false;
-            };
-            session.compaction_pending = pending;
-            true
-        })
+        let Some(session) = self.get(session_key) else {
+            return false;
+        };
+        session.with_mut(|state| state.compaction_pending = pending);
+        true
     }
 
     async fn emit_end(&self, session_key: &str) {
@@ -445,8 +512,187 @@ impl SessionManager {
     }
 }
 
+fn sanitize_compacted_history(history: Vec<Message>) -> Vec<Message> {
+    history
+        .into_iter()
+        .filter(|message| message.role != protocol::MessageRole::Tool)
+        .map(|mut message| {
+            if message.role == protocol::MessageRole::Assistant && message.tool_calls.is_some() {
+                message.tool_calls = None;
+            }
+            message
+        })
+        .collect()
+}
+
 fn remove_key(maps: &mut Maps, session_key: &str) {
     maps.sessions.remove(session_key);
     maps.books.remove(session_key);
     maps.order.retain(|key| key != session_key);
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use async_trait::async_trait;
+    use chrono::{DateTime, Utc};
+    use serde_json::{Map, Value};
+
+    use super::SessionManager;
+    use crate::error::ProviderError;
+    use crate::loader::WorkspaceLoader;
+    use crate::prompt::VOICE_MODE_PROMPT;
+    use crate::router::{AgentConfig, LlmProvider, Router};
+    use crate::sessions::{SessionOptions, session_key};
+
+    struct Stub;
+
+    #[async_trait]
+    impl LlmProvider for Stub {
+        fn id(&self) -> &str {
+            "mock"
+        }
+
+        async fn is_available(&self) -> Result<bool, ProviderError> {
+            Ok(true)
+        }
+    }
+
+    fn router() -> Router {
+        let router = Router::new("opus");
+        router.register_agent(AgentConfig::new("opus", "Opus", "mock", None, None, false));
+        router.register_provider(Arc::new(Stub));
+        router
+    }
+
+    fn message(chat_type: &str, extra: Option<&str>) -> protocol::InboundMessage {
+        let metadata = extra.map(|text| {
+            let mut map = Map::new();
+            map.insert("systemPrompt".to_string(), Value::String(text.to_string()));
+            map
+        });
+        protocol::InboundMessage {
+            id: "m1".to_string(),
+            user_id: "alice".to_string(),
+            username: None,
+            display_name: None,
+            channel_id: "ch".to_string(),
+            chat_type: chat_type.to_string(),
+            text: "hello".to_string(),
+            platform: "test".to_string(),
+            agent: None,
+            reply_to_message_id: None,
+            attachments: None,
+            metadata,
+            timestamp: protocol::JsNumber::from(0_i64),
+        }
+    }
+
+    struct TempDir {
+        path: std::path::PathBuf,
+    }
+
+    impl TempDir {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "rr-6w-session-{}-{}",
+                std::process::id(),
+                now_token()
+            ));
+            std::fs::create_dir_all(&path).unwrap();
+            std::fs::write(path.join("AGENT.md"), "agent identity").unwrap();
+            Self { path }
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
+    fn now_token() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos() as u64)
+            .unwrap_or(0)
+    }
+
+    fn loader(dir: &std::path::Path, ticks: &Arc<Mutex<i64>>) -> WorkspaceLoader {
+        let ticks = Arc::clone(ticks);
+        WorkspaceLoader::with_clock(
+            dir.to_string_lossy().into_owned(),
+            Arc::new(move || {
+                let seconds = match ticks.lock() {
+                    Ok(guard) => *guard,
+                    Err(poisoned) => *poisoned.into_inner(),
+                };
+                DateTime::from_timestamp(seconds, 0).unwrap_or_else(Utc::now)
+            }),
+        )
+    }
+
+    #[tokio::test]
+    async fn system_prompt_freezes_on_the_session() {
+        let dir = TempDir::new();
+        let ticks = Arc::new(Mutex::new(1_791_647_112_i64));
+        let loader = loader(dir.path.as_path(), &ticks);
+        let manager = SessionManager::new(router());
+        let key = session_key("ch", "alice");
+        let first_message = message("dm", None);
+        let session = manager
+            .get_or_create_session(&key, &first_message)
+            .await
+            .unwrap();
+        let first = manager
+            .ensure_system_prompt(&session, &loader, "opus", &first_message)
+            .await;
+        assert!(first.contains("11:45:12 AM"));
+        assert!(!first.contains('\u{202f}'));
+        assert!(!first.contains("VOICE MODE"));
+        *ticks.lock().unwrap() = 1_768_491_912;
+        let later = message("voice", Some("  be terse  "));
+        let second = manager
+            .ensure_system_prompt(&session, &loader, "opus", &later)
+            .await;
+        assert_eq!(first, second);
+        assert_eq!(
+            manager
+                .get(&key)
+                .unwrap()
+                .snapshot()
+                .system_prompt
+                .as_deref(),
+            Some(first.as_str())
+        );
+
+        let voice_key = session_key("ch", "voice");
+        let voice_message = message("voice", Some("  be terse  "));
+        let voice_session = manager
+            .create_session(
+                &voice_key,
+                &AgentConfig::new("opus", "Opus", "mock", None, None, false),
+                SessionOptions {
+                    platform: Some("test".to_string()),
+                    user_id: Some("alice".to_string()),
+                },
+            )
+            .await;
+        manager.set(&voice_key, voice_session.clone());
+        let voice = manager
+            .ensure_system_prompt(&voice_session, &loader, "opus", &voice_message)
+            .await;
+        assert!(voice.contains("11:45:12 AM") || voice.contains("10:45:12 AM"));
+        assert!(voice.contains(VOICE_MODE_PROMPT));
+        assert!(voice.contains("\n\nbe terse"));
+        let frozen = voice.clone();
+        *ticks.lock().unwrap() = 1_791_647_112;
+        let text_later = message("dm", Some("different"));
+        let again = manager
+            .ensure_system_prompt(&voice_session, &loader, "opus", &text_later)
+            .await;
+        assert_eq!(again, frozen);
+        assert!(!again.contains("different"));
+    }
 }
