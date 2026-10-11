@@ -63,7 +63,8 @@ async fn returns_newest_first_and_skips_garbage() {
         },
         &|message| warns.lock().push(message.to_string()),
     )
-    .await;
+    .await
+    .unwrap();
     assert_eq!(
         runs.iter().map(|run| run.id.as_str()).collect::<Vec<_>>(),
         vec!["run-b", "run-a"]
@@ -82,7 +83,7 @@ async fn lists_nested_children() {
         "child-wf",
         "2026-01-04T00:00:00.000Z",
     );
-    let children = list_child_runs(&parent, &|_message| {}).await;
+    let children = list_child_runs(&parent, &|_message| {}).await.unwrap();
     assert_eq!(children.len(), 1);
     assert_eq!(children[0].id, "child-1");
     assert!(children[0].nested);
@@ -93,11 +94,15 @@ async fn lists_nested_children() {
 async fn empty_and_missing_roots_are_empty() {
     let root = temp_root("list-empty");
     let missing = root.join("nope");
-    let runs = list_runs(&missing, ListRunsOptions::default(), &|_message| {}).await;
+    let runs = list_runs(&missing, ListRunsOptions::default(), &|_message| {})
+        .await
+        .unwrap();
     assert!(runs.is_empty());
     let empty = root.join("empty");
     std::fs::create_dir_all(&empty).unwrap();
-    let runs = list_runs(&empty, ListRunsOptions::default(), &|_message| {}).await;
+    let runs = list_runs(&empty, ListRunsOptions::default(), &|_message| {})
+        .await
+        .unwrap();
     assert!(runs.is_empty());
 }
 
@@ -124,7 +129,8 @@ async fn loads_valid_defs_and_skips_broken() {
     let loaded = list_workflow_defs(&[defs], &|message| {
         warns.lock().push(message.to_string());
     })
-    .await;
+    .await
+    .unwrap();
     assert_eq!(loaded.len(), 1);
     assert_eq!(loaded[0].manifest.id, "hello");
     assert!(warns.lock().iter().any(|item| item.contains("broken")));
@@ -135,7 +141,9 @@ async fn runs_sort_started_at_with_locale_compare() {
     let root = temp_root("locale-runs");
     write_case(&root.join("run-lower"), "run-lower", "wf", "readme.md");
     write_case(&root.join("run-upper"), "run-upper", "wf", "README.md");
-    let runs = list_runs(&root, ListRunsOptions::default(), &|_message| {}).await;
+    let runs = list_runs(&root, ListRunsOptions::default(), &|_message| {})
+        .await
+        .unwrap();
     assert_eq!(
         runs.iter().map(|run| run.id.as_str()).collect::<Vec<_>>(),
         vec!["run-upper", "run-lower"]
@@ -150,7 +158,7 @@ async fn defs_sort_names_with_locale_compare() {
     write_def(&defs.join("zebra"), "zebra", "Zebra");
     write_def(&defs.join("apple"), "apple", "apple");
     write_def(&defs.join("lower"), "lower", "readme.md");
-    let loaded = list_workflow_defs(&[defs], &|_message| {}).await;
+    let loaded = list_workflow_defs(&[defs], &|_message| {}).await.unwrap();
     let names: Vec<_> = loaded
         .iter()
         .map(|item| item.manifest.name.as_str())

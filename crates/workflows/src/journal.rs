@@ -48,10 +48,10 @@ pub async fn append_journal(case_dir: &Path, entry: &JournalEntry) -> Result<(),
         let lock = path_lock(&path);
         let _guard = lock.lock();
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|err| WorkflowError::io(parent, err))?;
+            io_fs::mkdir_all(parent)?;
         }
         if !path.exists() {
-            std::fs::write(&path, b"").map_err(|err| WorkflowError::io(&path, err))?;
+            io_fs::write_file(&path, b"")?;
         }
         io_fs::repair_torn_tail(&path, |tail| {
             let trimmed = js_trim(tail);
@@ -73,7 +73,7 @@ pub async fn read_journal(case_dir: &Path) -> Result<Vec<JournalEntry>, Workflow
         if !path.exists() {
             return Ok(Vec::new());
         }
-        let bytes = std::fs::read(&path).map_err(|err| WorkflowError::io(&path, err))?;
+        let bytes = io_fs::read_bytes(&path)?;
         parse_journal_bytes(&bytes)
     });
     match task.await {

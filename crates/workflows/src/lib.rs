@@ -58,7 +58,7 @@ pub use loader::{load_workflow_dir, parse_frontmatter, resolve_workflow_dir};
 pub use manifest::{
     load_manifest_file, parse_manifest, validate_input_contract, validate_start_input,
 };
-pub use pathutil::{node_join, node_join_paths, normalize_posix, path_text};
+pub use pathutil::{node_join, node_join_paths, path_text};
 pub use registry::{
     CallContext, CallResolver, NamespacedCallRegistry, create_call_registry, parse_call_ref,
 };

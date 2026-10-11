@@ -3,10 +3,10 @@ use std::sync::Arc;
 
 use config_crate::paths::shared_path as standard_shared_path;
 use protocol::host::ProcessEnv;
-use protocol::js::js_trim;
+use protocol::js::{js_trim, posix_normalize};
 
 use crate::executors::ExecutorRegistry;
-use crate::pathutil::{node_join, normalize_posix, path_text, strip_trailing_slashes};
+use crate::pathutil::{node_join, path_text, strip_trailing_slashes};
 use crate::registry::NamespacedCallRegistry;
 
 pub const DEFAULT_STEP_TIMEOUT_MS: f64 = 30.0 * 60.0 * 1000.0;
@@ -129,8 +129,8 @@ pub fn edit_path_for_def_dir(abs_dir: &str, files_root: Option<&str>) -> Option<
     if js_trim(files_root).is_empty() {
         return None;
     }
-    let root = normalize_posix(strip_trailing_slashes(files_root));
-    let dir = normalize_posix(strip_trailing_slashes(abs_dir));
+    let root = posix_normalize(strip_trailing_slashes(files_root));
+    let dir = posix_normalize(strip_trailing_slashes(abs_dir));
     if root.is_empty() || root == "." || dir.is_empty() || dir == "." {
         return None;
     }

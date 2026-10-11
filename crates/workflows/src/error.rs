@@ -275,8 +275,12 @@ impl WorkflowError {
         Self::Message(text.into())
     }
 
-    pub fn io(path: &std::path::Path, err: std::io::Error) -> Self {
-        Self::Message(format!("failed to access {}: {err}", path.display()))
+    pub fn io(syscall: &'static str, path: Option<&std::path::Path>, err: &std::io::Error) -> Self {
+        Self::from_fs(protocol::host::fs_error(syscall, path, None, err))
+    }
+
+    pub fn from_fs(err: protocol::host::FsError) -> Self {
+        Self::Message(err.to_string())
     }
 
     pub fn not_paused(run_id: &str, status: &str) -> Self {
@@ -336,4 +340,38 @@ pub fn is_budget_exceeded(err: &WorkflowError) -> bool {
 
 pub fn is_max_concurrent_runs(err: &WorkflowError) -> bool {
     err.is_max_concurrent()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::WorkflowError;
+
+    #[test]
+    fn filesystem_error_text_matches_node() {
+        let denied = WorkflowError::io(
+            "open",
+            Some(Path::new("/tmp/run.ts")),
+            &std::io::Error::from_raw_os_error(13),
+        );
+        assert_eq!(
+            denied.to_string(),
+            "EACCES: permission denied, open '/tmp/run.ts'"
+        );
+        let missing = WorkflowError::io(
+            "open",
+            Some(Path::new("/tmp/missing.txt")),
+            &std::io::Error::from_raw_os_error(2),
+        );
+        assert_eq!(
+            missing.to_string(),
+            "ENOENT: no such file or directory, open '/tmp/missing.txt'"
+        );
+        let read = WorkflowError::io("read", None, &std::io::Error::from_raw_os_error(21));
+        assert_eq!(
+            read.to_string(),
+            "EISDIR: illegal operation on a directory, read"
+        );
+    }
 }

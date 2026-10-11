@@ -817,7 +817,7 @@ pub async fn assert_under_concurrent_cap(
         },
         &|message| tracing::warn!("{message}"),
     )
-    .await;
+    .await?;
     let active = runs
         .iter()
         .filter(|run| run.workflow_id == workflow_id && !run.status.is_terminal())

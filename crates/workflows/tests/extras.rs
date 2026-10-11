@@ -1,3 +1,4 @@
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -301,6 +302,46 @@ async fn kill_run_writes_killed_marker_and_journal() {
             }
         )
     }));
+}
+
+#[tokio::test]
+async fn unreadable_run_script_reports_the_node_error() {
+    let root = temp_root("validate-node-error");
+    let dir = root.join("wf");
+    write_minimal(&dir).await;
+    let run = dir.join("run.ts");
+    std::fs::remove_file(&run).unwrap();
+    std::fs::create_dir(&run).unwrap();
+    let response = validate_workflow_dir(&dir).await;
+    assert!(!response.ok);
+    assert_eq!(
+        response.diagnostics[0].message,
+        "could not read run script: EISDIR: illegal operation on a directory, read"
+    );
+    std::fs::remove_dir(&run).unwrap();
+    std::fs::write(&run, "export default async function run() {}\n").unwrap();
+    let mut permissions = std::fs::metadata(&run).unwrap().permissions();
+    let original = permissions.mode();
+    permissions.set_mode(0o0);
+    std::fs::set_permissions(&run, permissions.clone()).unwrap();
+    let denied = validate_workflow_dir(&dir).await;
+    permissions.set_mode(original);
+    std::fs::set_permissions(&run, permissions).unwrap();
+    let message = denied
+        .diagnostics
+        .first()
+        .map(|item| item.message.as_str())
+        .unwrap_or("");
+    if message.contains("EACCES") {
+        assert_eq!(
+            message,
+            format!(
+                "could not read run script: EACCES: permission denied, open '{}'",
+                run.display()
+            )
+        );
+    }
+    std::fs::remove_dir_all(&root).unwrap();
 }
 
 #[tokio::test]

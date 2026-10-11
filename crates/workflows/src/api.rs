@@ -25,7 +25,7 @@ pub async fn load_run_detail(
     let case_dir = engine.resolve_case_dir(run_id).await?;
     let state = read_case(&case_dir).await?;
     let journal = read_journal(&case_dir).await?;
-    let children = list_child_runs(&case_dir, &|message| tracing::warn!("{message}")).await;
+    let children = list_child_runs(&case_dir, &|message| tracing::warn!("{message}")).await?;
     let open_gate = find_open_gate(&journal);
     let fields = match state.document.get_raw("fields")? {
         Some(raw) => WireJson::parse(&raw)?,
@@ -178,7 +178,13 @@ pub async fn resolve_def_dir_for_validate(
     workflow_id: &str,
     warn: &(dyn Fn(&str) + Send + Sync),
 ) -> Option<String> {
-    let loaded = list_workflow_defs(roots, warn).await;
+    let loaded = match list_workflow_defs(roots, warn).await {
+        Ok(loaded) => loaded,
+        Err(err) => {
+            warn(&format!("listWorkflowDefs: {err}"));
+            return None;
+        }
+    };
     if let Some(found) = loaded.iter().find(|item| item.manifest.id == workflow_id) {
         return Some(found.dir.clone());
     }

@@ -2,13 +2,12 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
-use parking_lot::Mutex as TableMutex;
+use parking_lot::Mutex;
 
 use serde_json::{Map, Value};
-use tokio::sync::Mutex;
 
 use crate::error::WorkflowError;
-use crate::io_fs::{self, read_string, try_exists};
+use crate::io_fs;
 use crate::pathutil::{node_join_paths, path_text};
 use crate::types::{CaseState, Run, RunStatus};
 use crate::wire::{WireJson, typed_raw};
@@ -23,9 +22,9 @@ pub fn is_terminal_status(status: RunStatus) -> bool {
     status.is_terminal()
 }
 
-fn lock_table() -> &'static TableMutex<HashMap<PathBuf, Arc<Mutex<()>>>> {
-    static LOCKS: OnceLock<TableMutex<HashMap<PathBuf, Arc<Mutex<()>>>>> = OnceLock::new();
-    LOCKS.get_or_init(|| TableMutex::new(HashMap::new()))
+fn lock_table() -> &'static Mutex<HashMap<PathBuf, Arc<Mutex<()>>>> {
+    static LOCKS: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> = OnceLock::new();
+    LOCKS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 fn case_lock(case_dir: &Path) -> Arc<Mutex<()>> {
@@ -36,37 +35,59 @@ fn case_lock(case_dir: &Path) -> Arc<Mutex<()>> {
         .clone()
 }
 
+async fn with_case_lock<T, F>(case_dir: PathBuf, work: F) -> Result<T, WorkflowError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, WorkflowError> + Send + 'static,
+{
+    let lock = case_lock(&case_dir);
+    let label = path_text(&case_dir);
+    let task = tokio::task::spawn_blocking(move || {
+        let _guard = lock.lock();
+        work()
+    });
+    match task.await {
+        Ok(result) => result,
+        Err(_) => Err(WorkflowError::message(format!("case task failed: {label}"))),
+    }
+}
+
 pub fn child_case_dir(parent_case_dir: &Path, child_run_id: &str) -> PathBuf {
     node_join_paths(parent_case_dir, child_run_id)
 }
 
 pub async fn write_case(case_dir: &Path, state: &CaseState) -> Result<(), WorkflowError> {
-    let lock = case_lock(case_dir);
-    let _guard = lock.lock().await;
-    write_case_unlocked(case_dir, state).await
-}
-
-async fn write_case_unlocked(case_dir: &Path, state: &CaseState) -> Result<(), WorkflowError> {
     let mut text = state.document.raw().to_string();
     text.push('\n');
-    io_fs::replace_bytes(&case_path(case_dir), text.as_bytes()).await
+    let case_dir = case_dir.to_path_buf();
+    with_case_lock(case_dir.clone(), move || {
+        write_case_locked(&case_dir, text.as_bytes())
+    })
+    .await
+}
+
+fn write_case_locked(case_dir: &Path, bytes: &[u8]) -> Result<(), WorkflowError> {
+    io_fs::replace_bytes(&case_path(case_dir), bytes)
 }
 
 pub async fn read_case(case_dir: &Path) -> Result<CaseState, WorkflowError> {
-    let lock = case_lock(case_dir);
-    let _guard = lock.lock().await;
-    read_case_unlocked(case_dir).await
+    let case_dir = case_dir.to_path_buf();
+    with_case_lock(case_dir.clone(), move || read_case_locked(&case_dir)).await
 }
 
-async fn read_case_unlocked(case_dir: &Path) -> Result<CaseState, WorkflowError> {
+fn read_case_locked(case_dir: &Path) -> Result<CaseState, WorkflowError> {
     let path = case_path(case_dir);
-    if !try_exists(&path).await? {
-        return Err(WorkflowError::message(format!(
-            "case.json not found in {}",
-            path_text(case_dir)
-        )));
+    match protocol::host::stat(&path) {
+        Ok(_) => {}
+        Err(err) if err.code == "ENOENT" => {
+            return Err(WorkflowError::message(format!(
+                "case.json not found in {}",
+                path_text(case_dir)
+            )));
+        }
+        Err(err) => return Err(WorkflowError::from_fs(err)),
     }
-    let raw = read_string(&path).await?;
+    let raw = protocol::host::read_text(&path).map_err(WorkflowError::from_fs)?;
     parse_case(&raw)
 }
 
@@ -104,24 +125,28 @@ fn case_from_document(document: WireJson) -> Result<CaseState, WorkflowError> {
 
 pub async fn update_case<F>(case_dir: &Path, mutate: F) -> Result<CaseState, WorkflowError>
 where
-    F: FnOnce(&mut WireJson) -> Result<(), WorkflowError>,
+    F: FnOnce(&mut WireJson) -> Result<(), WorkflowError> + Send + 'static,
 {
-    let lock = case_lock(case_dir);
-    let _guard = lock.lock().await;
-    let state = read_case_unlocked(case_dir).await?;
-    if is_terminal_status(state.run.status) {
-        tracing::warn!(
-            "updateCase: run {} is {} (terminal); write ignored",
-            state.run.id,
-            state.run.status
-        );
-        return Ok(state);
-    }
-    let mut document = state.document;
-    mutate(&mut document)?;
-    let state = case_from_document(document)?;
-    write_case_unlocked(case_dir, &state).await?;
-    Ok(state)
+    let case_dir = case_dir.to_path_buf();
+    with_case_lock(case_dir.clone(), move || {
+        let state = read_case_locked(&case_dir)?;
+        if is_terminal_status(state.run.status) {
+            tracing::warn!(
+                "updateCase: run {} is {} (terminal); write ignored",
+                state.run.id,
+                state.run.status
+            );
+            return Ok(state);
+        }
+        let mut document = state.document;
+        mutate(&mut document)?;
+        let state = case_from_document(document)?;
+        let mut text = state.document.raw().to_string();
+        text.push('\n');
+        write_case_locked(&case_dir, text.as_bytes())?;
+        Ok(state)
+    })
+    .await
 }
 
 pub async fn merge_fields(
@@ -235,4 +260,74 @@ pub fn case_state_from_wire(run: Run, fields: &WireJson) -> Result<CaseState, Wo
         ("fields".to_string(), fields.raw().to_string()),
     ])?;
     case_from_document(document)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    use serde_json::Map;
+
+    use super::{RunPatch, case_path, case_state, read_case, update_run, write_case};
+    use crate::io_fs::replace_bytes_by;
+    use crate::types::{Run, RunStatus, StartedBy, StartedByType};
+
+    #[tokio::test]
+    async fn timed_out_replace_does_not_clobber_a_later_terminal_write() {
+        let dir = std::env::temp_dir().join(format!(
+            "wf-case-late-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let run = Run {
+            id: "run-1".to_string(),
+            workflow_id: "wf".to_string(),
+            version: "1.0.0".to_string(),
+            started_by: StartedBy::new(StartedByType::Human),
+            parent: None,
+            case_dir: dir.display().to_string(),
+            status: RunStatus::Running,
+            current: None,
+            workflow_dir: None,
+            error: None,
+            output: None,
+            started_at: Some("2026-01-01T00:00:00.000Z".to_string()),
+            finished_at: None,
+        };
+        let state = case_state(run, Map::new()).unwrap();
+        write_case(&dir, &state).await.unwrap();
+        let path = case_path(&dir);
+        let committed = std::fs::read(&path).unwrap();
+        let err = replace_bytes_by(
+            &path,
+            b"STALE-SNAPSHOT\n",
+            Instant::now() - Duration::from_secs(1),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("timed out"), "{err}");
+        assert_eq!(std::fs::read(&path).unwrap(), committed);
+        update_run(
+            &dir,
+            RunPatch {
+                status: Some(RunStatus::Failed),
+                error: Some("stopped".to_string()),
+                finished_at: Some("2026-01-01T00:00:01.000Z".to_string()),
+                ..RunPatch::default()
+            },
+        )
+        .await
+        .unwrap();
+        let text = String::from_utf8(std::fs::read(&path).unwrap()).unwrap();
+        assert!(text.contains("\"failed\""), "{text}");
+        assert!(text.contains("stopped"), "{text}");
+        assert!(!text.contains("STALE-SNAPSHOT"), "{text}");
+        let stored = read_case(&dir).await.unwrap();
+        assert_eq!(stored.run.status, RunStatus::Failed);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

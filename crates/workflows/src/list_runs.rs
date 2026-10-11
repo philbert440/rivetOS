@@ -5,6 +5,7 @@ use protocol::js::locale_compare;
 use serde_json::Value;
 
 use crate::case::case_path;
+use crate::error::WorkflowError;
 use crate::io_fs::{self, read_string, try_exists};
 use crate::loader::load_workflow_dir;
 use crate::pathutil::{node_join_paths, path_text};
@@ -21,44 +22,44 @@ pub async fn list_runs(
     case_dir_root: &Path,
     opts: ListRunsOptions,
     on_warn: &(dyn Fn(&str) + Send + Sync),
-) -> Vec<RunSummary> {
+) -> Result<Vec<RunSummary>, WorkflowError> {
     let limit = opts.limit.unwrap_or(100);
     let depth = opts.depth.unwrap_or(0);
     match try_exists(case_dir_root).await {
         Ok(true) => {}
-        Ok(false) => return Vec::new(),
+        Ok(false) => return Ok(Vec::new()),
         Err(err) => {
             on_warn(&format!(
                 "listRuns: cannot read {}: {err}",
                 path_text(case_dir_root)
             ));
-            return Vec::new();
+            return Ok(Vec::new());
         }
     }
     let mut found = Vec::new();
     scan_runs(case_dir_root, depth, 0, &mut found, on_warn, None).await;
-    found.sort_by(|left, right| {
+    sort_with_locale(&mut found, |left, right| {
         let right_at = right.started_at.as_deref().unwrap_or("");
         let left_at = left.started_at.as_deref().unwrap_or("");
         locale_ordering(right_at, left_at)
-    });
+    })?;
     found.truncate(limit);
-    found
+    Ok(found)
 }
 
 pub async fn list_child_runs(
     case_dir: &Path,
     on_warn: &(dyn Fn(&str) + Send + Sync),
-) -> Vec<RunSummary> {
+) -> Result<Vec<RunSummary>, WorkflowError> {
     match try_exists(case_dir).await {
         Ok(true) => {}
-        Ok(false) => return Vec::new(),
+        Ok(false) => return Ok(Vec::new()),
         Err(err) => {
             on_warn(&format!(
                 "listChildRuns: failed reading {}: {err}",
                 path_text(case_dir)
             ));
-            return Vec::new();
+            return Ok(Vec::new());
         }
     }
     let parent_run_id = read_parent_id(case_dir).await;
@@ -69,7 +70,7 @@ pub async fn list_child_runs(
                 "listChildRuns: failed reading {}: {err}",
                 path_text(case_dir)
             ));
-            return Vec::new();
+            return Ok(Vec::new());
         }
     };
     let mut found = Vec::new();
@@ -83,18 +84,18 @@ pub async fn list_child_runs(
             found.push(summary);
         }
     }
-    found.sort_by(|left, right| {
+    sort_with_locale(&mut found, |left, right| {
         let right_at = right.started_at.as_deref().unwrap_or("");
         let left_at = left.started_at.as_deref().unwrap_or("");
         locale_ordering(right_at, left_at)
-    });
-    found
+    })?;
+    Ok(found)
 }
 
 pub async fn list_workflow_defs(
     workflows_roots: &[impl AsRef<Path>],
     on_warn: &(dyn Fn(&str) + Send + Sync),
-) -> Vec<LoadedWorkflow> {
+) -> Result<Vec<LoadedWorkflow>, WorkflowError> {
     let mut out = Vec::new();
     let mut seen = Vec::new();
     for root in workflows_roots {
@@ -164,17 +165,30 @@ pub async fn list_workflow_defs(
             }
         }
     }
-    out.sort_by(|left, right| locale_ordering(&left.manifest.name, &right.manifest.name));
-    out
+    sort_with_locale(&mut out, |left, right| {
+        locale_ordering(&left.manifest.name, &right.manifest.name)
+    })?;
+    Ok(out)
 }
 
-fn locale_ordering(left: &str, right: &str) -> Ordering {
+fn locale_ordering(left: &str, right: &str) -> Result<Ordering, WorkflowError> {
     match locale_compare(left, right) {
-        Ok(value) if value < 0 => Ordering::Less,
-        Ok(value) if value > 0 => Ordering::Greater,
-        Ok(_) => Ordering::Equal,
-        Err(_) => left.cmp(right),
+        Ok(value) if value < 0 => Ok(Ordering::Less),
+        Ok(value) if value > 0 => Ok(Ordering::Greater),
+        Ok(_) => Ok(Ordering::Equal),
+        Err(err) => Err(WorkflowError::message(format!(
+            "localeCompare failed: {err}"
+        ))),
     }
+}
+
+fn sort_with_locale<T>(
+    items: &mut [T],
+    compare: impl Fn(&T, &T) -> Result<Ordering, WorkflowError>,
+) -> Result<(), WorkflowError> {
+    locale_ordering("a", "b")?;
+    items.sort_by(|left, right| compare(left, right).unwrap_or(Ordering::Equal));
+    Ok(())
 }
 
 async fn scan_runs(
@@ -322,22 +336,25 @@ mod tests {
             .collect();
         let mut shuffled = names.clone();
         shuffled.reverse();
-        shuffled.sort_by(|left, right| locale_ordering(left, right));
+        shuffled.sort_by(|left, right| locale_ordering(left, right).unwrap());
         assert_eq!(shuffled, names);
         for pair in golden["locale_compare"]["pairs"].as_array().unwrap() {
             let left = pair["a"].as_str().unwrap();
             let right = pair["b"].as_str().unwrap();
             let sign = pair["sign"].as_i64().unwrap();
-            let actual = match locale_ordering(left, right) {
+            let actual = match locale_ordering(left, right).unwrap() {
                 std::cmp::Ordering::Less => -1,
                 std::cmp::Ordering::Equal => 0,
                 std::cmp::Ordering::Greater => 1,
             };
             assert_eq!(actual, sign, "{left} vs {right}");
         }
-        assert_eq!(locale_ordering("apple", "Zebra"), std::cmp::Ordering::Less);
         assert_eq!(
-            locale_ordering("Zebra", "apple"),
+            locale_ordering("apple", "Zebra").unwrap(),
+            std::cmp::Ordering::Less
+        );
+        assert_eq!(
+            locale_ordering("Zebra", "apple").unwrap(),
             std::cmp::Ordering::Greater
         );
     }
