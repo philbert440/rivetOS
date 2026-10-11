@@ -1,0 +1,676 @@
+use std::sync::Arc;
+
+use parking_lot::Mutex;
+
+use hooks::{
+    AbortSignal, HookContext, HookHandler, HookPipeline, HookRegistration, HookSignal,
+    PreparedTool, StreamEvent, StreamSink, ToolBinding, ToolCallContext, ToolExecError, ToolFn,
+    ToolResult, ToolResultContent, ToolResultOutput, execute_tool, to_ai_sdk_tools,
+    to_tool_result_output,
+};
+use protocol::js::JsString;
+use protocol::{ContentPart, HookEventName, StreamEventType};
+use serde_json::{Value, json};
+
+fn tool(name: &str, execute: ToolFn) -> PreparedTool {
+    PreparedTool {
+        name: name.to_string(),
+        description: format!("{name} description"),
+        parameters: json!({"type": "object", "properties": {"x": {"type": "string"}}}),
+        execute,
+    }
+}
+
+fn text_tool(name: &str, text: &'static str) -> PreparedTool {
+    tool(
+        name,
+        Arc::new(move |_args, _signal, _ctx| {
+            Box::pin(async move { Ok(ToolResult::Text(text.into())) })
+        }),
+    )
+}
+
+struct Collect(Mutex<Vec<StreamEvent>>);
+
+impl StreamSink for Collect {
+    fn emit(&self, event: &StreamEvent) {
+        self.0.lock().push(event.clone());
+    }
+}
+
+#[tokio::test]
+async fn executes_tools_through_before_and_after_hooks() {
+    let set = to_ai_sdk_tools(
+        vec![tool(
+            "echo",
+            Arc::new(|args, _signal, _ctx| {
+                Box::pin(async move {
+                    let value = args.get("x").and_then(Value::as_str).unwrap_or("");
+                    Ok(ToolResult::Text(format!("got:{value}").into()))
+                })
+            }),
+        )],
+        ToolBinding::default(),
+    );
+    assert_eq!(set.names(), vec!["echo"]);
+    assert!(!set.is_empty());
+    assert_eq!(set.len(), 1);
+    let echo = set.get("echo").expect("echo");
+    assert_eq!(echo.description(), "echo description");
+    assert_eq!(echo.name(), "echo");
+    assert!(echo.parameters().get("type").is_some());
+    let result = echo.execute(&json!({"x": "hi"}), None).await;
+    assert_eq!(result, ToolResult::Text("got:hi".into()));
+
+    let received = Arc::new(Mutex::new(None));
+    let slot = Arc::clone(&received);
+    let set = to_ai_sdk_tools(
+        vec![tool(
+            "capture",
+            Arc::new(move |args, _signal, _ctx| {
+                let slot = Arc::clone(&slot);
+                Box::pin(async move {
+                    *slot.lock() = Some(args);
+                    Ok(ToolResult::Text("ok".into()))
+                })
+            }),
+        )],
+        ToolBinding::default(),
+    );
+    set.get("capture")
+        .expect("capture")
+        .execute(&json!({"x": "value"}), None)
+        .await;
+    assert_eq!(
+        received.lock().clone(),
+        Some(
+            json!({"x": "value"})
+                .as_object()
+                .cloned()
+                .unwrap_or_default()
+        )
+    );
+
+    let pipeline = Arc::new(HookPipeline::new());
+    let fired = Arc::new(Mutex::new(Vec::new()));
+    let before_args = Arc::new(Mutex::new(None));
+    let after_state = Arc::new(Mutex::new(None));
+    let fired_before = Arc::clone(&fired);
+    let args_slot = Arc::clone(&before_args);
+    pipeline.register(HookRegistration::new(
+        "b",
+        HookEventName::ToolBefore,
+        HookHandler::from_sync(move |ctx: &mut HookContext| {
+            fired_before.lock().push("before");
+            *args_slot.lock() = ctx.args.clone();
+            Ok(HookSignal::Continue)
+        }),
+    ));
+    let fired_after = Arc::clone(&fired);
+    let after_slot = Arc::clone(&after_state);
+    pipeline.register(HookRegistration::new(
+        "a",
+        HookEventName::ToolAfter,
+        HookHandler::from_sync(move |ctx: &mut HookContext| {
+            fired_after.lock().push("after");
+            *after_slot.lock() = Some((ctx.result.clone(), ctx.is_error, ctx.duration_ms));
+            Ok(HookSignal::Continue)
+        }),
+    ));
+    let result = execute_tool(
+        &text_tool("echo", "done"),
+        &json!({"x": "hi"}),
+        &ToolBinding {
+            hooks: Some(pipeline),
+            ..ToolBinding::default()
+        },
+        None,
+    )
+    .await;
+    assert_eq!(result, ToolResult::Text("done".into()));
+    assert_eq!(fired.lock().as_slice(), ["before", "after"]);
+    assert_eq!(
+        before_args.lock().clone(),
+        Some(json!({"x": "hi"}).as_object().cloned().unwrap_or_default())
+    );
+    let after = after_state.lock().clone();
+    let (after_result, is_error, duration) = after.expect("after");
+    assert_eq!(after_result, Some(ToolResult::Text("done".into())));
+    assert_eq!(is_error, Some(false));
+    assert!(duration.unwrap_or(-1) >= 0);
+}
+
+#[tokio::test]
+async fn blocked_hooks_stop_the_tool_without_stream_events() {
+    let pipeline = Arc::new(HookPipeline::new());
+    pipeline.register(HookRegistration::new(
+        "block",
+        HookEventName::ToolBefore,
+        HookHandler::from_sync(|ctx| {
+            ctx.blocked = Some(true);
+            ctx.block_reason = Some("no shells in tests".to_string());
+            Ok(HookSignal::Continue)
+        }),
+    ));
+    let ran = Arc::new(Mutex::new(false));
+    let flag = Arc::clone(&ran);
+    let events = Arc::new(Collect(Mutex::new(Vec::new())));
+    let prepared = tool(
+        "shell",
+        Arc::new(move |_args, _signal, _ctx| {
+            let flag = Arc::clone(&flag);
+            Box::pin(async move {
+                *flag.lock() = true;
+                Ok(ToolResult::Text("should not run".into()))
+            })
+        }),
+    );
+    let result = execute_tool(
+        &prepared,
+        &json!({"x": "rm -rf /"}),
+        &ToolBinding {
+            hooks: Some(pipeline),
+            stream: Some(events.clone()),
+            ..ToolBinding::default()
+        },
+        None,
+    )
+    .await;
+    assert!(!*ran.lock());
+    assert_eq!(
+        result,
+        ToolResult::Text("Blocked: no shells in tests".into())
+    );
+    assert!(events.0.lock().is_empty());
+
+    let pipeline = Arc::new(HookPipeline::new());
+    pipeline.register(HookRegistration::new(
+        "block",
+        HookEventName::ToolBefore,
+        HookHandler::from_sync(|ctx| {
+            ctx.blocked = Some(true);
+            Ok(HookSignal::Abort)
+        }),
+    ));
+    let result = execute_tool(
+        &text_tool("shell", "ran"),
+        &json!({}),
+        &ToolBinding {
+            hooks: Some(pipeline),
+            ..ToolBinding::default()
+        },
+        None,
+    )
+    .await;
+    assert_eq!(
+        result,
+        ToolResult::Text("Blocked: Blocked by safety hook".into())
+    );
+
+    let pipeline = Arc::new(HookPipeline::new());
+    pipeline.register(HookRegistration::new(
+        "block",
+        HookEventName::ToolBefore,
+        HookHandler::from_sync(|ctx| {
+            ctx.blocked = Some(true);
+            ctx.block_reason = Some(String::new());
+            Ok(HookSignal::Continue)
+        }),
+    ));
+    let result = execute_tool(
+        &text_tool("shell", "ran"),
+        &json!({}),
+        &ToolBinding {
+            hooks: Some(pipeline),
+            ..ToolBinding::default()
+        },
+        None,
+    )
+    .await;
+    assert_eq!(result, ToolResult::Text("Blocked: ".into()));
+}
+
+#[tokio::test]
+async fn abort_without_blocked_still_runs_and_rewrites_args() {
+    let pipeline = Arc::new(HookPipeline::new());
+    pipeline.register(HookRegistration::new(
+        "abort",
+        HookEventName::ToolBefore,
+        HookHandler::from_sync(|_| Ok(HookSignal::Abort)),
+    ));
+    let result = execute_tool(
+        &text_tool("echo", "ran"),
+        &json!({"x": "hi"}),
+        &ToolBinding {
+            hooks: Some(pipeline),
+            ..ToolBinding::default()
+        },
+        None,
+    )
+    .await;
+    assert_eq!(result, ToolResult::Text("ran".into()));
+
+    let pipeline = Arc::new(HookPipeline::new());
+    pipeline.register(HookRegistration::new(
+        "rewrite",
+        HookEventName::ToolBefore,
+        HookHandler::from_sync(|ctx| {
+            ctx.args = Some(
+                json!({"x": "rewritten"})
+                    .as_object()
+                    .cloned()
+                    .unwrap_or_default(),
+            );
+            Ok(HookSignal::Continue)
+        }),
+    ));
+    let received = Arc::new(Mutex::new(None));
+    let slot = Arc::clone(&received);
+    let result = execute_tool(
+        &tool(
+            "capture",
+            Arc::new(move |args, _signal, _ctx| {
+                let slot = Arc::clone(&slot);
+                Box::pin(async move {
+                    *slot.lock() = Some(args);
+                    Ok(ToolResult::Text("ok".into()))
+                })
+            }),
+        ),
+        &json!({"x": "original"}),
+        &ToolBinding {
+            hooks: Some(pipeline),
+            ..ToolBinding::default()
+        },
+        None,
+    )
+    .await;
+    assert_eq!(result, ToolResult::Text("ok".into()));
+    assert_eq!(
+        received.lock().clone(),
+        Some(
+            json!({"x": "rewritten"})
+                .as_object()
+                .cloned()
+                .unwrap_or_default()
+        )
+    );
+
+    let wrapped = execute_tool(
+        &text_tool("wrap", "ok"),
+        &json!("hi"),
+        &ToolBinding::default(),
+        None,
+    )
+    .await;
+    assert_eq!(wrapped, ToolResult::Text("ok".into()));
+    let seen = Arc::new(Mutex::new(None));
+    let slot = Arc::clone(&seen);
+    execute_tool(
+        &tool(
+            "wrap",
+            Arc::new(move |args, _signal, _ctx| {
+                let slot = Arc::clone(&slot);
+                Box::pin(async move {
+                    *slot.lock() = Some(args);
+                    Ok(ToolResult::Text("ok".into()))
+                })
+            }),
+        ),
+        &json!("hi"),
+        &ToolBinding::default(),
+        None,
+    )
+    .await;
+    assert_eq!(
+        seen.lock().clone(),
+        Some(
+            json!({"value": "hi"})
+                .as_object()
+                .cloned()
+                .unwrap_or_default()
+        )
+    );
+}
+
+#[tokio::test]
+async fn thrown_errors_stream_events_and_session_identity() {
+    let pipeline = Arc::new(HookPipeline::new());
+    let after_error = Arc::new(Mutex::new(None));
+    let slot = Arc::clone(&after_error);
+    pipeline.register(HookRegistration::new(
+        "observe",
+        HookEventName::ToolAfter,
+        HookHandler::from_sync(move |ctx| {
+            *slot.lock() = ctx.is_error;
+            Ok(HookSignal::Continue)
+        }),
+    ));
+    let events = Arc::new(Collect(Mutex::new(Vec::new())));
+    let result = execute_tool(
+        &tool(
+            "boom",
+            Arc::new(|_args, _signal, _ctx| Box::pin(async { Err(ToolExecError::new("kaboom")) })),
+        ),
+        &json!({}),
+        &ToolBinding {
+            hooks: Some(pipeline),
+            stream: Some(events.clone()),
+            ..ToolBinding::default()
+        },
+        None,
+    )
+    .await;
+    assert_eq!(result, ToolResult::Text("Error: kaboom".into()));
+    assert_eq!(*after_error.lock(), Some(true));
+    let streamed = events.0.lock().clone();
+    assert_eq!(streamed[0].r#type, StreamEventType::ToolStart);
+    assert_eq!(streamed[0].content.to_utf8(), "🔧 boom");
+    assert_eq!(streamed[1].r#type, StreamEventType::ToolResult);
+    assert_eq!(streamed[1].content.to_utf8(), "❌ boom: Error: kaboom");
+
+    let signal = AbortSignal::new();
+    let seen_signal = Arc::new(Mutex::new(None));
+    let slot = Arc::clone(&seen_signal);
+    let seen_session = Arc::new(Mutex::new(None));
+    let session_slot = Arc::clone(&seen_session);
+    execute_tool(
+        &tool(
+            "inspect",
+            Arc::new(move |_args, signal, ctx: ToolCallContext| {
+                let slot = Arc::clone(&slot);
+                let session_slot = Arc::clone(&session_slot);
+                Box::pin(async move {
+                    *slot.lock() = Some(signal);
+                    *session_slot.lock() =
+                        Some((ctx.agent_id, ctx.working_dir, ctx.session.agent_id));
+                    Ok(ToolResult::Text("ok".into()))
+                })
+            }),
+        ),
+        &json!({}),
+        &ToolBinding {
+            agent_id: Some("owner".to_string()),
+            working_dir: Some("/tmp/work".to_string()),
+            session_id: Some("sess-1".to_string()),
+            ..ToolBinding::default()
+        },
+        Some(signal.clone()),
+    )
+    .await;
+    assert_eq!(seen_signal.lock().clone(), Some(signal));
+    assert_eq!(
+        seen_session.lock().clone(),
+        Some((
+            Some("owner".to_string()),
+            Some("/tmp/work".to_string()),
+            "owner".to_string()
+        ))
+    );
+
+    let long = "x".repeat(250);
+    let events = Arc::new(Collect(Mutex::new(Vec::new())));
+    let long_tool = tool(
+        "long",
+        Arc::new(move |_args, _signal, _ctx| {
+            let long = long.clone();
+            Box::pin(async move { Ok(ToolResult::Text(long.into())) })
+        }),
+    );
+    let mut args = serde_json::Map::new();
+    args.insert("blob".to_string(), json!("y".repeat(201)));
+    execute_tool(
+        &long_tool,
+        &Value::Object(args),
+        &ToolBinding {
+            stream: Some(events.clone()),
+            ..ToolBinding::default()
+        },
+        None,
+    )
+    .await;
+    let streamed = events.0.lock().clone();
+    let metadata = streamed[0].metadata.clone().expect("metadata");
+    let summary = metadata
+        .get("args")
+        .and_then(|value| value.as_object())
+        .expect("args");
+    let truncated = format!("{}…", "y".repeat(200));
+    assert_eq!(
+        summary.get("blob").and_then(|value| value.as_str()),
+        Some(truncated.as_str())
+    );
+    assert_eq!(
+        streamed[1].content.to_utf8(),
+        format!("✅ long: {}", "x".repeat(200))
+    );
+    let wire = serde_json::to_string(&streamed[0]).expect("event");
+    assert!(
+        wire.contains(r#""args":{"blob":"#),
+        "tool-start metadata stringifies arguments with JSON.stringify"
+    );
+
+    let pipeline = Arc::new(HookPipeline::new());
+    let flagged = Arc::new(Mutex::new(None));
+    let slot = Arc::clone(&flagged);
+    pipeline.register(HookRegistration::new(
+        "observe",
+        HookEventName::ToolAfter,
+        HookHandler::from_sync(move |ctx| {
+            *slot.lock() = ctx.is_error;
+            Ok(HookSignal::Continue)
+        }),
+    ));
+    execute_tool(
+        &text_tool("explicit", "Error: explicit failure"),
+        &json!({}),
+        &ToolBinding {
+            hooks: Some(pipeline),
+            ..ToolBinding::default()
+        },
+        None,
+    )
+    .await;
+    assert_eq!(*flagged.lock(), Some(true));
+}
+
+#[test]
+fn to_model_output_matches_the_typescript_cases() {
+    assert_eq!(
+        to_tool_result_output(&ToolResult::Text("hello".into())),
+        ToolResultOutput::Text {
+            value: "hello".into()
+        }
+    );
+    let parts = ToolResult::Parts(vec![
+        ContentPart::Text { text: "one".into() },
+        ContentPart::Text {
+            text: " two".into(),
+        },
+    ]);
+    assert_eq!(
+        to_tool_result_output(&parts),
+        ToolResultOutput::Text {
+            value: "one two".into()
+        }
+    );
+    let image = ToolResult::Parts(vec![
+        ContentPart::Text {
+            text: "snap:".into(),
+        },
+        ContentPart::Image {
+            data: Some("aGVsbG8=".to_string()),
+            url: None,
+            mime_type: Some("image/png".to_string()),
+        },
+    ]);
+    assert_eq!(
+        to_tool_result_output(&image),
+        ToolResultOutput::Content {
+            value: vec![
+                ToolResultContent::Text {
+                    text: "snap:".into()
+                },
+                ToolResultContent::ImageData {
+                    data: "aGVsbG8=".to_string(),
+                    media_type: "image/png".to_string(),
+                },
+            ]
+        }
+    );
+    let urls = ToolResult::Parts(vec![
+        ContentPart::Image {
+            data: None,
+            url: Some("https://cdn.example.com/a.jpg".to_string()),
+            mime_type: None,
+        },
+        ContentPart::Image {
+            data: Some("YWJjZA==".to_string()),
+            url: None,
+            mime_type: None,
+        },
+    ]);
+    assert_eq!(
+        to_tool_result_output(&urls),
+        ToolResultOutput::Content {
+            value: vec![
+                ToolResultContent::ImageUrl {
+                    url: "https://cdn.example.com/a.jpg".to_string()
+                },
+                ToolResultContent::ImageData {
+                    data: "YWJjZA==".to_string(),
+                    media_type: "image/jpeg".to_string(),
+                },
+            ]
+        }
+    );
+    let set = to_ai_sdk_tools(
+        vec![text_tool("a", "x"), text_tool("b", "y")],
+        ToolBinding::default(),
+    );
+    assert_eq!(set.names(), vec!["a", "b"]);
+    assert_eq!(set.get("a").expect("a").description(), "a description");
+    assert_eq!(
+        set.get("t")
+            .map(|tool| tool.to_model_output(&ToolResult::Text("hello".into()))),
+        None
+    );
+    assert_eq!(
+        set.get("a")
+            .expect("a")
+            .to_model_output(&ToolResult::Text("hello".into())),
+        ToolResultOutput::Text {
+            value: "hello".into()
+        }
+    );
+}
+
+#[tokio::test]
+async fn truncated_emoji_results_keep_utf16_on_the_stream() {
+    let mut units = vec![u16::from(b'a'); 199];
+    units.push(0xD83D);
+    let notice = "\n\n[Truncated at 200 chars. Use max_chars parameter to see more.]";
+    units.extend(notice.encode_utf16());
+    let fetched = JsString::from_units(units);
+    let events = Arc::new(Collect(Mutex::new(Vec::new())));
+    let stored = fetched.clone();
+    execute_tool(
+        &tool(
+            "fetch",
+            Arc::new(move |_args, _signal, _ctx| {
+                let stored = stored.clone();
+                Box::pin(async move { Ok(ToolResult::Text(stored)) })
+            }),
+        ),
+        &json!({}),
+        &ToolBinding {
+            stream: Some(events.clone()),
+            ..ToolBinding::default()
+        },
+        None,
+    )
+    .await;
+    let streamed = events.0.lock().clone();
+    assert_eq!(streamed[1].r#type, StreamEventType::ToolResult);
+    assert!(streamed[1].content.units().contains(&0xD83D));
+    assert!(!streamed[1].content.units().contains(&0xFFFD));
+    let wire = serde_json::to_string(&streamed[1]).expect("event");
+    assert!(wire.contains("\\ud83d"), "{wire}");
+    assert!(!wire.contains("\\ufffd"), "{wire}");
+    assert!(!wire.contains('\u{FFFD}'), "{wire}");
+    match to_tool_result_output(&ToolResult::Text(fetched.clone())) {
+        ToolResultOutput::Text { value } => assert_eq!(value.units(), fetched.units()),
+        ToolResultOutput::Content { .. } => panic!("direct text"),
+    }
+
+    let mut head = "see ".encode_utf16().collect::<Vec<_>>();
+    head.push(0xD83D);
+    let mut tail = vec![0xDE00];
+    tail.extend(notice.encode_utf16());
+    let parts = ToolResult::Parts(vec![
+        ContentPart::Text {
+            text: JsString::from_units(head),
+        },
+        ContentPart::Text {
+            text: JsString::from_units(tail),
+        },
+    ]);
+    let events = Arc::new(Collect(Mutex::new(Vec::new())));
+    let streamed_parts = parts.clone();
+    execute_tool(
+        &tool(
+            "shell",
+            Arc::new(move |_args, _signal, _ctx| {
+                let streamed_parts = streamed_parts.clone();
+                Box::pin(async move { Ok(streamed_parts) })
+            }),
+        ),
+        &json!({}),
+        &ToolBinding {
+            stream: Some(events.clone()),
+            ..ToolBinding::default()
+        },
+        None,
+    )
+    .await;
+    let streamed = events.0.lock().clone();
+    assert!(
+        streamed[1]
+            .content
+            .units()
+            .windows(2)
+            .any(|pair| pair == [0xD83D, 0xDE00])
+    );
+    assert!(!streamed[1].content.units().contains(&0xFFFD));
+    let wire = serde_json::to_string(&streamed[1]).expect("parts event");
+    let parsed: StreamEvent = serde_json::from_str(&wire).expect("parse event");
+    assert_eq!(parsed.content.units(), streamed[1].content.units());
+    assert!(!wire.contains("\\ufffd"), "{wire}");
+    assert!(!wire.contains('\u{FFFD}'), "{wire}");
+    match to_tool_result_output(&parts) {
+        ToolResultOutput::Text { value } => {
+            assert!(
+                value
+                    .units()
+                    .windows(2)
+                    .any(|pair| pair == [0xD83D, 0xDE00])
+            );
+            let model = serde_json::to_string(&ToolResultOutput::Text {
+                value: value.clone(),
+            })
+            .expect("model");
+            let parsed: ToolResultOutput = serde_json::from_str(&model).expect("parse model");
+            match parsed {
+                ToolResultOutput::Text {
+                    value: parsed_value,
+                } => {
+                    assert_eq!(parsed_value.units(), value.units());
+                }
+                ToolResultOutput::Content { .. } => panic!("joined text"),
+            }
+            assert!(!model.contains("\\ufffd"), "{model}");
+            assert!(!model.contains('\u{FFFD}'), "{model}");
+        }
+        ToolResultOutput::Content { .. } => panic!("joined text"),
+    }
+}
