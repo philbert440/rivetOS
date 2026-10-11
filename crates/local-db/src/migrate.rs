@@ -194,10 +194,10 @@ pub fn node_missing_message(command: &str) -> String {
 
 pub fn load_migrated(home: &Path) -> Result<Vec<String>> {
     let path = migrated_record(home);
-    let text = match std::fs::read_to_string(&path) {
+    let text = match protocol::host::read_text(&path) {
         Ok(text) => text,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => return Err(error.into()),
+        Err(error) if error.code == "ENOENT" => return Ok(Vec::new()),
+        Err(error) => return Err(LocalDbError::message(error.to_string())),
     };
     let parsed: MigratedFile = serde_json::from_str(&text)
         .map_err(|error| LocalDbError::Json(format!("{}: {error}", path.display())))?;
@@ -553,7 +553,7 @@ pub async fn export_pglite_source(
 }
 
 pub fn package_entry(dir: &Path, export_key: &str) -> Result<PathBuf> {
-    let text = std::fs::read_to_string(dir.join("package.json")).map_err(|error| {
+    let text = protocol::host::read_text(&dir.join("package.json")).map_err(|error| {
         LocalDbError::message(format!(
             "embedded postgres: cannot read {}/package.json: {error}",
             dir.display()

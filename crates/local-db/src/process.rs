@@ -58,7 +58,7 @@ pub struct PostmasterPid {
 }
 
 pub fn read_postmaster_pid(pgdata: &Path) -> Option<i64> {
-    let text = std::fs::read_to_string(pgdata.join("postmaster.pid")).ok()?;
+    let text = protocol::host::read_text(&pgdata.join("postmaster.pid")).ok()?;
     let line = text.lines().next()?.trim();
     let pid = line.parse::<i64>().ok()?;
     if pid > 0 { Some(pid) } else { None }
@@ -91,10 +91,12 @@ pub async fn clear_stale_postmaster(
     if !pid_path.exists() {
         return Ok(());
     }
-    let text = match tokio::fs::read_to_string(&pid_path).await {
-        Ok(text) => text,
-        Err(_) => return remove_pid(&pid_path).await,
-    };
+    let read_path = pid_path.clone();
+    let text =
+        match tokio::task::spawn_blocking(move || protocol::host::read_text(&read_path)).await {
+            Ok(Ok(text)) => text,
+            _ => return remove_pid(&pid_path).await,
+        };
     let Some(parsed) = parse_postmaster_pid(&text) else {
         log.warn(&format!(
             "embedded postgres: removing unreadable postmaster.pid at {}",

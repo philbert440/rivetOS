@@ -1000,7 +1000,7 @@ fn pgvector_recorded(installation_dir: &Path) -> bool {
 }
 
 fn marker_lists_pgvector(path: &Path) -> bool {
-    std::fs::read_to_string(path)
+    protocol::host::read_text(path)
         .ok()
         .is_some_and(|text| text.contains("pgvector_compiled"))
 }
@@ -2116,14 +2116,14 @@ mod tests {
             .expect("time")
             .with_timezone(&chrono::Utc);
         assert_eq!(backup_stamp(time), "2026-01-02T03-04-05");
-        let path = default_backup_path(Path::new("/tmp/home"), "2026-01-02T03-04-05");
+        let path = default_backup_path(Path::new("/tmp/user-home"), "2026-01-02T03-04-05");
         assert_eq!(
             path,
-            PathBuf::from("/tmp/home/.rivetos/backups/postgres-2026-01-02T03-04-05.sql")
+            PathBuf::from("/tmp/user-home/.rivetos/backups/postgres-2026-01-02T03-04-05.sql")
         );
         assert_eq!(
             backup_wrote_line(&path),
-            "✅ backup wrote /tmp/home/.rivetos/backups/postgres-2026-01-02T03-04-05.sql"
+            "✅ backup wrote /tmp/user-home/.rivetos/backups/postgres-2026-01-02T03-04-05.sql"
         );
     }
 

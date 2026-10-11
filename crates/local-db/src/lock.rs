@@ -67,7 +67,7 @@ pub fn lock_path(data_dir: &Path) -> PathBuf {
 }
 
 pub fn read_embedded_pg_lock(data_dir: &Path) -> Option<EmbeddedPgLock> {
-    let text = std::fs::read_to_string(lock_path(data_dir)).ok()?;
+    let text = protocol::host::read_text(&lock_path(data_dir)).ok()?;
     parse_lock(&text)
 }
 
@@ -214,13 +214,16 @@ async fn classify_existing(
     configured_port: u16,
     log: &dyn EmbeddedPgLog,
 ) -> Result<AttachDecision> {
-    let text = match tokio::fs::read_to_string(path).await {
-        Ok(text) => text,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(AttachDecision::Missing);
-        }
-        Err(error) => return Err(error.into()),
-    };
+    let read_path = path.to_path_buf();
+    let text =
+        match tokio::task::spawn_blocking(move || protocol::host::read_text(&read_path)).await {
+            Ok(Ok(text)) => text,
+            Ok(Err(error)) if error.code == "ENOENT" => {
+                return Ok(AttachDecision::Missing);
+            }
+            Ok(Err(error)) => return Err(LocalDbError::message(error.to_string())),
+            Err(error) => return Err(LocalDbError::message(error.to_string())),
+        };
     let decision = classify_text(&text, configured_port, probe_lock_pid);
     if let AttachDecision::Alive { pid, port } = &decision {
         log.info(&format!(
@@ -458,7 +461,7 @@ fn try_file_lock(path: &Path) -> std::result::Result<FileLock, LockTry> {
 
 #[cfg(not(unix))]
 fn lock_text_is_dead(path: &Path) -> bool {
-    let Ok(text) = std::fs::read_to_string(path) else {
+    let Ok(text) = protocol::host::read_text(path) else {
         return true;
     };
     let Ok(pid) = text.trim().parse::<i64>() else {
@@ -471,8 +474,8 @@ fn lock_text_is_dead(path: &Path) -> bool {
 fn release_file_lock(file: HeldLock, path: &Path) {
     let _ = file;
     let ours = std::process::id().to_string();
-    if std::fs::read_to_string(path).ok().as_deref() == Some(ours.as_str())
-        || std::fs::read_to_string(path)
+    if protocol::host::read_text(path).ok().as_deref() == Some(ours.as_str())
+        || protocol::host::read_text(path)
             .ok()
             .is_some_and(|text| text.trim() == ours)
     {

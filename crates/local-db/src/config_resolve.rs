@@ -139,7 +139,7 @@ pub fn read_embedded_config_with(
     home: &Path,
     env: &dyn Env,
 ) -> Result<Option<(Value, ResolvedEmbeddedPg)>> {
-    let text = match std::fs::read_to_string(path) {
+    let text = match protocol::host::read_text(path) {
         Ok(text) => text,
         Err(_) => return Ok(None),
     };
