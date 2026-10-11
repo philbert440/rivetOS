@@ -383,6 +383,38 @@ async fn truncated_utf8_tail_is_recovered_on_read_and_append() {
     );
 }
 
+#[tokio::test]
+async fn complete_line_keeps_an_invalid_byte_the_way_node_reads_it() {
+    let dir = temp_root("journal-lossy");
+    let path = journal_path(&dir);
+    let mut bytes =
+        br#"{"type":"step_finished","ts":"t","stepId":"a#1","label":"a","seq":1,"kind":"run","result":"x"#
+            .to_vec();
+    bytes.extend_from_slice(&[0xff, 0xe2, 0x28, 0xa1]);
+    bytes.extend_from_slice(br#""}"#);
+    bytes.push(b'\n');
+    std::fs::write(&path, &bytes).unwrap();
+    let all = read_journal(&dir).await.unwrap();
+    assert_eq!(all.len(), 1);
+    match &all[0] {
+        JournalEntry::StepFinished { result, .. } => {
+            assert_eq!(
+                result.as_ref().unwrap().to_value().as_str(),
+                Some("x\u{FFFD}\u{FFFD}(\u{FFFD}")
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    let mut torn = bytes;
+    torn.extend_from_slice(
+        br#"{"type":"step_finished","ts":"t2","stepId":"b#1","label":"b","seq":1,"kind":"run","result":"torn"#,
+    );
+    torn.push(0xff);
+    torn.extend_from_slice(br#""}"#);
+    std::fs::write(&path, &torn).unwrap();
+    assert_eq!(read_journal(&dir).await.unwrap().len(), 1);
+}
+
 async fn append_started(dir: &std::path::Path) {
     append_journal(
         dir,

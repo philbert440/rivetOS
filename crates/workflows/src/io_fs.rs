@@ -495,4 +495,72 @@ mod tests {
         std::fs::set_permissions(&blocked, permissions).unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
     }
+
+    #[tokio::test]
+    async fn read_string_matches_node_read_file_utf8() {
+        let golden: serde_json::Value = serde_json::from_str(
+            &protocol::host::read_text(
+                &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/golden/js-semantics.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let dir = temp_dir("lossy-read");
+        for (index, case) in golden["read_file_utf8"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .enumerate()
+        {
+            let bytes = decode_hex(case["hex"].as_str().unwrap());
+            let path = dir.join(format!("file-{index}"));
+            std::fs::write(&path, &bytes).unwrap();
+            let text = super::read_string(&path).await.unwrap();
+            let units: Vec<u16> = text.encode_utf16().collect();
+            assert_eq!(units, units_of(&case["units"]), "{}", case["hex"]);
+        }
+        let missing = dir.join("missing.txt");
+        let missing_err = super::read_string(&missing).await.unwrap_err();
+        let missing_text = missing_err.to_string();
+        assert!(
+            missing_text.starts_with("ENOENT: no such file or directory, open '"),
+            "{missing_text}"
+        );
+        assert!(missing_text.contains("missing.txt"), "{missing_text}");
+        let dir_err = super::read_string(&dir).await.unwrap_err();
+        assert_eq!(
+            dir_err.to_string(),
+            "EISDIR: illegal operation on a directory, read"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn units_of(value: &serde_json::Value) -> Vec<u16> {
+        value
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item.as_u64().unwrap() as u16)
+            .collect()
+    }
+
+    fn decode_hex(text: &str) -> Vec<u8> {
+        let bytes = text.as_bytes();
+        let mut out = Vec::with_capacity(bytes.len() / 2);
+        let mut index = 0;
+        while index + 1 < bytes.len() {
+            out.push((hex_nibble(bytes[index]) << 4) | hex_nibble(bytes[index + 1]));
+            index += 2;
+        }
+        out
+    }
+
+    fn hex_nibble(byte: u8) -> u8 {
+        match byte {
+            b'0'..=b'9' => byte - b'0',
+            b'a'..=b'f' => byte - b'a' + 10,
+            b'A'..=b'F' => byte - b'A' + 10,
+            _ => panic!("hex"),
+        }
+    }
 }

@@ -1,7 +1,8 @@
 use serde_json::{Map, Value};
 
 pub fn resolve_env_vars(value: &Value) -> Value {
-    resolve_env_vars_with(value, |name| std::env::var(name).ok())
+    let env = protocol::host::ProcessEnv;
+    resolve_env_vars_with(value, |name| protocol::host::Env::var(&env, name))
 }
 
 pub fn resolve_env_vars_with(value: &Value, lookup: impl Fn(&str) -> Option<String>) -> Value {

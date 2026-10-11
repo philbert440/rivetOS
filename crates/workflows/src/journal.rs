@@ -103,6 +103,14 @@ pub fn parse_journal(raw: &str) -> Result<Vec<JournalEntry>, WorkflowError> {
     parse_journal_bytes(raw.as_bytes())
 }
 
+fn decode_journal_line(line: &[u8], unfinished: bool) -> Option<std::borrow::Cow<'_, str>> {
+    match std::str::from_utf8(line) {
+        Ok(text) => Some(std::borrow::Cow::Borrowed(text)),
+        Err(_) if unfinished => None,
+        Err(_) => Some(String::from_utf8_lossy(line)),
+    }
+}
+
 fn parse_journal_bytes(bytes: &[u8]) -> Result<Vec<JournalEntry>, WorkflowError> {
     if bytes.is_empty() {
         return Ok(Vec::new());
@@ -116,15 +124,10 @@ fn parse_journal_bytes(bytes: &[u8]) -> Result<Vec<JournalEntry>, WorkflowError>
     let mut entries = Vec::new();
     for (index, line) in lines.iter().enumerate() {
         let unfinished = !complete && index == last;
-        let Ok(text) = std::str::from_utf8(line) else {
-            if unfinished {
-                continue;
-            }
-            return Err(WorkflowError::message(
-                "failed to parse journal line: invalid utf-8",
-            ));
+        let Some(text) = decode_journal_line(line, unfinished) else {
+            continue;
         };
-        let trimmed = js_trim(text);
+        let trimmed = js_trim(&text);
         if trimmed.is_empty() {
             continue;
         }

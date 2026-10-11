@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
-use protocol::host::fs_error;
+use protocol::host::{fs_error, read_text};
 use protocol::js::{
     self, JsValue, from_serde, js_slice_units, posix_basename, posix_dirname, posix_is_absolute,
     posix_join, posix_resolve,
@@ -16,7 +16,7 @@ use crate::timefmt::format_en_us_new_york;
 
 fn golden() -> Value {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/golden/js-semantics.json");
-    let text = std::fs::read_to_string(&path).expect("golden");
+    let text = read_text(&path).expect("golden");
     serde_json::from_str(&text).expect("json")
 }
 

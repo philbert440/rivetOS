@@ -17,7 +17,7 @@ mod tests {
     fn number_text_matches_the_node_golden() {
         let path =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden/js-semantics.json");
-        let text = std::fs::read_to_string(path).unwrap();
+        let text = protocol::host::read_text(&path).unwrap();
         let golden: serde_json::Value = serde_json::from_str(&text).unwrap();
         for case in golden["to_string"].as_array().unwrap() {
             if case["kind"].as_str() != Some("number") {

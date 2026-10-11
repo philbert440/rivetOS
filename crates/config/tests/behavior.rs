@@ -231,3 +231,37 @@ fn validation_failure_does_not_resolve_env() {
     let err = config::load_str("[]\n").unwrap_err();
     assert_eq!(err.to_string(), "Config validation failed");
 }
+
+#[test]
+fn load_reads_invalid_bytes_as_node_does() {
+    let dir = std::env::temp_dir().join(format!("rr-cfg-lossy-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("config.yaml");
+    let mut bytes = b"runtime:\n  workspace: \"/tmp/".to_vec();
+    bytes.extend_from_slice(&[0xff, 0xe2, 0x28, 0xa1]);
+    bytes.extend_from_slice(
+        b"\"\n  default_agent: main\nagents:\n  main:\n    provider: anthropic\nproviders:\n  anthropic:\n    model: claude-opus\n",
+    );
+    std::fs::write(&path, &bytes).unwrap();
+    let loaded = config::load(&path).unwrap();
+    assert_eq!(
+        loaded
+            .document
+            .pointer("/runtime/workspace")
+            .and_then(|value| value.as_str()),
+        Some("/tmp/\u{FFFD}\u{FFFD}(\u{FFFD}")
+    );
+    let missing = dir.join("missing.yaml");
+    let missing_text = config::load(&missing).unwrap_err().to_string();
+    assert!(
+        missing_text.starts_with("ENOENT: no such file or directory, open '"),
+        "{missing_text}"
+    );
+    assert!(missing_text.contains("missing.yaml"), "{missing_text}");
+    assert_eq!(
+        config::load(&dir).unwrap_err().to_string(),
+        "EISDIR: illegal operation on a directory, read"
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
