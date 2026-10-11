@@ -1147,60 +1147,79 @@ impl<D: SearchDb> SearchEngine<D> {
             return Vec::new();
         }
         let (sql, params) = chunk_sql(literal, pool, options, with_window);
-        match self.db.query(&sql, &params).await {
-            Ok(rows) => rows.rows.iter().map(map_chunk).collect(),
-            Err(err) => {
-                self.disable_chunk(&chunk_arm_error_reason(&err.message, err.code.as_deref()));
-                Vec::new()
-            }
+        if let Err(err) = session.query("SAVEPOINT chunk_arm", &[]).await {
+            rollback_savepoint(session, "chunk_arm").await;
+            self.fail_chunk(&err);
+            return Vec::new();
         }
+        let rows = match session.query(&sql, &params).await {
+            Ok(rows) => rows,
+            Err(err) => {
+                rollback_savepoint(session, "chunk_arm").await;
+                self.fail_chunk(&err);
+                return Vec::new();
+            }
+        };
+        if let Err(err) = session.query("RELEASE SAVEPOINT chunk_arm", &[]).await {
+            rollback_savepoint(session, "chunk_arm").await;
+            self.fail_chunk(&err);
+            return Vec::new();
+        }
+        rows.rows.iter().map(map_chunk).collect()
     }
 
     async fn chunk_ready(&self, session: &mut D::Session) -> bool {
         if let Some(ready) = self.shared.chunk.lock().available {
             return ready;
         }
-        let _ = session.query("SAVEPOINT chunk_arm_probe", &[]).await;
-        match session.query(CHUNK_ARM_PROBE_SQL, &[]).await {
-            Ok(result) => {
-                let _ = session
-                    .query("RELEASE SAVEPOINT chunk_arm_probe", &[])
-                    .await;
-                let present = result
-                    .rows
-                    .first()
-                    .and_then(|row| cell(row, "present"))
-                    .and_then(Cell::as_bool)
-                    == Some(true);
-                let granted = result
-                    .rows
-                    .first()
-                    .and_then(|row| cell(row, "granted"))
-                    .and_then(Cell::as_bool)
-                    == Some(true);
-                if present && granted {
-                    self.shared.chunk.lock().available = Some(true);
-                    true
-                } else {
-                    self.disable_chunk(if present {
-                        "no SELECT on ros_message_chunks"
-                    } else {
-                        "ros_message_chunks not present (run migrations)"
-                    });
-                    false
-                }
-            }
-            Err(err) => {
-                let _ = session
-                    .query("ROLLBACK TO SAVEPOINT chunk_arm_probe", &[])
-                    .await;
-                let _ = session
-                    .query("RELEASE SAVEPOINT chunk_arm_probe", &[])
-                    .await;
-                self.disable_chunk(&chunk_arm_error_reason(&err.message, err.code.as_deref()));
-                false
-            }
+        if let Err(err) = session.query("SAVEPOINT chunk_arm_probe", &[]).await {
+            rollback_savepoint(session, "chunk_arm_probe").await;
+            self.fail_chunk(&err);
+            return false;
         }
+        let result = match session.query(CHUNK_ARM_PROBE_SQL, &[]).await {
+            Ok(result) => result,
+            Err(err) => {
+                rollback_savepoint(session, "chunk_arm_probe").await;
+                self.fail_chunk(&err);
+                return false;
+            }
+        };
+        if let Err(err) = session
+            .query("RELEASE SAVEPOINT chunk_arm_probe", &[])
+            .await
+        {
+            rollback_savepoint(session, "chunk_arm_probe").await;
+            self.fail_chunk(&err);
+            return false;
+        }
+        let present = result
+            .rows
+            .first()
+            .and_then(|row| cell(row, "present"))
+            .and_then(Cell::as_bool)
+            == Some(true);
+        let granted = result
+            .rows
+            .first()
+            .and_then(|row| cell(row, "granted"))
+            .and_then(Cell::as_bool)
+            == Some(true);
+        if present && granted {
+            self.shared.chunk.lock().available = Some(true);
+            true
+        } else {
+            self.disable_chunk(if present {
+                "no SELECT on ros_message_chunks"
+            } else {
+                "ros_message_chunks not present (run migrations)"
+            });
+            false
+        }
+    }
+
+    fn fail_chunk(&self, err: &DbFail) {
+        self.disable_chunk(&chunk_arm_error_reason(&err.message, err.code.as_deref()));
     }
 
     fn disable_chunk(&self, reason: &str) {
@@ -1587,6 +1606,14 @@ async fn wait_health(mut rx: tokio::sync::watch::Receiver<Option<HealthView>>) -
         available: false,
         checked_at: format_js_iso(Utc::now()),
         reason: Some("unknown".to_string()),
+    }
+}
+
+async fn rollback_savepoint(session: &mut impl SearchSession, name: &str) {
+    let rollback = format!("ROLLBACK TO SAVEPOINT {name}");
+    if session.query(&rollback, &[]).await.is_ok() {
+        let release = format!("RELEASE SAVEPOINT {name}");
+        let _ = session.query(&release, &[]).await;
     }
 }
 
@@ -2014,7 +2041,7 @@ fn chunk_sql(
     let chunk_pool_idx = params.len();
     params.push(Bind::I64(pool));
     let sql = format!(
-        "WITH ranked AS ( SELECT c.message_id, c.idx, c.char_start, c.char_end, c.content, (1 - (c.embedding <=> $1::halfvec)) AS sim FROM ros_message_chunks c JOIN ros_messages m ON m.id = c.message_id WHERE {conds} ORDER BY (c.embedding <=> $1::halfvec) + 0 LIMIT ${chunk_pool_idx} ), best AS ( SELECT DISTINCT ON (message_id) message_id, idx, char_start, char_end, content, sim FROM ranked ORDER BY message_id, sim DESC, idx ) SELECT m.id, m.content, m.role, m.agent, m.metadata, m.conversation_id, m.created_at, m.tool_name, m.tool_result, {boost} AS boost, b.sim AS semantic_sim, b.content AS chunk_content, b.char_start AS chunk_char_start, b.char_end AS chunk_char_end, b.idx AS chunk_idx, (SELECT count(*) FROM ros_message_chunks c2 WHERE c2.message_id = b.message_id) AS chunk_count FROM best b JOIN ros_messages m ON m.id = b.message_id ORDER BY b.sim DESC LIMIT ${limit}",
+        "WITH ranked AS ( SELECT c.message_id, c.idx, c.char_start, c.char_end, c.content, (1 - (c.embedding <=> $1::halfvec)) AS sim FROM ros_message_chunks c JOIN ros_messages m ON m.id = c.message_id WHERE {conds} ORDER BY c.embedding <=> $1::halfvec LIMIT ${chunk_pool_idx} ), best AS ( SELECT DISTINCT ON (message_id) message_id, idx, char_start, char_end, content, sim FROM ranked ORDER BY message_id, sim DESC, idx ) SELECT m.id, m.content, m.role, m.agent, m.metadata, m.conversation_id, m.created_at, m.tool_name, m.tool_result, {boost} AS boost, b.sim AS semantic_sim, b.content AS chunk_content, b.char_start AS chunk_char_start, b.char_end AS chunk_char_end, b.idx AS chunk_idx, (SELECT count(*) FROM ros_message_chunks c2 WHERE c2.message_id = b.message_id) AS chunk_count FROM best b JOIN ros_messages m ON m.id = b.message_id ORDER BY b.sim DESC LIMIT ${limit}",
         conds = conds.join(" AND "),
         boost = message_boost(),
         limit = params.len(),

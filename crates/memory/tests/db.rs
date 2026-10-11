@@ -826,10 +826,6 @@ async fn ranking_orders_body(pool: PgPool) -> Result<(), String> {
     )
     .await
     .map_err(|err| format!("capture vuser: {err}"))?;
-    sqlx::query("DROP INDEX IF EXISTS ros_messages_embedding_hnsw")
-        .execute(&pool)
-        .await
-        .map_err(|err| format!("drop hnsw: {err}"))?;
     sqlx::query("UPDATE ros_messages SET created_at = NOW() - interval '30 days', access_count = 0, embedding = $1::halfvec(1024) WHERE content = 'vsystem vectorneedle'")
         .bind(axis_literal(0))
         .execute(&pool)

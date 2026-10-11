@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -522,6 +524,16 @@ async fn vector_transaction_sets_ef_search_and_releases_once() {
             .any(|sql| sql.starts_with("SET LOCAL hnsw.ef_search = "))
     );
     assert!(client.iter().any(|sql| sql.contains("<=>")));
+    assert!(client.iter().any(|sql| sql == "SAVEPOINT chunk_arm"));
+    assert!(client.iter().any(|sql| {
+        sql.contains("ORDER BY c.embedding <=> $1::halfvec LIMIT")
+            && !sql.contains("(c.embedding <=> $1::halfvec) + 0")
+    }));
+    assert!(
+        client
+            .iter()
+            .any(|sql| sql == "RELEASE SAVEPOINT chunk_arm")
+    );
     assert_eq!(client.last().map(String::as_str), Some("COMMIT"));
     assert_eq!(db.releases(), vec![None]);
     *db.inner.throw_select.lock() = true;
