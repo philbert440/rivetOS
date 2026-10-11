@@ -1,7 +1,11 @@
 use std::collections::BTreeMap;
+use std::fmt;
 use std::path::PathBuf;
 
-use chrono::{Datelike, TimeZone, Timelike};
+use chrono::{
+    DateTime, Datelike, FixedOffset, LocalResult, NaiveDate, NaiveDateTime, NaiveTime, Offset,
+    TimeZone, Timelike, Utc,
+};
 use memory::columns::WidthMigrationDecision;
 use memory::columns::decide_width_migration;
 use memory::cowork_hash::{CoworkHookRow, cowork_content_hash, pick_cowork_hook_rewrite};
@@ -36,6 +40,204 @@ fn sha(material: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(material.as_bytes());
     hex::encode(hasher.finalize())
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Seg {
+    start_utc_secs: i64,
+    east: i32,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ZoneOffset {
+    east: i32,
+    count: u8,
+    segs: [Seg; 4],
+}
+
+impl fmt::Display for ZoneOffset {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let sign = if self.east >= 0 { '+' } else { '-' };
+        let abs = self.east.unsigned_abs();
+        write!(
+            formatter,
+            "{sign}{:02}:{:02}",
+            abs / 3600,
+            (abs % 3600) / 60
+        )
+    }
+}
+
+impl Offset for ZoneOffset {
+    fn fix(&self) -> FixedOffset {
+        FixedOffset::east_opt(self.east).expect("offset")
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Zone {
+    count: u8,
+    segs: [Seg; 4],
+}
+
+impl Zone {
+    fn new(parts: &[(i64, i32)]) -> Self {
+        assert!(!parts.is_empty() && parts.len() <= 4);
+        let mut segs = [Seg {
+            start_utc_secs: i64::MIN,
+            east: 0,
+        }; 4];
+        for (index, (start, east)) in parts.iter().copied().enumerate() {
+            segs[index] = Seg {
+                start_utc_secs: start,
+                east,
+            };
+        }
+        Self {
+            count: parts.len() as u8,
+            segs,
+        }
+    }
+
+    fn offset_at(&self, east: i32) -> ZoneOffset {
+        ZoneOffset {
+            east,
+            count: self.count,
+            segs: self.segs,
+        }
+    }
+}
+
+impl TimeZone for Zone {
+    type Offset = ZoneOffset;
+
+    fn from_offset(offset: &Self::Offset) -> Self {
+        Self {
+            count: offset.count,
+            segs: offset.segs,
+        }
+    }
+
+    fn offset_from_local_date(&self, local: &NaiveDate) -> LocalResult<Self::Offset> {
+        let Some(midnight) = local.and_hms_opt(0, 0, 0) else {
+            return LocalResult::None;
+        };
+        self.offset_from_local_datetime(&midnight)
+    }
+
+    fn offset_from_local_datetime(&self, local: &NaiveDateTime) -> LocalResult<Self::Offset> {
+        let mut hits = Vec::new();
+        let count = self.count as usize;
+        for index in 0..count {
+            let start = self.segs[index].start_utc_secs;
+            let end = if index + 1 < count {
+                self.segs[index + 1].start_utc_secs
+            } else {
+                i64::MAX
+            };
+            let Some(utc) = local
+                .and_utc()
+                .timestamp()
+                .checked_sub(i64::from(self.segs[index].east))
+            else {
+                continue;
+            };
+            if utc >= start && utc < end {
+                hits.push((utc, self.segs[index].east));
+            }
+        }
+        hits.sort_by_key(|(utc, _)| *utc);
+        match hits.as_slice() {
+            [] => LocalResult::None,
+            [(_, east)] => LocalResult::Single(self.offset_at(*east)),
+            many => {
+                let earliest = many[0].1;
+                let latest = many[many.len() - 1].1;
+                LocalResult::Ambiguous(self.offset_at(earliest), self.offset_at(latest))
+            }
+        }
+    }
+
+    fn offset_from_utc_date(&self, utc: &NaiveDate) -> Self::Offset {
+        let midnight = utc.and_hms_opt(0, 0, 0).expect("midnight");
+        self.offset_from_utc_datetime(&midnight)
+    }
+
+    fn offset_from_utc_datetime(&self, utc: &NaiveDateTime) -> Self::Offset {
+        let secs = utc.and_utc().timestamp();
+        let mut east = self.segs[0].east;
+        for seg in self.segs.iter().take(self.count as usize) {
+            if seg.start_utc_secs <= secs {
+                east = seg.east;
+            }
+        }
+        self.offset_at(east)
+    }
+}
+
+fn utc_secs(year: i32, month: u32, day: u32, hour: u32, min: u32, sec: u32) -> i64 {
+    NaiveDate::from_ymd_opt(year, month, day)
+        .expect("date")
+        .and_hms_opt(hour, min, sec)
+        .expect("time")
+        .and_utc()
+        .timestamp()
+}
+
+fn zone_at(
+    zone: Zone,
+    year: i32,
+    month: u32,
+    day: u32,
+    hour: u32,
+    min: u32,
+    sec: u32,
+) -> DateTime<Zone> {
+    let naive = NaiveDate::from_ymd_opt(year, month, day)
+        .expect("date")
+        .and_hms_opt(hour, min, sec)
+        .expect("time");
+    match zone.from_local_datetime(&naive) {
+        LocalResult::Single(dt) => dt,
+        LocalResult::Ambiguous(earliest, _) => earliest,
+        LocalResult::None => panic!("local time {naive} is in a gap"),
+    }
+}
+
+fn us_eastern() -> Zone {
+    Zone::new(&[
+        (utc_secs(1900, 1, 1, 0, 0, 0), -5 * 3600),
+        (utc_secs(2026, 3, 8, 7, 0, 0), -4 * 3600),
+        (utc_secs(2026, 11, 1, 6, 0, 0), -5 * 3600),
+    ])
+}
+
+fn sydney() -> Zone {
+    Zone::new(&[
+        (utc_secs(1900, 1, 1, 0, 0, 0), 11 * 3600),
+        (utc_secs(2026, 4, 4, 16, 0, 0), 10 * 3600),
+        (utc_secs(2026, 10, 3, 16, 0, 0), 11 * 3600),
+    ])
+}
+
+fn weekday_gap() -> Zone {
+    Zone::new(&[
+        (utc_secs(1900, 1, 1, 0, 0, 0), -5 * 3600),
+        (utc_secs(2026, 3, 11, 7, 0, 0), -4 * 3600),
+        (utc_secs(2026, 11, 4, 6, 0, 0), -5 * 3600),
+    ])
+}
+
+fn assert_window<Tz: TimeZone>(now: DateTime<Tz>, window: &str, since: &str, before: Option<&str>) {
+    let (got_since, got_before) = resolve_window(window, now).expect(window);
+    assert_eq!(got_since.as_deref(), Some(since), "{window} since");
+    assert_eq!(got_before.as_deref(), before, "{window} before");
+}
+
+fn hours_between(since: &str, before: &str) -> i64 {
+    let since = DateTime::parse_from_rfc3339(since).expect("since");
+    let before = DateTime::parse_from_rfc3339(before).expect("before");
+    (before - since).num_hours()
 }
 
 fn fixture(path: &str) -> PathBuf {
@@ -256,14 +458,11 @@ fn hashes_caps_and_surrogate_boundary() {
 
 #[test]
 fn windows_slug_and_project_rule() {
-    let now = chrono::Local
-        .with_ymd_and_hms(2026, 10, 10, 15, 0, 0)
-        .single()
-        .expect("now");
+    let now = Utc.with_ymd_and_hms(2026, 10, 10, 15, 0, 0).unwrap();
     let err = resolve_window("", now).expect_err("empty");
     assert!(err.contains("Invalid window=\"\""));
     let (since, before) = resolve_window("today", now).expect("today");
-    assert!(since.unwrap().starts_with("2026-10-10T"));
+    assert_eq!(since.as_deref(), Some("2026-10-10T00:00:00.000Z"));
     assert!(before.is_none());
     let (since, before) =
         apply_window_args(Some("yesterday"), Some("2026-01-01T00:00:00Z"), None, now)
@@ -457,37 +656,158 @@ fn write_tool_validation_and_sql_shapes() {
 }
 
 #[test]
-fn calendar_windows_and_js_dates() {
-    for (year, month, day) in [(2026, 3, 9), (2026, 11, 2), (2026, 10, 11)] {
-        let now = chrono::Local
-            .with_ymd_and_hms(year, month, day, 15, 0, 0)
-            .single()
-            .expect("local noon");
-        let (since, before) = resolve_window("yesterday", now).expect("yesterday");
-        let since = chrono::DateTime::parse_from_rfc3339(&since.expect("since"))
-            .expect("since iso")
-            .with_timezone(&chrono::Local);
-        let before = chrono::DateTime::parse_from_rfc3339(&before.expect("before"))
-            .expect("before iso")
-            .with_timezone(&chrono::Local);
-        let midnight = chrono::NaiveTime::from_hms_opt(0, 0, 0).expect("midnight");
-        assert_eq!(since.time(), midnight);
-        assert_eq!(before.time(), midnight);
-        assert_eq!(before.date_naive(), now.date_naive());
-        assert_eq!(
-            since.date_naive(),
-            now.date_naive()
-                .checked_sub_days(chrono::Days::new(1))
-                .expect("yesterday")
-        );
-        let (week, open) = resolve_window("this_week", now).expect("week");
-        assert!(open.is_none());
-        let week = chrono::DateTime::parse_from_rfc3339(&week.expect("week"))
-            .expect("week iso")
-            .with_timezone(&chrono::Local);
-        assert_eq!(week.time(), midnight);
-        assert_eq!(week.weekday(), chrono::Weekday::Mon);
-    }
+fn calendar_windows_follow_the_injected_zone() {
+    let midnight = NaiveTime::from_hms_opt(0, 0, 0).expect("midnight");
+    let utc = Utc.with_ymd_and_hms(2026, 3, 9, 15, 0, 0).unwrap();
+    assert_window(
+        utc,
+        "yesterday",
+        "2026-03-08T00:00:00.000Z",
+        Some("2026-03-09T00:00:00.000Z"),
+    );
+    assert_eq!(
+        hours_between("2026-03-08T00:00:00.000Z", "2026-03-09T00:00:00.000Z"),
+        24
+    );
+    assert_window(utc, "this_week", "2026-03-09T00:00:00.000Z", None);
+    assert_window(utc, "today", "2026-03-09T00:00:00.000Z", None);
+    assert_window(utc, "last_24h", "2026-03-08T15:00:00.000Z", None);
+    assert_window(utc, "last_7d", "2026-03-02T15:00:00.000Z", None);
+    let tokyo = FixedOffset::east_opt(9 * 3600)
+        .expect("tokyo")
+        .with_ymd_and_hms(2026, 3, 9, 15, 0, 0)
+        .unwrap();
+    assert_window(
+        tokyo,
+        "yesterday",
+        "2026-03-07T15:00:00.000Z",
+        Some("2026-03-08T15:00:00.000Z"),
+    );
+    assert_eq!(
+        hours_between("2026-03-07T15:00:00.000Z", "2026-03-08T15:00:00.000Z"),
+        24
+    );
+    assert_window(tokyo, "this_week", "2026-03-08T15:00:00.000Z", None);
+    let eastern = us_eastern();
+    assert_window(
+        zone_at(eastern, 2026, 3, 9, 15, 0, 0),
+        "yesterday",
+        "2026-03-08T05:00:00.000Z",
+        Some("2026-03-09T04:00:00.000Z"),
+    );
+    assert_eq!(
+        hours_between("2026-03-08T05:00:00.000Z", "2026-03-09T04:00:00.000Z"),
+        23
+    );
+    let spring = DateTime::parse_from_rfc3339("2026-03-08T05:00:00.000Z")
+        .expect("spring")
+        .with_timezone(&eastern);
+    assert_eq!(spring.time(), midnight);
+    assert_eq!(
+        spring.date_naive(),
+        NaiveDate::from_ymd_opt(2026, 3, 8).expect("march 8")
+    );
+    assert_window(
+        zone_at(eastern, 2026, 3, 9, 15, 0, 0),
+        "this_week",
+        "2026-03-09T04:00:00.000Z",
+        None,
+    );
+    assert_window(
+        zone_at(eastern, 2026, 3, 9, 15, 0, 0),
+        "last_24h",
+        "2026-03-08T19:00:00.000Z",
+        None,
+    );
+    assert_window(
+        zone_at(eastern, 2026, 11, 2, 15, 0, 0),
+        "yesterday",
+        "2026-11-01T04:00:00.000Z",
+        Some("2026-11-02T05:00:00.000Z"),
+    );
+    assert_eq!(
+        hours_between("2026-11-01T04:00:00.000Z", "2026-11-02T05:00:00.000Z"),
+        25
+    );
+    let fall = DateTime::parse_from_rfc3339("2026-11-01T04:00:00.000Z")
+        .expect("fall")
+        .with_timezone(&eastern);
+    assert_eq!(fall.time(), midnight);
+    assert_eq!(fall.weekday(), chrono::Weekday::Sun);
+    assert_window(
+        zone_at(eastern, 2026, 10, 11, 15, 0, 0),
+        "yesterday",
+        "2026-10-10T04:00:00.000Z",
+        Some("2026-10-11T04:00:00.000Z"),
+    );
+    assert_eq!(
+        hours_between("2026-10-10T04:00:00.000Z", "2026-10-11T04:00:00.000Z"),
+        24
+    );
+    assert_window(
+        zone_at(eastern, 2026, 10, 11, 15, 0, 0),
+        "this_week",
+        "2026-10-05T04:00:00.000Z",
+        None,
+    );
+    let au = sydney();
+    assert_window(
+        zone_at(au, 2026, 10, 5, 15, 0, 0),
+        "yesterday",
+        "2026-10-03T14:00:00.000Z",
+        Some("2026-10-04T13:00:00.000Z"),
+    );
+    assert_eq!(
+        hours_between("2026-10-03T14:00:00.000Z", "2026-10-04T13:00:00.000Z"),
+        23
+    );
+    assert_window(
+        zone_at(au, 2026, 4, 6, 15, 0, 0),
+        "yesterday",
+        "2026-04-04T13:00:00.000Z",
+        Some("2026-04-05T14:00:00.000Z"),
+    );
+    assert_eq!(
+        hours_between("2026-04-04T13:00:00.000Z", "2026-04-05T14:00:00.000Z"),
+        25
+    );
+    let split = weekday_gap();
+    assert_window(
+        zone_at(split, 2026, 3, 12, 15, 0, 0),
+        "yesterday",
+        "2026-03-11T05:00:00.000Z",
+        Some("2026-03-12T04:00:00.000Z"),
+    );
+    assert_eq!(
+        hours_between("2026-03-11T05:00:00.000Z", "2026-03-12T04:00:00.000Z"),
+        23
+    );
+    assert_window(
+        zone_at(split, 2026, 3, 12, 15, 0, 0),
+        "this_week",
+        "2026-03-09T05:00:00.000Z",
+        None,
+    );
+    assert_window(
+        zone_at(split, 2026, 11, 5, 15, 0, 0),
+        "yesterday",
+        "2026-11-04T04:00:00.000Z",
+        Some("2026-11-05T05:00:00.000Z"),
+    );
+    assert_eq!(
+        hours_between("2026-11-04T04:00:00.000Z", "2026-11-05T05:00:00.000Z"),
+        25
+    );
+    assert_window(
+        zone_at(split, 2026, 11, 6, 15, 0, 0),
+        "this_week",
+        "2026-11-02T04:00:00.000Z",
+        None,
+    );
+}
+
+#[test]
+fn js_dates_keep_the_recorded_forms() {
     let utc = |raw: &str| {
         chrono::DateTime::parse_from_rfc3339(raw)
             .expect(raw)
@@ -539,6 +859,33 @@ fn opencode_json_matches_javascript_stringify() {
     let tool_result = full.tool_result.expect("mcp");
     assert!(!tool_result.contains("[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]"));
     assert!(tool_result.contains("\\u0000"));
+    let mut stdout = vec![b'a'; 19];
+    stdout.push(0xff);
+    let bytes = stdout
+        .iter()
+        .map(|byte| byte.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let grep = format!(
+        r#"{{"params":{{"update":{{"rawOutput":{{"type":"GrepSearch","stdout":[{bytes}]}}}}}}}}"#
+    );
+    let recovered = extract_full_from_line(&grep, None);
+    assert_eq!(
+        recovered.tool_result.as_deref(),
+        Some("aaaaaaaaaaaaaaaaaaa\u{FFFD}")
+    );
+    let clipped = extract_full_from_line(
+        r#"{"params":{"update":{"rawOutput":{"type":"GrepSearch","stdout":[72,256,-1,105]}}}}"#,
+        None,
+    );
+    assert_eq!(clipped.tool_result.as_deref(), Some("H\u{0}\u{FFFD}i"));
+    let mcp = extract_full_from_line(
+        r#"{"params":{"update":{"rawOutput":{"type":"MCP","server_name":"s","tool_name":"t","output":[104,101,108,108,111,255,33,0,1,2,3,4,5,6,7,8]}}}}"#,
+        None,
+    );
+    let mcp_text = mcp.tool_result.expect("mcp lossy");
+    assert!(!mcp_text.contains("[16 bytes]"));
+    assert!(mcp_text.contains("hello\u{FFFD}!"));
 }
 
 #[test]

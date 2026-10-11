@@ -115,13 +115,13 @@ pub fn normalize_window_input(raw: &str) -> Option<String> {
     Some(s)
 }
 
-fn iso(dt: DateTime<Local>) -> String {
+fn iso<Tz: TimeZone>(dt: DateTime<Tz>) -> String {
     dt.to_utc().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()
 }
 
-fn local_midnight(date: NaiveDate) -> Option<DateTime<Local>> {
+fn zoned_midnight<Tz: TimeZone>(date: NaiveDate, tz: &Tz) -> Option<DateTime<Tz>> {
     let naive = date.and_hms_opt(0, 0, 0)?;
-    match Local.from_local_datetime(&naive) {
+    match tz.from_local_datetime(&naive) {
         chrono::LocalResult::Single(dt) => Some(dt),
         chrono::LocalResult::Ambiguous(earliest, _) => Some(earliest),
         chrono::LocalResult::None => None,
@@ -171,9 +171,9 @@ pub fn parse_js_date(raw: &str) -> Option<DateTime<Utc>> {
     spaced.as_deref().and_then(naive_local)
 }
 
-pub fn resolve_window(
+pub fn resolve_window<Tz: TimeZone>(
     window: &str,
-    now: DateTime<Local>,
+    now: DateTime<Tz>,
 ) -> Result<(Option<String>, Option<String>), String> {
     let normalized = normalize_window_input(window).ok_or_else(|| {
         format!(
@@ -192,15 +192,16 @@ pub fn resolve_window(
             format_window_choices()
         ));
     }
-    let today = local_midnight(now.date_naive()).unwrap_or(now);
+    let zone = now.timezone();
+    let today = zoned_midnight(now.date_naive(), &zone).unwrap_or_else(|| now.clone());
     match normalized.as_str() {
         "today" | "this_morning" => Ok((Some(iso(today)), None)),
         "yesterday" => {
             let yest = today
                 .date_naive()
                 .checked_sub_days(chrono::Days::new(1))
-                .and_then(local_midnight)
-                .unwrap_or(today);
+                .and_then(|date| zoned_midnight(date, &zone))
+                .unwrap_or_else(|| today.clone());
             Ok((Some(iso(yest)), Some(iso(today))))
         }
         "this_week" => {
@@ -209,7 +210,7 @@ pub fn resolve_window(
             let monday = today
                 .date_naive()
                 .checked_sub_days(chrono::Days::new(u64::from(from_monday)))
-                .and_then(local_midnight)
+                .and_then(|date| zoned_midnight(date, &zone))
                 .unwrap_or(today);
             Ok((Some(iso(monday)), None))
         }
@@ -229,11 +230,11 @@ pub fn resolve_window(
     }
 }
 
-pub fn apply_window_args(
+pub fn apply_window_args<Tz: TimeZone>(
     window: Option<&str>,
     since: Option<&str>,
     before: Option<&str>,
-    now: DateTime<Local>,
+    now: DateTime<Tz>,
 ) -> Result<(Option<String>, Option<String>), String> {
     let explicit_since = since.filter(|s| !s.is_empty()).map(str::to_string);
     let explicit_before = before.filter(|s| !s.is_empty()).map(str::to_string);

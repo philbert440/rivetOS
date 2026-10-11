@@ -321,7 +321,7 @@ pub fn is_missing_schema_code(code: Option<&str>) -> bool {
 pub fn embedding_probe_reason(endpoint: Option<&str>) -> &'static str {
     match endpoint {
         Some(value) if !value.is_empty() => "embedding endpoint probe is deferred to slice 2b",
-        _ => "embedding endpoint not configured",
+        _ => "not configured",
     }
 }
 

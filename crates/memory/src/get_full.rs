@@ -30,18 +30,168 @@ fn obj(value: &Value) -> Option<&Map<String, Value>> {
     value.as_object()
 }
 
-fn bytes_to_string(arr: &[Value]) -> String {
-    let mut bytes = Vec::with_capacity(arr.len());
-    for item in arr {
-        let Some(n) = item.as_u64() else {
-            return format!("[{} bytes]", arr.len());
-        };
-        if n > 255 {
-            return format!("[{} bytes]", arr.len());
-        }
-        bytes.push(n as u8);
+fn f64_to_uint8(n: f64) -> u8 {
+    if !n.is_finite() {
+        return 0;
     }
-    String::from_utf8(bytes).unwrap_or_else(|_| format!("[{} bytes]", arr.len()))
+    let wrapped = n.trunc() % 256.0;
+    let positive = if wrapped < 0.0 {
+        wrapped + 256.0
+    } else {
+        wrapped
+    };
+    if (0.0..256.0).contains(&positive) {
+        positive as u8
+    } else {
+        0
+    }
+}
+
+fn number_to_uint8(n: &serde_json::Number) -> u8 {
+    if let Some(v) = n.as_i64() {
+        return v.rem_euclid(256) as u8;
+    }
+    if let Some(v) = n.as_u64() {
+        return (v % 256) as u8;
+    }
+    n.as_f64().map(f64_to_uint8).unwrap_or(0)
+}
+
+fn is_js_decimal(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    let mut index = 0;
+    let saw_digit = if index < bytes.len() && bytes[index] == b'.' {
+        index += 1;
+        let start = index;
+        while index < bytes.len() && bytes[index].is_ascii_digit() {
+            index += 1;
+        }
+        index > start
+    } else {
+        let start = index;
+        while index < bytes.len() && bytes[index].is_ascii_digit() {
+            index += 1;
+        }
+        if index == start {
+            return false;
+        }
+        if index < bytes.len() && bytes[index] == b'.' {
+            index += 1;
+            while index < bytes.len() && bytes[index].is_ascii_digit() {
+                index += 1;
+            }
+        }
+        true
+    };
+    if index < bytes.len() && (bytes[index] == b'e' || bytes[index] == b'E') {
+        index += 1;
+        if index < bytes.len() && (bytes[index] == b'+' || bytes[index] == b'-') {
+            index += 1;
+        }
+        let start = index;
+        while index < bytes.len() && bytes[index].is_ascii_digit() {
+            index += 1;
+        }
+        if index == start {
+            return false;
+        }
+    }
+    saw_digit && index == bytes.len()
+}
+
+fn prefixed_int(sign: f64, digits: &str, base: u32) -> f64 {
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return f64::NAN;
+    }
+    match u64::from_str_radix(digits, base) {
+        Ok(value) => sign * (value as f64),
+        Err(_) => f64::NAN,
+    }
+}
+
+fn js_string_to_f64(text: &str) -> f64 {
+    let trimmed = protocol::js::js_trim(text);
+    if trimmed.is_empty() {
+        return 0.0;
+    }
+    let bytes = trimmed.as_bytes();
+    let (sign, rest) = match bytes[0] {
+        b'+' => (1.0, &trimmed[1..]),
+        b'-' => (-1.0, &trimmed[1..]),
+        _ => (1.0, trimmed),
+    };
+    if rest.is_empty() {
+        return f64::NAN;
+    }
+    if rest == "Infinity" {
+        return sign * f64::INFINITY;
+    }
+    let rest_bytes = rest.as_bytes();
+    if rest_bytes.len() > 2 && rest_bytes[0] == b'0' {
+        let base = match rest_bytes[1] {
+            b'x' | b'X' => 16,
+            b'b' | b'B' => 2,
+            b'o' | b'O' => 8,
+            _ => 0,
+        };
+        if base != 0 {
+            if bytes[0] != b'0' {
+                return f64::NAN;
+            }
+            return prefixed_int(1.0, &rest[2..], base);
+        }
+    }
+    if !is_js_decimal(rest) {
+        return f64::NAN;
+    }
+    sign * rest.parse::<f64>().unwrap_or(f64::NAN)
+}
+
+fn array_join(items: &[Value], depth: usize) -> String {
+    if depth > 8 {
+        return String::new();
+    }
+    let mut out = String::new();
+    for (index, item) in items.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        match item {
+            Value::Null => {}
+            Value::Bool(true) => out.push_str("true"),
+            Value::Bool(false) => out.push_str("false"),
+            Value::Number(n) => {
+                if let Some(value) = n.as_i64() {
+                    out.push_str(&value.to_string());
+                } else if let Some(value) = n.as_u64() {
+                    out.push_str(&value.to_string());
+                } else if let Some(value) = n.as_f64() {
+                    out.push_str(&value.to_string());
+                }
+            }
+            Value::String(text) => out.push_str(text),
+            Value::Array(nested) => out.push_str(&array_join(nested, depth + 1)),
+            Value::Object(_) => out.push_str("[object Object]"),
+        }
+    }
+    out
+}
+
+fn json_to_uint8(value: &Value) -> u8 {
+    let n = match value {
+        Value::Null | Value::Bool(false) => 0.0,
+        Value::Bool(true) => 1.0,
+        Value::Number(n) => return number_to_uint8(n),
+        Value::String(text) => js_string_to_f64(text),
+        Value::Array(items) => js_string_to_f64(&array_join(items, 0)),
+        Value::Object(_) => f64::NAN,
+    };
+    f64_to_uint8(n)
+}
+
+fn bytes_to_string(arr: &[Value]) -> String {
+    let bytes = arr.iter().map(json_to_uint8).collect::<Vec<_>>();
+    String::from_utf8_lossy(&bytes).into_owned()
 }
 
 fn looks_like_bytes(arr: &[Value]) -> bool {

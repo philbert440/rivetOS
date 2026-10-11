@@ -919,7 +919,7 @@ async fn browse_stats_health_bump_and_get_full() {
             assert_eq!(restricted.body["embeddings"]["status"], json!("unavailable"));
             assert_eq!(
                 restricted.body["embeddings"]["error"],
-                json!("embedding endpoint not configured")
+                json!("not configured")
             );
             assert_eq!(restricted.body["status"], json!("degraded"));
             let probed = PostgresMemory::from_pool(db.pool.clone(), false)
