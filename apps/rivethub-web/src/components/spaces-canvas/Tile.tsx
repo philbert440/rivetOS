@@ -7,10 +7,13 @@
 
 import { memo, useEffect, useState, type CSSProperties, type JSX, type ReactNode } from 'react'
 import type { HarnessDescriptor, SessionMessage } from '@rivetos/types'
-import { Pencil } from 'lucide-react'
+import { Pencil, X } from 'lucide-react'
 import { harnessAccentKey } from '../../lib/agent-accent.js'
 import type { ChatItem } from '../../lib/harness-chat.js'
 import { useChat } from '../../stores/chat.js'
+import { useConnection } from '../../stores/connection.js'
+import { useSpaces } from '../../stores/spaces.js'
+import { rowMembershipKey } from '../drawer-item.js'
 import { RenameInput, useSessionTitle } from '../session-rename.js'
 import { ThreadMini } from './ThreadMini.js'
 import { tileChip, type ModelNames } from './tile-label.js'
@@ -208,6 +211,26 @@ export const Tile = memo(function Tile(props: TileProps): JSX.Element {
               style={{ padding: '0.4em', borderWidth: 'calc(1px * var(--ch, 1))' }}
             >
               <Pencil style={{ width: '1em', height: '1em' }} />
+            </button>
+            <button
+              type="button"
+              data-act=""
+              data-tile-unplace=""
+              aria-label={`Move ${title} back to History`}
+              title="Back to History"
+              onClick={() => {
+                // Same as Move → History: the thread leaves the space, the
+                // conversation itself is untouched.
+                const membership = useSpaces.getState().membership
+                const base = useConnection.getState().baseUrl
+                useSpaces.getState().unplace(rowMembershipKey(base, props.item, membership))
+              }}
+              className={`pointer-events-auto shrink-0 rounded-full border border-line bg-panel text-ink-dim hover:border-red hover:text-red focus:opacity-100 ${
+                props.selected ? '' : 'opacity-0 group-hover:opacity-100'
+              }`}
+              style={{ padding: '0.4em', borderWidth: 'calc(1px * var(--ch, 1))' }}
+            >
+              <X style={{ width: '1em', height: '1em' }} />
             </button>
           </>
         )}
