@@ -1,0 +1,16 @@
+default_model = "moonshotai/kimi-k3"
+
+[models."moonshotai/kimi-k3"]
+provider = "moonshotai"
+model = "kimi-k3"
+display_name = "Kimi K3"
+
+[models."moonshotai/kimi-k2-0905-preview"]
+provider = "moonshotai"
+model = "kimi-k2-0905-preview"
+display_name = "Kimi K2 0905"
+
+[models."moonshotai/kimi-k2-turbo-preview"]
+provider = "moonshotai"
+model = "kimi-k2-turbo-preview"
+display_name = "Kimi K2 Turbo"

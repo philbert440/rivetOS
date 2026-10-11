@@ -1,0 +1,5 @@
+{"type":"user","message":{"content":"<user_info>noise</user_info>"}}
+{"type":"user","message":{"content":"hello claude"}}
+{"type":"assistant","message":{"model":"claude-opus-4","content":[{"type":"text","text":"hi there"},{"type":"thinking","text":"x"}],"usage":{"input_tokens":1000,"output_tokens":40,"cache_read_input_tokens":200,"cache_creation_input_tokens":50}}}
+{"type":"user","isSidechain":true,"message":{"content":"sidechain skip me"}}
+{"type":"user","message":{"content":"second turn"}}
