@@ -16,7 +16,9 @@ use crate::registry::HarnessExecutor;
 use crate::spawn::{
     KILL_GRACE_MS, SpawnRequest, StdinMode, child_env, exit_label, spawn_child, stderr_tail,
 };
-use crate::standard_helpers::{Env, ProcessEnv, home_path, num_value};
+use protocol::host::{Env, ProcessEnv};
+
+use crate::standard_helpers::{home_path, num_value};
 
 pub const KIMI_HARNESS_ID: &str = "kimi-code";
 

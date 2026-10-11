@@ -3,6 +3,7 @@ mod support;
 
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use parking_lot::Mutex;
 use std::time::Duration;
@@ -535,16 +536,37 @@ async fn relative_cwd_is_absolute_before_session_new() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn prompt_failure_keeps_partial_output_and_usage() {
+    let release = Arc::new(AtomicBool::new(false));
     let executor = AcpHarnessExecutor::fake(
         "cursor",
         FakeScript {
-            fail_after_output: true,
+            close_after_output: true,
+            release_close: Arc::clone(&release),
             ..FakeScript::default()
         },
     );
     let handle = executor.start(TaskSpec::conformance("Say hello"), AbortFlag::new());
-    let result = handle.result().await;
-    let events = handle.events.drain().await;
+    let mut seen = Vec::new();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let event = handle.events.recv().await.expect("events closed");
+            let found = event.den_body().is_some_and(
+                |body| matches!(body, DenBody::MessageAgent { text } if text == "partial-text"),
+            );
+            seen.push(event);
+            if found {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("updates were not received");
+    release.store(true, Ordering::SeqCst);
+    let result = tokio::time::timeout(Duration::from_secs(5), handle.result())
+        .await
+        .expect("result");
+    seen.extend(handle.events.drain().await);
+    let events = seen;
     assert_eq!(result.verdict, TaskVerdict::Failed);
     assert_eq!(result.output.as_deref(), Some("partial-text"));
     assert!(result.error.unwrap().contains("acp session ended"));
@@ -558,12 +580,14 @@ async fn prompt_failure_keeps_partial_output_and_usage() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn later_turn_failure_replaces_previous_output() {
+    let release = Arc::new(AtomicBool::new(false));
     let executor = AcpHarnessExecutor::fake(
         "cursor",
         FakeScript {
             message: "first-turn".into(),
-            fail_after_output: true,
-            fail_after_prompt: Some(1),
+            close_after_output: true,
+            close_on_prompt: Some(1),
+            release_close: Arc::clone(&release),
             usage_by_prompt: vec![FakeUsage {
                 used: 3,
                 size: 10,
@@ -575,8 +599,27 @@ async fn later_turn_failure_replaces_previous_output() {
     );
     let handle = executor.start(TaskSpec::conformance("Say hello"), AbortFlag::new());
     handle.push_steer_for_test("again");
-    let result = handle.result().await;
-    let events = handle.events.drain().await;
+    let mut seen = Vec::new();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let event = handle.events.recv().await.expect("events closed");
+            let found = event.den_body().is_some_and(
+                |body| matches!(body, DenBody::MessageAgent { text } if text == "partial-text"),
+            );
+            seen.push(event);
+            if found {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("updates were not received");
+    release.store(true, Ordering::SeqCst);
+    let result = tokio::time::timeout(Duration::from_secs(5), handle.result())
+        .await
+        .expect("result");
+    seen.extend(handle.events.drain().await);
+    let events = seen;
     assert_eq!(result.verdict, TaskVerdict::Failed);
     assert_eq!(result.output.as_deref(), Some("partial-text"));
     assert_eq!(result.usage.turns, 2);
@@ -617,6 +660,39 @@ async fn resume_without_load_usage_does_not_charge_historical_cost() {
     let result = handle.result().await;
     assert_eq!(result.verdict, TaskVerdict::Completed);
     assert_eq!(result.usage.turns, 2);
+    assert_eq!(result.usage.cost_usd, Some(protocol::JsNumber::from(0.5)));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn resume_unknown_charges_same_prompt_deltas() {
+    let mut executor = AcpHarnessExecutor::fake(
+        "hermes",
+        FakeScript {
+            session_id: "sess-9".into(),
+            usage_steps: vec![vec![
+                FakeUsage {
+                    used: 10,
+                    size: 100,
+                    amount: Some(10.5),
+                    currency: Some("USD".into()),
+                },
+                FakeUsage {
+                    used: 12,
+                    size: 100,
+                    amount: Some(11.0),
+                    currency: Some("USD".into()),
+                },
+            ]],
+            ..FakeScript::default()
+        },
+    );
+    executor.resume_session_id = Some("sess-9".into());
+    let result = executor
+        .start(TaskSpec::conformance("Say hello"), AbortFlag::new())
+        .result()
+        .await;
+    assert_eq!(result.verdict, TaskVerdict::Completed);
+    assert_eq!(result.usage.turns, 1);
     assert_eq!(result.usage.cost_usd, Some(protocol::JsNumber::from(0.5)));
 }
 

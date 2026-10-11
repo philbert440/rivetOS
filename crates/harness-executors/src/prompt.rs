@@ -1,8 +1,5 @@
-use protocol::js::{JsValue, js_trim};
-use protocol::{
-    CriterionSelfReport, ParsedArtifact, ParsedCriterion, TaskArtifact, TaskResult, TaskVerdict,
-    parse_session_id_str, parse_task_result,
-};
+use protocol::js::js_trim;
+use protocol::{TaskResult, TaskVerdict, parse_session_id_str, parse_task_result};
 use transcripts::value::{slice_text, text_units};
 
 use crate::model::{AcceptanceCriterion, TaskSpec, UsageAcc, result_with_output};
@@ -189,37 +186,6 @@ pub fn variant_for_effort(effort: Option<&str>) -> Option<String> {
     }
 }
 
-fn task_artifacts(parsed: &[ParsedArtifact]) -> Vec<TaskArtifact> {
-    parsed
-        .iter()
-        .filter_map(|item| {
-            Some(TaskArtifact {
-                kind: item.kind()?,
-                r#ref: item.r#ref()?.to_string(),
-                note: item.note().and_then(JsValue::as_str).map(str::to_string),
-            })
-        })
-        .collect()
-}
-
-fn task_criteria(parsed: Option<Vec<ParsedCriterion>>) -> Option<Vec<CriterionSelfReport>> {
-    parsed.map(|items| {
-        items
-            .iter()
-            .filter_map(|item| {
-                Some(CriterionSelfReport {
-                    id: item.id()?.to_string(),
-                    met: item.met()?,
-                    evidence: item
-                        .evidence()
-                        .and_then(JsValue::as_str)
-                        .map(str::to_string),
-                })
-            })
-            .collect()
-    })
-}
-
 pub fn finish_from_text(text: &str, usage: &UsageAcc) -> TaskResult {
     if let Some(parsed) = parse_task_result(text) {
         return result_with_output(
@@ -227,8 +193,8 @@ pub fn finish_from_text(text: &str, usage: &UsageAcc) -> TaskResult {
                 verdict: parsed.verdict,
                 summary: parsed.summary,
                 output: parsed.output.clone(),
-                artifacts: task_artifacts(&parsed.artifacts),
-                criteria_self_report: task_criteria(parsed.criteria_self_report),
+                artifacts: parsed.artifacts,
+                criteria_self_report: parsed.criteria_self_report,
                 usage: usage.to_usage(),
                 error: None,
             },

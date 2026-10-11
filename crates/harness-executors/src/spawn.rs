@@ -8,7 +8,9 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, watch};
 
-use crate::standard_helpers::{Env, clock_ms};
+use protocol::host::Env;
+
+use crate::standard_helpers::clock_ms;
 
 pub const KILL_GRACE_MS: u64 = 10_000;
 pub const STDERR_CAP: usize = 64 * 1024;

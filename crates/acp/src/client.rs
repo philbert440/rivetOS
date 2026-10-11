@@ -81,6 +81,7 @@ pub struct AcpClient {
     connection: Arc<Mutex<Option<ConnectionTo<Agent>>>>,
     cancelled: Arc<AtomicBool>,
     live: Arc<SyncMutex<Option<mpsc::UnboundedSender<SessionEvent>>>>,
+    partial: Arc<SyncMutex<Option<Vec<SessionEvent>>>>,
     driver: Option<JoinHandle<Result<(), AcpError>>>,
 }
 
@@ -97,9 +98,11 @@ impl AcpClient {
         let connection: Arc<Mutex<Option<ConnectionTo<Agent>>>> = Arc::new(Mutex::new(None));
         let cancelled = Arc::new(AtomicBool::new(false));
         let live = Arc::new(SyncMutex::new(None));
+        let partial = Arc::new(SyncMutex::new(None));
         let connection_for_driver = Arc::clone(&connection);
         let cancelled_for_handler = Arc::clone(&cancelled);
         let live_for_driver = Arc::clone(&live);
+        let partial_for_driver = Arc::clone(&partial);
         let (ready_tx, ready_rx) = oneshot::channel();
         let driver = tokio::spawn(async move {
             let policy = policy;
@@ -152,6 +155,7 @@ impl AcpClient {
                     }
                     let _ = ready_tx.send(());
                     let live = live_for_driver;
+                    let partial = partial_for_driver;
                     while let Some(command) = commands_rx.recv().await {
                         match command {
                             Command::Shutdown => break,
@@ -168,17 +172,18 @@ impl AcpClient {
                                             ),
                                     )
                                     .block_task();
-                                let result = finish_request(&mut updates_rx, &live, pending)
-                                    .await
-                                    .map_err(|failure| failure.0)
-                                    .map(|(response, _)| InitializeInfo {
-                                        load_session: response.agent_capabilities.load_session,
-                                        auth_methods: response
-                                            .auth_methods
-                                            .iter()
-                                            .map(|method| method.id().to_string())
-                                            .collect(),
-                                    });
+                                let result =
+                                    finish_request(&mut updates_rx, &live, &partial, pending)
+                                        .await
+                                        .map_err(|failure| failure.0)
+                                        .map(|(response, _)| InitializeInfo {
+                                            load_session: response.agent_capabilities.load_session,
+                                            auth_methods: response
+                                                .auth_methods
+                                                .iter()
+                                                .map(|method| method.id().to_string())
+                                                .collect(),
+                                        });
                                 let _ = reply.send(result);
                             }
                             Command::Authenticate { method_id, reply } => {
@@ -186,20 +191,22 @@ impl AcpClient {
                                 let pending = cx
                                     .send_request(AuthenticateRequest::new(method_id))
                                     .block_task();
-                                let result = finish_request(&mut updates_rx, &live, pending)
-                                    .await
-                                    .map_err(|failure| failure.0)
-                                    .map(|_| ());
+                                let result =
+                                    finish_request(&mut updates_rx, &live, &partial, pending)
+                                        .await
+                                        .map_err(|failure| failure.0)
+                                        .map(|_| ());
                                 let _ = reply.send(result);
                             }
                             Command::NewSession { cwd, reply } => {
                                 discard_queued(&mut updates_rx);
                                 let pending =
                                     cx.send_request(NewSessionRequest::new(cwd)).block_task();
-                                let result = finish_request(&mut updates_rx, &live, pending)
-                                    .await
-                                    .map_err(|failure| failure.0)
-                                    .map(|(response, _)| response.session_id.to_string());
+                                let result =
+                                    finish_request(&mut updates_rx, &live, &partial, pending)
+                                        .await
+                                        .map_err(|failure| failure.0)
+                                        .map(|(response, _)| response.session_id.to_string());
                                 let _ = reply.send(result);
                             }
                             Command::LoadSession {
@@ -211,10 +218,11 @@ impl AcpClient {
                                 let pending = cx
                                     .send_request(LoadSessionRequest::new(session_id, cwd))
                                     .block_task();
-                                let result = finish_request(&mut updates_rx, &live, pending)
-                                    .await
-                                    .map_err(|failure| failure.0)
-                                    .map(|(_, events)| LoadOutput { events });
+                                let result =
+                                    finish_request(&mut updates_rx, &live, &partial, pending)
+                                        .await
+                                        .map_err(|failure| failure.0)
+                                        .map(|(_, events)| LoadOutput { events });
                                 let _ = reply.send(result);
                             }
                             Command::Prompt {
@@ -224,6 +232,7 @@ impl AcpClient {
                             } => {
                                 cancelled_for_handler.store(false, Ordering::SeqCst);
                                 discard_queued(&mut updates_rx);
+                                *partial.lock() = Some(Vec::new());
                                 let pending = cx
                                     .send_request(PromptRequest::new(
                                         session_id,
@@ -231,7 +240,9 @@ impl AcpClient {
                                     ))
                                     .block_task();
                                 let result =
-                                    match finish_request(&mut updates_rx, &live, pending).await {
+                                    match finish_request(&mut updates_rx, &live, &partial, pending)
+                                        .await
+                                    {
                                         Ok((response, events)) => Ok(Ok(PromptOutput {
                                             stop_reason: stop_name(response.stop_reason),
                                             text: message_text(&events),
@@ -247,6 +258,7 @@ impl AcpClient {
                                         }
                                     };
                                 let _ = reply.send(result);
+                                *partial.lock() = None;
                             }
                         }
                     }
@@ -261,6 +273,7 @@ impl AcpClient {
                 connection,
                 cancelled,
                 live,
+                partial,
                 driver: Some(driver),
             }),
             Err(_) => match driver.await {
@@ -308,11 +321,14 @@ impl AcpClient {
         {
             Ok(Ok(output)) => Ok(output),
             Ok(Err(error)) => Err(error),
-            Err(error) => Err(PromptError {
-                message: error.to_string(),
-                text: String::new(),
-                events: Vec::new(),
-            }),
+            Err(error) => {
+                let events = self.partial.lock().take().unwrap_or_default();
+                Err(PromptError {
+                    message: error.to_string(),
+                    text: message_text(&events),
+                    events,
+                })
+            }
         }
     }
 
@@ -381,6 +397,7 @@ fn discard_queued(updates: &mut mpsc::Receiver<SessionEvent>) {
 async fn finish_request<T, F>(
     updates: &mut mpsc::Receiver<SessionEvent>,
     live: &SyncMutex<Option<mpsc::UnboundedSender<SessionEvent>>>,
+    partial: &SyncMutex<Option<Vec<SessionEvent>>>,
     request: F,
 ) -> Result<(T, Vec<SessionEvent>), Box<(AcpError, Vec<SessionEvent>)>>
 where
@@ -400,14 +417,18 @@ where
             }
             event = updates.recv() => {
                 match event {
-                    Some(event) => push_live(live, &mut events, event),
+                    Some(event) => push_live(live, partial, &mut events, event),
                     None => open = false,
                 }
             }
         }
     };
-    while let Ok(event) = updates.try_recv() {
-        push_live(live, &mut events, event);
+    let queued = updates.len();
+    for _ in 0..queued {
+        match updates.try_recv() {
+            Ok(event) => push_live(live, partial, &mut events, event),
+            Err(_) => break,
+        }
     }
     match outcome {
         Ok(value) => Ok((value, events)),
@@ -417,9 +438,13 @@ where
 
 fn push_live(
     live: &SyncMutex<Option<mpsc::UnboundedSender<SessionEvent>>>,
+    partial: &SyncMutex<Option<Vec<SessionEvent>>>,
     events: &mut Vec<SessionEvent>,
     event: SessionEvent,
 ) {
+    if let Some(slot) = partial.lock().as_mut() {
+        slot.push(event.clone());
+    }
     if let Some(sender) = live.lock().clone() {
         let _ = sender.send(event.clone());
     }
@@ -460,39 +485,68 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn ready_response_does_not_wait_for_later_updates() {
-        let (tx, mut rx) = mpsc::channel(8);
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ready_response_drain_stops_while_a_producer_is_blocked() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::task::Poll;
+
+        let (tx, mut rx) = mpsc::channel(2);
         let live = SyncMutex::new(None);
+        let partial = SyncMutex::new(None);
         tx.send(message("before")).await.unwrap();
-        let request = std::future::ready(Ok::<_, agent_client_protocol::Error>(7_u8));
+        tx.send(message("queued")).await.unwrap();
         let flood_tx = tx.clone();
+        let started = std::sync::Arc::new(AtomicBool::new(false));
+        let started_flag = std::sync::Arc::clone(&started);
         let flood = tokio::spawn(async move {
-            loop {
-                if flood_tx.send(message("after")).await.is_err() {
-                    break;
+            let mut pending = std::pin::pin!(flood_tx.send(message("later")));
+            std::future::poll_fn(|cx| {
+                loop {
+                    match pending.as_mut().poll(cx) {
+                        Poll::Pending => {
+                            started_flag.store(true, Ordering::SeqCst);
+                            return Poll::Pending;
+                        }
+                        Poll::Ready(Err(_)) => return Poll::Ready(()),
+                        Poll::Ready(Ok(())) => {
+                            pending.set(flood_tx.send(message("later")));
+                        }
+                    }
                 }
-            }
+            })
+            .await;
         });
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while !started.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("producer did not block");
+        let request = std::future::ready(Ok::<_, agent_client_protocol::Error>(7_u8));
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(1),
-            finish_request(&mut rx, &live, request),
+            finish_request(&mut rx, &live, &partial, request),
         )
         .await;
+        drop(tx);
         flood.abort();
         let (value, events) = result.expect("response").expect("ok");
         assert_eq!(value, 7);
         assert!(events.iter().any(|event| event == &message("before")));
+        assert!(events.len() <= 2);
+        assert!(events.iter().all(|event| event != &message("later")));
     }
 
     #[tokio::test]
     async fn request_error_keeps_updates_already_received() {
         let (tx, mut rx) = mpsc::channel(4);
         let live = SyncMutex::new(None);
+        let partial = SyncMutex::new(None);
         tx.send(message("partial-text")).await.unwrap();
         let request =
             std::future::ready(Err::<(), _>(agent_client_protocol::Error::internal_error()));
-        let (error, events) = *finish_request(&mut rx, &live, request)
+        let (error, events) = *finish_request(&mut rx, &live, &partial, request)
             .await
             .expect_err("rpc error");
         assert!(!error.to_string().is_empty());

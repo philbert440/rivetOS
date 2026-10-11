@@ -20,7 +20,9 @@ use crate::registry::HarnessExecutor;
 use crate::spawn::{
     KILL_GRACE_MS, SpawnRequest, StdinMode, child_env, exit_label, spawn_child, stderr_tail,
 };
-use crate::standard_helpers::{Env, ProcessEnv, home_path, json_str, num_value, object_str};
+use protocol::host::{Env, ProcessEnv};
+
+use crate::standard_helpers::{home_path, json_str, num_value, object_str};
 
 pub const OPENCODE_HARNESS_ID: &str = "opencode";
 

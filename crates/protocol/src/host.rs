@@ -6,8 +6,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use std::os::unix::fs::OpenOptionsExt;
 
-pub trait Env {
+pub trait Env: Send + Sync {
     fn var(&self, name: &str) -> Option<String>;
+
+    fn pairs(&self) -> Vec<(String, String)> {
+        Vec::new()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -16,6 +20,10 @@ pub struct ProcessEnv;
 impl Env for ProcessEnv {
     fn var(&self, name: &str) -> Option<String> {
         std::env::var_os(name).map(|value| value.to_string_lossy().into_owned())
+    }
+
+    fn pairs(&self) -> Vec<(String, String)> {
+        std::env::vars().collect()
     }
 }
 
@@ -38,6 +46,13 @@ impl MapEnv {
 impl Env for MapEnv {
     fn var(&self, name: &str) -> Option<String> {
         self.vars.get(name).cloned()
+    }
+
+    fn pairs(&self) -> Vec<(String, String)> {
+        self.vars
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect()
     }
 }
 
@@ -300,7 +315,7 @@ mod tests {
     use std::path::Path;
 
     use super::{
-        MapEnv, atomic_replace, env_trimmed, fs_error, home_dir, read_text, read_text_capped,
+        Env, MapEnv, atomic_replace, env_trimmed, fs_error, home_dir, read_text, read_text_capped,
         write_text,
     };
 
@@ -318,6 +333,20 @@ mod tests {
         assert_eq!(home_dir(&env).as_deref(), Some(""));
         env.set("HOME", "relative/dir");
         assert_eq!(home_dir(&env).as_deref(), Some("relative/dir"));
+        env.set("A", "1");
+        env.set("B", "2");
+        let mut pairs = env.pairs();
+        pairs.sort();
+        assert_eq!(
+            pairs,
+            vec![
+                ("A".to_string(), "1".to_string()),
+                ("B".to_string(), "2".to_string()),
+                ("BLANK".to_string(), " \n".to_string()),
+                ("EMPTY".to_string(), String::new()),
+                ("HOME".to_string(), "relative/dir".to_string()),
+            ]
+        );
 
         let dir = std::env::temp_dir();
         let path = dir.join(format!("rr0-host-{}", std::process::id()));

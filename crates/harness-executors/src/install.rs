@@ -18,7 +18,7 @@ use crate::registry::{
     opencode_missing_binary, pi_missing_binary, qwen_missing_binary,
 };
 use crate::spawn::probe_binary;
-use crate::standard_helpers::Env;
+use protocol::host::Env;
 
 #[derive(Clone, Debug)]
 pub struct HarnessBinaries {

@@ -20,7 +20,7 @@ use crate::model::{
 use crate::prompt::clamp_prompt;
 use crate::registry::HarnessExecutor;
 use crate::spawn::{KILL_GRACE_MS, child_env, signal_pid};
-use crate::standard_helpers::{Env, ProcessEnv};
+use protocol::host::{Env, ProcessEnv};
 
 pub const GROK_BUILD_HARNESS_ID: &str = "grok-build";
 pub const HERMES_HARNESS_ID: &str = "hermes";
@@ -681,37 +681,44 @@ fn note_usd(basis: &mut CostBasis, events: &[SessionEvent]) {
 }
 
 fn charge_usd(basis: &mut CostBasis, events: &[SessionEvent]) -> Option<f64> {
-    let latest = last_usd(events)?;
-    match *basis {
-        CostBasis::ResumeUnknown => {
-            *basis = CostBasis::Known(latest);
-            None
-        }
-        CostBasis::Fresh => {
-            *basis = CostBasis::Known(latest);
-            (latest > 0.0).then_some(latest)
-        }
-        CostBasis::Known(start) => {
-            *basis = CostBasis::Known(latest);
-            (latest > start).then_some(latest - start)
-        }
-    }
-}
-
-fn last_usd(events: &[SessionEvent]) -> Option<f64> {
-    let mut latest = None;
+    let mut charged = 0.0;
+    let mut saw = false;
     for event in events {
-        if let SessionEvent::Usage {
+        let SessionEvent::Usage {
             cost_amount: Some(amount),
             cost_currency,
             ..
         } = event
-            && cost_currency.as_deref() == Some("USD")
-        {
-            latest = Some(*amount);
+        else {
+            continue;
+        };
+        if cost_currency.as_deref() != Some("USD") {
+            continue;
+        }
+        saw = true;
+        let delta = match *basis {
+            CostBasis::ResumeUnknown => {
+                *basis = CostBasis::Known(*amount);
+                None
+            }
+            CostBasis::Fresh => {
+                *basis = CostBasis::Known(*amount);
+                (*amount > 0.0).then_some(*amount)
+            }
+            CostBasis::Known(start) => {
+                *basis = CostBasis::Known(*amount);
+                (*amount > start).then_some(*amount - start)
+            }
+        };
+        if let Some(delta) = delta {
+            charged += delta;
         }
     }
-    latest
+    if saw && charged > 0.0 {
+        Some(charged)
+    } else {
+        None
+    }
 }
 
 fn current_dir() -> String {

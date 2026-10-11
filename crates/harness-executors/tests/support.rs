@@ -47,10 +47,10 @@ pub fn write_exe(dir: &Path, name: &str, body: &str) -> PathBuf {
 pub fn map_env(extra: &[(&str, &str)]) -> MapEnv {
     let mut env = MapEnv::new();
     if let Ok(path) = std::env::var("PATH") {
-        env.insert("PATH", path);
+        env.set("PATH", path);
     }
     for (key, value) in extra {
-        env.insert(*key, *value);
+        env.set(*key, *value);
     }
     env
 }

@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use parking_lot::Mutex;
 use std::time::Duration;
@@ -176,8 +177,10 @@ async fn load_session_respects_advertise_and_failure() {
 
 #[tokio::test]
 async fn prompt_error_keeps_text_and_usage_received_before_the_failure() {
+    let release = Arc::new(AtomicBool::new(false));
     let (transport, task) = spawn_fake(FakeScript {
-        fail_after_output: true,
+        close_after_output: true,
+        release_close: Arc::clone(&release),
         ..FakeScript::default()
     });
     let client = AcpClient::connect(transport, Arc::new(AllowOncePolicy))
@@ -185,7 +188,45 @@ async fn prompt_error_keeps_text_and_usage_received_before_the_failure() {
         .unwrap();
     client.initialize().await.unwrap();
     let id = client.new_session(PathBuf::from("/work")).await.unwrap();
-    let error = client.prompt(id, "hi".into()).await.unwrap_err();
+    let mut live = client.begin_turn_events();
+    let prompt = client.prompt(id, "hi".into());
+    tokio::pin!(prompt);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let mut saw_cost = false;
+        let mut saw_text = false;
+        loop {
+            tokio::select! {
+                biased;
+                event = live.recv() => {
+                    match event {
+                        Some(SessionEvent::Usage {
+                            cost_amount: Some(2.5),
+                            ..
+                        }) => saw_cost = true,
+                        Some(SessionEvent::AgentMessage { text }) if text == "partial-text" => {
+                            saw_text = true;
+                        }
+                        Some(_) => {}
+                        None => panic!("live closed before the handshake"),
+                    }
+                    if saw_cost && saw_text {
+                        break;
+                    }
+                }
+                result = &mut prompt => {
+                    let _ = result;
+                    panic!("prompt ended before the handshake");
+                }
+            }
+        }
+    })
+    .await
+    .expect("updates were not received");
+    release.store(true, Ordering::SeqCst);
+    let error = tokio::time::timeout(Duration::from_secs(5), prompt)
+        .await
+        .expect("prompt")
+        .unwrap_err();
     assert!(!error.to_string().is_empty());
     assert_eq!(error.text, "partial-text");
     assert!(error.events.iter().any(|event| {
@@ -200,7 +241,6 @@ async fn prompt_error_keeps_text_and_usage_received_before_the_failure() {
             } if *cost == 2.5
         )
     }));
-    drop(client);
     let _ = task.await;
 }
 

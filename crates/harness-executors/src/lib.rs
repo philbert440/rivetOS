@@ -50,6 +50,7 @@ pub use prompt::{
     build_task_scaffold, build_turn_prompt, canonical_session_id, clamp_prompt,
     render_resume_transcript, task_result_fence_instructions, variant_for_effort,
 };
+pub use protocol::host::{Env, MapEnv, ProcessEnv};
 pub use qwen::{
     QWEN_CODE_HARNESS_ID, QwenCodeExecutor, QwenFlags, QwenTurnFacts, build_qwen_args,
     build_qwen_child_env, canonical_qwen_session_id, default_workspace_dir, encode_qwen_bucket,
@@ -71,4 +72,3 @@ pub use spawn::{
     KILL_GRACE_MS, STDERR_CAP, STDOUT_CAP, SpawnRequest, Spawned, StdinMode, child_env,
     probe_binary, spawn_child, stderr_tail,
 };
-pub use standard_helpers::{Env, MapEnv, ProcessEnv};

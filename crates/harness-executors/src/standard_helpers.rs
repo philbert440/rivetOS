@@ -1,77 +1,11 @@
-use std::collections::BTreeMap;
-
-use protocol::host::Env as HostEnv;
-
-pub trait Env: Send + Sync {
-    fn var(&self, name: &str) -> Option<String>;
-    fn pairs(&self) -> Vec<(String, String)>;
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct MapEnv {
-    pairs: BTreeMap<String, String>,
-}
-
-impl MapEnv {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn insert(&mut self, key: impl Into<String>, value: impl Into<String>) {
-        self.pairs.insert(key.into(), value.into());
-    }
-
-    pub fn from_pairs(
-        pairs: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
-    ) -> Self {
-        let mut env = Self::new();
-        for (key, value) in pairs {
-            env.insert(key, value);
-        }
-        env
-    }
-}
-
-impl Env for MapEnv {
-    fn var(&self, name: &str) -> Option<String> {
-        self.pairs.get(name).cloned()
-    }
-
-    fn pairs(&self) -> Vec<(String, String)> {
-        self.pairs
-            .iter()
-            .map(|(key, value)| (key.clone(), value.clone()))
-            .collect()
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-pub struct ProcessEnv;
-
-impl Env for ProcessEnv {
-    fn var(&self, name: &str) -> Option<String> {
-        protocol::host::ProcessEnv.var(name)
-    }
-
-    fn pairs(&self) -> Vec<(String, String)> {
-        std::env::vars().collect()
-    }
-}
-
-struct EnvLookup<'a>(&'a dyn Env);
-
-impl protocol::host::Env for EnvLookup<'_> {
-    fn var(&self, name: &str) -> Option<String> {
-        self.0.var(name)
-    }
-}
+use protocol::host::Env;
 
 pub fn clock_ms() -> i64 {
     protocol::js::date_now() as i64
 }
 
 pub fn home_path(env: &dyn Env) -> std::path::PathBuf {
-    match protocol::host::home_dir(&EnvLookup(env)) {
+    match protocol::host::home_dir(env) {
         Some(home) => std::path::PathBuf::from(home),
         None => std::path::PathBuf::from("."),
     }

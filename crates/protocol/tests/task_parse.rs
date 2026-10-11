@@ -197,6 +197,19 @@ fn artifact_serde_keeps_surrogate_and_orders_index_keys() {
 }
 
 #[test]
+fn task_result_keeps_artifact_and_criterion_extensions() {
+    let raw = r#"{"verdict":"completed","summary":"Fixed the widget","artifacts":[{"kind":"commit","ref":"abc123","note":1,"checksum":"zz"}],"criteriaSelfReport":[{"id":"c1","met":true,"evidence":"ran tests","extra":"kept"}],"usage":{"inputTokens":0,"outputTokens":0,"totalTokens":0,"turns":0,"wallClockMs":0}}"#;
+    let result: protocol::TaskResult = serde_json::from_str(raw).unwrap();
+    let back = serde_json::to_string(&result).unwrap();
+    assert!(back.contains(r#""note":1,"#), "{back}");
+    assert!(back.contains(r#""checksum":"zz""#), "{back}");
+    assert!(back.contains(r#""evidence":"ran tests""#), "{back}");
+    assert!(back.contains(r#""extra":"kept""#), "{back}");
+    let again: protocol::TaskResult = serde_json::from_str(&back).unwrap();
+    assert_eq!(result, again);
+}
+
+#[test]
 fn lone_surrogate_summary_is_replacement_and_kept() {
     let parsed = parse_task_result_json(r#"{"verdict":"completed","summary":"\ud83d"}"#).unwrap();
     assert_eq!(parsed.summary, "\u{FFFD}");

@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use parking_lot::Mutex;
 
@@ -39,6 +40,7 @@ pub struct FakeScript {
     pub usage_cost: Option<f64>,
     pub usage_currency: Option<String>,
     pub usage_by_prompt: Vec<FakeUsage>,
+    pub usage_steps: Vec<Vec<FakeUsage>>,
     pub load_usage: Option<FakeUsage>,
     pub chunk_count: Option<usize>,
     pub load_chunks: Option<usize>,
@@ -48,6 +50,9 @@ pub struct FakeScript {
     pub permission_reject_only: bool,
     pub wait_for_cancel: bool,
     pub exit_mid_turn: bool,
+    pub close_after_output: bool,
+    pub close_on_prompt: Option<usize>,
+    pub release_close: Arc<AtomicBool>,
     pub fail_after_output: bool,
     pub fail_after_prompt: Option<usize>,
     pub fail_load: bool,
@@ -72,6 +77,7 @@ impl Default for FakeScript {
             usage_cost: None,
             usage_currency: None,
             usage_by_prompt: Vec::new(),
+            usage_steps: Vec::new(),
             load_usage: None,
             chunk_count: None,
             load_chunks: None,
@@ -81,6 +87,9 @@ impl Default for FakeScript {
             permission_reject_only: false,
             wait_for_cancel: false,
             exit_mid_turn: false,
+            close_after_output: false,
+            close_on_prompt: None,
+            release_close: Arc::new(AtomicBool::new(false)),
             fail_after_output: false,
             fail_after_prompt: None,
             fail_load: false,
@@ -209,6 +218,35 @@ pub fn spawn_fake(script: FakeScript) -> (Channel, JoinHandle<Result<(), AcpErro
                             (state.script.clone(), index)
                         };
                         let session_id = request.session_id.to_string();
+                        if script.close_after_output
+                            && script
+                                .close_on_prompt
+                                .is_none_or(|index| index == prompt_index)
+                        {
+                            let _ = send_usage(
+                                &cx,
+                                &session_id,
+                                &FakeUsage {
+                                    used: 7,
+                                    size: 20,
+                                    amount: Some(2.5),
+                                    currency: Some("USD".into()),
+                                },
+                            );
+                            let _ = send_message(&cx, &session_id, "partial-text");
+                            loop {
+                                if script.release_close.load(Ordering::SeqCst) {
+                                    break;
+                                }
+                                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                            }
+                            let abort = locked(&state_prompt).abort.clone();
+                            if let Some(abort) = abort {
+                                abort.abort();
+                            }
+                            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                            return Ok(());
+                        }
                         if script.fail_after_output
                             && script
                                 .fail_after_prompt
@@ -395,7 +433,11 @@ fn finish_prompt(
             SessionUpdate::Plan(Plan::new(entries)),
         ));
     }
-    if let Some(usage) = script.usage_by_prompt.get(prompt_index) {
+    if let Some(steps) = script.usage_steps.get(prompt_index) {
+        for step in steps {
+            let _ = send_usage(cx, session_id, step);
+        }
+    } else if let Some(usage) = script.usage_by_prompt.get(prompt_index) {
         let _ = send_usage(cx, session_id, usage);
     } else if let (Some(used), Some(size)) = (script.usage_used, script.usage_size) {
         let usage = FakeUsage {
