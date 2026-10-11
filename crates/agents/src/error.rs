@@ -14,6 +14,15 @@ pub enum PresetError {
     Io(#[from] std::io::Error),
 }
 
+impl From<protocol::host::FsError> for PresetError {
+    fn from(err: protocol::host::FsError) -> Self {
+        Self::Io(std::io::Error::new(
+            std::io::Error::from_raw_os_error(-err.errno).kind(),
+            err.to_string(),
+        ))
+    }
+}
+
 impl PresetError {
     pub fn conflict(message: impl Into<String>) -> Self {
         Self::Conflict {

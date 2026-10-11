@@ -294,6 +294,56 @@ fn ensure_reports_node_eacces_when_the_parent_is_not_searchable() {
 }
 
 #[test]
+fn ensure_reports_node_eacces_when_the_shared_link_cannot_be_created() {
+    let root = TempDir::new("agent-registry-dir");
+    let directory = root.path_str("agent");
+    std::fs::create_dir(&directory).unwrap();
+    let shared = root.path_str("shared");
+    std::fs::create_dir(&shared).unwrap();
+    let mut locked = std::fs::metadata(&directory).unwrap().permissions();
+    locked.set_mode(0o500);
+    std::fs::set_permissions(&directory, locked).unwrap();
+    let result = ensure_agent_directory(Some(&directory), Some(true), &opts(&shared));
+    let mut restored = std::fs::metadata(&directory).unwrap().permissions();
+    restored.set_mode(0o700);
+    std::fs::set_permissions(&directory, restored).unwrap();
+    let err = match result {
+        Ok(_) => return,
+        Err(err) => err,
+    };
+    let link = root.path_str("agent/rivet-shared");
+    assert_eq!(
+        err.to_string(),
+        format!("EACCES: permission denied, symlink '{shared}' -> '{link}'")
+    );
+}
+
+#[test]
+fn ensure_reports_node_eacces_when_the_link_cannot_be_statted() {
+    let root = TempDir::new("agent-registry-dir");
+    let directory = root.path_str("agent");
+    std::fs::create_dir(&directory).unwrap();
+    let shared = root.path_str("shared");
+    std::fs::create_dir(&shared).unwrap();
+    let mut locked = std::fs::metadata(&directory).unwrap().permissions();
+    locked.set_mode(0o600);
+    std::fs::set_permissions(&directory, locked).unwrap();
+    let result = ensure_agent_directory(Some(&directory), Some(true), &opts(&shared));
+    let mut restored = std::fs::metadata(&directory).unwrap().permissions();
+    restored.set_mode(0o700);
+    std::fs::set_permissions(&directory, restored).unwrap();
+    let err = match result {
+        Ok(_) => return,
+        Err(err) => err,
+    };
+    let link = root.path_str("agent/rivet-shared");
+    assert_eq!(
+        err.to_string(),
+        format!("EACCES: permission denied, lstat '{link}'")
+    );
+}
+
+#[test]
 fn ensure_rejects_an_empty_or_non_absolute_directory() {
     let err = ensure_agent_directory(Some(""), None, &empty_opts()).unwrap_err();
     assert_eq!(err.to_string(), "agent directory is empty");

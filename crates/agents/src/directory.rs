@@ -57,16 +57,16 @@ pub fn ensure_agent_directory(
     let link_name = opts.link_name.unwrap_or(LINK_NAME);
     let link = posix_join(&[&directory, link_name]);
     let link_path = Path::new(&link);
-    match symlink_metadata(link_path) {
+    match protocol::host::lstat(link_path) {
         Ok(meta) => finish_existing(created, &link, &meta, opts),
-        Err(err) if err.kind() == io::ErrorKind::NotFound => {
-            match std::os::unix::fs::symlink(shared_dir, link_path) {
+        Err(err) if err.code == "ENOENT" => {
+            match protocol::host::symlink(Path::new(shared_dir), link_path) {
                 Ok(()) => {
                     log_line(opts, &format!("linked {link} -> {shared_dir}"));
                     Ok(linked_result(created, &link))
                 }
-                Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
-                    let meta = symlink_metadata(link_path)?;
+                Err(err) if err.code == "EEXIST" => {
+                    let meta = protocol::host::lstat(link_path)?;
                     finish_existing(created, &link, &meta, opts)
                 }
                 Err(err) => Err(err.into()),
@@ -159,10 +159,6 @@ fn log_line(opts: &EnsureAgentDirectoryOptions<'_>, message: &str) {
 
 fn path_exists(path: &Path) -> bool {
     std::fs::metadata(path).is_ok()
-}
-
-fn symlink_metadata(path: &Path) -> io::Result<std::fs::Metadata> {
-    std::fs::symlink_metadata(path)
 }
 
 pub fn mkdir_p_700(path: &Path) -> io::Result<()> {

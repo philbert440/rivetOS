@@ -12,8 +12,10 @@ pub use validate::{
     format_validation_result, validate_config,
 };
 
+use std::io;
 use std::path::Path;
 
+use protocol::host::read_text;
 use serde_json::Value;
 
 pub fn parse_yaml(text: &str) -> Result<Value, ConfigError> {
@@ -36,6 +38,6 @@ pub fn load_str(yaml: &str) -> Result<LoadedConfig, ConfigError> {
 }
 
 pub fn load(path: impl AsRef<Path>) -> Result<LoadedConfig, ConfigError> {
-    let text = std::fs::read_to_string(path)?;
+    let text = read_text(path.as_ref()).map_err(|err| io::Error::other(err.to_string()))?;
     load_str(&text)
 }

@@ -224,7 +224,12 @@ fn assert_name_available(
 
 async fn load_blocking(file: &str) -> Result<Vec<JsValue>, PresetError> {
     let file = file.to_string();
-    spawn_io(move || load_registry(&file)).await
+    spawn_io(move || {
+        let lock = lock_for(&file);
+        let _guard = lock.lock();
+        load_registry(&file)
+    })
+    .await
 }
 
 async fn spawn_io<T: Send + 'static>(
@@ -364,5 +369,86 @@ fn quarantine_message(file: &str, reason: &str, detail: &str) {
         tracing::warn!("[den-server] agents.json {reason}; quarantined to {dest}");
     } else {
         tracing::warn!("[den-server] agents.json {reason}; quarantine rename failed: {detail}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Duration;
+
+    use super::*;
+
+    static NEXT_FILE: AtomicU64 = AtomicU64::new(1);
+
+    fn scratch_file(label: &str) -> String {
+        let dir = std::env::temp_dir().join(format!(
+            "agents-file-store-{}-{}-{label}",
+            std::process::id(),
+            NEXT_FILE.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("agents.json").to_string_lossy().into_owned()
+    }
+
+    fn committed_registry() -> String {
+        serde_json::to_string(&serde_json::json!({
+            "agents": [{
+                "id": "committed-id",
+                "name": "Committed",
+                "color": "#000000",
+                "model": "test-model",
+                "effort": "medium",
+                "systemPrompt": "",
+                "nodeBaseUrl": "http://example.com",
+                "createdAt": 1,
+                "updatedAt": 1,
+            }],
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_read_waits_for_the_writer_lock_so_a_committed_registry_survives() {
+        let file = scratch_file("reader-writer-race");
+        std::fs::write(&file, "{not json").unwrap();
+        let lock = lock_for(&file);
+        let guard = lock.lock();
+        let (done, done_rx) = std::sync::mpsc::channel();
+        let reader_file = file.clone();
+        let reader = std::thread::spawn(move || {
+            let store = FileAgentPresetStore::new(reader_file);
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .unwrap();
+            let listed = runtime.block_on(store.list(None));
+            done.send(listed).unwrap();
+        });
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(
+            done_rx.try_recv().is_err(),
+            "read must wait for the per-path writer lock"
+        );
+        std::fs::write(&file, committed_registry()).unwrap();
+        drop(guard);
+        reader.join().unwrap();
+        let presets = done_rx
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+        assert_eq!(presets.len(), 1);
+        assert_eq!(presets[0].id.to_utf8(), "committed-id");
+        let dir = Path::new(&file).parent().unwrap();
+        let corrupt: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with("agents.json.corrupt-"))
+            .collect();
+        assert!(corrupt.is_empty(), "{corrupt:?}");
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            committed_registry()
+        );
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }
