@@ -481,7 +481,8 @@ fn demotes_article_headings_and_caps_summary_growth() {
         current = apply_patch(Some(&current), &thrash);
     }
     assert!(current.current_state.len() <= SUMMARY_MAX_CHARS);
-    let capped = cap_summary(&"a".repeat(3000), 100);
+    let repeated = protocol::js::JsString::from("a".repeat(3000));
+    let capped = cap_summary(&repeated, 100);
     assert!(capped.kept.len() <= 100);
     assert!(!capped.overflow.is_empty());
 }
@@ -1013,12 +1014,12 @@ fn wire_index_total_is_a_json_number_and_git_sha_is_null() {
         aliases: Vec::new(),
         tags: Vec::new(),
         entities: Vec::new(),
-        current_state: "node-a".to_string(),
+        current_state: "node-a".into(),
         article: None,
         see_also: None,
         history: Vec::new(),
         citations: Vec::new(),
-        markdown: "#".to_string(),
+        markdown: "#".into(),
         sources: Vec::new(),
         git_sha: None,
         last_verified: None,
@@ -1162,16 +1163,54 @@ fn second_summary_patch_keeps_the_unpaired_surrogate() {
 
 #[test]
 fn summary_cap_keeps_an_unpaired_surrogate() {
-    let text = format!("{}😀", "a".repeat(2399));
+    let text = protocol::js::JsString::from(format!("{}😀", "a".repeat(2399)));
     let capped = cap_summary(&text, 2400);
     assert_eq!(capped.kept.units().last().copied(), Some(0xD83D));
     assert_eq!(capped.overflow.units().first().copied(), Some(0xDE00));
+    let again = cap_summary(capped.kept.as_js_string(), 2400);
+    assert_eq!(again.kept.units(), capped.kept.units());
+    assert!(again.overflow.is_empty());
     let kept = serde_json::to_string(&capped.kept).expect("kept");
     let overflow = serde_json::to_string(&capped.overflow).expect("overflow");
     assert!(kept.contains("\\ud83d"), "{kept}");
     assert!(overflow.contains("\\ude00"), "{overflow}");
     assert!(!kept.contains("\\ufffd"), "{kept}");
     assert!(!overflow.contains("\\ufffd"), "{overflow}");
+}
+
+#[test]
+fn page_wire_keeps_the_capped_summary() {
+    let mut first = patch(PatchAction::Create, "example-topic", "2026-07-01T00:00:00Z");
+    first.current_state = Some(format!("{}😀", "a".repeat(2399)));
+    let page = apply_patch(None, &first);
+    let serialized = serialize_wiki_page(&page);
+    assert_eq!(page.current_state.units().last().copied(), Some(0xD83D));
+    let wire = WikiPageResponse {
+        slug: page.meta.slug.clone(),
+        title: page.meta.title.clone(),
+        aliases: Vec::new(),
+        tags: Vec::new(),
+        entities: Vec::new(),
+        current_state: page.current_state.as_js_string().clone(),
+        article: None,
+        see_also: None,
+        history: Vec::new(),
+        citations: Vec::new(),
+        markdown: serialized.as_js_string().clone(),
+        sources: Vec::new(),
+        git_sha: None,
+        last_verified: None,
+        updated_at: "2026-07-01T00:00:00Z".to_string(),
+        related: None,
+    };
+    let json = serde_json::to_string(&wire).expect("json");
+    assert!(json.contains("\\ud83d"), "{json}");
+    assert!(!json.contains("\\ufffd"), "{json}");
+    let back: WikiPageResponse = serde_json::from_str(&json).expect("back");
+    assert_eq!(back.current_state.units(), page.current_state.units());
+    assert_eq!(back.markdown.units(), serialized.units());
+    assert_eq!(back.current_state.units().last().copied(), Some(0xD83D));
+    assert!(back.markdown.units().contains(&0xD83D));
 }
 
 #[test]

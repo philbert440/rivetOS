@@ -584,7 +584,7 @@ fn units_contains(hay: &[u16], needle: &[u16]) -> bool {
     hay.windows(needle.len()).any(|window| window == needle)
 }
 
-pub fn cap_summary(text: &str, max_chars: usize) -> SummaryCap {
+pub fn cap_summary(text: &protocol::js::JsString, max_chars: usize) -> SummaryCap {
     cap_units(&JsText::from(text), max_chars)
 }
 

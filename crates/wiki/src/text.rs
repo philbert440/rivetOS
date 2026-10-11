@@ -46,6 +46,14 @@ impl From<String> for JsText {
     }
 }
 
+impl From<&protocol::js::JsString> for JsText {
+    fn from(text: &protocol::js::JsString) -> Self {
+        Self {
+            inner: text.clone(),
+        }
+    }
+}
+
 impl std::fmt::Display for JsText {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(self.utf8())
@@ -84,6 +92,10 @@ impl JsText {
         Self {
             inner: protocol::js::JsString::from_units(units),
         }
+    }
+
+    pub fn as_js_string(&self) -> &protocol::js::JsString {
+        &self.inner
     }
 
     pub fn units(&self) -> &[u16] {

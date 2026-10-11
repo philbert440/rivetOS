@@ -33,14 +33,14 @@ pub struct WikiPageResponse {
     pub aliases: Vec<String>,
     pub tags: Vec<String>,
     pub entities: Vec<String>,
-    pub current_state: String,
+    pub current_state: JsString,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub article: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub see_also: Option<Vec<String>>,
     pub history: Vec<WikiHistoryEntry>,
     pub citations: Vec<WikiCitation>,
-    pub markdown: String,
+    pub markdown: JsString,
     pub sources: Vec<WikiSourceRef>,
     pub git_sha: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
