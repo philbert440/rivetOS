@@ -1,5 +1,7 @@
 use std::net::IpAddr;
 
+use const_oid::db::rfc5280::{ID_KP_CLIENT_AUTH, ID_KP_SERVER_AUTH};
+use const_oid::db::rfc5912::SHA_256_WITH_RSA_ENCRYPTION;
 use rsa::RsaPrivateKey;
 use x509_cert::builder::profile::BuilderProfile;
 use x509_cert::builder::{Builder, CertificateBuilder};
@@ -14,14 +16,11 @@ use x509_cert::ext::pkix::{
 use x509_cert::ext::{Extension, ToExtension};
 use x509_cert::name::Name;
 use x509_cert::serial_number::SerialNumber;
-use x509_cert::spki::{ObjectIdentifier, SubjectPublicKeyInfoRef};
+use x509_cert::spki::SubjectPublicKeyInfoRef;
 use x509_cert::time::{Time, Validity};
 
 use crate::error::{Error, wrap};
 use crate::signer::{self, RsaSignature, RsaSigner};
-
-const SERVER_AUTH: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.6.1.5.5.7.3.1");
-const CLIENT_AUTH: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.6.1.5.5.7.3.2");
 
 struct RivetProfile {
     issuer: Name,
@@ -136,11 +135,11 @@ pub fn client_usage() -> KeyUsage {
 }
 
 pub fn server_eku() -> ExtendedKeyUsage {
-    ExtendedKeyUsage(vec![SERVER_AUTH, CLIENT_AUTH])
+    ExtendedKeyUsage(vec![ID_KP_SERVER_AUTH, ID_KP_CLIENT_AUTH])
 }
 
 pub fn client_eku() -> ExtendedKeyUsage {
-    ExtendedKeyUsage(vec![CLIENT_AUTH])
+    ExtendedKeyUsage(vec![ID_KP_CLIENT_AUTH])
 }
 
 pub fn parse_san_list(list: &str) -> Result<SubjectAltName, Error> {
@@ -189,7 +188,7 @@ pub fn issuer_name_from_pem(pem: &str) -> Result<Name, Error> {
 
 pub fn sha256_rsa_algorithm() -> x509_cert::AlgorithmIdentifier {
     x509_cert::AlgorithmIdentifier {
-        oid: ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.11"),
+        oid: SHA_256_WITH_RSA_ENCRYPTION,
         parameters: Some(x509_cert::der::asn1::Any::null()),
     }
 }

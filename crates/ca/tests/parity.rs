@@ -298,7 +298,7 @@ fn native_ca_matches_openssl() {
             "issue-node",
             "node-a",
             "bare.example",
-            "IP:10.1.2.3",
+            "IP:192.0.2.10",
             "URI:https://example.test/a",
             "email:dev@example.test",
         ],
@@ -311,7 +311,7 @@ fn native_ca_matches_openssl() {
         "rivet-ca: issued node cert: {}\n",
         node_crt.display()
     )));
-    assert!(node.2.contains("rivet-ca:   SANs: DNS:node-a.mesh,DNS:node-a-mcp.mesh,DNS:node-a-runtime-rpc.mesh,DNS:bare.example,IP:10.1.2.3,URI:https://example.test/a,email:dev@example.test\n"));
+    assert!(node.2.contains("rivet-ca:   SANs: DNS:node-a.mesh,DNS:node-a-mcp.mesh,DNS:node-a-runtime-rpc.mesh,DNS:bare.example,IP:192.0.2.10,URI:https://example.test/a,email:dev@example.test\n"));
     assert_eq!(
         fs::read_to_string(int_dir.join("int.srl")).unwrap(),
         "1001\n"
@@ -340,7 +340,7 @@ fn native_ca_matches_openssl() {
     assert!(node_text.contains("DNS:node-a-mcp.mesh"));
     assert!(node_text.contains("DNS:node-a-runtime-rpc.mesh"));
     assert!(node_text.contains("DNS:bare.example"));
-    assert!(node_text.contains("10.1.2.3"));
+    assert!(node_text.contains("192.0.2.10"));
     assert!(node_text.contains("https://example.test/a"));
     assert!(node_text.contains("dev@example.test"));
     assert!(!node_text.contains("CRL Distribution"));

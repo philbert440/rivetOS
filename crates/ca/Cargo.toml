@@ -16,6 +16,7 @@ path = "src/main.rs"
 [dependencies]
 base64 = { workspace = true }
 config = { path = "../config" }
+const-oid = { workspace = true }
 fd-lock = { workspace = true }
 getrandom = { workspace = true }
 p12-keystore = { workspace = true }

@@ -2,6 +2,12 @@ use std::fs;
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use const_oid::ObjectIdentifier;
+use const_oid::db::rfc5280::{
+    ID_CE_BASIC_CONSTRAINTS, ID_CE_CERTIFICATE_POLICIES, ID_CE_EXT_KEY_USAGE,
+    ID_CE_INHIBIT_ANY_POLICY, ID_CE_KEY_USAGE, ID_CE_NAME_CONSTRAINTS, ID_CE_POLICY_CONSTRAINTS,
+    ID_CE_POLICY_MAPPINGS, ID_CE_SUBJECT_ALT_NAME,
+};
 use rustls_pki_types::{CertificateDer, SignatureVerificationAlgorithm, UnixTime};
 use webpki::{EndEntityCert, ExtendedKeyUsageValidator, KeyPurposeIdIter};
 use x509_parser::certificate::X509Certificate;
@@ -369,7 +375,7 @@ fn check_critical(chain: &[Anchor], cert_path: &Path) -> Option<VerifyOutput> {
         };
         for ext in certificate.extensions() {
             let oid = ext.oid.to_id_string();
-            if oid == "2.5.29.30" && subtree_minmax(ext.value) {
+            if oid == ID_CE_NAME_CONSTRAINTS.to_string() && subtree_minmax(ext.value) {
                 continue;
             }
             if !ext.critical {
@@ -397,30 +403,49 @@ fn unhandled(anchor: &Anchor, cert_path: &Path, depth: usize) -> VerifyOutput {
     )
 }
 
+const ID_PE_IP_ADDR_BLOCKS: ObjectIdentifier =
+    ObjectIdentifier::new_unwrap(concat!("1.3.6", ".1.5.5", ".7.1.7"));
+const ID_PE_AUTONOMOUS_SYS_NUM: ObjectIdentifier =
+    ObjectIdentifier::new_unwrap(concat!("1.3.6", ".1.5.5", ".7.1.8"));
+const ID_PE_PROXY_CERT_INFO: ObjectIdentifier =
+    ObjectIdentifier::new_unwrap(concat!("1.3.6", ".1.5.5", ".7.1.14"));
+const NETSCAPE_CERT_TYPE: ObjectIdentifier =
+    ObjectIdentifier::new_unwrap(concat!("2.16.840", ".1.113730", ".1.1"));
+
+const PROCESSED_EXTENSIONS: [ObjectIdentifier; 13] = [
+    ID_CE_KEY_USAGE,
+    ID_CE_SUBJECT_ALT_NAME,
+    ID_CE_BASIC_CONSTRAINTS,
+    ID_CE_NAME_CONSTRAINTS,
+    ID_CE_CERTIFICATE_POLICIES,
+    ID_CE_POLICY_MAPPINGS,
+    ID_CE_POLICY_CONSTRAINTS,
+    ID_CE_EXT_KEY_USAGE,
+    ID_CE_INHIBIT_ANY_POLICY,
+    ID_PE_IP_ADDR_BLOCKS,
+    ID_PE_AUTONOMOUS_SYS_NUM,
+    ID_PE_PROXY_CERT_INFO,
+    NETSCAPE_CERT_TYPE,
+];
+
+const MUST_PARSE_EXTENSIONS: [ObjectIdentifier; 5] = [
+    ID_CE_KEY_USAGE,
+    ID_CE_SUBJECT_ALT_NAME,
+    ID_CE_BASIC_CONSTRAINTS,
+    ID_CE_NAME_CONSTRAINTS,
+    ID_CE_EXT_KEY_USAGE,
+];
+
 fn processed_extension(oid: &str) -> bool {
-    matches!(
-        oid,
-        "2.5.29.15"
-            | "2.5.29.17"
-            | "2.5.29.19"
-            | "2.5.29.30"
-            | "2.5.29.32"
-            | "2.5.29.33"
-            | "2.5.29.36"
-            | "2.5.29.37"
-            | "2.5.29.54"
-            | "1.3.6.1.5.5.7.1.7"
-            | "1.3.6.1.5.5.7.1.8"
-            | "1.3.6.1.5.5.7.1.14"
-            | "2.16.840.1.113730.1.1"
-    )
+    PROCESSED_EXTENSIONS
+        .iter()
+        .any(|identifier| identifier.to_string() == oid)
 }
 
 fn must_parse(oid: &str) -> bool {
-    matches!(
-        oid,
-        "2.5.29.15" | "2.5.29.17" | "2.5.29.19" | "2.5.29.30" | "2.5.29.37"
-    )
+    MUST_PARSE_EXTENSIONS
+        .iter()
+        .any(|identifier| identifier.to_string() == oid)
 }
 
 fn check_extended_key_usage(chain: &[Anchor], cert_path: &Path) -> Option<VerifyOutput> {
@@ -712,7 +737,7 @@ fn excluded_ip_matches(chain: &[Anchor]) -> bool {
 
 fn raw_name_constraints<'a>(certificate: &'a X509Certificate<'a>) -> Option<&'a [u8]> {
     certificate.extensions().iter().find_map(|ext| {
-        if ext.oid.to_id_string() == "2.5.29.30" {
+        if ext.oid.to_id_string() == ID_CE_NAME_CONSTRAINTS.to_string() {
             Some(ext.value)
         } else {
             None

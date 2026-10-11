@@ -199,6 +199,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.23.1",
  "config",
+ "const-oid 0.10.2",
  "fd-lock",
  "getrandom 0.2.17",
  "p12-keystore",

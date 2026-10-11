@@ -1,3 +1,4 @@
+use const_oid::db::rfc5912::SHA_256_WITH_RSA_ENCRYPTION;
 use rsa::RsaPrivateKey;
 use rsa::pkcs1v15::SigningKey;
 use rsa::sha2::Sha256;
@@ -6,12 +7,10 @@ use x509_cert::der::Decode;
 use x509_cert::der::asn1::{Any, BitString};
 use x509_cert::spki::{
     AlgorithmIdentifierOwned, Document, DynSignatureAlgorithmIdentifier, EncodePublicKey,
-    ObjectIdentifier, SignatureBitStringEncoding, SubjectPublicKeyInfoOwned,
+    SignatureBitStringEncoding, SubjectPublicKeyInfoOwned,
 };
 
 use crate::error::{Error, wrap};
-
-const SHA256_WITH_RSA: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.11");
 
 pub struct RsaSignature(Vec<u8>);
 
@@ -57,7 +56,7 @@ impl signature::Keypair for RsaSigner {
 impl DynSignatureAlgorithmIdentifier for RsaSigner {
     fn signature_algorithm_identifier(&self) -> x509_cert::spki::Result<AlgorithmIdentifierOwned> {
         Ok(AlgorithmIdentifierOwned {
-            oid: SHA256_WITH_RSA,
+            oid: SHA_256_WITH_RSA_ENCRYPTION,
             parameters: Some(Any::null()),
         })
     }
