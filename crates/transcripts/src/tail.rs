@@ -7,7 +7,7 @@ use crate::fsutil;
 use crate::identity::{den_session_ref, path_unsafe};
 use crate::jsonl::read_jsonl;
 use crate::store::Store;
-use crate::turn::Turn;
+use crate::turn::{CaptureMessage, Turn};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct TailFrame {
@@ -43,6 +43,12 @@ pub struct SqliteCursor {
     pub time_ms: i64,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OpencodeCursor {
+    pub part_time_updated: i64,
+    pub message_time_updated: i64,
+}
+
 #[derive(Clone, Debug)]
 struct JsonlState {
     offset: u64,
@@ -54,6 +60,7 @@ struct JsonlState {
 pub struct TranscriptTail {
     jsonl: HashMap<String, JsonlState>,
     sqlite: HashMap<String, SqliteCursor>,
+    opencode: HashMap<String, OpencodeCursor>,
     sigs: Vec<String>,
     turns: Vec<Turn>,
     command: String,
@@ -65,6 +72,7 @@ impl TranscriptTail {
         Self {
             jsonl: HashMap::new(),
             sqlite: HashMap::new(),
+            opencode: HashMap::new(),
             sigs: Vec::new(),
             turns: Vec::new(),
             command: String::new(),
@@ -164,6 +172,45 @@ impl TranscriptTail {
         out
     }
 
+    pub fn opencode_since(&mut self, key: &str, messages: &[CaptureMessage]) -> Vec<usize> {
+        let state = self.opencode.get(key).cloned().unwrap_or(OpencodeCursor {
+            part_time_updated: 0,
+            message_time_updated: 0,
+        });
+        let part_floor = if state.part_time_updated > 0 {
+            state.part_time_updated.saturating_sub(30_000).max(0)
+        } else {
+            0
+        };
+        let msg_hw = state.message_time_updated.max(0);
+        let mut out = Vec::new();
+        let mut next_part = state.part_time_updated;
+        let mut next_msg = state.message_time_updated;
+        for (index, message) in messages.iter().enumerate() {
+            let part_stamp = extra_i64(message, "partTimeUpdated");
+            let msg_stamp = extra_i64(message, "messageTimeUpdated");
+            if part_stamp > part_floor || msg_stamp > msg_hw {
+                out.push(index);
+            }
+            if part_stamp > next_part {
+                next_part = part_stamp;
+            }
+            if msg_stamp > next_msg {
+                next_msg = msg_stamp;
+            }
+        }
+        if next_part != 0 || next_msg != 0 {
+            self.opencode.insert(
+                key.to_string(),
+                OpencodeCursor {
+                    part_time_updated: next_part,
+                    message_time_updated: next_msg,
+                },
+            );
+        }
+        out
+    }
+
     fn emit(&mut self, from: usize, turns: Vec<Turn>, command: &str, truncated: bool) -> TailFrame {
         self.sigs = turns.iter().map(turn_sig).collect();
         self.command = command.to_string();
@@ -204,6 +251,17 @@ pub fn merge_transcript_window(prev: &[Turn], next: &[Turn], truncated: bool) ->
     let mut out = prev[..overlap].to_vec();
     out.extend(next.iter().cloned());
     out
+}
+
+fn extra_i64(message: &CaptureMessage, key: &str) -> i64 {
+    message
+        .extra
+        .as_ref()
+        .and_then(|value| value.get(key))
+        .and_then(Value::as_f64)
+        .filter(|number| number.is_finite())
+        .map(|number| number as i64)
+        .unwrap_or(0)
 }
 
 fn turn_sig(turn: &Turn) -> String {

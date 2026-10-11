@@ -92,15 +92,23 @@ pub fn load(roots: &Roots, id: &str) -> (Vec<Turn>, Vec<CaptureMessage>) {
     )
     .unwrap_or_default();
     let mut roles: HashMap<String, String> = HashMap::new();
+    let mut message_data: HashMap<String, Value> = HashMap::new();
+    let mut message_updated: HashMap<String, Value> = HashMap::new();
     let mut by_message: HashMap<String, Vec<Obj>> = HashMap::new();
+    let db = db_path(roots).to_string_lossy().into_owned();
     let msgs: Vec<Obj> = messages
         .into_iter()
         .map(|message| {
-            let mut rec = json_object(message.get("data"));
+            let body = json_object(message.get("data"));
+            let mut rec = body.clone();
             if let Some(id) = message.get("id").and_then(Value::as_str) {
                 rec.insert("id".into(), Value::String(id.to_string()));
+                message_data.insert(id.to_string(), Value::Object(body));
                 if let Some(role) = rec.get("role").and_then(Value::as_str) {
                     roles.insert(id.to_string(), role.to_string());
+                }
+                if let Some(time) = message.get("time_updated").cloned() {
+                    message_updated.insert(id.to_string(), time);
                 }
             }
             if let Some(time) = message.get("time_created").cloned() {
@@ -134,8 +142,16 @@ pub fn load(roots: &Roots, id: &str) -> (Vec<Turn>, Vec<CaptureMessage>) {
             wrapped.insert("id".into(), Value::String(id.to_string()));
         }
         wrapped.insert("session_id".into(), Value::String(id.to_string()));
+        wrapped.insert("message_id".into(), Value::String(mid.to_string()));
+        wrapped.insert("db_path".into(), Value::String(db.clone()));
         if let Some(role) = roles.get(mid) {
             wrapped.insert("role".into(), Value::String(role.clone()));
+        }
+        if let Some(body) = message_data.get(mid) {
+            wrapped.insert("message_data".into(), body.clone());
+        }
+        if let Some(time) = message_updated.get(mid) {
+            wrapped.insert("message_time_updated".into(), time.clone());
         }
         if let Some(time) = part.get("time_created").cloned() {
             wrapped.insert("time_created".into(), time);

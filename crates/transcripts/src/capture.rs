@@ -1,8 +1,10 @@
 use std::collections::HashMap;
+use std::path::Path;
 
 use serde_json::Value;
 
-use crate::jsonl::{ParsedLine, lines_objects, parse_lines};
+use crate::fsutil;
+use crate::jsonl::{ParsedLine, lines_objects, parse_lines, parse_lines_at};
 use crate::text::content_text;
 use crate::turn::{CaptureMessage, Turn};
 use crate::value::{Obj, js_norm, jtrim};
@@ -14,31 +16,31 @@ pub struct StoreView {
 }
 
 pub fn project_claude(text: &str, source: Option<&str>, truncated: bool) -> StoreView {
-    project_lines("claude", &parse_lines(text), source, truncated)
+    project_lines("claude", &parse_lines(text), source, truncated, None)
 }
 
 pub fn project_codex(text: &str) -> StoreView {
-    project_lines("codex", &parse_lines(text), None, false)
+    project_lines("codex", &parse_lines(text), None, false, None)
 }
 
 pub fn project_kimi(text: &str) -> StoreView {
-    project_lines("kimi", &parse_lines(text), None, false)
+    project_lines("kimi", &parse_lines(text), None, false, None)
 }
 
 pub fn project_pi(text: &str) -> StoreView {
-    project_lines("pi", &parse_lines(text), None, false)
+    project_lines("pi", &parse_lines(text), None, false, None)
 }
 
 pub fn project_qwen(text: &str) -> StoreView {
-    project_lines("qwen", &parse_lines(text), None, false)
+    project_lines("qwen", &parse_lines(text), None, false, None)
 }
 
 pub fn project_cursor(text: &str) -> StoreView {
-    project_lines("cursor", &parse_lines(text), None, false)
+    project_lines("cursor", &parse_lines(text), None, false, None)
 }
 
 pub fn project_cowork(text: &str) -> StoreView {
-    project_lines("cowork", &parse_lines(text), None, false)
+    project_lines("cowork", &parse_lines(text), None, false, None)
 }
 
 pub fn project_grok_chat(text: &str) -> StoreView {
@@ -64,6 +66,7 @@ pub fn project_lines(
     lines: &[ParsedLine],
     source: Option<&str>,
     truncated: bool,
+    hint: Option<&str>,
 ) -> StoreView {
     let objects = lines_objects(lines);
     let turns = match command {
@@ -77,21 +80,72 @@ pub fn project_lines(
         "cursor" => crate::cursor::cursor_turns_from_objects(&objects),
         _ => Vec::new(),
     };
-    let messages = match command {
-        "claude" => claude_capture_lines(lines),
-        "cowork" => cowork_capture_lines_parsed(lines),
-        "grok" => Vec::new(),
-        "codex" => codex_capture_lines(lines),
-        "kimi" => kimi_capture_for(lines, None),
-        "pi" => pi_capture_lines(lines),
-        "qwen" => qwen_capture_lines(lines),
-        "cursor" => cursor_capture_lines(lines),
-        _ => Vec::new(),
-    };
+    let messages = capture_batch(command, lines, hint);
     StoreView {
         turns,
         messages,
         truncated,
+    }
+}
+
+#[derive(Default)]
+struct CodexAccum {
+    session_id: String,
+    names: HashMap<String, String>,
+}
+
+#[derive(Default)]
+struct KimiAccum {
+    hint: String,
+    last_ms: i64,
+    occurrences: HashMap<String, i64>,
+}
+
+struct GrokAccum {
+    session_id: String,
+    source_path: String,
+    prompt_turns: HashMap<String, i64>,
+    user_chunks: HashMap<i64, i64>,
+    pending: HashMap<String, GrokPending>,
+    current_turn: i64,
+}
+
+impl Default for GrokAccum {
+    fn default() -> Self {
+        Self {
+            session_id: String::new(),
+            source_path: String::new(),
+            prompt_turns: HashMap::new(),
+            user_chunks: HashMap::new(),
+            pending: HashMap::new(),
+            current_turn: -1,
+        }
+    }
+}
+
+fn capture_batch(command: &str, lines: &[ParsedLine], hint: Option<&str>) -> Vec<CaptureMessage> {
+    match command {
+        "claude" => claude_capture_lines(lines),
+        "codex" => {
+            let mut state = CodexAccum::default();
+            codex_capture_lines(lines, hint, &mut state)
+        }
+        "kimi" => kimi_capture_for(lines, hint),
+        "pi" => pi_capture_lines(lines),
+        "qwen" => qwen_capture_lines(lines),
+        "cursor" => cursor_capture_lines(lines, hint),
+        "cowork" => {
+            let mut pending = HashMap::new();
+            cowork_capture_lines_parsed(lines, hint, &mut pending)
+        }
+        "grok" => {
+            let mut state = GrokAccum::default();
+            if let Some(id) = hint.filter(|text| !text.is_empty()) {
+                state.session_id = id.to_string();
+            }
+            grok_resume(&mut state, lines)
+        }
+        _ => Vec::new(),
     }
 }
 
@@ -225,11 +279,25 @@ fn claude_capture_lines(lines: &[ParsedLine]) -> Vec<CaptureMessage> {
 }
 
 pub fn codex_capture_text(text: &str) -> Vec<CaptureMessage> {
-    codex_capture_lines(&parse_lines(text))
+    let mut state = CodexAccum::default();
+    codex_capture_lines(&parse_lines(text), None, &mut state)
 }
 
-fn codex_capture_lines(lines: &[ParsedLine]) -> Vec<CaptureMessage> {
-    let mut session_id = "unknown".to_string();
+fn codex_capture_lines(
+    lines: &[ParsedLine],
+    hint: Option<&str>,
+    state: &mut CodexAccum,
+) -> Vec<CaptureMessage> {
+    if (state.session_id.is_empty() || state.session_id == "unknown")
+        && let Some(id) = hint.filter(|id| native_session(id))
+    {
+        state.session_id = id.to_string();
+    }
+    let mut session_id = std::mem::take(&mut state.session_id);
+    if session_id.is_empty() {
+        session_id = "unknown".into();
+    }
+    let mut names = std::mem::take(&mut state.names);
     for line in lines {
         let Some(obj) = line.value.as_object() else {
             continue;
@@ -246,7 +314,6 @@ fn codex_capture_lines(lines: &[ParsedLine]) -> Vec<CaptureMessage> {
             session_id = id.to_string();
         }
     }
-    let mut names = HashMap::new();
     let mut out = Vec::new();
     for line in lines {
         let Some(obj) = line.value.as_object() else {
@@ -402,6 +469,8 @@ fn codex_capture_lines(lines: &[ParsedLine]) -> Vec<CaptureMessage> {
             _ => {}
         }
     }
+    state.session_id = session_id;
+    state.names = names;
     out
 }
 
@@ -409,10 +478,27 @@ pub fn kimi_capture_text(text: &str) -> Vec<CaptureMessage> {
     kimi_capture_for(&parse_lines(text), None)
 }
 
+pub fn kimi_capture_text_for(text: &str, hint: Option<&str>) -> Vec<CaptureMessage> {
+    kimi_capture_for(&parse_lines(text), hint)
+}
+
 pub(crate) fn kimi_capture_for(lines: &[ParsedLine], hint: Option<&str>) -> Vec<CaptureMessage> {
+    let mut state = KimiAccum::default();
+    kimi_resume(&mut state, lines, hint)
+}
+
+fn kimi_resume(
+    state: &mut KimiAccum,
+    lines: &[ParsedLine],
+    hint: Option<&str>,
+) -> Vec<CaptureMessage> {
+    if let Some(hint) = hint.filter(|text| !text.is_empty()) {
+        state.hint = hint.to_string();
+    }
     let mut out = Vec::new();
-    let mut last_ms = 0_i64;
-    let mut occurrences: HashMap<String, u32> = HashMap::new();
+    let mut last_ms = state.last_ms;
+    let mut occurrences = std::mem::take(&mut state.occurrences);
+    let hint_owned = state.hint.clone();
     for line in lines {
         let Some(obj) = line.value.as_object() else {
             continue;
@@ -463,7 +549,11 @@ pub(crate) fn kimi_capture_for(lines: &[ParsedLine], hint: Option<&str>) -> Vec<
             .get("sessionId")
             .and_then(Value::as_str)
             .filter(|text| !text.is_empty())
-            .unwrap_or(hint.unwrap_or("unknown"));
+            .unwrap_or(if hint_owned.is_empty() {
+                "unknown"
+            } else {
+                hint_owned.as_str()
+            });
         let tuple = protocol::js::stringify(&Value::Array(vec![
             Value::String("assistant".into()),
             Value::String(content.clone()),
@@ -522,6 +612,8 @@ pub(crate) fn kimi_capture_for(lines: &[ParsedLine], hint: Option<&str>) -> Vec<
         message.extra = Some(Value::Object(extra));
         out.push(place(message, line));
     }
+    state.last_ms = last_ms;
+    state.occurrences = occurrences;
     out
 }
 
@@ -529,6 +621,7 @@ pub fn grok_capture_updates(text: &str) -> Vec<CaptureMessage> {
     grok_capture_lines(&parse_lines(text))
 }
 
+#[derive(Clone)]
 struct GrokPending {
     name: Option<String>,
     raw_input: Option<Value>,
@@ -536,7 +629,17 @@ struct GrokPending {
 }
 
 pub(crate) fn grok_capture_lines(lines: &[ParsedLine]) -> Vec<CaptureMessage> {
-    let mut prompt_turns: HashMap<String, i64> = HashMap::new();
+    let mut state = GrokAccum::default();
+    grok_resume(&mut state, lines)
+}
+
+fn grok_resume(state: &mut GrokAccum, lines: &[ParsedLine]) -> Vec<CaptureMessage> {
+    let session_owned = state.session_id.clone();
+    let path_owned = state.source_path.clone();
+    let mut prompt_turns = std::mem::take(&mut state.prompt_turns);
+    let mut user_chunks = std::mem::take(&mut state.user_chunks);
+    let mut pending = std::mem::take(&mut state.pending);
+    let mut current_turn = state.current_turn;
     for line in lines {
         let Some(params) = line.value.get("params").and_then(Value::as_object) else {
             continue;
@@ -553,9 +656,6 @@ pub(crate) fn grok_capture_lines(lines: &[ParsedLine]) -> Vec<CaptureMessage> {
             prompt_turns.insert(prompt_id.to_string(), prompt_turns.len() as i64);
         }
     }
-    let mut user_chunks: HashMap<i64, i64> = HashMap::new();
-    let mut pending: HashMap<String, GrokPending> = HashMap::new();
-    let mut current_turn = -1_i64;
     let mut out = Vec::new();
     for line in lines {
         let Some(params) = line.value.get("params").and_then(Value::as_object) else {
@@ -599,18 +699,24 @@ pub(crate) fn grok_capture_lines(lines: &[ParsedLine]) -> Vec<CaptureMessage> {
             (current_turn, 10_000 + line.index as i64)
         };
         let ordinal = turn.saturating_mul(1_000_000).saturating_add(sub_order);
-        let stamp = |message: &mut CaptureMessage| {
-            message.event_id = event_id.clone();
-            message.event_ts = event_ts.clone();
-            message.ordinal = Some(ordinal);
-            message.line_index = Some(line.index as u64);
-            message.source_offset = Some(line.offset);
+        let emit = |message: CaptureMessage| {
+            grok_identified(
+                message,
+                GrokStamp {
+                    session: &session_owned,
+                    path: &path_owned,
+                    ordinal,
+                    line_index: line.index as u64,
+                    offset: line.offset,
+                    native_id: event_id.as_deref(),
+                    event_ts: event_ts.as_deref(),
+                },
+            )
         };
         match kind {
             "user_message_chunk" => {
                 if let Some(body) = extract_text(update.get("content")) {
                     let mut message = CaptureMessage::new("user", body);
-                    stamp(&mut message);
                     let mut extra = serde_json::Map::new();
                     extra.insert("sessionUpdate".into(), Value::String(kind.into()));
                     if let Some(model) = update_meta.and_then(|row| row.get("modelId")) {
@@ -620,7 +726,7 @@ pub(crate) fn grok_capture_lines(lines: &[ParsedLine]) -> Vec<CaptureMessage> {
                         extra.insert("promptIndex".into(), index.clone());
                     }
                     message.extra = Some(Value::Object(extra));
-                    out.push(message);
+                    out.push(emit(message));
                 }
             }
             "agent_message_chunk" | "agent_thought_chunk" => {
@@ -631,9 +737,8 @@ pub(crate) fn grok_capture_lines(lines: &[ParsedLine]) -> Vec<CaptureMessage> {
                         body
                     };
                     let mut message = CaptureMessage::new("assistant", content);
-                    stamp(&mut message);
                     message.extra = Some(extra_pairs(&[("sessionUpdate", kind.to_string())]));
-                    out.push(message);
+                    out.push(emit(message));
                 }
             }
             "tool_call" => {
@@ -678,7 +783,6 @@ pub(crate) fn grok_capture_lines(lines: &[ParsedLine]) -> Vec<CaptureMessage> {
                     format_tool_result(update),
                 );
                 message.tool_args = raw_input.map(|value| js_norm(&value));
-                stamp(&mut message);
                 let mut extra = extra_map(&[
                     ("sessionUpdate", kind.to_string()),
                     ("toolCallId", id.to_string()),
@@ -692,18 +796,83 @@ pub(crate) fn grok_capture_lines(lines: &[ParsedLine]) -> Vec<CaptureMessage> {
                     extra.insert("kind".into(), kind_value.clone());
                 }
                 message.extra = Some(Value::Object(extra));
-                out.push(message);
+                out.push(emit(message));
             }
             "memory_flush_started" | "memory_flush_completed" => {
                 let mut message = CaptureMessage::new("system", format!("[grok.{kind}]"));
-                stamp(&mut message);
                 message.extra = Some(extra_pairs(&[("sessionUpdate", kind.to_string())]));
-                out.push(message);
+                out.push(emit(message));
             }
             _ => {}
         }
     }
+    state.prompt_turns = prompt_turns;
+    state.user_chunks = user_chunks;
+    state.pending = pending;
+    state.current_turn = current_turn;
     out
+}
+
+struct GrokStamp<'a> {
+    session: &'a str,
+    path: &'a str,
+    ordinal: i64,
+    line_index: u64,
+    offset: u64,
+    native_id: Option<&'a str>,
+    event_ts: Option<&'a str>,
+}
+
+fn grok_identified(mut message: CaptureMessage, stamp: GrokStamp<'_>) -> CaptureMessage {
+    let GrokStamp {
+        session,
+        path,
+        ordinal,
+        line_index,
+        offset,
+        native_id,
+        event_ts,
+    } = stamp;
+    let session = if session.is_empty() {
+        "unknown"
+    } else {
+        session
+    };
+    let event_id = format!("grok-build:{session}:{ordinal}");
+    message.event_id = Some(event_id.clone());
+    message.event_ts = event_ts.map(str::to_string);
+    if event_ts.is_some() {
+        message.created_at = message.event_ts.clone();
+    }
+    message.ordinal = Some(ordinal);
+    message.line_index = Some(line_index);
+    message.source_offset = Some(offset);
+    message.session_id = Some(session.to_string());
+    let existing = match message.extra.take() {
+        Some(Value::Object(map)) => map,
+        _ => serde_json::Map::new(),
+    };
+    let mut extra = serde_json::Map::new();
+    extra.insert("source".into(), Value::String("grok-jsonl".into()));
+    for (key, value) in existing {
+        if key != "source" {
+            extra.insert(key, value);
+        }
+    }
+    extra.insert("event_id".into(), Value::String(event_id));
+    extra.insert("ordinal".into(), Value::from(ordinal));
+    if !path.is_empty() {
+        extra.insert("session_jsonl_path".into(), Value::String(path.to_string()));
+    }
+    extra.insert("session_jsonl_line".into(), Value::from(line_index));
+    if let Some(id) = native_id.filter(|text| !text.is_empty()) {
+        extra.insert("native_event_id".into(), Value::String(id.to_string()));
+    }
+    if let Some(ts) = event_ts {
+        extra.insert("event_ts".into(), Value::String(ts.to_string()));
+    }
+    message.extra = Some(Value::Object(extra));
+    message
 }
 
 pub fn pi_capture_text(text: &str) -> Vec<CaptureMessage> {
@@ -926,10 +1095,11 @@ pub fn cursor_capture_objects(objects: &[Obj]) -> Vec<CaptureMessage> {
             value: Value::Object(obj.clone()),
         })
         .collect::<Vec<_>>();
-    cursor_capture_lines(&lines)
+    cursor_capture_lines(&lines, None)
 }
 
-fn cursor_capture_lines(lines: &[ParsedLine]) -> Vec<CaptureMessage> {
+fn cursor_capture_lines(lines: &[ParsedLine], hint: Option<&str>) -> Vec<CaptureMessage> {
+    let fallback = hint.unwrap_or("");
     let mut out = Vec::new();
     for line in lines {
         let Some(obj) = line.value.as_object() else {
@@ -944,7 +1114,11 @@ fn cursor_capture_lines(lines: &[ParsedLine]) -> Vec<CaptureMessage> {
             .or_else(|| obj.get("sessionId"))
             .and_then(Value::as_str)
             .filter(|text| !text.is_empty())
-            .unwrap_or("unknown");
+            .unwrap_or(if fallback.is_empty() {
+                "unknown"
+            } else {
+                fallback
+            });
         let message = obj.get("message").and_then(Value::as_object).unwrap_or(obj);
         let Some(content) = message.get("content") else {
             continue;
@@ -955,6 +1129,15 @@ fn cursor_capture_lines(lines: &[ParsedLine]) -> Vec<CaptureMessage> {
                 line.index
             ));
             row.session_id = Some(conversation.to_string());
+            let mut extra = extra_map(&[
+                ("source", "cursor-transcript".into()),
+                (
+                    "native_event_id",
+                    format!("line:{}:part:{part}", line.index),
+                ),
+            ]);
+            extra.insert("session_jsonl_line".into(), Value::from(line.index as u64));
+            row.extra = Some(Value::Object(extra));
             out.push(place(row, line));
         };
         if let Some(text) = content.as_str() {
@@ -1005,10 +1188,16 @@ pub fn cowork_capture_lines(lines: &[String]) -> Vec<CaptureMessage> {
             })
         })
         .collect::<Vec<_>>();
-    cowork_capture_lines_parsed(&parsed)
+    let mut pending = HashMap::new();
+    cowork_capture_lines_parsed(&parsed, None, &mut pending)
 }
 
-fn cowork_capture_lines_parsed(lines: &[ParsedLine]) -> Vec<CaptureMessage> {
+fn cowork_capture_lines_parsed(
+    lines: &[ParsedLine],
+    hint: Option<&str>,
+    pending: &mut HashMap<String, String>,
+) -> Vec<CaptureMessage> {
+    let hinted = hint.filter(|text| !text.is_empty()).map(str::to_string);
     let mut results = HashMap::new();
     for line in lines {
         let Some(obj) = line.value.as_object() else {
@@ -1023,13 +1212,20 @@ fn cowork_capture_lines_parsed(lines: &[ParsedLine]) -> Vec<CaptureMessage> {
         let Some(obj) = line.value.as_object() else {
             continue;
         };
-        let part = obj
-            .get("cliSessionId")
-            .or_else(|| obj.get("sessionId"))
-            .or_else(|| obj.get("session_id"))
-            .and_then(Value::as_str)
-            .filter(|text| !text.is_empty())
-            .unwrap_or("unknown");
+        let owned_part;
+        let part = if let Some(id) = hinted.as_deref() {
+            id
+        } else {
+            owned_part = obj
+                .get("cliSessionId")
+                .or_else(|| obj.get("sessionId"))
+                .or_else(|| obj.get("session_id"))
+                .and_then(Value::as_str)
+                .filter(|text| !text.is_empty())
+                .unwrap_or("unknown")
+                .to_string();
+            owned_part.as_str()
+        };
         let uuid = obj
             .get("uuid")
             .and_then(Value::as_str)
@@ -1069,7 +1265,14 @@ fn cowork_capture_lines_parsed(lines: &[ParsedLine]) -> Vec<CaptureMessage> {
         }
         for (name, id, input) in &uses {
             let result = id.as_ref().and_then(|id| results.get(id).cloned());
-            let mut row = CaptureMessage::tool(format!("[tool call] {name}"), name, result);
+            if let Some(id) = id {
+                if result.is_some() {
+                    pending.remove(id);
+                } else {
+                    pending.insert(id.clone(), name.clone());
+                }
+            }
+            let mut row = CaptureMessage::tool(format!("[tool call] {name}"), name, result.clone());
             row.tool_args = input.clone().map(|value| js_norm(&value));
             row.event_id = id
                 .as_ref()
@@ -1078,7 +1281,31 @@ fn cowork_capture_lines_parsed(lines: &[ParsedLine]) -> Vec<CaptureMessage> {
             row.event_ts = created.clone();
             row.created_at = created.clone();
             row.session_id = Some(part.to_string());
-            row.extra = Some(extra_pairs(&[("source", "cowork-transcript".into())]));
+            let mut extra = extra_map(&[("source", "cowork-transcript".into())]);
+            if let Some(id) = id {
+                extra.insert("tool_use_id".into(), Value::String(id.clone()));
+            }
+            if result.is_none() {
+                extra.insert("pending_result".into(), Value::Bool(true));
+            }
+            row.extra = Some(Value::Object(extra));
+            out.push(place(row, line));
+        }
+        for (id, text) in &here {
+            if uses.iter().any(|(_, uid, _)| uid.as_deref() == Some(id)) {
+                continue;
+            }
+            let name = pending.remove(id).unwrap_or_else(|| "tool".into());
+            let mut row =
+                CaptureMessage::tool(format!("[tool call] {name}"), name, Some(text.clone()));
+            row.event_id = Some(format!("cowork:{part}:tool:{id}"));
+            row.event_ts = created.clone();
+            row.created_at = created.clone();
+            row.session_id = Some(part.to_string());
+            let mut extra = extra_map(&[("source", "cowork-transcript".into())]);
+            extra.insert("tool_use_id".into(), Value::String(id.clone()));
+            extra.insert("pending_result".into(), Value::Bool(false));
+            row.extra = Some(Value::Object(extra));
             out.push(place(row, line));
         }
     }
@@ -1118,6 +1345,102 @@ pub fn hermes_capture_rows(rows: &[Obj]) -> Vec<CaptureMessage> {
             Some(message)
         })
         .collect()
+}
+
+fn opencode_base(part: &Obj, kind: &str, more: &[(&str, String)]) -> Value {
+    let mut extra = extra_map(&[
+        ("source", "opencode-sqlite".into()),
+        ("sourceEvent", format!("part:{kind}")),
+    ]);
+    for (key, value) in more {
+        if !value.is_empty() {
+            extra.insert((*key).to_string(), Value::String(value.clone()));
+        }
+    }
+    if let Some(msg) = part.get("message_data").and_then(Value::as_object) {
+        let model_id = msg
+            .get("modelID")
+            .and_then(Value::as_str)
+            .filter(|text| !text.is_empty())
+            .map(str::to_string)
+            .or_else(|| {
+                msg.get("model")
+                    .and_then(Value::as_object)
+                    .and_then(|model| model.get("id"))
+                    .and_then(Value::as_str)
+                    .filter(|text| !text.is_empty())
+                    .map(str::to_string)
+            });
+        let provider_id = msg
+            .get("providerID")
+            .and_then(Value::as_str)
+            .filter(|text| !text.is_empty())
+            .map(str::to_string)
+            .or_else(|| {
+                msg.get("model")
+                    .and_then(Value::as_object)
+                    .and_then(|model| model.get("providerID"))
+                    .and_then(Value::as_str)
+                    .filter(|text| !text.is_empty())
+                    .map(str::to_string)
+            });
+        if let Some(id) = model_id {
+            extra.insert("modelID".into(), Value::String(id));
+        }
+        if let Some(id) = provider_id {
+            extra.insert("providerID".into(), Value::String(id));
+        }
+        if let Some(tokens) = msg.get("tokens").filter(|value| value.is_object()) {
+            extra.insert("tokens".into(), tokens.clone());
+        }
+        if let Some(cost) = msg.get("cost").filter(|value| !value.is_null()) {
+            extra.insert("cost".into(), cost.clone());
+        }
+    }
+    if let Some(id) = part
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|text| !text.is_empty())
+    {
+        extra.insert(
+            "session_sqlite_part_id".into(),
+            Value::String(id.to_string()),
+        );
+        extra.insert("sessionSqlitePartId".into(), Value::String(id.to_string()));
+    }
+    if let Some(path) = part
+        .get("db_path")
+        .and_then(Value::as_str)
+        .filter(|text| !text.is_empty())
+    {
+        extra.insert(
+            "session_sqlite_path".into(),
+            Value::String(path.to_string()),
+        );
+        extra.insert("sessionSqlitePath".into(), Value::String(path.to_string()));
+    }
+    if let Some(id) = part
+        .get("message_id")
+        .and_then(Value::as_str)
+        .filter(|text| !text.is_empty())
+    {
+        extra.insert("messageId".into(), Value::String(id.to_string()));
+    }
+    if let Some(stamp) = json_i64(part.get("message_time_updated")) {
+        extra.insert("messageTimeUpdated".into(), Value::from(stamp));
+    }
+    let updated = json_i64(part.get("time_updated")).unwrap_or(0);
+    let created = json_i64(part.get("time_created")).unwrap_or(0);
+    let stamp = if updated != 0 { updated } else { created };
+    if stamp != 0 {
+        extra.insert("partTimeUpdated".into(), Value::from(stamp));
+    }
+    Value::Object(extra)
+}
+
+fn json_i64(value: Option<&Value>) -> Option<i64> {
+    let number = value?.as_f64()?;
+    number.is_finite().then_some(number as i64)
 }
 
 pub fn opencode_capture_parts(parts: &[Obj]) -> Vec<CaptureMessage> {
@@ -1167,11 +1490,7 @@ pub fn opencode_capture_parts(parts: &[Obj]) -> Vec<CaptureMessage> {
             }
             base.role = "assistant".into();
             base.content = format!("[thinking] {chunk}");
-            base.extra = Some(extra_pairs(&[
-                ("source", "opencode".into()),
-                ("sourceEvent", format!("part:{kind}")),
-                ("partType", "think".into()),
-            ]));
+            base.extra = Some(opencode_base(part, kind, &[("partType", "think".into())]));
             out.push(base);
             continue;
         }
@@ -1231,11 +1550,11 @@ pub fn opencode_capture_parts(parts: &[Obj]) -> Vec<CaptureMessage> {
             base.tool_name = Some(name.to_string());
             base.tool_args = args;
             base.tool_result = result;
-            base.extra = Some(extra_pairs(&[
-                ("source", "opencode".into()),
-                ("sourceEvent", format!("part:{kind}")),
-                ("toolStatus", if failure { "error" } else { "done" }.into()),
-            ]));
+            base.extra = Some(opencode_base(
+                part,
+                kind,
+                &[("toolStatus", if failure { "error" } else { "done" }.into())],
+            ));
             out.push(base);
             continue;
         }
@@ -1255,10 +1574,7 @@ pub fn opencode_capture_parts(parts: &[Obj]) -> Vec<CaptureMessage> {
             }
             base.role = role.into();
             base.content = text.to_string();
-            base.extra = Some(extra_pairs(&[
-                ("source", "opencode".into()),
-                ("sourceEvent", format!("part:{kind}")),
-            ]));
+            base.extra = Some(opencode_base(part, kind, &[]));
             out.push(base);
         }
     }
@@ -1789,4 +2105,145 @@ fn tool_results(obj: &Obj) -> Vec<(String, String)> {
             Some((id, block_text(row.get("content"))))
         })
         .collect()
+}
+
+struct CaptureSlot {
+    offset: u64,
+    next_line: usize,
+    dev: u64,
+    ino: u64,
+    prefix: Vec<u8>,
+    grok: GrokAccum,
+    codex: CodexAccum,
+    kimi: KimiAccum,
+    cowork_pending: HashMap<String, String>,
+}
+
+impl CaptureSlot {
+    fn fresh(dev: u64, ino: u64) -> Self {
+        Self {
+            offset: 0,
+            next_line: 0,
+            dev,
+            ino,
+            prefix: Vec::new(),
+            grok: GrokAccum::default(),
+            codex: CodexAccum::default(),
+            kimi: KimiAccum::default(),
+            cowork_pending: HashMap::new(),
+        }
+    }
+}
+
+pub struct CaptureCursor {
+    slots: HashMap<String, CaptureSlot>,
+}
+
+impl CaptureCursor {
+    pub fn new() -> Self {
+        Self {
+            slots: HashMap::new(),
+        }
+    }
+
+    pub fn read(
+        &mut self,
+        path: &Path,
+        command: &str,
+        hint: Option<&str>,
+        finish: bool,
+    ) -> Vec<CaptureMessage> {
+        let key = path.to_string_lossy().into_owned();
+        let stamp = fsutil::file_stamp(path);
+        let len = stamp.as_ref().map(|item| item.size).unwrap_or(0);
+        let dev = stamp.as_ref().map(|item| item.dev).unwrap_or(0);
+        let ino = stamp.as_ref().map(|item| item.ino).unwrap_or(0);
+        let mut slot = self
+            .slots
+            .remove(&key)
+            .unwrap_or_else(|| CaptureSlot::fresh(dev, ino));
+        let prefix_mismatch = if slot.prefix.is_empty() {
+            false
+        } else {
+            fsutil::read_range(path, 0, slot.prefix.len() as u64)
+                .is_none_or(|got| got.as_slice() != slot.prefix.as_slice())
+        };
+        if len < slot.offset
+            || (slot.offset > 0 && (dev != slot.dev || ino != slot.ino || prefix_mismatch))
+        {
+            slot = CaptureSlot::fresh(dev, ino);
+        }
+        let bytes = fsutil::read_range(path, slot.offset, len).unwrap_or_default();
+        let end_rel = if finish {
+            bytes.len()
+        } else {
+            bytes
+                .iter()
+                .rposition(|byte| *byte == b'\n')
+                .map(|index| index + 1)
+                .unwrap_or(0)
+        };
+        let text = String::from_utf8_lossy(&bytes[..end_rel]).into_owned();
+        let lines = parse_lines_at(&text, slot.next_line, slot.offset);
+        let messages = ingest_slot(&mut slot, command, hint, path, &lines);
+        let newlines = text.bytes().filter(|byte| *byte == b'\n').count();
+        let extra = usize::from(!text.is_empty() && !text.ends_with('\n'));
+        slot.next_line = slot
+            .next_line
+            .saturating_add(newlines)
+            .saturating_add(extra);
+        let new_offset = slot.offset.saturating_add(end_rel as u64);
+        if new_offset > 0 {
+            let head = new_offset.min(64);
+            if let Some(prefix) = fsutil::read_range(path, 0, head) {
+                slot.prefix = prefix;
+            }
+        }
+        slot.offset = new_offset;
+        slot.dev = dev;
+        slot.ino = ino;
+        self.slots.insert(key, slot);
+        messages
+    }
+}
+
+impl Default for CaptureCursor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+pub fn capture_snapshot(path: &Path, command: &str, hint: Option<&str>) -> Vec<CaptureMessage> {
+    let mut cursor = CaptureCursor::new();
+    cursor.read(path, command, hint, true)
+}
+
+fn ingest_slot(
+    slot: &mut CaptureSlot,
+    command: &str,
+    hint: Option<&str>,
+    path: &Path,
+    lines: &[ParsedLine],
+) -> Vec<CaptureMessage> {
+    match command {
+        "claude" => claude_capture_lines(lines),
+        "codex" => codex_capture_lines(lines, hint, &mut slot.codex),
+        "kimi" => kimi_resume(&mut slot.kimi, lines, hint),
+        "pi" => pi_capture_lines(lines),
+        "qwen" => qwen_capture_lines(lines),
+        "cursor" => cursor_capture_lines(lines, hint),
+        "cowork" => cowork_capture_lines_parsed(lines, hint, &mut slot.cowork_pending),
+        "grok" => {
+            if slot.grok.source_path.is_empty() {
+                slot.grok.source_path = path.to_string_lossy().into_owned();
+            }
+            if slot.grok.session_id.is_empty()
+                && let Some(id) = hint.filter(|text| !text.is_empty())
+            {
+                slot.grok.session_id = id.to_string();
+            }
+            grok_resume(&mut slot.grok, lines)
+        }
+        _ => Vec::new(),
+    }
 }

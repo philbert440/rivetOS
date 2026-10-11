@@ -1,6 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::io::{Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
+use std::io::Read;
 use std::path::Path;
 use std::sync::OnceLock;
 
@@ -1419,8 +1418,8 @@ fn discover<T>(
         .discovery
         .entry(req.key.to_string())
         .or_insert_with(Slot::fresh);
-    settle_one(state, req.key, req.now);
     apply_finished_job(state, req.key, req.now, &mut req.log);
+    settle_one(state, req.key, req.now);
     flush_pending(state, &mut req.log);
     let previous = state
         .discovery
@@ -1489,6 +1488,7 @@ fn settle_one(state: &mut SheetState, key: &str, now: i64) {
             slot.failing = true;
         }
     }
+    state.jobs.remove(key);
 }
 
 fn flush_pending(state: &mut SheetState, log: &mut Option<&mut dyn FnMut(&str)>) {
@@ -2566,49 +2566,61 @@ fn hermes_named_re() -> Option<&'static Regex> {
 
 const HTTP_BODY_CAP: usize = 8 * 1024 * 1024;
 
+#[cfg(test)]
+thread_local! {
+    static TEST_CLIENT: std::cell::RefCell<Option<reqwest::blocking::Client>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn set_test_client(client: Option<reqwest::blocking::Client>) {
+    TEST_CLIENT.with(|slot| *slot.borrow_mut() = client);
+}
+
+fn discovery_client() -> Result<reqwest::blocking::Client, String> {
+    #[cfg(test)]
+    if let Some(client) = TEST_CLIENT.with(|slot| slot.borrow().clone()) {
+        return Ok(client);
+    }
+    reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_millis(3_000))
+        .build()
+        .map_err(|_| "listing failed".to_string())
+}
+
 fn fetch_openai_models(base: &str, api_key: Option<&str>) -> Result<Vec<String>, String> {
-    if !base.starts_with("http://") {
+    if !http_base(base) {
         return Err("listing failed".into());
     }
-    if api_key.is_some_and(|key| key.bytes().any(|byte| byte == b'\r' || byte == b'\n')) {
+    if base
+        .bytes()
+        .any(|byte| matches!(byte, b'\r' | b'\n' | b' '))
+    {
         return Err("listing failed".into());
     }
-    let (host, port, host_header, path) = http_target(base)?;
-    let target = if host.contains(':') {
-        format!("[{host}]:{port}")
-    } else {
-        format!("{host}:{port}")
-    };
-    let addr = target
-        .to_socket_addrs()
-        .map_err(|_| "listing failed".to_string())?
-        .next()
-        .ok_or_else(|| "listing failed".to_string())?;
-    let mut stream = TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(3_000))
-        .map_err(|_| "listing failed".to_string())?;
-    stream
-        .set_read_timeout(Some(std::time::Duration::from_millis(3_000)))
-        .map_err(|_| "listing failed".to_string())?;
-    stream
-        .set_write_timeout(Some(std::time::Duration::from_millis(3_000)))
-        .map_err(|_| "listing failed".to_string())?;
-    let mut req = format!(
-        "GET {path} HTTP/1.1\r\nHost: {host_header}\r\nAccept: application/json\r\nConnection: close\r\n"
-    );
+    if api_key.is_some_and(|key| key.bytes().any(|byte| matches!(byte, b'\r' | b'\n'))) {
+        return Err("listing failed".into());
+    }
+    let trimmed = base.trim_end_matches('/');
+    if trimmed.is_empty() {
+        return Err("listing failed".into());
+    }
+    let url = format!("{trimmed}/models");
+    let client = discovery_client()?;
+    let mut req = client.get(&url).header("Accept", "application/json");
     if let Some(key) = api_key {
-        req.push_str("Authorization: Bearer ");
-        req.push_str(key);
-        req.push_str("\r\n");
+        req = req.bearer_auth(key);
     }
-    req.push_str("\r\n");
-    stream
-        .write_all(req.as_bytes())
-        .map_err(|_| "listing failed".to_string())?;
-    let (status, body) = read_http(&mut stream)?;
-    if !(200..300).contains(&status) {
-        return Err(format!("HTTP {status}"));
+    let response = req.send().map_err(|_| "listing failed".to_string())?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!("HTTP {}", status.as_u16()));
     }
-    let text = String::from_utf8_lossy(&body);
+    let bytes = response.bytes().map_err(|_| "listing failed".to_string())?;
+    if bytes.len() > HTTP_BODY_CAP {
+        return Err("listing failed".into());
+    }
+    let text = String::from_utf8_lossy(&bytes);
     let raw = protocol::js::parse(&text).map_err(|err| err.to_string())?;
     let Some(rows) = raw.get("data").and_then(Value::as_array) else {
         return Ok(Vec::new());
@@ -2619,156 +2631,131 @@ fn fetch_openai_models(base: &str, api_key: Option<&str>) -> Result<Vec<String>,
         .collect())
 }
 
-fn http_target(base: &str) -> Result<(String, u16, String, String), String> {
-    let trimmed = base.trim_end_matches('/');
-    let rest = trimmed
-        .strip_prefix("http://")
-        .ok_or_else(|| "listing failed".to_string())?;
-    if rest.is_empty()
-        || rest
-            .bytes()
-            .any(|byte| byte == b'\r' || byte == b'\n' || byte == b' ')
-    {
-        return Err("listing failed".into());
-    }
-    let (authority, prefix) = match rest.split_once('/') {
-        Some((authority, prefix)) => (authority, format!("/{prefix}")),
-        None => (rest, String::new()),
-    };
-    if authority.is_empty() {
-        return Err("listing failed".into());
-    }
-    let (host, port, header) = parse_authority(authority)?;
-    Ok((host, port, header, format!("{prefix}/models")))
-}
+#[cfg(test)]
+mod fetch_tests {
+    use super::{fetch_openai_models, set_test_client};
 
-fn parse_authority(authority: &str) -> Result<(String, u16, String), String> {
-    if let Some(rest) = authority.strip_prefix('[') {
-        let Some((host, after)) = rest.split_once(']') else {
-            return Err("listing failed".into());
-        };
-        let port = if let Some(port) = after.strip_prefix(':') {
-            port.parse::<u16>()
-                .map_err(|_| "listing failed".to_string())?
-        } else if after.is_empty() {
-            80
-        } else {
-            return Err("listing failed".into());
-        };
-        return Ok((host.to_string(), port, authority.to_string()));
-    }
-    if let Some((host, port_text)) = authority.rsplit_once(':') {
-        if host.is_empty() || !port_text.bytes().all(|byte| byte.is_ascii_digit()) {
-            return Err("listing failed".into());
-        }
-        let port = port_text
-            .parse::<u16>()
-            .map_err(|_| "listing failed".to_string())?;
-        return Ok((host.to_string(), port, authority.to_string()));
-    }
-    if authority.is_empty() {
-        return Err("listing failed".into());
-    }
-    Ok((authority.to_string(), 80, authority.to_string()))
-}
+    struct ClearClient;
 
-fn read_http(stream: &mut TcpStream) -> Result<(u16, Vec<u8>), String> {
-    let mut buf = Vec::new();
-    let header_at = loop {
-        if buf.len() > 65_536 {
-            return Err("listing failed".into());
-        }
-        if let Some(pos) = find_slice(&buf, b"\r\n\r\n") {
-            break pos;
-        }
-        if !read_more(stream, &mut buf) {
-            return Err("listing failed".into());
-        }
-    };
-    let header = String::from_utf8_lossy(&buf[..header_at]).into_owned();
-    let mut lines = header.split("\r\n");
-    let status = lines
-        .next()
-        .and_then(|line| line.split_whitespace().nth(1))
-        .and_then(|code| code.parse::<u16>().ok())
-        .ok_or_else(|| "listing failed".to_string())?;
-    let mut length = None;
-    let mut chunked = false;
-    for line in lines {
-        let lower = line.to_ascii_lowercase();
-        if let Some(rest) = lower.strip_prefix("content-length:") {
-            length = rest.trim().parse::<usize>().ok();
-        } else if lower.starts_with("transfer-encoding:") && lower.contains("chunked") {
-            chunked = true;
+    impl Drop for ClearClient {
+        fn drop(&mut self) {
+            set_test_client(None);
         }
     }
-    let mut body = buf.split_off(header_at + 4);
-    if chunked {
-        body = decode_chunked(stream, body)?;
-    } else if let Some(len) = length {
-        let len = len.min(HTTP_BODY_CAP);
-        while body.len() < len {
-            if !read_more(stream, &mut body) || body.len() > HTTP_BODY_CAP {
-                break;
-            }
-        }
-        body.truncate(len);
-    } else {
-        while body.len() < HTTP_BODY_CAP && read_more(stream, &mut body) {}
-        body.truncate(HTTP_BODY_CAP);
-    }
-    Ok((status, body))
-}
 
-fn decode_chunked(stream: &mut TcpStream, mut buf: Vec<u8>) -> Result<Vec<u8>, String> {
-    let mut out = Vec::new();
-    loop {
-        let line_end = loop {
-            if let Some(pos) = find_slice(&buf, b"\r\n") {
-                break pos;
-            }
-            if buf.len() > 64 || !read_more(stream, &mut buf) {
-                return Err("listing failed".into());
-            }
-        };
-        let line =
-            std::str::from_utf8(&buf[..line_end]).map_err(|_| "listing failed".to_string())?;
-        let size_text = line.split(';').next().unwrap_or("").trim();
-        let size =
-            usize::from_str_radix(size_text, 16).map_err(|_| "listing failed".to_string())?;
-        buf = buf.split_off(line_end + 2);
-        if size == 0 {
-            return Ok(out);
-        }
-        if size > HTTP_BODY_CAP || out.len().saturating_add(size) > HTTP_BODY_CAP {
-            return Err("listing failed".into());
-        }
-        while buf.len() < size + 2 {
-            if !read_more(stream, &mut buf) {
-                return Err("listing failed".into());
-            }
-        }
-        out.extend_from_slice(&buf[..size]);
-        buf = buf.split_off(size + 2);
+    fn http_body(sock: &mut std::net::TcpStream, body: &[u8]) {
+        let header = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        let _ = std::io::Write::write_all(sock, header.as_bytes());
+        let _ = std::io::Write::write_all(sock, body);
     }
-}
 
-fn read_more(stream: &mut TcpStream, buf: &mut Vec<u8>) -> bool {
-    let mut tmp = [0_u8; 8192];
-    loop {
-        match stream.read(&mut tmp) {
-            Ok(0) => return false,
-            Ok(n) => {
-                buf.extend_from_slice(&tmp[..n]);
-                return true;
+    #[test]
+    fn https_catalog_parses_model_ids() {
+        let _clear = ClearClient;
+        let certified =
+            rcgen::generate_simple_self_signed(vec!["127.0.0.1".to_string()]).expect("cert");
+        let cert_der = certified.cert.der().clone();
+        let key = rustls::pki_types::PrivateKeyDer::Pkcs8(
+            rustls::pki_types::PrivatePkcs8KeyDer::from(certified.key_pair.serialize_der()),
+        );
+        let config = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(vec![cert_der], key)
+            .expect("server config");
+        let config = std::sync::Arc::new(config);
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        let server_config = std::sync::Arc::clone(&config);
+        std::thread::spawn(move || {
+            let Ok((mut sock, _)) = listener.accept() else {
+                return;
+            };
+            let Ok(mut conn) = rustls::ServerConnection::new(server_config) else {
+                return;
+            };
+            let mut tls = rustls::Stream::new(&mut conn, &mut sock);
+            let mut buf = [0_u8; 4096];
+            let mut got = Vec::new();
+            loop {
+                match std::io::Read::read(&mut tls, &mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        got.extend_from_slice(&buf[..n]);
+                        if got.windows(4).any(|window| window == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
             }
-            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {}
-            Err(_) => return false,
-        }
+            let body = br#"{"data":[{"id":"tls-model"},{"id":"bad id"}]}"#;
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = std::io::Write::write_all(&mut tls, header.as_bytes());
+            let _ = std::io::Write::write_all(&mut tls, body);
+            let _ = std::io::Write::flush(&mut tls);
+        });
+        let pem = certified.cert.pem();
+        let root = reqwest::Certificate::from_pem(pem.as_bytes()).expect("root");
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_millis(3_000))
+            .http1_only()
+            .add_root_certificate(root)
+            .build()
+            .expect("client");
+        set_test_client(Some(client));
+        let ids = fetch_openai_models(&format!("https://127.0.0.1:{port}/v1"), Some("secret"))
+            .expect("models");
+        assert_eq!(ids, vec!["tls-model".to_string(), "bad id".to_string()]);
     }
-}
 
-fn find_slice(buf: &[u8], needle: &[u8]) -> Option<usize> {
-    buf.windows(needle.len())
-        .position(|window| window == needle)
+    #[test]
+    fn overall_deadline_stops_a_dribbling_body() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        std::thread::spawn(move || {
+            let Ok((mut sock, _)) = listener.accept() else {
+                return;
+            };
+            let _ = sock.set_read_timeout(Some(std::time::Duration::from_secs(2)));
+            let mut buf = [0_u8; 2048];
+            let _ = std::io::Read::read(&mut sock, &mut buf);
+            let _ = std::io::Write::write_all(
+                &mut sock,
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n1\r\n",
+            );
+            let _ = std::io::Write::write_all(&mut sock, b"x");
+            std::thread::sleep(std::time::Duration::from_secs(8));
+        });
+        let started = std::time::Instant::now();
+        let err = fetch_openai_models(&format!("http://127.0.0.1:{port}/v1"), None);
+        assert!(err.is_err(), "{err:?}");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(6),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn plain_http_catalog_still_parses() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        std::thread::spawn(move || {
+            let Ok((mut sock, _)) = listener.accept() else {
+                return;
+            };
+            let _ = sock.set_read_timeout(Some(std::time::Duration::from_secs(2)));
+            let mut buf = [0_u8; 2048];
+            let _ = std::io::Read::read(&mut sock, &mut buf);
+            http_body(&mut sock, br#"{"data":[{"id":"local-b"}]}"#);
+        });
+        let ids = fetch_openai_models(&format!("http://127.0.0.1:{port}/v1"), None).expect("http");
+        assert_eq!(ids, vec!["local-b".to_string()]);
+    }
 }

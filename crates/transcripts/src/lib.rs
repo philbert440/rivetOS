@@ -27,11 +27,11 @@ pub mod turn;
 pub mod value;
 
 pub use capture::{
-    StoreView, claude_capture_text, codex_capture_text, cowork_capture_lines,
-    cursor_capture_objects, grok_capture_updates, hermes_capture_rows, kimi_capture_text,
-    opencode_capture_parts, pi_capture_text, project_claude, project_codex, project_cowork,
-    project_cursor, project_grok_chat, project_grok_updates, project_kimi, project_pi,
-    project_qwen, qwen_capture_text,
+    CaptureCursor, StoreView, capture_snapshot, claude_capture_text, codex_capture_text,
+    cowork_capture_lines, cursor_capture_objects, grok_capture_updates, hermes_capture_rows,
+    kimi_capture_text, kimi_capture_text_for, opencode_capture_parts, pi_capture_text,
+    project_claude, project_codex, project_cowork, project_cursor, project_grok_chat,
+    project_grok_updates, project_kimi, project_pi, project_qwen, qwen_capture_text,
 };
 pub use claude::{
     claude_turns_from_lines, claude_turns_from_lines_sourced, claude_turns_from_text,
@@ -71,7 +71,8 @@ pub use sheets::{
 };
 pub use store::Store;
 pub use tail::{
-    JsonlCursor, TailFrame, TranscriptTail, TranscriptWatch, WatchFrame, merge_transcript_window,
+    JsonlCursor, OpencodeCursor, TailFrame, TranscriptTail, TranscriptWatch, WatchFrame,
+    merge_transcript_window,
 };
 pub use text::{
     extract_turn_text, is_bare_slash_command, objects_from_lines, objects_from_text,

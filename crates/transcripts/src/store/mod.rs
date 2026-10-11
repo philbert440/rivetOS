@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use crate::capture::{grok_capture_lines, kimi_capture_for, project_lines};
+use crate::capture::{capture_snapshot, project_lines};
 use crate::identity::{den_session_ref, path_unsafe};
 use crate::jsonl::read_jsonl;
 use crate::nest::DelegatedLink;
@@ -237,14 +237,9 @@ impl Store {
         let Some(path) = claude::find_jsonl(&self.roots, id, parent) else {
             return Transcript::empty(id);
         };
-        let parsed = read_jsonl(&path, self.roots.max_bytes);
-        let view = project_lines(
-            "claude",
-            &parsed.lines,
-            Some(&path.to_string_lossy()),
-            parsed.truncated,
-        );
-        transcript(id, "claude", view.turns, view.messages, view.truncated)
+        let source = path.to_string_lossy().into_owned();
+        let (turns, messages, truncated) = self.windowed(id, "claude", &path, Some(&source));
+        transcript(id, "claude", turns, messages, truncated)
     }
 
     pub fn read_grok(&self, id: &str) -> Transcript {
@@ -259,13 +254,16 @@ impl Store {
 
     fn finish_grok(&self, id: &str, path: &std::path::Path) -> Transcript {
         let parsed = read_jsonl(path, self.roots.max_bytes);
-        let view = project_lines("grok", &parsed.lines, None, parsed.truncated);
+        let native = den_session_ref(id).native;
+        let hint = (!native.is_empty()).then_some(native.as_str());
+        let view = project_lines("grok", &parsed.lines, None, parsed.truncated, hint);
         let updates = path
             .parent()
             .map(|dir| dir.join("updates.jsonl"))
             .filter(|path| crate::fsutil::is_file(path));
         let messages = updates
-            .map(|path| grok_capture_lines(&read_jsonl(&path, self.roots.max_bytes).lines))
+            .as_ref()
+            .map(|path| capture_snapshot(path, "grok", hint))
             .unwrap_or_default();
         transcript(id, "grok", view.turns, messages, parsed.truncated)
     }
@@ -285,15 +283,9 @@ impl Store {
         let Some(dir) = kimi::session_dir(&self.roots, id) else {
             return Transcript::empty(id);
         };
-        let parsed = read_jsonl(&kimi::wire_path(&dir), self.roots.max_bytes);
-        let view = project_lines("kimi", &parsed.lines, None, parsed.truncated);
-        transcript(
-            id,
-            "kimi",
-            view.turns,
-            kimi_capture_for(&parsed.lines, Some(id)),
-            parsed.truncated,
-        )
+        let path = kimi::wire_path(&dir);
+        let (turns, messages, truncated) = self.windowed(id, "kimi", &path, None);
+        transcript(id, "kimi", turns, messages, truncated)
     }
 
     pub fn read_codex(&self, id: &str) -> Transcript {
@@ -345,16 +337,14 @@ impl Store {
         if store_ref.command == "grok" {
             return self.finish_grok(id, std::path::Path::new(&store_ref.path));
         }
-        let parsed = read_jsonl(std::path::Path::new(&store_ref.path), self.roots.max_bytes);
         let source = (store_ref.command == "claude").then_some(store_ref.path.as_str());
-        let view = project_lines(&store_ref.command, &parsed.lines, source, parsed.truncated);
-        transcript(
+        let (turns, messages, truncated) = self.windowed(
             id,
             &store_ref.command,
-            view.turns,
-            view.messages,
-            parsed.truncated,
-        )
+            std::path::Path::new(&store_ref.path),
+            source,
+        );
+        transcript(id, &store_ref.command, turns, messages, truncated)
     }
 
     pub fn resolve(&self, id: &str) -> Option<StoreRef> {
@@ -469,10 +459,28 @@ impl Store {
         let Some(path) = path else {
             return Transcript::empty(id);
         };
-        let parsed = read_jsonl(&path, self.roots.max_bytes);
         let source = (command == "claude").then(|| path.to_string_lossy().into_owned());
-        let view = project_lines(command, &parsed.lines, source.as_deref(), parsed.truncated);
-        transcript(id, command, view.turns, view.messages, parsed.truncated)
+        let (turns, messages, truncated) = self.windowed(id, command, &path, source.as_deref());
+        transcript(id, command, turns, messages, truncated)
+    }
+
+    fn windowed(
+        &self,
+        id: &str,
+        command: &str,
+        path: &std::path::Path,
+        source: Option<&str>,
+    ) -> (Vec<crate::turn::Turn>, Vec<CaptureMessage>, bool) {
+        let parsed = read_jsonl(path, self.roots.max_bytes);
+        let native = den_session_ref(id).native;
+        let hint = (!native.is_empty()).then_some(native.as_str());
+        let view = project_lines(command, &parsed.lines, source, parsed.truncated, hint);
+        let messages = if parsed.truncated {
+            capture_snapshot(path, command, hint)
+        } else {
+            view.messages
+        };
+        (view.turns, messages, parsed.truncated)
     }
 }
 

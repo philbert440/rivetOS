@@ -61,8 +61,12 @@ pub fn read_jsonl(path: &Path, max_bytes: u64) -> JsonlFile {
 }
 
 pub fn parse_lines(text: &str) -> Vec<ParsedLine> {
+    parse_lines_at(text, 0, 0)
+}
+
+pub fn parse_lines_at(text: &str, index_base: usize, offset_base: u64) -> Vec<ParsedLine> {
     let mut out = Vec::new();
-    let mut offset = 0usize;
+    let mut offset = 0u64;
     for (index, raw) in text.split('\n').enumerate() {
         let line = raw.strip_suffix('\r').unwrap_or(raw);
         let trimmed = jtrim(line);
@@ -71,12 +75,12 @@ pub fn parse_lines(text: &str) -> Vec<ParsedLine> {
             && value.is_object()
         {
             out.push(ParsedLine {
-                index,
-                offset: offset as u64,
+                index: index_base.saturating_add(index),
+                offset: offset_base.saturating_add(offset),
                 value,
             });
         }
-        offset = offset.saturating_add(raw.len()).saturating_add(1);
+        offset = offset.saturating_add(raw.len() as u64).saturating_add(1);
     }
     out
 }
