@@ -288,11 +288,15 @@ pub fn resolve_task_context(env: &dyn protocol::host::Env) -> TaskCaptureContext
     }
 }
 
-pub fn derive_session_key(transcript_path: &Path, env: &dyn protocol::host::Env) -> String {
-    let home = env
-        .var("HOME")
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| "/tmp".to_string());
+pub fn derive_session_key(
+    transcript_path: &Path,
+    env: &dyn protocol::host::Env,
+) -> Result<String, String> {
+    session_key_from_home(protocol::host::home_dir(env), transcript_path)
+}
+
+fn session_key_from_home(home: Option<String>, transcript_path: &Path) -> Result<String, String> {
+    let home = home.ok_or_else(|| crate::error::HOMEDIR_MISSING.to_string())?;
     let root = PathBuf::from(home).join(".claude").join("projects");
     let abs =
         std::path::absolute(transcript_path).unwrap_or_else(|_| transcript_path.to_path_buf());
@@ -301,11 +305,11 @@ pub fn derive_session_key(transcript_path: &Path, env: &dyn protocol::host::Env)
         Err(_) => abs.to_string_lossy().trim_start_matches('/').to_string(),
     };
     let trimmed = base.strip_suffix(".jsonl").unwrap_or(&base);
-    format!("claude-code:{trimmed}")
+    Ok(format!("claude-code:{trimmed}"))
 }
 
-pub fn parse_transcript(file: &Path) -> std::io::Result<ParsedTranscript> {
-    let text = std::fs::read_to_string(file)?;
+pub fn parse_transcript(file: &Path) -> Result<ParsedTranscript, protocol::host::FsError> {
+    let text = protocol::host::read_text(file)?;
     Ok(parse_transcript_text(file, &text))
 }
 
@@ -434,7 +438,7 @@ pub async fn ingest_transcript(opts: IngestOptions) -> Result<IngestResult, Stri
     let env_ref = env
         .as_ref()
         .map(|item| item.as_ref() as &(dyn protocol::host::Env + Send + Sync));
-    let fallback_key = derive_session_key(&opts.transcript_path, env_ref.unwrap_or(&ProcessEnv));
+    let fallback_key = derive_session_key(&opts.transcript_path, env_ref.unwrap_or(&ProcessEnv))?;
     if !path_is_file(&opts.transcript_path).await {
         return Ok(IngestResult {
             session_key: fallback_key,
@@ -1739,5 +1743,59 @@ mod occurrence_scale {
             ids.tool.last().unwrap().to_utf8(),
             format!("claude-code:sess-1:tool:toolu_{}", ROWS - 1)
         );
+    }
+}
+
+#[cfg(test)]
+mod home_and_text {
+    use std::path::{Path, PathBuf};
+
+    use super::{derive_session_key, parse_transcript, session_key_from_home};
+    use crate::error::HOMEDIR_MISSING;
+
+    #[test]
+    fn session_key_follows_homedir() {
+        assert_eq!(
+            session_key_from_home(None, Path::new("/tmp/sess.jsonl")).unwrap_err(),
+            HOMEDIR_MISSING
+        );
+        assert_eq!(
+            session_key_from_home(Some(String::new()), Path::new("/tmp/sess.jsonl")).unwrap(),
+            "claude-code:tmp/sess"
+        );
+        assert_eq!(
+            session_key_from_home(
+                Some("/home/example".to_string()),
+                Path::new("/home/example/.claude/projects/demo/sess.jsonl"),
+            )
+            .unwrap(),
+            "claude-code:demo/sess"
+        );
+        let absent = protocol::host::MapEnv::new();
+        let home = protocol::host::home_dir(&absent).unwrap();
+        let file = PathBuf::from(&home)
+            .join(".claude")
+            .join("projects")
+            .join("demo")
+            .join("sess.jsonl");
+        assert_eq!(
+            derive_session_key(&file, &absent).unwrap(),
+            "claude-code:demo/sess"
+        );
+    }
+
+    #[test]
+    fn parse_transcript_keeps_a_line_after_an_invalid_byte() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("sess.jsonl");
+        let mut bytes =
+            br#"{"type":"user","sessionId":"s","message":{"role":"user","content":"caf"#.to_vec();
+        bytes.push(0x92);
+        bytes.extend_from_slice(br#""}}"#);
+        bytes.push(b'\n');
+        std::fs::write(&file, bytes).unwrap();
+        let parsed = parse_transcript(&file).unwrap();
+        assert_eq!(parsed.session_id.as_deref(), Some("s"));
+        assert_eq!(parsed.msgs[0].content, "caf\u{FFFD}");
     }
 }

@@ -136,7 +136,7 @@ pub fn arm_worker_deadline(opts: DeadlineOptions) -> DeadlineHandle {
     DeadlineHandle { flag, notify }
 }
 
-pub(crate) const HOMEDIR_MISSING: &str = "ENOENT: no such file or directory, uv_os_homedir";
+pub(crate) use crate::error::HOMEDIR_MISSING;
 
 pub(crate) fn require_home(home: Option<String>) -> Result<(), String> {
     joined_home(home, &[]).map(|_| ())
@@ -271,7 +271,7 @@ pub async fn ingest_spool_file(spool_file: &Path, deps: &WorkerDeps) -> Result<(
     };
     deps.skip_files.lock().insert(display_path(&claimed));
     let claimed_read = claimed.clone();
-    let mut payload = match spawn_io(move || std::fs::read_to_string(&claimed_read)).await? {
+    let mut payload = match spawn_io(move || protocol::host::read_text(&claimed_read)).await? {
         Ok(text) => match protocol::js::parse(&text) {
             Ok(value) => value,
             Err(error) => {
@@ -1065,7 +1065,7 @@ fn js_to_json(value: &JsValue) -> Value {
 }
 
 fn read_settings(path: &Path) -> Result<Map<String, Value>, String> {
-    match std::fs::read_to_string(path) {
+    match protocol::host::read_text(path) {
         Ok(text) => match protocol::js::parse(&text) {
             Ok(value) => match js_to_json(&value) {
                 Value::Object(map) => Ok(map),
@@ -1073,7 +1073,7 @@ fn read_settings(path: &Path) -> Result<Map<String, Value>, String> {
             },
             Err(error) => Err(error.to_string()),
         },
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Map::new()),
+        Err(error) if error.code == "ENOENT" => Ok(Map::new()),
         Err(error) => Err(error.to_string()),
     }
 }
@@ -1198,5 +1198,22 @@ mod home_paths {
             "ENOENT: no such file or directory, uv_os_homedir"
         );
         assert_eq!(require_home(None).unwrap_err(), HOMEDIR_MISSING);
+    }
+
+    #[test]
+    fn settings_keep_an_invalid_byte_as_replacement() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let mut bytes = br#"{"ok":true,"note":"caf"#.to_vec();
+        bytes.push(0x92);
+        bytes.extend_from_slice(br#""}"#);
+        std::fs::write(&path, bytes).unwrap();
+        let map = super::read_settings(&path).unwrap();
+        assert_eq!(map.get("ok"), Some(&serde_json::Value::Bool(true)));
+        assert_eq!(
+            map.get("note").and_then(serde_json::Value::as_str),
+            Some("caf\u{FFFD}")
+        );
+        assert!(super::read_settings(&dir.path().join("missing.json")).is_ok());
     }
 }

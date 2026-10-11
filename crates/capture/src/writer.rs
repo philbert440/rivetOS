@@ -40,9 +40,7 @@ pub struct ReplayOptions {
     pub max: Option<f64>,
 }
 
-pub fn create_capture_writer(
-    opts: CaptureWriterOptions,
-) -> Result<CaptureWriter, transport::MissingUserToken> {
+pub fn create_capture_writer(opts: CaptureWriterOptions) -> Result<CaptureWriter, CaptureError> {
     let user = match &opts.user {
         UserSource::FromEnv => transport::capture_user_from_env(opts.env.as_ref())?,
         UserSource::Owner => None,
@@ -50,7 +48,7 @@ pub fn create_capture_writer(
     };
     let dir = match &opts.spool_dir {
         Some(dir) => dir.clone(),
-        None => spool_dir_for(opts.env.as_ref(), user.as_ref()),
+        None => spool_dir_for(opts.env.as_ref(), user.as_ref())?,
     };
     let redaction = resolve_writer_redaction(&opts);
     let now_ms = opts
@@ -72,19 +70,23 @@ pub fn create_capture_writer(
     })
 }
 
-fn spool_dir_for(env: &dyn Env, user: Option<&CaptureUser>) -> PathBuf {
-    let home = env
-        .var("HOME")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/tmp"));
-    match user {
-        Some(user) => home
+fn spool_dir_for(env: &dyn Env, user: Option<&CaptureUser>) -> Result<PathBuf, CaptureError> {
+    spool_dir_from(protocol::host::home_dir(env), user)
+}
+
+fn spool_dir_from(
+    home: Option<String>,
+    user: Option<&CaptureUser>,
+) -> Result<PathBuf, CaptureError> {
+    let home = home.ok_or_else(|| CaptureError::Io(crate::error::HOMEDIR_MISSING.to_string()))?;
+    let root = PathBuf::from(home);
+    Ok(match user {
+        Some(user) => root
             .join(".rivetos")
             .join("capture-spool-users")
             .join(spool_name_for(&user.id)),
-        None => home.join(".rivetos").join("capture-spool"),
-    }
+        None => root.join(".rivetos").join("capture-spool"),
+    })
 }
 
 pub fn spool_name_for(user_id: &str) -> String {
@@ -250,15 +252,18 @@ impl CaptureWriter {
 
     async fn replay_one(&self, file: &str) -> ReplayStep {
         let path = self.dir.join(file);
-        let body = match tokio::fs::read_to_string(&path).await {
-            Ok(body) => body,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return ReplayStep::Continue;
+        let read_path = path.clone();
+        let loaded =
+            tokio::task::spawn_blocking(move || protocol::host::read_text(&read_path)).await;
+        let body = match loaded {
+            Ok(Ok(body)) => body,
+            Ok(Err(error)) if error.code == "ENOENT" => return ReplayStep::Continue,
+            Ok(Err(error)) => {
+                self.emit(&replay_read_line(&error, &path));
+                return ReplayStep::Stop;
             }
             Err(error) => {
-                self.emit(
-                    &CaptureError::Io(format!("Error: {error}: {}", path.display())).log_line(),
-                );
+                self.emit(&replay_read_line(&error, &path));
                 return ReplayStep::Stop;
             }
         };
@@ -405,6 +410,10 @@ enum ReplayStep {
     Dead,
     Continue,
     Stop,
+}
+
+fn replay_read_line(error: &impl std::fmt::Display, path: &Path) -> String {
+    CaptureError::Io(format!("Error: {error}: {}", path.display())).log_line()
 }
 
 fn classify_response(has_user: bool, reply: HttpReply) -> Result<CaptureResult, CaptureError> {
@@ -1101,5 +1110,41 @@ mod chunk_math {
         }
         assert!(saw_full);
         assert_eq!(total, 30);
+    }
+}
+
+#[cfg(test)]
+mod spool_home {
+    use std::path::PathBuf;
+
+    use super::{spool_dir_for, spool_dir_from};
+    use crate::error::{CaptureError, HOMEDIR_MISSING};
+    use crate::transport::CaptureUser;
+
+    #[test]
+    fn spool_directory_follows_homedir() {
+        assert!(matches!(
+            spool_dir_from(None, None),
+            Err(CaptureError::Io(message)) if message == HOMEDIR_MISSING
+        ));
+        assert_eq!(
+            spool_dir_from(Some(String::new()), None).unwrap(),
+            PathBuf::from(".rivetos").join("capture-spool")
+        );
+        let user = CaptureUser {
+            id: "guest".to_string(),
+            token: "tok".to_string(),
+        };
+        assert_eq!(
+            spool_dir_from(Some("/home/example".to_string()), Some(&user)).unwrap(),
+            PathBuf::from("/home/example/.rivetos/capture-spool-users")
+                .join(super::spool_name_for("guest"))
+        );
+        let absent = protocol::host::MapEnv::new();
+        let home = protocol::host::home_dir(&absent).unwrap();
+        assert_eq!(
+            spool_dir_for(&absent, None).unwrap(),
+            PathBuf::from(home).join(".rivetos").join("capture-spool")
+        );
     }
 }

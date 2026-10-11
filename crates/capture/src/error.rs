@@ -2,6 +2,8 @@ use thiserror::Error;
 
 use crate::transport::MissingUserToken;
 
+pub(crate) const HOMEDIR_MISSING: &str = "ENOENT: no such file or directory, uv_os_homedir";
+
 #[derive(Debug, Error)]
 pub enum CaptureError {
     #[error("capture HTTP {status}")]

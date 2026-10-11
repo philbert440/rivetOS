@@ -625,9 +625,9 @@ fn read_body(
             };
         }
     }
-    match std::fs::read_to_string(path) {
+    match protocol::host::read_text(path) {
         Ok(text) => Ok(text),
-        Err(error) if error.kind() == ErrorKind::NotFound => Err(ReadFail::Missing),
+        Err(error) if error.code == "ENOENT" => Err(ReadFail::Missing),
         Err(_) => Err(ReadFail::Unreadable),
     }
 }
@@ -860,5 +860,28 @@ fn io_code(error: &io::Error) -> Option<&'static str> {
         ErrorKind::AlreadyExists => Some("EEXIST"),
         ErrorKind::PermissionDenied => Some("EACCES"),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod lossy_body {
+    use super::{ReadFail, read_body};
+
+    #[test]
+    fn an_invalid_byte_is_text_not_unreadable() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("holder.body");
+        let mut bytes = br#"{"pid":1,"host":"caf"#.to_vec();
+        bytes.push(0x92);
+        bytes.extend_from_slice(br#"","ts":"t","token":"k"}"#);
+        std::fs::write(&path, bytes).unwrap();
+        assert!(matches!(
+            read_body(&path, &None),
+            Ok(text) if text.contains("caf\u{FFFD}")
+        ));
+        assert!(matches!(
+            read_body(&dir.path().join("gone"), &None),
+            Err(ReadFail::Missing)
+        ));
     }
 }

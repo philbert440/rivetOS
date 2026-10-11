@@ -1927,6 +1927,35 @@ async fn a_non_http_redirect_is_a_transport_error() {
 }
 
 #[tokio::test]
+async fn replay_keeps_a_spool_with_an_invalid_byte() {
+    let bodies = Arc::new(Mutex::new(Vec::new()));
+    let stored = bodies.clone();
+    let exchange: capture::HttpExchange = Arc::new(move |body: &str| {
+        stored.lock().push(body.to_string());
+        Ok(capture::HttpReply {
+            status: 200,
+            body: r#"{"ok":true,"conversation_id":"c","inserted":1,"skipped":0}"#.to_string(),
+        })
+    });
+    let spool = tempfile::tempdir().unwrap();
+    let mut bytes = br#"{"note":"caf"#.to_vec();
+    bytes.push(0x92);
+    bytes.extend_from_slice(br#""}"#);
+    std::fs::write(spool.path().join("1-invalid.json"), bytes).unwrap();
+    let mut opts = CaptureWriterOptions::new("http://127.0.0.1:9");
+    opts.spool_dir = Some(spool.path().to_path_buf());
+    opts.env = Arc::new(MapEnv::default());
+    opts.user = UserSource::Owner;
+    opts.exchange = Some(exchange);
+    let writer = create_capture_writer(opts).unwrap();
+    let report = writer.replay(capture::ReplayOptions::default()).await;
+    assert_eq!((report.replayed, report.dead, report.remaining), (1, 0, 0));
+    let posted = bodies.lock();
+    assert_eq!(posted.len(), 1);
+    assert!(posted[0].contains("caf\u{FFFD}"));
+}
+
+#[tokio::test]
 async fn thousands_of_rows_stay_within_the_chunk_limit() {
     let bodies = Arc::new(Mutex::new(Vec::new()));
     let stored = bodies.clone();

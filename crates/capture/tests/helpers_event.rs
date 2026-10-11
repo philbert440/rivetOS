@@ -119,6 +119,24 @@ fn load_env_file_keeps_a_bom_prefixed_first_setting() {
 }
 
 #[test]
+fn load_env_file_keeps_settings_after_an_invalid_byte() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join(".env");
+    let mut bytes = b"RIVETOS_PG_URL=postgres://localhost/rivet\n# caf".to_vec();
+    bytes.push(0x92);
+    bytes.extend_from_slice(b"s\nNOTE=caf");
+    bytes.push(0x92);
+    bytes.extend_from_slice(b"s\n");
+    std::fs::write(&file, bytes).unwrap();
+    let values = load_env_file(&file);
+    assert_eq!(
+        values.get("RIVETOS_PG_URL").map(String::as_str),
+        Some("postgres://localhost/rivet")
+    );
+    assert_eq!(values.get("NOTE").map(String::as_str), Some("caf\u{FFFD}s"));
+}
+
+#[test]
 fn iso_epoch_and_year_boundary() {
     assert_eq!(iso_from_unix_ms(0), "1970-01-01T00:00:00.000Z");
     assert_eq!(

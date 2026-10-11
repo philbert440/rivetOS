@@ -43,7 +43,7 @@ pub fn cap_field(text: &str) -> CappedText {
 
 pub fn load_env_file(path: impl AsRef<Path>) -> std::collections::BTreeMap<String, String> {
     let mut values = std::collections::BTreeMap::new();
-    let Ok(raw) = std::fs::read_to_string(path) else {
+    let Ok(raw) = protocol::host::read_text(path.as_ref()) else {
         return values;
     };
     for line in raw.split('\n') {

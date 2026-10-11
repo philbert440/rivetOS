@@ -368,11 +368,78 @@ pub fn den_scheme_is_https(url: &str) -> bool {
 }
 
 pub fn default_config_reader() -> Option<String> {
-    let home = std::env::var("HOME").ok()?;
-    let path = PathBuf::from(home).join(".rivetos").join("config.yaml");
-    std::fs::read_to_string(path).ok()
+    read_user_config(&protocol::host::ProcessEnv, protocol::host::home_dir)
+}
+
+pub(crate) fn read_user_config(
+    env: &dyn Env,
+    home_of: impl Fn(&dyn Env) -> Option<String>,
+) -> Option<String> {
+    let home = home_of(env)?;
+    protocol::host::read_text(&user_config_path(&home)).ok()
+}
+
+fn user_config_path(home: &str) -> PathBuf {
+    PathBuf::from(home).join(".rivetos").join("config.yaml")
 }
 
 pub fn path_exists(path: &Path) -> bool {
     path.exists()
+}
+
+#[cfg(test)]
+mod home_config {
+    use std::path::PathBuf;
+
+    use protocol::host::{Env, MapEnv};
+
+    use super::{path_exists, read_user_config, resolve_den_url, user_config_path};
+    use crate::transport::{CaptureTransport, resolve_capture_transport};
+
+    #[test]
+    fn unset_home_uses_the_fallback_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("fallback");
+        let config_dir = home.join(".rivetos");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        let mut bytes = b"den:\n  port: 6174\n  tls_ca: /custom/ca.pem\n# caf".to_vec();
+        bytes.push(0x92);
+        bytes.extend_from_slice(b"s\n");
+        std::fs::write(config_dir.join("config.yaml"), bytes).unwrap();
+        let fallback = home.to_string_lossy().into_owned();
+        let absent = MapEnv::new();
+        assert!(absent.var("HOME").is_none());
+        let probe = move |env: &dyn Env| env.var("HOME").or_else(|| Some(fallback.clone()));
+        let text = read_user_config(&absent, &probe).unwrap();
+        let resolved = resolve_den_url(&absent, || Some(text.clone()), &path_exists).unwrap();
+        assert_eq!(resolved.den_url, "https://127.0.0.1:6174");
+        assert_eq!(resolved.ca_path, "/custom/ca.pem");
+        let transport = resolve_capture_transport(&absent, || read_user_config(&absent, &probe));
+        assert_eq!(
+            transport,
+            CaptureTransport::Den {
+                den_url: "https://127.0.0.1:6174".to_string(),
+                warnings: None,
+                user: None,
+            }
+        );
+
+        let mut empty = MapEnv::new();
+        empty.set("HOME", "");
+        assert_eq!(protocol::host::home_dir(&empty).as_deref(), Some(""));
+        assert_eq!(
+            user_config_path(""),
+            PathBuf::from(".rivetos").join("config.yaml")
+        );
+        assert_ne!(
+            user_config_path(""),
+            home.join(".rivetos").join("config.yaml")
+        );
+        let resolved = resolve_den_url(&empty, || None, &path_exists).unwrap();
+        assert_eq!(resolved.den_url, "https://127.0.0.1:5174");
+        assert_eq!(
+            resolved.ca_path,
+            "/rivet-shared/rivet-ca/intermediate/chain.pem"
+        );
+    }
 }
