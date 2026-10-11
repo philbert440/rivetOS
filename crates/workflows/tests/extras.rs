@@ -150,7 +150,7 @@ fn timeout_and_kill_error_text() {
 }
 
 #[tokio::test]
-async fn non_positive_max_runtime_fails_without_starting_the_script() {
+async fn non_positive_max_runtime_starts_the_script_then_fails() {
     let root = temp_root("timeout0");
     let dir = root.join("wf");
     write_minimal(&dir).await;
@@ -187,7 +187,7 @@ async fn non_positive_max_runtime_fails_without_starting_the_script() {
         .await
         .unwrap();
     assert_eq!(result.run.status, RunStatus::Failed);
-    assert!(!ran.load(Ordering::SeqCst));
+    assert!(ran.load(Ordering::SeqCst));
     assert!(
         result
             .run

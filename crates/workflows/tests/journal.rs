@@ -3,9 +3,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::{Map, Value, json};
 use workflows::{
-    CacheSource, CachedStep, JournalEntry, StartedBy, StartedByType, StepKind, WorkflowError,
-    append_journal, find_cached_step_result, is_open_gate, journal_path, max_seq_for_label,
-    parse_journal, read_journal,
+    CacheSource, CachedStep, JournalEntry, StartedBy, StartedByType, StepKind, WireJson,
+    WorkflowError, append_journal, find_cached_step_result, is_open_gate, journal_path,
+    max_seq_for_label, parse_journal, read_journal,
 };
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -21,13 +21,17 @@ fn started_by() -> StartedBy {
     StartedBy::new(StartedByType::Human)
 }
 
+fn wire(value: Value) -> WireJson {
+    WireJson::from_value(&value).unwrap()
+}
+
 fn sample_entries() -> (JournalEntry, JournalEntry) {
     let started = JournalEntry::RunStarted {
         ts: "2026-01-01T00:00:00.000Z".to_string(),
         run_id: "r1".to_string(),
         workflow_id: "w".to_string(),
         version: "1".to_string(),
-        input: Map::new(),
+        input: wire(Value::Object(Map::new())),
         started_by: started_by(),
         parent: None,
     };
@@ -37,7 +41,7 @@ fn sample_entries() -> (JournalEntry, JournalEntry) {
         label: "a".to_string(),
         seq: 1,
         kind: StepKind::Agent,
-        result: json!({"x": 1}),
+        result: Some(wire(json!({"x": 1}))),
         usage: None,
     };
     (started, finished)
@@ -52,7 +56,12 @@ async fn appends_and_reads_jsonl_entries() {
     let all = read_journal(&dir).await.unwrap();
     assert_eq!(all.len(), 2);
     match &all[1] {
-        JournalEntry::StepFinished { result, .. } => assert_eq!(result, &json!({"x": 1})),
+        JournalEntry::StepFinished { result, .. } => {
+            assert_eq!(
+                result.as_ref().map(WireJson::to_value),
+                Some(json!({"x": 1}))
+            )
+        }
         other => panic!("unexpected {other:?}"),
     }
     let raw = std::fs::read_to_string(journal_path(&dir)).unwrap();
@@ -71,7 +80,7 @@ fn find_cached_step_result_prefers_finished_and_resolved() {
             label: "a".to_string(),
             seq: 1,
             kind: StepKind::Run,
-            result: json!(42),
+            result: Some(wire(json!(42))),
             usage: None,
         },
         JournalEntry::GateResolved {
@@ -79,23 +88,22 @@ fn find_cached_step_result_prefers_finished_and_resolved() {
             step_id: "g#1".to_string(),
             label: "g".to_string(),
             seq: 1,
-            values: {
-                let mut values = Map::new();
-                values.insert("ok".to_string(), Value::Bool(true));
-                values
-            },
+            values: wire(json!({"ok": true})),
         },
     ];
     match find_cached_step_result(&entries, "a", 1, None).unwrap() {
         CachedStep::Hit { result, from } => {
-            assert_eq!(result, json!(42));
+            assert_eq!(result.as_ref().map(WireJson::to_value), Some(json!(42)));
             assert_eq!(from, CacheSource::StepFinished);
         }
         CachedStep::Miss => panic!("expected hit"),
     }
     match find_cached_step_result(&entries, "g", 1, None).unwrap() {
         CachedStep::Hit { result, from } => {
-            assert_eq!(result, json!({"ok": true}));
+            assert_eq!(
+                result.as_ref().map(WireJson::to_value),
+                Some(json!({"ok": true}))
+            );
             assert_eq!(from, CacheSource::GateResolved);
         }
         CachedStep::Miss => panic!("expected hit"),
@@ -124,7 +132,7 @@ fn max_seq_and_open_gate() {
             label: "x".to_string(),
             seq: 2,
             kind: StepKind::Run,
-            result: Value::Null,
+            result: Some(wire(Value::Null)),
             usage: None,
         },
     ];
@@ -136,7 +144,7 @@ fn max_seq_and_open_gate() {
         step_id: "g#1".to_string(),
         label: "g".to_string(),
         seq: 1,
-        values: Map::new(),
+        values: wire(Value::Object(Map::new())),
     });
     assert!(!is_open_gate(&entries, "g", 1));
 }
@@ -149,7 +157,7 @@ fn kind_mismatch_both_variants() {
         label: "x".to_string(),
         seq: 1,
         kind: StepKind::Run,
-        result: json!({"ok": true}),
+        result: Some(wire(json!({"ok": true}))),
         usage: None,
     }];
     assert!(
@@ -163,14 +171,12 @@ fn kind_mismatch_both_variants() {
     assert!(text.contains("journaled as \"run\""), "{text}");
     assert!(text.contains("declares \"agent\""), "{text}");
 
-    let mut values = Map::new();
-    values.insert("ok".to_string(), Value::Bool(true));
     let gate = vec![JournalEntry::GateResolved {
         ts: "now".to_string(),
         step_id: "x#1".to_string(),
         label: "x".to_string(),
         seq: 1,
-        values,
+        values: wire(json!({"ok": true})),
     }];
     let err = find_cached_step_result(&gate, "x", 1, Some("agent")).unwrap_err();
     let text = err.to_string();
@@ -194,7 +200,7 @@ async fn serializes_concurrent_appends() {
                     label: "s".to_string(),
                     seq: index,
                     kind: StepKind::Run,
-                    result: json!({"i": index, "pad": "xxxxxxxxxxxxxxxxxxxx"}),
+                    result: Some(wire(json!({"i": index, "pad": "xxxxxxxxxxxxxxxxxxxx"}))),
                     usage: None,
                 },
             )
@@ -209,4 +215,63 @@ async fn serializes_concurrent_appends() {
     for entry in all {
         assert_eq!(entry.entry_type(), "step_finished");
     }
+}
+
+#[test]
+fn torn_final_line_is_skipped_and_a_valid_line_without_newline_is_kept() {
+    let good = r#"{"type":"step_finished","ts":"t","stepId":"a#1","label":"a","seq":1,"kind":"run","result":1}"#;
+    let torn = format!("{good}\n{{\"type\":\"step_fin");
+    assert_eq!(parse_journal(&torn).unwrap().len(), 1);
+    assert_eq!(parse_journal(good).unwrap().len(), 1);
+    let middle = format!("{good}\nnot-json\n{good}\n");
+    let err = parse_journal(&middle).unwrap_err();
+    assert!(
+        err.to_string().starts_with("failed to parse journal line"),
+        "{err}"
+    );
+}
+
+#[test]
+fn absent_result_is_not_null() {
+    let absent =
+        r#"{"type":"step_finished","ts":"t","stepId":"a#1","label":"a","seq":1,"kind":"run"}"#;
+    let parsed = parse_journal(absent).unwrap();
+    match &parsed[0] {
+        JournalEntry::StepFinished { result, .. } => {
+            assert!(result.is_none());
+            assert!(!parsed[0].to_json_line().unwrap().contains("result"));
+        }
+        other => panic!("unexpected {other:?}"),
+    }
+    let present = r#"{"type":"step_finished","ts":"t","stepId":"a#1","label":"a","seq":1,"kind":"run","result":null}"#;
+    let parsed = parse_journal(present).unwrap();
+    match &parsed[0] {
+        JournalEntry::StepFinished { result, .. } => {
+            assert_eq!(result.as_ref().map(WireJson::raw), Some("null"));
+            assert!(
+                parsed[0]
+                    .to_json_line()
+                    .unwrap()
+                    .contains("\"result\":null")
+            );
+        }
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+#[test]
+fn surrogate_escape_roundtrips_in_the_journal_and_case() {
+    let raw = "{\"type\":\"step_finished\",\"ts\":\"t\",\"stepId\":\"a#1\",\"label\":\"a\",\"seq\":1,\"kind\":\"run\",\"result\":\"\\ud800\"}\n";
+    let parsed = parse_journal(raw).unwrap();
+    let line = parsed[0].to_json_line().unwrap();
+    assert!(line.contains("\\ud800"), "{line}");
+    let again = parse_journal(&format!("{line}\n")).unwrap();
+    assert_eq!(again[0].to_json_line().unwrap(), line);
+    let case_raw = "{\"run\":{\"id\":\"r\",\"workflowId\":\"w\",\"version\":\"1\",\"status\":\"running\",\"startedBy\":{\"type\":\"human\"},\"caseDir\":\"/tmp/r\"},\"fields\":{\"note\":\"\\ud800\"}}\n";
+    let state = workflows::parse_case(case_raw).unwrap();
+    assert!(
+        state.document.raw().contains("\\ud800"),
+        "{}",
+        state.document.raw()
+    );
 }

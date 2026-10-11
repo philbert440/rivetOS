@@ -7,6 +7,7 @@ use crate::io_fs::{self, read_string, try_exists};
 use crate::loader::load_workflow_dir;
 use crate::pathutil::{node_join_paths, path_text};
 use crate::types::{LoadedWorkflow, RunStatus, RunSummary};
+use crate::wire::WireJson;
 
 #[derive(Default)]
 pub struct ListRunsOptions {
@@ -208,7 +209,7 @@ async fn scan_runs(
 
 async fn read_parent_id(case_dir: &Path) -> Option<String> {
     let raw = read_string(&case_path(case_dir)).await.ok()?;
-    let document: Value = serde_json::from_str(&raw).ok()?;
+    let document = WireJson::parse(&raw).ok()?.to_value();
     document
         .get("run")
         .and_then(|run| run.get("id"))
@@ -237,8 +238,8 @@ async fn read_run_summary(
             return None;
         }
     };
-    let document: Value = match serde_json::from_str(&raw) {
-        Ok(value) => value,
+    let document = match WireJson::parse(&raw) {
+        Ok(document) => document.to_value(),
         Err(err) => {
             on_warn(&format!("listRuns: skip {}: {err}", path_text(case_dir)));
             return None;

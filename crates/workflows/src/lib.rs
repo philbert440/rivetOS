@@ -18,6 +18,7 @@ mod script_host;
 mod step;
 mod timeutil;
 mod types;
+mod wire;
 
 pub use api::{
     diagnostics_from_load_error, load_run_detail, materialize_detached_failure,
@@ -47,6 +48,7 @@ pub use executors::{
     MockCall, MockExecutorRegistry, MockRunHandler, ReportUsageFn, RunExecuteOpts, RunExecutor,
     agent_handler, run_handler,
 };
+pub use io_fs::append_bytes;
 pub use journal::{
     JOURNAL_FILENAME, append_journal, ensure_journal, find_cached_step_result, find_open_gate,
     is_open_gate, journal_path, max_seq_for_label, parse_journal, read_journal,
@@ -62,8 +64,8 @@ pub use registry::{
 };
 pub use scaffold::{ScaffoldOptions, ScaffoldResult, scaffold_workflow};
 pub use step::{
-    AgentStepOpts, BranchFn, HumanStepOpts, ParallelBegin, RunStepOpts, Step, StepRuntimeOptions,
-    StepScope, branch, create_step_runtime,
+    AgentStepOpts, BranchFn, HumanStepOpts, ParallelBegin, RunStepOpts, Step, StepOutput,
+    StepRuntimeOptions, StepScope, branch, create_step_runtime,
 };
 pub use timeutil::now_iso;
 pub use types::{
@@ -72,3 +74,4 @@ pub use types::{
     RunSummary, StartedBy, StartedByType, StepKind, StepUsage, WorkflowBudgets, WorkflowDiagnostic,
     WorkflowManifest, WorkflowValidateResponse, make_step_id,
 };
+pub use wire::WireJson;

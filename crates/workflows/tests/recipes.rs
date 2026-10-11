@@ -42,7 +42,8 @@ async fn loads_hello_world_manifest_and_greeter() {
             .manifest
             .budgets
             .as_ref()
-            .and_then(|item| item.max_tokens),
+            .and_then(|item| item.max_tokens)
+            .map(|number| number.as_f64()),
         Some(20_000.0)
     );
     assert_eq!(

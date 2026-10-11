@@ -5,6 +5,9 @@ use protocol::JsNumber;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+use crate::error::WorkflowError;
+use crate::wire::{JsonLine, WireJson, typed_raw};
+
 pub fn make_step_id(label: &str, seq: i64) -> String {
     format!("{label}#{seq}")
 }
@@ -80,11 +83,11 @@ pub struct OutlineStep {
 #[serde(rename_all = "camelCase")]
 pub struct WorkflowBudgets {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_tokens: Option<f64>,
+    pub max_tokens: Option<JsNumber>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_cost: Option<f64>,
+    pub max_cost: Option<JsNumber>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_concurrent_runs: Option<f64>,
+    pub max_concurrent_runs: Option<JsNumber>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -134,6 +137,7 @@ pub struct AgentDef {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LoadedWorkflow {
     pub dir: String,
     pub manifest: WorkflowManifest,
@@ -339,7 +343,7 @@ impl StepUsage {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum JournalEntry {
     #[serde(rename = "run_started", rename_all = "camelCase")]
@@ -348,7 +352,7 @@ pub enum JournalEntry {
         run_id: String,
         workflow_id: String,
         version: String,
-        input: Map<String, Value>,
+        input: WireJson,
         started_by: StartedBy,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         parent: Option<ParentRef>,
@@ -359,7 +363,7 @@ pub enum JournalEntry {
         run_id: String,
         status: RunFinishedStatus,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        output: Option<Value>,
+        output: Option<WireJson>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
@@ -378,7 +382,8 @@ pub enum JournalEntry {
         label: String,
         seq: i64,
         kind: StepKind,
-        result: Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        result: Option<WireJson>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         usage: Option<StepUsage>,
     },
@@ -407,7 +412,7 @@ pub enum JournalEntry {
         step_id: String,
         label: String,
         seq: i64,
-        values: Map<String, Value>,
+        values: WireJson,
     },
     #[serde(rename = "manifest_warn", rename_all = "camelCase")]
     ManifestWarn {
@@ -434,6 +439,15 @@ impl RunFinishedStatus {
             Self::Done => "done",
             Self::Failed => "failed",
             Self::Killed => "killed",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "done" => Some(Self::Done),
+            "failed" => Some(Self::Failed),
+            "killed" => Some(Self::Killed),
+            _ => None,
         }
     }
 }
@@ -470,16 +484,171 @@ impl JournalEntry {
         }
     }
 
-    pub fn to_json_line(&self) -> Result<String, serde_json::Error> {
-        serde_json::to_string(self)
+    pub fn to_json_line(&self) -> Result<String, WorkflowError> {
+        let mut line = JsonLine::new();
+        match self {
+            Self::RunStarted {
+                ts,
+                run_id,
+                workflow_id,
+                version,
+                input,
+                started_by,
+                parent,
+            } => {
+                line.string("type", "run_started");
+                line.string("ts", ts);
+                line.string("runId", run_id);
+                line.string("workflowId", workflow_id);
+                line.string("version", version);
+                line.raw("input", input.raw());
+                line.raw("startedBy", &typed_raw(started_by)?);
+                if let Some(parent) = parent {
+                    line.raw("parent", &typed_raw(parent)?);
+                }
+            }
+            Self::RunFinished {
+                ts,
+                run_id,
+                status,
+                output,
+                error,
+            } => {
+                line.string("type", "run_finished");
+                line.string("ts", ts);
+                line.string("runId", run_id);
+                line.string("status", status.as_str());
+                if let Some(output) = output {
+                    line.raw("output", output.raw());
+                }
+                if let Some(error) = error {
+                    line.string("error", error);
+                }
+            }
+            Self::StepStarted {
+                ts,
+                step_id,
+                label,
+                seq,
+                kind,
+            } => {
+                line.string("type", "step_started");
+                line.string("ts", ts);
+                line.string("stepId", step_id);
+                line.string("label", label);
+                line.i64("seq", *seq);
+                line.string("kind", kind.as_str());
+            }
+            Self::StepFinished {
+                ts,
+                step_id,
+                label,
+                seq,
+                kind,
+                result,
+                usage,
+            } => {
+                line.string("type", "step_finished");
+                line.string("ts", ts);
+                line.string("stepId", step_id);
+                line.string("label", label);
+                line.i64("seq", *seq);
+                line.string("kind", kind.as_str());
+                if let Some(result) = result {
+                    line.raw("result", result.raw());
+                }
+                if let Some(usage) = usage {
+                    line.raw("usage", &typed_raw(usage)?);
+                }
+            }
+            Self::StepFailed {
+                ts,
+                step_id,
+                label,
+                seq,
+                kind,
+                error,
+            } => {
+                line.string("type", "step_failed");
+                line.string("ts", ts);
+                line.string("stepId", step_id);
+                line.string("label", label);
+                line.i64("seq", *seq);
+                line.string("kind", kind.as_str());
+                line.string("error", error);
+            }
+            Self::GateOpened {
+                ts,
+                step_id,
+                label,
+                seq,
+                prompt,
+                fields,
+            } => {
+                line.string("type", "gate_opened");
+                line.string("ts", ts);
+                line.string("stepId", step_id);
+                line.string("label", label);
+                line.i64("seq", *seq);
+                if let Some(prompt) = prompt {
+                    line.string("prompt", prompt);
+                }
+                line.raw("fields", &string_array(fields));
+            }
+            Self::GateResolved {
+                ts,
+                step_id,
+                label,
+                seq,
+                values,
+            } => {
+                line.string("type", "gate_resolved");
+                line.string("ts", ts);
+                line.string("stepId", step_id);
+                line.string("label", label);
+                line.i64("seq", *seq);
+                line.raw("values", values.raw());
+            }
+            Self::ManifestWarn {
+                ts,
+                step_id,
+                label,
+                seq,
+                undeclared,
+                message,
+            } => {
+                line.string("type", "manifest_warn");
+                line.string("ts", ts);
+                line.string("stepId", step_id);
+                line.string("label", label);
+                line.i64("seq", *seq);
+                line.raw("undeclared", &string_array(undeclared));
+                line.string("message", message);
+            }
+        }
+        Ok(line.finish())
     }
+}
+
+fn string_array(items: &[String]) -> String {
+    let mut out = String::from("[");
+    for (index, item) in items.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        out.push_str(&protocol::js::stringify(&protocol::js::JsValue::from_text(
+            item,
+        )));
+    }
+    out.push(']');
+    out
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct CaseState {
     pub run: Run,
     pub fields: Map<String, Value>,
-    pub document: Value,
+    pub document: WireJson,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -508,7 +677,10 @@ impl CacheSource {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum CachedStep {
-    Hit { result: Value, from: CacheSource },
+    Hit {
+        result: Option<WireJson>,
+        from: CacheSource,
+    },
     Miss,
 }
 
@@ -517,10 +689,13 @@ impl CachedStep {
         matches!(self, Self::Hit { .. })
     }
 
-    pub fn result(&self) -> Option<&Value> {
+    pub fn result(&self) -> Option<&WireJson> {
         match self {
-            Self::Hit { result, .. } => Some(result),
-            Self::Miss => None,
+            Self::Hit {
+                result: Some(result),
+                ..
+            } => Some(result),
+            _ => None,
         }
     }
 }

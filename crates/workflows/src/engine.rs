@@ -3,7 +3,8 @@ use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::{Arc, Weak};
-use std::time::Duration;
+use std::task::Poll;
+use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value};
 use tokio::sync::Mutex;
@@ -32,6 +33,7 @@ use crate::types::{
     JournalEntry, LoadedWorkflow, ParentRef, Run, RunFinishedStatus, RunStatus, StartedBy,
     StartedByType,
 };
+use crate::wire::WireJson;
 
 pub struct RunScriptContext {
     pub run_id: String,
@@ -142,7 +144,7 @@ impl WorkflowEngine {
                 .manifest
                 .budgets
                 .as_ref()
-                .and_then(|budgets| budgets.max_concurrent_runs),
+                .and_then(|budgets| budgets.max_concurrent_runs.map(protocol::JsNumber::as_f64)),
         )
         .await?;
         let run_id = options
@@ -178,7 +180,7 @@ impl WorkflowEngine {
             run_id,
             workflow_id: workflow.manifest.id.clone(),
             version: workflow.manifest.version.clone(),
-            input,
+            input: object_wire(&input)?,
             started_by,
             parent: options.parent,
         };
@@ -324,7 +326,7 @@ impl WorkflowEngine {
                 step_id: open.step_id,
                 label: open.label,
                 seq: open.seq,
-                values: values.clone(),
+                values: object_wire(&values)?,
             },
         )
         .await?;
@@ -422,7 +424,7 @@ impl WorkflowEngine {
                         ts: now_iso(),
                         run_id: state.run.id.clone(),
                         status: RunFinishedStatus::Done,
-                        output: Some(output),
+                        output: Some(WireJson::from_value(&output)?),
                         error: None,
                     },
                 )
@@ -519,6 +521,7 @@ impl WorkflowEngine {
         let case_state = read_case(case_dir).await?;
         let run_id = case_state.run.id.clone();
         let journal = read_journal(case_dir).await?;
+        let origin = Instant::now();
         let step = create_step_runtime(StepRuntimeOptions {
             case_dir: path_text(case_dir),
             run_id: run_id.clone(),
@@ -540,14 +543,31 @@ impl WorkflowEngine {
         };
         let script = run_script.unwrap_or_else(|| node_script(workflow.run_path.clone()));
         let max_runtime = resolve_max_run_runtime_ms(self.inner.config.max_run_runtime_ms);
-        if !max_runtime.is_finite() || max_runtime <= 0.0 {
+        let mut background = BackgroundScript {
+            future: Some(Box::pin(script(step.clone(), ctx))),
+        };
+        let first = poll_script(&mut background).await;
+        if let Some(result) = first {
+            background.future.take();
+            if runtime_exceeded(max_runtime, origin) {
+                return Err(WorkflowError::run_timeout(&run_id, max_runtime));
+            }
+            result?;
+        } else if runtime_exceeded(max_runtime, origin) {
             return Err(WorkflowError::run_timeout(&run_id, max_runtime));
-        }
-        let timeout = Duration::from_millis(max_runtime as u64);
-        match tokio::time::timeout(timeout, script(step.clone(), ctx)).await {
-            Ok(Ok(())) => {}
-            Ok(Err(err)) => return Err(err),
-            Err(_) => return Err(WorkflowError::run_timeout(&run_id, max_runtime)),
+        } else {
+            let budget = runtime_budget(max_runtime);
+            let remaining = budget.saturating_sub(origin.elapsed());
+            match tokio::time::timeout(remaining, poll_script(&mut background)).await {
+                Ok(Some(result)) => {
+                    background.future.take();
+                    result?;
+                }
+                Ok(None) => {
+                    return Err(WorkflowError::message("run script already finished"));
+                }
+                Err(_) => return Err(WorkflowError::run_timeout(&run_id, max_runtime)),
+            }
         }
         if let Some(output) = step.done_output() {
             return Ok(Value::Object(output));
@@ -624,6 +644,52 @@ impl WorkflowEngine {
     }
 }
 
+fn object_wire(map: &Map<String, Value>) -> Result<WireJson, WorkflowError> {
+    WireJson::from_value(&Value::Object(map.clone()))
+}
+
+fn runtime_budget(max_runtime_ms: f64) -> Duration {
+    if !max_runtime_ms.is_finite() || max_runtime_ms <= 0.0 {
+        return Duration::ZERO;
+    }
+    Duration::try_from_secs_f64(max_runtime_ms / 1000.0)
+        .unwrap_or(Duration::from_secs(365 * 24 * 3600))
+}
+
+fn runtime_exceeded(max_runtime_ms: f64, origin: Instant) -> bool {
+    if !max_runtime_ms.is_finite() || max_runtime_ms <= 0.0 {
+        return true;
+    }
+    origin.elapsed() >= runtime_budget(max_runtime_ms)
+}
+
+type ScriptFuture = Pin<Box<dyn Future<Output = Result<(), WorkflowError>> + Send>>;
+
+struct BackgroundScript {
+    future: Option<ScriptFuture>,
+}
+
+impl Drop for BackgroundScript {
+    fn drop(&mut self) {
+        let Some(future) = self.future.take() else {
+            return;
+        };
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                let _ = future.await;
+            });
+        }
+    }
+}
+
+async fn poll_script(background: &mut BackgroundScript) -> Option<Result<(), WorkflowError>> {
+    std::future::poll_fn(|cx| match background.future.as_mut() {
+        Some(future) => future.as_mut().poll(cx).map(Some),
+        None => Poll::Ready(None),
+    })
+    .await
+}
+
 fn finished_result(run: Run, case_dir: &Path) -> StartRunResult {
     StartRunResult {
         run,
@@ -644,6 +710,7 @@ fn node_script(run_path: String) -> RunScript {
                     run_id: ctx.run_id,
                     input: ctx.input,
                     case_dir: ctx.case_dir,
+                    workflow: ctx.workflow,
                     fields: ctx.fields,
                 },
             )
@@ -759,8 +826,9 @@ async fn find_case_dir_recursive(
         }
         if has_case
             && let Ok(raw) = read_string(&case_path(&path)).await
-            && let Ok(value) = serde_json::from_str::<Value>(&raw)
-            && value
+            && let Ok(document) = WireJson::parse(&raw)
+            && document
+                .to_value()
                 .get("run")
                 .and_then(|run| run.get("id"))
                 .and_then(Value::as_str)

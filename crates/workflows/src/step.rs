@@ -5,6 +5,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use protocol::JsNumber;
+use serde::Serialize;
 use serde_json::{Map, Value};
 
 use crate::case::{RunPatch, merge_fields, update_run};
@@ -18,9 +19,10 @@ use crate::pathutil::{node_join_paths, path_text};
 use crate::registry::{CallContext, NamespacedCallRegistry};
 use crate::timeutil::now_iso;
 use crate::types::{
-    AgentDef, Field, JournalEntry, LoadedWorkflow, StepKind, StepUsage, WorkflowBudgets,
-    make_step_id,
+    AgentDef, CachedStep, Field, JournalEntry, LoadedWorkflow, StepKind, StepUsage,
+    WorkflowBudgets, make_step_id,
 };
+use crate::wire::WireJson;
 
 pub struct AgentStepOpts {
     pub agent: Option<String>,
@@ -110,9 +112,77 @@ pub struct StepScope {
 
 pub struct ParallelBegin {
     pub replay: bool,
-    pub result: Option<Value>,
+    pub result: Option<WireJson>,
     pub token: String,
     pub branches: Vec<StepScope>,
+}
+
+#[derive(Clone, Debug)]
+pub struct StepOutput {
+    defined: bool,
+    value: Value,
+    raw: Option<String>,
+}
+
+impl StepOutput {
+    pub fn from_value(value: Value) -> Result<Self, WorkflowError> {
+        let wire = WireJson::from_value(&value)?;
+        Ok(Self {
+            defined: true,
+            value: wire.to_value(),
+            raw: Some(wire.raw().to_string()),
+        })
+    }
+
+    pub fn undefined() -> Self {
+        Self {
+            defined: false,
+            value: Value::Null,
+            raw: None,
+        }
+    }
+
+    pub fn from_wire(wire: Option<WireJson>) -> Self {
+        match wire {
+            Some(wire) => Self {
+                defined: true,
+                value: wire.to_value(),
+                raw: Some(wire.raw().to_string()),
+            },
+            None => Self::undefined(),
+        }
+    }
+
+    pub fn wire(&self) -> Result<Option<WireJson>, WorkflowError> {
+        if !self.defined {
+            return Ok(None);
+        }
+        match &self.raw {
+            Some(raw) => Ok(Some(WireJson::parse(raw)?)),
+            None => Ok(Some(WireJson::from_value(&self.value)?)),
+        }
+    }
+
+    pub fn into_value(self) -> Value {
+        self.value
+    }
+}
+
+impl std::ops::Deref for StepOutput {
+    type Target = Value;
+
+    fn deref(&self) -> &Self::Target {
+        &self.value
+    }
+}
+
+impl Serialize for StepOutput {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.value.serialize(serializer)
+    }
 }
 
 pub type BranchFn = Box<
@@ -128,7 +198,7 @@ where
 }
 
 enum Phase {
-    Replay { result: Value },
+    Replay { result: Option<WireJson> },
     Live { step_id: String, seq: i64 },
 }
 
@@ -248,11 +318,15 @@ impl Step {
         }
     }
 
-    pub async fn agent(&self, label: &str, opts: AgentStepOpts) -> Result<Value, WorkflowError> {
+    pub async fn agent(
+        &self,
+        label: &str,
+        opts: AgentStepOpts,
+    ) -> Result<StepOutput, WorkflowError> {
         let full = self.scoped_label(label);
         let phase = self.inner.begin_step(&full, StepKind::Agent).await?;
         let (step_id, seq) = match phase {
-            Phase::Replay { result } => return Ok(result),
+            Phase::Replay { result } => return Ok(StepOutput::from_wire(result)),
             Phase::Live { step_id, seq } => (step_id, seq),
         };
         match self.agent_live(&full, &step_id, seq, opts).await {
@@ -273,7 +347,7 @@ impl Step {
         step_id: &str,
         seq: i64,
         opts: AgentStepOpts,
-    ) -> Result<Value, WorkflowError> {
+    ) -> Result<StepOutput, WorkflowError> {
         let agent_def = match &opts.agent {
             Some(name) => Some(self.known_agent(name, full)?),
             None => None,
@@ -308,10 +382,11 @@ impl Step {
         }
         let usage = slot.lock().unwrap_or_else(|err| err.into_inner()).clone();
         self.inner.accumulate(usage.as_ref());
+        let output = StepOutput::from_value(result)?;
         self.inner
-            .finish_step(full, seq, step_id, StepKind::Agent, result.clone(), usage)
+            .finish_step(full, seq, step_id, StepKind::Agent, output.wire()?, usage)
             .await?;
-        Ok(result)
+        Ok(output)
     }
 
     fn known_agent(&self, name: &str, label: &str) -> Result<AgentDef, WorkflowError> {
@@ -379,11 +454,11 @@ impl Step {
         Ok(())
     }
 
-    pub async fn run(&self, label: &str, opts: RunStepOpts) -> Result<Value, WorkflowError> {
+    pub async fn run(&self, label: &str, opts: RunStepOpts) -> Result<StepOutput, WorkflowError> {
         let full = self.scoped_label(label);
         let phase = self.inner.begin_step(&full, StepKind::Run).await?;
         let (step_id, seq) = match phase {
-            Phase::Replay { result } => return Ok(result),
+            Phase::Replay { result } => return Ok(StepOutput::from_wire(result)),
             Phase::Live { step_id, seq } => (step_id, seq),
         };
         match self.run_live(&full, &step_id, seq, opts).await {
@@ -404,7 +479,7 @@ impl Step {
         step_id: &str,
         seq: i64,
         opts: RunStepOpts,
-    ) -> Result<Value, WorkflowError> {
+    ) -> Result<StepOutput, WorkflowError> {
         let slot: Arc<Mutex<Option<StepUsage>>> = Arc::new(Mutex::new(None));
         let report_slot = Arc::clone(&slot);
         let report_usage: ReportUsageFn = Arc::new(move |usage| {
@@ -430,13 +505,18 @@ impl Step {
             .await?;
         let usage = slot.lock().unwrap_or_else(|err| err.into_inner()).clone();
         self.inner.accumulate(usage.as_ref());
+        let output = StepOutput::from_value(result)?;
         self.inner
-            .finish_step(full, seq, step_id, StepKind::Run, result.clone(), usage)
+            .finish_step(full, seq, step_id, StepKind::Run, output.wire()?, usage)
             .await?;
-        Ok(result)
+        Ok(output)
     }
 
-    pub async fn human(&self, label: &str, opts: HumanStepOpts) -> Result<Value, WorkflowError> {
+    pub async fn human(
+        &self,
+        label: &str,
+        opts: HumanStepOpts,
+    ) -> Result<StepOutput, WorkflowError> {
         if !self.scope.allow_human {
             return Err(WorkflowError::message(format!(
                 "step.human(\"{label}\") is not allowed inside a step.parallel branch (partial suspension is undefined in v1)"
@@ -445,7 +525,7 @@ impl Step {
         let full = self.scoped_label(label);
         let phase = self.inner.begin_step(&full, StepKind::Human).await?;
         let (step_id, seq) = match phase {
-            Phase::Replay { result } => return Ok(result),
+            Phase::Replay { result } => return Ok(StepOutput::from_wire(result)),
             Phase::Live { step_id, seq } => (step_id, seq),
         };
         if !is_open_gate(&self.inner.journal.lock().await, &full, seq) {
@@ -477,11 +557,11 @@ impl Step {
         label: &str,
         reference: &str,
         input: Map<String, Value>,
-    ) -> Result<Value, WorkflowError> {
+    ) -> Result<StepOutput, WorkflowError> {
         let full = self.scoped_label(label);
         let phase = self.inner.begin_step(&full, StepKind::Call).await?;
         let (step_id, seq) = match phase {
-            Phase::Replay { result } => return Ok(result),
+            Phase::Replay { result } => return Ok(StepOutput::from_wire(result)),
             Phase::Live { step_id, seq } => (step_id, seq),
         };
         let called = self
@@ -500,10 +580,11 @@ impl Step {
             .await;
         match called {
             Ok(result) => {
+                let output = StepOutput::from_value(result)?;
                 self.inner
-                    .finish_step(&full, seq, &step_id, StepKind::Call, result.clone(), None)
+                    .finish_step(&full, seq, &step_id, StepKind::Call, output.wire()?, None)
                     .await?;
-                Ok(result)
+                Ok(output)
             }
             Err(err) if err.is_suspension() => Err(err),
             Err(err) => {
@@ -561,15 +642,9 @@ impl Step {
             *slot = Some(output.clone());
         }
         merge_fields(Path::new(&self.inner.case_dir), &output).await?;
+        let recorded = WireJson::from_value(&Value::Object(output))?;
         self.inner
-            .finish_step(
-                "done",
-                seq,
-                &step_id,
-                StepKind::Done,
-                Value::Object(output),
-                None,
-            )
+            .finish_step("done", seq, &step_id, StepKind::Done, Some(recorded), None)
             .await?;
         Ok(())
     }
@@ -578,7 +653,7 @@ impl Step {
         &self,
         label: &str,
         branches: Vec<BranchFn>,
-    ) -> Result<Value, WorkflowError> {
+    ) -> Result<StepOutput, WorkflowError> {
         if !self.scope.allow_parallel {
             return Err(WorkflowError::message(format!(
                 "nested step.parallel(\"{label}\") is not allowed — parallel branches cannot contain step.parallel"
@@ -586,18 +661,46 @@ impl Step {
         }
         let begin = self.parallel_begin(label, branches.len()).await?;
         if begin.replay {
-            return Ok(begin.result.unwrap_or(Value::Null));
+            return Ok(StepOutput::from_wire(begin.result));
         }
         let token = begin.token.clone();
-        let mut futures = Vec::with_capacity(branches.len());
-        for (scope, function) in begin.branches.into_iter().zip(branches) {
-            futures.push(function(self.with_scope(scope)));
+        let count = branches.len();
+        if count == 0 {
+            return self.finish_parallel_values(&token, Vec::new()).await;
         }
-        let joined = futures::future::join_all(futures).await;
-        let mut results = Vec::with_capacity(joined.len());
-        for item in joined {
-            match item {
-                Ok(value) => results.push(value),
+        let (tx, mut rx) =
+            tokio::sync::mpsc::channel::<(usize, Result<Value, WorkflowError>)>(count);
+        for (index, (scope, function)) in begin.branches.into_iter().zip(branches).enumerate() {
+            let tx = tx.clone();
+            let step = self.with_scope(scope);
+            tokio::spawn(async move {
+                let result = function(step).await;
+                let _ = tx.send((index, result)).await;
+            });
+        }
+        drop(tx);
+        let mut slots = vec![None; count];
+        let mut got = 0usize;
+        while let Some((index, result)) = rx.recv().await {
+            match result {
+                Ok(value) => {
+                    if index < slots.len() && slots[index].is_none() {
+                        slots[index] = Some(value);
+                        got += 1;
+                    }
+                    if got == count {
+                        let mut results = Vec::with_capacity(count);
+                        for slot in slots {
+                            let Some(value) = slot else {
+                                return Err(WorkflowError::message(
+                                    "parallel branch did not return a result",
+                                ));
+                            };
+                            results.push(value);
+                        }
+                        return self.finish_parallel_values(&token, results).await;
+                    }
+                }
                 Err(err) if err.is_suspension() => return Err(err),
                 Err(err) => {
                     self.parallel_fail(&token, &err).await?;
@@ -605,9 +708,20 @@ impl Step {
                 }
             }
         }
-        let value = Value::Array(results);
-        self.parallel_finish(&token, value.clone()).await?;
-        Ok(value)
+        Err(WorkflowError::message("parallel branch stopped"))
+    }
+
+    async fn finish_parallel_values(
+        &self,
+        token: &str,
+        results: Vec<Value>,
+    ) -> Result<StepOutput, WorkflowError> {
+        let output = StepOutput::from_value(Value::Array(results))?;
+        let Some(wire) = output.wire()? else {
+            return Err(WorkflowError::message("parallel result missing"));
+        };
+        self.parallel_finish(token, wire).await?;
+        Ok(output)
     }
 
     pub async fn parallel_begin(
@@ -626,7 +740,7 @@ impl Step {
             Phase::Replay { result } => {
                 return Ok(ParallelBegin {
                     replay: true,
-                    result: Some(result),
+                    result,
                     token: String::new(),
                     branches: Vec::new(),
                 });
@@ -672,7 +786,11 @@ impl Step {
         })
     }
 
-    pub async fn parallel_finish(&self, token: &str, result: Value) -> Result<(), WorkflowError> {
+    pub async fn parallel_finish(
+        &self,
+        token: &str,
+        result: WireJson,
+    ) -> Result<(), WorkflowError> {
         let pending = {
             self.inner
                 .pending
@@ -691,7 +809,7 @@ impl Step {
                 pending.seq,
                 &pending.step_id,
                 StepKind::Parallel,
-                result,
+                Some(result),
                 None,
             )
             .await
@@ -756,16 +874,12 @@ impl StepInner {
             return Ok(());
         };
         let spend = self.spend.lock().unwrap_or_else(|err| err.into_inner());
-        if let Some(limit) = budgets.max_tokens
-            && limit.is_finite()
-            && limit > 0.0
+        if let Some(limit) = positive_limit(budgets.max_tokens)
             && spend.tokens > limit
         {
             return Err(WorkflowError::budget("maxTokens", limit, spend.tokens));
         }
-        if let Some(limit) = budgets.max_cost
-            && limit.is_finite()
-            && limit > 0.0
+        if let Some(limit) = positive_limit(budgets.max_cost)
             && spend.cost > limit
         {
             return Err(WorkflowError::budget("maxCost", limit, spend.cost));
@@ -793,10 +907,8 @@ impl StepInner {
             let journal = self.journal.lock().await;
             find_cached_step_result(&journal, label, seq, Some(kind.as_str()))?
         };
-        if let Some(result) = cached.result() {
-            return Ok(Phase::Replay {
-                result: result.clone(),
-            });
+        if let CachedStep::Hit { result, .. } = cached {
+            return Ok(Phase::Replay { result });
         }
         let already_started = {
             let journal = self.journal.lock().await;
@@ -841,7 +953,7 @@ impl StepInner {
         seq: i64,
         step_id: &str,
         kind: StepKind,
-        result: Value,
+        result: Option<WireJson>,
         usage: Option<StepUsage>,
     ) -> Result<(), WorkflowError> {
         let usage = usage.filter(|item| !item.is_empty());
@@ -878,6 +990,15 @@ impl StepInner {
         append_journal(Path::new(&self.case_dir), &entry).await?;
         self.journal.lock().await.push(entry);
         Ok(())
+    }
+}
+
+fn positive_limit(limit: Option<JsNumber>) -> Option<f64> {
+    let value = limit?.as_f64();
+    if value.is_finite() && value > 0.0 {
+        Some(value)
+    } else {
+        None
     }
 }
 

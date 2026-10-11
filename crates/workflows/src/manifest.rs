@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use protocol::JsNumber;
 use protocol::js::js_trim;
 use serde_json::{Map, Value};
 
@@ -333,6 +334,6 @@ fn parse_budgets(raw: Option<&Value>) -> Result<Option<WorkflowBudgets>, Workflo
     }))
 }
 
-fn number_field(object: &Map<String, Value>, key: &str) -> Option<f64> {
-    object.get(key).and_then(Value::as_f64)
+fn number_field(object: &Map<String, Value>, key: &str) -> Option<JsNumber> {
+    object.get(key).and_then(Value::as_f64).map(JsNumber::from)
 }

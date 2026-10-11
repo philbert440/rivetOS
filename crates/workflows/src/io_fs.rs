@@ -44,6 +44,30 @@ pub async fn read_string(path: &Path) -> Result<String, WorkflowError> {
     .await
 }
 
+pub fn append_line_blocking(path: &Path, line: &[u8]) -> Result<(), WorkflowError> {
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|err| WorkflowError::io(path, err))?;
+    let mut written = 0;
+    while written < line.len() {
+        match file.write(&line[written..]) {
+            Ok(0) => {
+                return Err(WorkflowError::message(format!(
+                    "journal write wrote no bytes: {}",
+                    path.display()
+                )));
+            }
+            Ok(count) => written += count,
+            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(err) => return Err(WorkflowError::io(path, err)),
+        }
+    }
+    file.flush().map_err(|err| WorkflowError::io(path, err))
+}
+
 pub async fn append_bytes(path: &Path, bytes: &[u8]) -> Result<(), WorkflowError> {
     let owned = path.to_path_buf();
     let bytes = bytes.to_vec();

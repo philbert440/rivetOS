@@ -10,8 +10,8 @@ use workflows::{
     AgentStepOpts, ContractReason, EngineConfig, ExecutorRegistry, HumanStepOpts, JournalEntry,
     LoadedWorkflow, MockExecutorRegistry, ResumeRunOptions, RunFinishedStatus, RunPatch, RunScript,
     RunStatus, RunStepOpts, ScaffoldOptions, StartRunOptions, StartedBy, StartedByType, StepKind,
-    StepUsage, WorkflowEngine, WorkflowError, agent_handler, append_journal, branch,
-    check_run_script_determinism, is_max_concurrent_runs, journal_path, load_workflow_dir,
+    StepOutput, StepUsage, WireJson, WorkflowEngine, WorkflowError, agent_handler, append_journal,
+    branch, check_run_script_determinism, is_max_concurrent_runs, journal_path, load_workflow_dir,
     make_step_id, node_join, parse_call_ref, parse_manifest, path_text, read_case, read_journal,
     run_handler, run_script, scaffold_workflow, update_run, validate_start_input,
 };
@@ -154,7 +154,27 @@ fn parses_workflow_yaml_fields() {
     .unwrap();
     assert_eq!(manifest.id, "x");
     assert_eq!(manifest.input[0].name, "a");
-    assert_eq!(manifest.budgets.unwrap().max_tokens, Some(10.0));
+    assert_eq!(
+        manifest
+            .budgets
+            .unwrap()
+            .max_tokens
+            .map(|number| number.as_f64()),
+        Some(10.0)
+    );
+    let thousand = parse_manifest(&json!({
+        "id": "x",
+        "version": "1",
+        "name": "X",
+        "input": [],
+        "output": [],
+        "budgets": {"maxTokens": 1000}
+    }))
+    .unwrap();
+    assert_eq!(
+        serde_json::to_string(&thousand.budgets).unwrap(),
+        r#"{"maxTokens":1000}"#
+    );
     let implicit = parse_manifest(&json!({
         "id": "x",
         "version": "1",
@@ -442,7 +462,7 @@ async fn nests_child_case_dir_under_parent() {
         let out = step
             .call("child-call", "child", message_input("from-parent"))
             .await?;
-        step.done(result_output(out)).await
+        step.done(result_output(out.into_value())).await
     });
     let started = engine
         .start_run(
@@ -1012,6 +1032,52 @@ async fn parallel_returns_results_in_branch_index_order() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn parallel_returns_the_first_failure_without_waiting() {
+    let root = temp_root("par-fail");
+    let (dir, workflow) = load_min(&root, "wf", None).await;
+    let engine = engine_for(
+        &root.join("runs"),
+        arc_exec(MockExecutorRegistry::new()),
+        vec![("test-wf", dir.as_path())],
+    );
+    let script = run_script(|step, _ctx| async move {
+        step.parallel(
+            "fan",
+            vec![
+                branch(|_step| async {
+                    tokio::time::sleep(Duration::from_secs(30)).await;
+                    Ok(json!(0))
+                }),
+                branch(|_step| async { Err(WorkflowError::message("branch failed fast")) }),
+            ],
+        )
+        .await?;
+        step.done(result_output(Value::String("nope".to_string())))
+            .await
+    });
+    let result = tokio::time::timeout(
+        Duration::from_secs(2),
+        engine.start_run(
+            "test-wf",
+            message_input("x"),
+            human(),
+            start_opts(script, workflow, None),
+        ),
+    )
+    .await
+    .expect("parallel waited for the slow branch")
+    .unwrap();
+    assert_eq!(result.run.status, RunStatus::Failed);
+    assert!(
+        result
+            .run
+            .error
+            .unwrap_or_default()
+            .contains("branch failed fast")
+    );
+}
+
 #[tokio::test]
 async fn replay_skips_completed_branch_steps() {
     let root = temp_root("par-replay");
@@ -1198,12 +1264,16 @@ async fn creates_branch_subdirs() {
                     step.parallel(
                         "fan",
                         vec![
-                            branch(
-                                |step| async move { step.run("w", RunStepOpts::script("a")).await },
-                            ),
-                            branch(
-                                |step| async move { step.run("w", RunStepOpts::script("b")).await },
-                            ),
+                            branch(|step| async move {
+                                step.run("w", RunStepOpts::script("a"))
+                                    .await
+                                    .map(StepOutput::into_value)
+                            }),
+                            branch(|step| async move {
+                                step.run("w", RunStepOpts::script("b"))
+                                    .await
+                                    .map(StepOutput::into_value)
+                            }),
                         ],
                     )
                     .await?;
@@ -1322,6 +1392,7 @@ async fn branch_agent_fields_do_not_merge() {
                             vec![branch(|step| async move {
                                 step.agent("w", AgentStepOpts::out(vec!["result".to_string()]))
                                     .await
+                                    .map(StepOutput::into_value)
                             })],
                         )
                         .await?;
@@ -1671,7 +1742,7 @@ async fn append_crashed_resolution(case_dir: &str) {
             step_id: "gate#1".to_string(),
             label: "gate".to_string(),
             seq: 1,
-            values,
+            values: WireJson::from_value(&Value::Object(values)).unwrap(),
         },
     )
     .await

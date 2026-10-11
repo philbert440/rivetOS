@@ -1,14 +1,25 @@
+use std::collections::VecDeque;
 use std::fmt;
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::net::UnixStream as StdUnixStream;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use command_fds::{CommandFdExt, FdMapping};
+use protocol::js::{JsObject, JsValue, js_trim, parse, stringify};
 use serde_json::{Map, Value};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 
-use crate::error::WorkflowError;
-use crate::step::{AgentStepOpts, HumanStepOpts, ParallelBegin, RunStepOpts, Step, StepScope};
+use crate::error::{ContractReason, ContractValidationIssue, WorkflowError};
+use crate::step::{
+    AgentStepOpts, HumanStepOpts, ParallelBegin, RunStepOpts, Step, StepOutput, StepScope,
+};
+use crate::timeutil::js_number_text;
+use crate::types::LoadedWorkflow;
+use crate::wire::{JsonLine, WireJson, js_to_value, typed_raw};
 
 const BRIDGE: &str = r#"
 import { createInterface } from 'node:readline'
@@ -27,8 +38,15 @@ function nextLine() {
   if (lines.length) return Promise.resolve(lines.shift())
   return new Promise((resolve) => waiters.push(resolve))
 }
+const errorFields = ['stepId', 'label', 'seq', 'runId', 'timeoutMs', 'issues', 'budget', 'limit', 'spent', 'workflowId', 'max', 'current', 'ref', 'namespace', 'knownNamespaces']
+function copyFields(target, source) {
+  if (!source || typeof source !== 'object') return
+  for (const key of errorFields) {
+    if (Object.prototype.hasOwnProperty.call(source, key)) target[key] = source[key]
+  }
+}
 function write(obj) {
-  writeSync(1, JSON.stringify(obj) + '\n')
+  writeSync(3, JSON.stringify(obj) + '\n')
 }
 const pending = new Map()
 let seq = 0
@@ -77,14 +95,11 @@ const reader = (async () => {
     const item = pending.get(msg.id)
     if (!item) continue
     pending.delete(msg.id)
-    if (msg.ok) item.resolve(msg.result === undefined ? null : msg.result)
+    if (msg.ok) item.resolve(msg.result)
     else {
       const error = new Error(msg.error || 'step failed')
       error.name = msg.name || 'Error'
-      if (msg.stepId !== undefined) error.stepId = msg.stepId
-      if (msg.label !== undefined) error.label = msg.label
-      if (msg.seq !== undefined) error.seq = msg.seq
-      if (msg.runId !== undefined) error.runId = msg.runId
+      copyFields(error, msg)
       item.reject(error)
     }
   }
@@ -98,15 +113,13 @@ try {
   await fn(makeStep(null), start.ctx)
   write({ op: 'script_done' })
 } catch (err) {
-  write({
+  const payload = {
     op: 'script_error',
     message: err && err.message ? err.message : String(err),
     name: err && err.name,
-    stepId: err && err.stepId,
-    label: err && err.label,
-    seq: err && err.seq,
-    runId: err && err.runId,
-  })
+  }
+  copyFields(payload, err)
+  write(payload)
 }
 process.exit(0)
 "#;
@@ -145,11 +158,30 @@ pub struct HostContext {
     pub run_id: String,
     pub input: Map<String, Value>,
     pub case_dir: String,
+    pub workflow: LoadedWorkflow,
     pub fields: Map<String, Value>,
 }
 
+const STDERR_CAP: usize = 64 * 1024;
+const SILENCE: Duration = Duration::from_secs(60);
+
+struct Frame {
+    op: String,
+    id_raw: String,
+    value: Value,
+    results_raw: Option<String>,
+    raw: String,
+}
+
+enum ProtocolEvent {
+    Line(String),
+    Eof,
+    Io(String),
+}
+
 pub async fn drive_node(run_path: &str, step: Step, ctx: HostContext) -> Result<(), WorkflowError> {
-    let plan = launch_plan(run_path).await?;
+    let run_path = absolute_text(run_path);
+    let plan = launch_plan(&run_path).await?;
     tracing::info!(
         strategy = plan.strategy,
         node = %plan.node.display(),
@@ -162,7 +194,7 @@ pub async fn drive_node(run_path: &str, step: Step, ctx: HostContext) -> Result<
         .arg("--input-type=module")
         .arg("-e")
         .arg(BRIDGE)
-        .env("RIVET_WF_RUN_PATH", run_path)
+        .env("RIVET_WF_RUN_PATH", &run_path)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -170,14 +202,29 @@ pub async fn drive_node(run_path: &str, step: Step, ctx: HostContext) -> Result<
     if let Some(root) = &plan.current_dir {
         command.current_dir(root);
     }
+    let (read_end, write_end) = StdUnixStream::pair()
+        .map_err(|err| WorkflowError::message(format!("failed to create protocol pipe: {err}")))?;
+    read_end.set_nonblocking(true).map_err(|err| {
+        WorkflowError::message(format!("failed to configure protocol pipe: {err}"))
+    })?;
+    command
+        .as_std_mut()
+        .fd_mappings(vec![FdMapping {
+            parent_fd: write_end.into(),
+            child_fd: 3,
+        }])
+        .map_err(|err| WorkflowError::message(format!("failed to map protocol fd: {err}")))?;
     let mut child = command.spawn().map_err(|err| {
         WorkflowError::message(format!(
             "failed to spawn {} for {} (loader {}): {err}",
             plan.node.display(),
-            Path::new(run_path).display(),
+            Path::new(&run_path).display(),
             plan.strategy
         ))
     })?;
+    drop(command);
+    let protocol = tokio::net::UnixStream::from_std(read_end)
+        .map_err(|err| WorkflowError::message(format!("failed to take protocol pipe: {err}")))?;
     let mut stdin = child
         .stdin
         .take()
@@ -186,150 +233,252 @@ pub async fn drive_node(run_path: &str, step: Step, ctx: HostContext) -> Result<
         .stdout
         .take()
         .ok_or_else(|| WorkflowError::message("node stdout unavailable"))?;
-    let stderr = child.stderr.take();
-    let (stderr_tx, mut stderr_rx) = tokio::sync::mpsc::channel(1);
-    if let Some(stderr) = stderr {
-        tokio::spawn(async move {
-            let mut reader = BufReader::new(stderr);
-            let mut text = String::new();
-            let _ = reader.read_to_string(&mut text).await;
-            let _ = stderr_tx.send(text).await;
-        });
-    }
-    let mut ctx_map = Map::new();
-    ctx_map.insert("runId".to_string(), Value::String(ctx.run_id));
-    ctx_map.insert("input".to_string(), Value::Object(ctx.input));
-    ctx_map.insert("caseDir".to_string(), Value::String(ctx.case_dir));
-    ctx_map.insert("fields".to_string(), Value::Object(ctx.fields));
-    let mut start = Map::new();
-    start.insert("op".to_string(), Value::String("start".to_string()));
-    start.insert("ctx".to_string(), Value::Object(ctx_map));
-    write_line(&mut stdin, &Value::Object(start)).await?;
-    let mut lines = BufReader::new(stdout).lines();
-    let outcome = loop {
-        let next = tokio::time::timeout(Duration::from_secs(60), lines.next_line()).await;
-        let line = match next {
-            Ok(Ok(Some(line))) => line,
-            Ok(Ok(None)) => {
-                let stderr_text = stderr_rx.try_recv().unwrap_or_default();
-                break Err(WorkflowError::message(format!(
-                    "node script closed stdout for {run_path} {stderr_text}"
-                )));
+    let stderr_ring = Arc::new(Mutex::new(VecDeque::<u8>::new()));
+    let stderr_task = child.stderr.take().map(|stderr| {
+        let ring = Arc::clone(&stderr_ring);
+        tokio::spawn(async move { drain_stderr(stderr, &ring).await })
+    });
+    tokio::spawn(async move { drain_stdout(stdout).await });
+    let (write_tx, mut write_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let writer = tokio::spawn(async move {
+        while let Some(line) = write_rx.recv().await {
+            if stdin.write_all(line.as_bytes()).await.is_err() {
+                break;
             }
-            Ok(Err(err)) => break Err(WorkflowError::message(format!("node stdout: {err}"))),
-            Err(_) => {
-                break Err(WorkflowError::message(format!(
+            if stdin.flush().await.is_err() {
+                break;
+            }
+        }
+    });
+    let start = start_line(&ctx)?;
+    write_tx
+        .send(start)
+        .map_err(|_| WorkflowError::message("node stdin closed"))?;
+    let (frame_tx, mut frame_rx) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(async move { read_protocol(protocol, frame_tx).await });
+    let inflight = Arc::new(AtomicUsize::new(0));
+    let (idle_tx, mut idle_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+    let silence = tokio::time::sleep(SILENCE);
+    tokio::pin!(silence);
+    let mut outcome = Ok(());
+    loop {
+        tokio::select! {
+            biased;
+            event = frame_rx.recv() => {
+                silence.as_mut().reset(tokio::time::Instant::now() + SILENCE);
+                match event {
+                    Some(ProtocolEvent::Line(line)) => {
+                        if js_trim(&line).is_empty() {
+                            continue;
+                        }
+                        let frame = match parse_frame(&line) {
+                            Ok(frame) => frame,
+                            Err(err) => {
+                                outcome = Err(err);
+                                break;
+                            }
+                        };
+                        if frame.op == "script_done" {
+                            break;
+                        }
+                        if frame.op == "script_error" {
+                            outcome = Err(script_error_frame(&frame.raw));
+                            break;
+                        }
+                        spawn_rpc(
+                            step.clone(),
+                            frame,
+                            Arc::clone(&inflight),
+                            write_tx.clone(),
+                            idle_tx.clone(),
+                        );
+                    }
+                    Some(ProtocolEvent::Eof) | None => {
+                        outcome = Err(WorkflowError::message(format!(
+                            "node script closed protocol for {run_path}"
+                        )));
+                        break;
+                    }
+                    Some(ProtocolEvent::Io(err)) => {
+                        outcome = Err(WorkflowError::message(format!("node protocol: {err}")));
+                        break;
+                    }
+                }
+            }
+            _ = idle_rx.recv() => {
+                silence.as_mut().reset(tokio::time::Instant::now() + SILENCE);
+            }
+            _ = &mut silence, if inflight.load(Ordering::SeqCst) == 0 => {
+                outcome = Err(WorkflowError::message(format!(
                     "node script timed out waiting for output: {run_path}"
                 )));
+                break;
             }
-        };
-        let message: Value = match serde_json::from_str(&line) {
-            Ok(value) => value,
-            Err(err) => {
-                break Err(WorkflowError::message(format!(
-                    "node script sent invalid json: {err}"
-                )));
-            }
-        };
-        let op = message.get("op").and_then(Value::as_str).unwrap_or("");
-        if op == "script_done" {
-            break Ok(());
         }
-        if op == "script_error" {
-            break Err(script_error(&message));
-        }
-        let id = message.get("id").cloned().unwrap_or(Value::Null);
-        let result = dispatch(&step, &message).await;
-        let response = match result {
-            Ok(value) => response_ok(id, value),
-            Err(err) => response_err(id, &err),
+    }
+    drop(write_tx);
+    let _ = writer.await;
+    let status = tokio::time::timeout(Duration::from_secs(5), child.wait()).await;
+    if let Some(task) = stderr_task {
+        let _ = tokio::time::timeout(Duration::from_secs(2), task).await;
+    }
+    if let Ok(Ok(status)) = status
+        && !status.success()
+    {
+        let tail = ring_text(&stderr_ring);
+        let note = format!("node exited {status}: {tail}");
+        outcome = match outcome {
+            Ok(()) => Err(WorkflowError::message(note)),
+            Err(err) => Err(WorkflowError::message(format!("{err}\n{note}"))),
         };
-        if let Err(err) = write_line(&mut stdin, &response).await {
-            break Err(err);
-        }
-    };
-    drop(stdin);
-    let _ = tokio::time::timeout(Duration::from_secs(5), child.wait()).await;
+    }
     outcome
 }
 
-async fn write_line(
-    stdin: &mut tokio::process::ChildStdin,
-    value: &Value,
-) -> Result<(), WorkflowError> {
-    let mut line =
-        serde_json::to_string(value).map_err(|err| WorkflowError::message(err.to_string()))?;
-    line.push('\n');
-    stdin
-        .write_all(line.as_bytes())
-        .await
-        .map_err(|err| WorkflowError::message(format!("node stdin: {err}")))?;
-    stdin
-        .flush()
-        .await
-        .map_err(|err| WorkflowError::message(format!("node stdin: {err}")))?;
-    Ok(())
-}
-
-fn script_error(message: &Value) -> WorkflowError {
-    let text = message
-        .get("message")
-        .and_then(Value::as_str)
-        .unwrap_or("run script failed")
-        .to_string();
-    let name = message.get("name").and_then(Value::as_str).unwrap_or("");
-    match name {
-        "WorkflowSuspension" => {
-            let step_id = message
-                .get("stepId")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string();
-            let label = message
-                .get("label")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string();
-            let seq = message.get("seq").and_then(Value::as_i64).unwrap_or(0);
-            WorkflowError::Suspension {
-                message: text,
-                step_id,
-                label,
-                seq,
+async fn drain_stdout(mut stdout: tokio::process::ChildStdout) {
+    let mut buf = [0u8; 4096];
+    loop {
+        match stdout.read(&mut buf).await {
+            Ok(0) | Err(_) => break,
+            Ok(n) => {
+                let text = String::from_utf8_lossy(&buf[..n]);
+                tracing::debug!("{text}");
             }
         }
-        "WorkflowKilled" => {
-            let run_id = message
-                .get("runId")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string();
-            if run_id.is_empty() {
-                WorkflowError::message(text)
-            } else {
-                WorkflowError::killed(run_id)
-            }
-        }
-        _ => WorkflowError::message(text),
     }
 }
 
-fn response_ok(id: Value, result: Value) -> Value {
-    let mut map = Map::new();
-    map.insert("op".to_string(), Value::String("response".to_string()));
-    map.insert("id".to_string(), id);
-    map.insert("ok".to_string(), Value::Bool(true));
-    map.insert("result".to_string(), result);
-    Value::Object(map)
+async fn drain_stderr(mut stderr: tokio::process::ChildStderr, ring: &Mutex<VecDeque<u8>>) {
+    let mut buf = [0u8; 4096];
+    loop {
+        match stderr.read(&mut buf).await {
+            Ok(0) | Err(_) => break,
+            Ok(n) => push_ring(ring, &buf[..n]),
+        }
+    }
 }
 
-fn response_err(id: Value, err: &WorkflowError) -> Value {
-    let mut map = Map::new();
-    map.insert("op".to_string(), Value::String("response".to_string()));
-    map.insert("id".to_string(), id);
-    map.insert("ok".to_string(), Value::Bool(false));
-    map.insert("error".to_string(), Value::String(err.to_string()));
-    map.insert("name".to_string(), Value::String(err.name().to_string()));
+fn push_ring(ring: &Mutex<VecDeque<u8>>, bytes: &[u8]) {
+    let mut guard = ring.lock().unwrap_or_else(|err| err.into_inner());
+    guard.extend(bytes);
+    while guard.len() > STDERR_CAP {
+        guard.pop_front();
+    }
+}
+
+fn ring_text(ring: &Mutex<VecDeque<u8>>) -> String {
+    let mut guard = ring.lock().unwrap_or_else(|err| err.into_inner());
+    String::from_utf8_lossy(guard.make_contiguous()).into_owned()
+}
+
+async fn read_protocol(
+    protocol: tokio::net::UnixStream,
+    frame_tx: tokio::sync::mpsc::UnboundedSender<ProtocolEvent>,
+) {
+    let mut lines = BufReader::new(protocol).lines();
+    loop {
+        match lines.next_line().await {
+            Ok(Some(line)) => {
+                if frame_tx.send(ProtocolEvent::Line(line)).is_err() {
+                    break;
+                }
+            }
+            Ok(None) => {
+                let _ = frame_tx.send(ProtocolEvent::Eof);
+                break;
+            }
+            Err(err) => {
+                let _ = frame_tx.send(ProtocolEvent::Io(err.to_string()));
+                break;
+            }
+        }
+    }
+}
+
+fn spawn_rpc(
+    step: Step,
+    frame: Frame,
+    inflight: Arc<AtomicUsize>,
+    write_tx: tokio::sync::mpsc::UnboundedSender<String>,
+    idle_tx: tokio::sync::mpsc::UnboundedSender<()>,
+) {
+    inflight.fetch_add(1, Ordering::SeqCst);
+    tokio::spawn(async move {
+        let id_raw = frame.id_raw.clone();
+        let line = match dispatch(&step, &frame).await {
+            Ok(result) => response_ok_line(&id_raw, result.as_deref()),
+            Err(err) => response_err_line(&id_raw, &err),
+        };
+        let _ = write_tx.send(line);
+        if inflight.fetch_sub(1, Ordering::SeqCst) == 1 {
+            let _ = idle_tx.send(());
+        }
+    });
+}
+
+fn start_line(ctx: &HostContext) -> Result<String, WorkflowError> {
+    let input = WireJson::from_value(&Value::Object(ctx.input.clone()))?;
+    let fields = WireJson::from_value(&Value::Object(ctx.fields.clone()))?;
+    let workflow = typed_raw(&ctx.workflow)?;
+    let mut body = JsonLine::new();
+    body.string("runId", &ctx.run_id);
+    body.raw("input", input.raw());
+    body.string("caseDir", &ctx.case_dir);
+    body.raw("workflow", &workflow);
+    body.raw("fields", fields.raw());
+    let mut start = JsonLine::new();
+    start.string("op", "start");
+    start.raw("ctx", &body.finish());
+    let mut line = start.finish();
+    line.push('\n');
+    Ok(line)
+}
+
+fn parse_frame(line: &str) -> Result<Frame, WorkflowError> {
+    let parsed = parse(line)
+        .map_err(|err| WorkflowError::message(format!("node script sent invalid json: {err}")))?;
+    let Some(object) = parsed.as_object() else {
+        return Err(WorkflowError::message(
+            "node script sent invalid json: expected object",
+        ));
+    };
+    let op = object
+        .get("op")
+        .and_then(JsValue::as_str)
+        .unwrap_or("")
+        .to_string();
+    let id_raw = object
+        .get("id")
+        .map(stringify)
+        .unwrap_or_else(|| "null".to_string());
+    let results_raw = object.get("results").map(stringify);
+    Ok(Frame {
+        op,
+        id_raw,
+        value: js_to_value(&parsed),
+        results_raw,
+        raw: line.to_string(),
+    })
+}
+
+fn response_ok_line(id_raw: &str, result: Option<&str>) -> String {
+    let mut line = JsonLine::new();
+    line.string("op", "response");
+    line.raw("id", id_raw);
+    line.raw("ok", "true");
+    if let Some(result) = result {
+        line.raw("result", result);
+    }
+    finish_line(line)
+}
+
+fn response_err_line(id_raw: &str, err: &WorkflowError) -> String {
+    let mut line = JsonLine::new();
+    line.string("op", "response");
+    line.raw("id", id_raw);
+    line.raw("ok", "false");
+    line.string("error", &err.to_string());
+    line.string("name", err.name());
     match err {
         WorkflowError::Suspension {
             step_id,
@@ -337,26 +486,222 @@ fn response_err(id: Value, err: &WorkflowError) -> Value {
             seq,
             ..
         } => {
-            map.insert("stepId".to_string(), Value::String(step_id.clone()));
-            map.insert("label".to_string(), Value::String(label.clone()));
-            map.insert("seq".to_string(), Value::from(*seq));
+            line.string("stepId", step_id);
+            line.string("label", label);
+            line.i64("seq", *seq);
         }
-        WorkflowError::Killed { run_id, .. } => {
-            map.insert("runId".to_string(), Value::String(run_id.clone()));
+        WorkflowError::Killed { run_id, .. } | WorkflowError::RunNotFound { run_id, .. } => {
+            line.string("runId", run_id);
         }
-        _ => {}
+        WorkflowError::Contract { issues, .. } => {
+            line.raw("issues", &issues_raw(issues));
+        }
+        WorkflowError::UnknownCallNamespace {
+            reference,
+            namespace,
+            known_namespaces,
+            ..
+        } => {
+            line.string("ref", reference);
+            line.string("namespace", namespace);
+            line.raw("knownNamespaces", &strings_raw(known_namespaces));
+        }
+        WorkflowError::WorkflowNotFound { reference, .. } => {
+            line.string("ref", reference);
+        }
+        WorkflowError::StepTimeout {
+            step_id,
+            timeout_ms,
+            ..
+        } => {
+            line.string("stepId", step_id);
+            line.raw("timeoutMs", &js_number_text(*timeout_ms));
+        }
+        WorkflowError::RunTimeout {
+            run_id, timeout_ms, ..
+        } => {
+            line.string("runId", run_id);
+            line.raw("timeoutMs", &js_number_text(*timeout_ms));
+        }
+        WorkflowError::BudgetExceeded {
+            budget,
+            limit,
+            spent,
+            ..
+        } => {
+            line.string("budget", budget);
+            line.raw("limit", &js_number_text(*limit));
+            line.raw("spent", &js_number_text(*spent));
+        }
+        WorkflowError::MaxConcurrentRuns {
+            workflow_id,
+            max,
+            current,
+            ..
+        } => {
+            line.string("workflowId", workflow_id);
+            line.raw("max", &js_number_text(*max));
+            line.raw("current", &current.to_string());
+        }
+        WorkflowError::Message(_) => {}
     }
-    Value::Object(map)
+    finish_line(line)
 }
 
-async fn dispatch(step: &Step, message: &Value) -> Result<Value, WorkflowError> {
-    let op = message.get("op").and_then(Value::as_str).unwrap_or("");
+fn finish_line(line: JsonLine) -> String {
+    let mut text = line.finish();
+    text.push('\n');
+    text
+}
+
+fn issues_raw(issues: &[ContractValidationIssue]) -> String {
+    let Ok(text) = serde_json::to_string(issues) else {
+        return "[]".to_string();
+    };
+    match WireJson::parse(&text) {
+        Ok(wire) => wire.raw().to_string(),
+        Err(_) => text,
+    }
+}
+
+fn strings_raw(items: &[String]) -> String {
+    let mut out = String::from("[");
+    for (index, item) in items.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        out.push_str(&stringify(&JsValue::from_text(item)));
+    }
+    out.push(']');
+    out
+}
+
+fn script_error_frame(raw: &str) -> WorkflowError {
+    let Ok(parsed) = parse(raw) else {
+        return WorkflowError::message("run script failed");
+    };
+    let Some(object) = parsed.as_object() else {
+        return WorkflowError::message("run script failed");
+    };
+    let text = js_string(object, "message");
+    let text = if text.is_empty() {
+        "run script failed".to_string()
+    } else {
+        text
+    };
+    let name = js_string(object, "name");
+    match name.as_str() {
+        "WorkflowSuspension" => WorkflowError::suspension(
+            js_string(object, "stepId"),
+            js_string(object, "label"),
+            js_i64(object, "seq"),
+        ),
+        "WorkflowKilled" => {
+            let run_id = js_string(object, "runId");
+            if run_id.is_empty() {
+                WorkflowError::message(text)
+            } else {
+                WorkflowError::killed(run_id)
+            }
+        }
+        "ContractValidationError" => match object.get("issues").and_then(JsValue::as_array) {
+            Some(items) => {
+                let issues = items
+                    .iter()
+                    .filter_map(|item| item.as_object())
+                    .map(|item| ContractValidationIssue {
+                        field: js_string(item, "field"),
+                        reason: reason_from(&js_string(item, "reason")),
+                        message: js_string(item, "message"),
+                    })
+                    .collect();
+                WorkflowError::contract(issues)
+            }
+            None => WorkflowError::message(text),
+        },
+        "UnknownCallNamespaceError" => WorkflowError::unknown_namespace(
+            js_string(object, "ref"),
+            js_string(object, "namespace"),
+            js_strings(object, "knownNamespaces"),
+        ),
+        "WorkflowNotFoundError" => {
+            WorkflowError::workflow_not_found(js_string(object, "ref"), Some(text))
+        }
+        "RunNotFoundError" => WorkflowError::run_not_found(js_string(object, "runId")),
+        "StepTimeoutError" => {
+            WorkflowError::step_timeout(js_string(object, "stepId"), js_f64(object, "timeoutMs"))
+        }
+        "RunTimeoutError" => {
+            WorkflowError::run_timeout(js_string(object, "runId"), js_f64(object, "timeoutMs"))
+        }
+        "BudgetExceededError" => {
+            let budget = match js_string(object, "budget").as_str() {
+                "maxTokens" => "maxTokens",
+                "maxCost" => "maxCost",
+                _ => return WorkflowError::message(text),
+            };
+            WorkflowError::budget(budget, js_f64(object, "limit"), js_f64(object, "spent"))
+        }
+        "MaxConcurrentRunsError" => {
+            let current = js_i64(object, "current");
+            let current = usize::try_from(current).unwrap_or(0);
+            WorkflowError::max_concurrent(
+                js_string(object, "workflowId"),
+                js_f64(object, "max"),
+                current,
+            )
+        }
+        _ => WorkflowError::message(text),
+    }
+}
+
+fn js_string(object: &JsObject, key: &str) -> String {
+    object
+        .get(key)
+        .and_then(JsValue::as_str)
+        .unwrap_or("")
+        .to_string()
+}
+
+fn js_i64(object: &JsObject, key: &str) -> i64 {
+    object.get(key).and_then(JsValue::as_i64).unwrap_or(0)
+}
+
+fn js_f64(object: &JsObject, key: &str) -> f64 {
+    match object.get(key) {
+        Some(JsValue::Number(value)) => *value,
+        _ => 0.0,
+    }
+}
+
+fn js_strings(object: &JsObject, key: &str) -> Vec<String> {
+    let Some(items) = object.get(key).and_then(JsValue::as_array) else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter_map(|item| item.as_str().map(str::to_string))
+        .collect()
+}
+
+fn reason_from(text: &str) -> ContractReason {
+    match text {
+        "missing" => ContractReason::Missing,
+        "type_mismatch" => ContractReason::TypeMismatch,
+        "file_missing" => ContractReason::FileMissing,
+        _ => ContractReason::Invalid,
+    }
+}
+
+async fn dispatch(step: &Step, frame: &Frame) -> Result<Option<String>, WorkflowError> {
+    let message = &frame.value;
+    let op = frame.op.as_str();
     let scoped = step_for(step, message);
     let label = message.get("label").and_then(Value::as_str).unwrap_or("");
     match op {
-        "agent" => scoped.agent(label, agent_opts(message.get("opts"))).await,
-        "run" => scoped.run(label, run_opts(message.get("opts"))).await,
-        "human" => scoped.human(label, human_opts(message.get("opts"))).await,
+        "agent" => output_raw(scoped.agent(label, agent_opts(message.get("opts"))).await?),
+        "run" => output_raw(scoped.run(label, run_opts(message.get("opts"))).await?),
+        "human" => output_raw(scoped.human(label, human_opts(message.get("opts"))).await?),
         "call" => {
             let reference = message.get("ref").and_then(Value::as_str).unwrap_or("");
             let input = message
@@ -364,7 +709,7 @@ async fn dispatch(step: &Step, message: &Value) -> Result<Value, WorkflowError> 
                 .and_then(Value::as_object)
                 .cloned()
                 .unwrap_or_default();
-            scoped.call(label, reference, input).await
+            output_raw(scoped.call(label, reference, input).await?)
         }
         "done" => {
             let output = message
@@ -373,21 +718,22 @@ async fn dispatch(step: &Step, message: &Value) -> Result<Value, WorkflowError> 
                 .cloned()
                 .unwrap_or_default();
             scoped.done(output).await?;
-            Ok(Value::Null)
+            Ok(None)
         }
         "parallel_begin" => {
             let count = message.get("count").and_then(Value::as_u64).unwrap_or(0) as usize;
             let begin = scoped.parallel_begin(label, count).await?;
-            Ok(parallel_begin_value(begin))
+            Ok(Some(parallel_begin_raw(&begin)?))
         }
         "parallel_end" => {
             let token = message.get("token").and_then(Value::as_str).unwrap_or("");
-            let results = message
-                .get("results")
-                .cloned()
-                .unwrap_or_else(|| Value::Array(Vec::new()));
+            let raw = frame
+                .results_raw
+                .clone()
+                .unwrap_or_else(|| "null".to_string());
+            let results = WireJson::parse(&raw)?;
             scoped.parallel_finish(token, results).await?;
-            Ok(Value::Null)
+            Ok(None)
         }
         "parallel_fail" => {
             let token = message.get("token").and_then(Value::as_str).unwrap_or("");
@@ -398,12 +744,16 @@ async fn dispatch(step: &Step, message: &Value) -> Result<Value, WorkflowError> 
             scoped
                 .parallel_fail(token, &WorkflowError::message(text))
                 .await?;
-            Ok(Value::Null)
+            Ok(None)
         }
         _ => Err(WorkflowError::message(format!(
             "unknown script op \"{op}\""
         ))),
     }
+}
+
+fn output_raw(output: StepOutput) -> Result<Option<String>, WorkflowError> {
+    Ok(output.wire()?.map(|wire| wire.raw().to_string()))
 }
 
 fn step_for(step: &Step, message: &Value) -> Step {
@@ -521,42 +871,56 @@ fn human_opts(value: Option<&Value>) -> HumanStepOpts {
     }
 }
 
-fn parallel_begin_value(begin: ParallelBegin) -> Value {
-    let mut map = Map::new();
+fn parallel_begin_raw(begin: &ParallelBegin) -> Result<String, WorkflowError> {
+    let mut line = JsonLine::new();
+    line.raw("replay", if begin.replay { "true" } else { "false" });
     if begin.replay {
-        map.insert("replay".to_string(), Value::Bool(true));
-        map.insert("result".to_string(), begin.result.unwrap_or(Value::Null));
-        return Value::Object(map);
+        if let Some(result) = &begin.result {
+            line.raw("result", result.raw());
+        }
+        return Ok(line.finish());
     }
-    let branches = begin
-        .branches
-        .into_iter()
-        .map(|scope| {
-            let mut scope_map = Map::new();
-            scope_map.insert("labelPrefix".to_string(), Value::String(scope.label_prefix));
-            scope_map.insert(
-                "executorCaseDir".to_string(),
-                Value::String(scope.executor_case_dir),
-            );
-            scope_map.insert("allowHuman".to_string(), Value::Bool(scope.allow_human));
-            scope_map.insert(
-                "allowParallel".to_string(),
-                Value::Bool(scope.allow_parallel),
-            );
-            scope_map.insert("allowDone".to_string(), Value::Bool(scope.allow_done));
-            scope_map.insert(
-                "mergeAgentFields".to_string(),
-                Value::Bool(scope.merge_agent_fields),
-            );
-            let mut item = Map::new();
-            item.insert("scope".to_string(), Value::Object(scope_map));
-            Value::Object(item)
-        })
-        .collect();
-    map.insert("replay".to_string(), Value::Bool(false));
-    map.insert("token".to_string(), Value::String(begin.token));
-    map.insert("branches".to_string(), Value::Array(branches));
-    Value::Object(map)
+    line.string("token", &begin.token);
+    let mut branches = String::from("[");
+    for (index, scope) in begin.branches.iter().enumerate() {
+        if index > 0 {
+            branches.push(',');
+        }
+        branches.push_str("{\"scope\":");
+        branches.push_str(&scope_raw(scope));
+        branches.push('}');
+    }
+    branches.push(']');
+    line.raw("branches", &branches);
+    Ok(line.finish())
+}
+
+fn scope_raw(scope: &StepScope) -> String {
+    let mut line = JsonLine::new();
+    line.string("labelPrefix", &scope.label_prefix);
+    line.string("executorCaseDir", &scope.executor_case_dir);
+    line.raw(
+        "allowHuman",
+        if scope.allow_human { "true" } else { "false" },
+    );
+    line.raw(
+        "allowParallel",
+        if scope.allow_parallel {
+            "true"
+        } else {
+            "false"
+        },
+    );
+    line.raw("allowDone", if scope.allow_done { "true" } else { "false" });
+    line.raw(
+        "mergeAgentFields",
+        if scope.merge_agent_fields {
+            "true"
+        } else {
+            "false"
+        },
+    );
+    line.finish()
 }
 
 async fn launch_plan(run_path: &str) -> Result<LaunchPlan, WorkflowError> {
@@ -680,7 +1044,7 @@ async fn find_node() -> Result<PathBuf, WorkflowError> {
 
 async fn resolve_program(name: &str) -> Option<PathBuf> {
     if name.contains('/') || name.contains('\\') {
-        let path = PathBuf::from(name);
+        let path = absolutize(Path::new(name));
         if is_executable(&path).await {
             return Some(path);
         }
@@ -688,12 +1052,23 @@ async fn resolve_program(name: &str) -> Option<PathBuf> {
     }
     let paths = std::env::var_os("PATH")?;
     for dir in std::env::split_paths(&paths) {
-        let candidate = dir.join(name);
+        let candidate = absolutize(&dir.join(name));
         if is_executable(&candidate).await {
             return Some(candidate);
         }
     }
     None
+}
+
+fn absolutize(path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        return path.to_path_buf();
+    }
+    std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn absolute_text(path: &str) -> String {
+    absolutize(Path::new(path)).display().to_string()
 }
 
 async fn is_executable(path: &Path) -> bool {
@@ -718,15 +1093,6 @@ fn tsx_roots() -> Vec<PathBuf> {
         push_unique(&mut roots, PathBuf::from(root));
     }
     push_unique(&mut roots, PathBuf::from(DEFAULT_INSTALL_ROOT));
-    if let Ok(cwd) = std::env::current_dir() {
-        let mut dir = cwd;
-        loop {
-            push_unique(&mut roots, dir.clone());
-            if !dir.pop() {
-                break;
-            }
-        }
-    }
     roots
 }
 
@@ -772,9 +1138,10 @@ async fn read_node_version(node: &Path) -> Result<NodeVersion, WorkflowError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        NodeVersion, TypeStrip, needs_typescript, parse_node_version, type_strip,
-        typescript_unavailable,
+        NodeVersion, TypeStrip, needs_typescript, parse_node_version, response_err_line,
+        response_ok_line, type_strip, typescript_unavailable,
     };
+    use crate::error::{ContractReason, ContractValidationIssue, WorkflowError};
 
     fn version(major: u64, minor: u64, patch: u64) -> NodeVersion {
         NodeVersion {
@@ -832,5 +1199,33 @@ mod tests {
         assert!(message.contains("Node 24"), "{message}");
         assert!(message.contains("v20.11.0"), "{message}");
         assert!(message.contains("/wf/run.ts"), "{message}");
+    }
+
+    #[test]
+    fn response_omits_undefined_and_keeps_null_and_surrogates() {
+        let missing = response_ok_line("1", None);
+        assert_eq!(missing, "{\"op\":\"response\",\"id\":1,\"ok\":true}\n");
+        let null_result = response_ok_line("2", Some("null"));
+        assert!(null_result.contains("\"result\":null"), "{null_result}");
+        let surrogate = response_ok_line("3", Some("\"\\ud800\""));
+        assert!(surrogate.contains("\\ud800"), "{surrogate}");
+    }
+
+    #[test]
+    fn response_err_includes_contract_issues_and_budget() {
+        let err = WorkflowError::contract(vec![ContractValidationIssue {
+            field: "name".into(),
+            reason: ContractReason::Missing,
+            message: "required string field \"name\" is missing".into(),
+        }]);
+        let line = response_err_line("4", &err);
+        assert!(line.contains("\"issues\":"), "{line}");
+        assert!(line.contains("\"field\":\"name\""), "{line}");
+        let budget = WorkflowError::budget("maxTokens", 1000.0, 1001.0);
+        let line = response_err_line("5", &budget);
+        assert!(line.contains("\"budget\":\"maxTokens\""), "{line}");
+        assert!(line.contains("\"limit\":1000"), "{line}");
+        assert!(line.contains("\"spent\":1001"), "{line}");
+        assert!(!line.contains("1000.0"), "{line}");
     }
 }
