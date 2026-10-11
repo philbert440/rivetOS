@@ -1299,6 +1299,387 @@ fn assert_critical_and_linked(text: &str, issuer_text: &str) {
     );
 }
 
+#[test]
+fn verify_matches_openssl_on_critical_eku_constraints_and_path_length() {
+    if !have_openssl() {
+        return;
+    }
+    let paths = scratch("verify-edges");
+    fs::create_dir_all(&paths.root_dir).unwrap();
+    fs::create_dir_all(paths.int_dir()).unwrap();
+    let work = paths.root_dir.clone();
+    let key = |name: &str| {
+        let path = work.join(name);
+        openssl(&["genrsa", "-out", &path.display().to_string(), "2048"]);
+        path
+    };
+    let root_key = key("root.key");
+    let int_key = key("int.key");
+    let sub_key = key("sub.key");
+    let leaf_key = key("leaf.key");
+    let root_cnf = work.join("root.cnf");
+    fs::write(
+        &root_cnf,
+        "[ req ]\ndistinguished_name = req_dn\nprompt = no\nx509_extensions = v3\n[ req_dn ]\nO = Rivet Collective\nCN = Rivet Root CA\n[ v3 ]\nbasicConstraints = critical, CA:TRUE\nkeyUsage = critical, keyCertSign, cRLSign\nsubjectKeyIdentifier = hash\n",
+    )
+    .unwrap();
+    let root_crt = work.join("root.crt");
+    openssl(&[
+        "req",
+        "-new",
+        "-x509",
+        "-sha256",
+        "-days",
+        "3650",
+        "-key",
+        &root_key.display().to_string(),
+        "-out",
+        &root_crt.display().to_string(),
+        "-config",
+        &root_cnf.display().to_string(),
+    ]);
+    let root_srl = work.join("root.srl");
+    let int_srl = work.join("int.srl");
+    let sub_srl = work.join("sub.srl");
+    fs::write(&root_srl, "1000\n").unwrap();
+    fs::write(&int_srl, "1000\n").unwrap();
+    fs::write(&sub_srl, "1000\n").unwrap();
+    let sign =
+        |key: &Path, name: &str, cn: &str, ext: &str, ca: &Path, cakey: &Path, srl: &Path| {
+            let csr = work.join(format!("{name}.csr"));
+            let crt = work.join(format!("{name}.crt"));
+            let extfile = work.join(format!("{name}.ext"));
+            openssl(&[
+                "req",
+                "-new",
+                "-sha256",
+                "-key",
+                &key.display().to_string(),
+                "-out",
+                &csr.display().to_string(),
+                "-subj",
+                &format!("/O=Rivet Collective/CN={cn}"),
+            ]);
+            fs::write(&extfile, ext).unwrap();
+            openssl(&[
+                "x509",
+                "-req",
+                "-sha256",
+                "-days",
+                "365",
+                "-in",
+                &csr.display().to_string(),
+                "-CA",
+                &ca.display().to_string(),
+                "-CAkey",
+                &cakey.display().to_string(),
+                "-CAserial",
+                &srl.display().to_string(),
+                "-out",
+                &crt.display().to_string(),
+                "-extfile",
+                &extfile.display().to_string(),
+            ]);
+            crt
+        };
+    let crl_for = |crt: &Path, key: &Path, name: &str| {
+        let index = work.join(format!("{name}-index.txt"));
+        let number = work.join(format!("{name}-crlnumber"));
+        let cnf = work.join(format!("{name}.cnf"));
+        let out = work.join(format!("{name}.crl"));
+        fs::write(&index, "").unwrap();
+        fs::write(&number, "1000\n").unwrap();
+        fs::write(
+            &cnf,
+            format!(
+                "[ca]\ndefault_ca=CA_default\n[CA_default]\ncertificate={}\nprivate_key={}\ndatabase={}\ncrlnumber={}\ndefault_md=sha256\ndefault_crl_days=30\n",
+                crt.display(),
+                key.display(),
+                index.display(),
+                number.display(),
+            ),
+        )
+        .unwrap();
+        openssl(&[
+            "ca",
+            "-batch",
+            "-gencrl",
+            "-config",
+            &cnf.display().to_string(),
+            "-out",
+            &out.display().to_string(),
+        ]);
+        out
+    };
+    let ca_ext = "basicConstraints=critical,CA:TRUE\nkeyUsage=critical,keyCertSign,cRLSign\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid:always\n";
+    let leaf = |san: &str, eku: &str| {
+        format!(
+            "basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage={eku}\nsubjectAltName={san}\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid\n"
+        )
+    };
+    let int_plain = sign(
+        &int_key,
+        "int-plain",
+        "Plain Intermediate",
+        ca_ext,
+        &root_crt,
+        &root_key,
+        &root_srl,
+    );
+    let int_nc = sign(
+        &int_key,
+        "int-nc",
+        "Permit Intermediate",
+        "basicConstraints=critical,CA:TRUE\nkeyUsage=critical,keyCertSign,cRLSign\nnameConstraints=critical,permitted;DNS:.allowed.example\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid:always\n",
+        &root_crt,
+        &root_key,
+        &root_srl,
+    );
+    let int_ex = sign(
+        &int_key,
+        "int-ex",
+        "Exclude Intermediate",
+        "basicConstraints=critical,CA:TRUE\nkeyUsage=critical,keyCertSign,cRLSign\nnameConstraints=critical,excluded;DNS:.bad.example\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid:always\n",
+        &root_crt,
+        &root_key,
+        &root_srl,
+    );
+    let int_path = sign(
+        &int_key,
+        "int-path",
+        "Plain Intermediate",
+        "basicConstraints=critical,CA:TRUE,pathlen:0\nkeyUsage=critical,keyCertSign,cRLSign\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid:always\n",
+        &root_crt,
+        &root_key,
+        &root_srl,
+    );
+    let int_eku = sign(
+        &int_key,
+        "int-eku",
+        "EKU Intermediate",
+        "basicConstraints=critical,CA:TRUE\nkeyUsage=critical,keyCertSign,cRLSign\nextendedKeyUsage=critical,codeSigning\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid:always\n",
+        &root_crt,
+        &root_key,
+        &root_srl,
+    );
+    let sub = sign(
+        &sub_key, "sub", "Sub CA", ca_ext, &int_path, &int_key, &int_srl,
+    );
+    let outside = sign(
+        &leaf_key,
+        "outside",
+        "outside.example",
+        &leaf("DNS:outside.example", "clientAuth"),
+        &int_nc,
+        &int_key,
+        &int_srl,
+    );
+    let inside = sign(
+        &leaf_key,
+        "inside",
+        "www.allowed.example",
+        &leaf("DNS:www.allowed.example", "clientAuth"),
+        &int_nc,
+        &int_key,
+        &int_srl,
+    );
+    let apex = sign(
+        &leaf_key,
+        "apex",
+        "allowed.example",
+        &leaf("DNS:allowed.example", "clientAuth"),
+        &int_nc,
+        &int_key,
+        &int_srl,
+    );
+    let cn_only = sign(
+        &leaf_key,
+        "cn-only",
+        "outside.example",
+        "basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=clientAuth\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid\n",
+        &int_nc,
+        &int_key,
+        &int_srl,
+    );
+    let san_wins = sign(
+        &leaf_key,
+        "san-wins",
+        "outside.example",
+        &leaf("DNS:www.allowed.example", "clientAuth"),
+        &int_nc,
+        &int_key,
+        &int_srl,
+    );
+    let excluded = sign(
+        &leaf_key,
+        "excluded",
+        "ok.example",
+        &leaf("DNS:x.bad.example", "clientAuth"),
+        &int_ex,
+        &int_key,
+        &int_srl,
+    );
+    let excluded_ok = sign(
+        &leaf_key,
+        "excluded-ok",
+        "ok.example",
+        &leaf("DNS:ok.example", "clientAuth"),
+        &int_ex,
+        &int_key,
+        &int_srl,
+    );
+    let unknown = sign(
+        &leaf_key,
+        "unknown",
+        "unknown.example",
+        &format!(
+            "{}1.2.3.4.5=critical,ASN1:UTF8String:nope\n",
+            leaf("DNS:unknown.example", "clientAuth")
+        ),
+        &int_plain,
+        &int_key,
+        &int_srl,
+    );
+    let unknown_nc = sign(
+        &leaf_key,
+        "unknown-nc",
+        "unknown.example",
+        &format!(
+            "{}1.2.3.4.5=ASN1:UTF8String:nope\n",
+            leaf("DNS:unknown.example", "clientAuth")
+        ),
+        &int_plain,
+        &int_key,
+        &int_srl,
+    );
+    let critical_ski = sign(
+        &leaf_key,
+        "critical-ski",
+        "ski.example",
+        "basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=clientAuth\nsubjectAltName=DNS:ski.example\nsubjectKeyIdentifier=critical,hash\nauthorityKeyIdentifier=keyid\n",
+        &int_plain,
+        &int_key,
+        &int_srl,
+    );
+    let critical_client = sign(
+        &leaf_key,
+        "critical-client",
+        "client.example",
+        &leaf("DNS:client.example", "critical,clientAuth"),
+        &int_plain,
+        &int_key,
+        &int_srl,
+    );
+    let server_only = sign(
+        &leaf_key,
+        "server-only",
+        "server.example",
+        &leaf("DNS:server.example", "serverAuth"),
+        &int_plain,
+        &int_key,
+        &int_srl,
+    );
+    let code_signing = sign(
+        &leaf_key,
+        "code-signing",
+        "eku.example",
+        &leaf("DNS:eku.example", "codeSigning"),
+        &int_plain,
+        &int_key,
+        &int_srl,
+    );
+    let under_eku = sign(
+        &leaf_key,
+        "under-eku",
+        "under.example",
+        &leaf("DNS:under.example", "clientAuth"),
+        &int_eku,
+        &int_key,
+        &int_srl,
+    );
+    let deep = sign(
+        &leaf_key,
+        "deep",
+        "deep.example",
+        &leaf("DNS:deep.example", "clientAuth"),
+        &sub,
+        &sub_key,
+        &sub_srl,
+    );
+    let plain_crl = crl_for(&int_plain, &int_key, "plain");
+    let nc_crl = crl_for(&int_nc, &int_key, "nc");
+    let ex_crl = crl_for(&int_ex, &int_key, "ex");
+    let eku_crl = crl_for(&int_eku, &int_key, "eku");
+    let sub_crl = crl_for(&sub, &sub_key, "sub");
+    let join = |parts: &[&Path]| {
+        let mut bytes = Vec::new();
+        for part in parts {
+            bytes.extend(fs::read(part).unwrap());
+        }
+        bytes
+    };
+    let plain_chain = join(&[&int_plain, &root_crt]);
+    let nc_chain = join(&[&int_nc, &root_crt]);
+    let ex_chain = join(&[&int_ex, &root_crt]);
+    let eku_chain = join(&[&int_eku, &root_crt]);
+    let deep_chain = join(&[&sub, &int_path, &root_crt]);
+    let check = |chain: &[u8], crl: &Path, cert: &Path| {
+        fs::write(paths.chain_path(), chain).unwrap();
+        fs::write(paths.crl_path(), fs::read(crl).unwrap()).unwrap();
+        compare_verify(&paths, cert);
+    };
+    let check_client_purpose = |chain: &[u8], crl: &Path, cert: &Path| {
+        fs::write(paths.chain_path(), chain).unwrap();
+        fs::write(paths.crl_path(), fs::read(crl).unwrap()).unwrap();
+        let ours = run(&paths, &["verify", &cert.display().to_string()]);
+        let openssl = openssl_raw(&[
+            "verify",
+            "-purpose",
+            "sslclient",
+            "-CAfile",
+            &paths.chain_path().display().to_string(),
+            "-crl_check",
+            "-CRLfile",
+            &paths.crl_path().display().to_string(),
+            &cert.display().to_string(),
+        ]);
+        let openssl_code = openssl.status.code().unwrap_or(1);
+        let openssl_out = String::from_utf8_lossy(&openssl.stdout).into_owned();
+        let openssl_err = String::from_utf8_lossy(&openssl.stderr).into_owned();
+        assert_eq!(
+            ours.0, openssl_code,
+            "openssl stdout {openssl_out} stderr {openssl_err}\nours {}",
+            ours.2
+        );
+        assert_eq!(
+            ours.1, openssl_out,
+            "stderr openssl {openssl_err} ours {}",
+            ours.2
+        );
+        assert_eq!(ours.2, openssl_err);
+        assert!(
+            ours.2.contains("error 26 at") && ours.2.contains("unsuitable certificate purpose"),
+            "{}",
+            ours.2
+        );
+    };
+    check(&nc_chain, &nc_crl, &outside);
+    check(&nc_chain, &nc_crl, &inside);
+    check(&nc_chain, &nc_crl, &apex);
+    check(&nc_chain, &nc_crl, &cn_only);
+    check(&nc_chain, &nc_crl, &san_wins);
+    check(&ex_chain, &ex_crl, &excluded);
+    check(&ex_chain, &ex_crl, &excluded_ok);
+    check(&plain_chain, &plain_crl, &unknown);
+    check(&plain_chain, &plain_crl, &unknown_nc);
+    check(&plain_chain, &plain_crl, &critical_ski);
+    check(&plain_chain, &plain_crl, &critical_client);
+    check(&plain_chain, &plain_crl, &server_only);
+    check(&deep_chain, &sub_crl, &deep);
+    check_client_purpose(&plain_chain, &plain_crl, &code_signing);
+    check_client_purpose(&eku_chain, &eku_crl, &under_eku);
+}
+
 fn extension_hex(text: &str, header: &str) -> String {
     let mut grab = false;
     for line in text.lines() {

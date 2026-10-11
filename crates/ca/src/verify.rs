@@ -3,9 +3,11 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use x509_parser::certificate::X509Certificate;
-use x509_parser::oid_registry::OID_PKCS1_SHA256WITHRSA;
+use x509_parser::extensions::{GeneralName, NameConstraints};
+use x509_parser::oid_registry::{OID_PKCS1_SHA256WITHRSA, OID_PKCS9_EMAIL_ADDRESS};
 use x509_parser::prelude::FromDer;
 use x509_parser::revocation_list::CertificateRevocationList;
+use x509_parser::x509::X509Name;
 
 use crate::namefmt::openssl_dn;
 use crate::pemutil;
@@ -34,6 +36,7 @@ struct Anchor {
     crl_sign: Option<bool>,
     dn: String,
     serial: String,
+    der: Vec<u8>,
 }
 
 pub fn verify_cert(chain_pem: &Path, crl_pem: &Path, cert_path: &Path) -> VerifyOutput {
@@ -91,7 +94,16 @@ pub fn verify_cert(chain_pem: &Path, crl_pem: &Path, cert_path: &Path) -> Verify
             );
         }
     };
+    if let Some(output) = check_critical(&chain, cert_path) {
+        return output;
+    }
+    if let Some(output) = check_extended_key_usage(&chain, cert_path) {
+        return output;
+    }
     if let Some(output) = check_ca_constraints(&chain, cert_path) {
+        return output;
+    }
+    if let Some(output) = check_name_constraints(&chain, cert_path) {
         return output;
     }
     let now = SystemTime::now()
@@ -341,7 +353,420 @@ fn parse_anchor(der: &[u8]) -> Option<Anchor> {
         crl_sign: usage.as_ref().map(|ext| ext.value.crl_sign()),
         dn: openssl_dn(certificate.subject()),
         serial: hex_from_raw(certificate.raw_serial()),
+        der: der.to_vec(),
     })
+}
+
+fn load_cert(anchor: &Anchor) -> Result<X509Certificate<'_>, ()> {
+    X509Certificate::from_der(&anchor.der)
+        .map(|(_, certificate)| certificate)
+        .map_err(|_| ())
+}
+
+fn check_critical(chain: &[Anchor], cert_path: &Path) -> Option<VerifyOutput> {
+    for (depth, anchor) in chain.iter().enumerate() {
+        let Ok(certificate) = load_cert(anchor) else {
+            return Some(unhandled(anchor, cert_path, depth));
+        };
+        for ext in certificate.extensions() {
+            if !ext.critical {
+                continue;
+            }
+            let oid = ext.oid.to_id_string();
+            if !processed_extension(&oid) {
+                return Some(unhandled(anchor, cert_path, depth));
+            }
+            let parsed = ext.parsed_extension();
+            if must_parse(&oid) && (parsed.error().is_some() || parsed.unsupported()) {
+                return Some(unhandled(anchor, cert_path, depth));
+            }
+        }
+    }
+    None
+}
+
+fn unhandled(anchor: &Anchor, cert_path: &Path, depth: usize) -> VerifyOutput {
+    fail_parsed(
+        &anchor.dn,
+        cert_path,
+        depth,
+        34,
+        "unhandled critical extension",
+    )
+}
+
+fn processed_extension(oid: &str) -> bool {
+    matches!(
+        oid,
+        "2.5.29.15"
+            | "2.5.29.17"
+            | "2.5.29.19"
+            | "2.5.29.30"
+            | "2.5.29.32"
+            | "2.5.29.33"
+            | "2.5.29.36"
+            | "2.5.29.37"
+            | "2.5.29.54"
+            | "1.3.6.1.5.5.7.1.7"
+            | "1.3.6.1.5.5.7.1.8"
+            | "1.3.6.1.5.5.7.1.14"
+            | "2.16.840.1.113730.1.1"
+    )
+}
+
+fn must_parse(oid: &str) -> bool {
+    matches!(
+        oid,
+        "2.5.29.15" | "2.5.29.17" | "2.5.29.19" | "2.5.29.30" | "2.5.29.37"
+    )
+}
+
+fn check_extended_key_usage(chain: &[Anchor], cert_path: &Path) -> Option<VerifyOutput> {
+    for (depth, anchor) in chain.iter().enumerate() {
+        let Ok(certificate) = load_cert(anchor) else {
+            return Some(unhandled(anchor, cert_path, depth));
+        };
+        let usage = match certificate.extended_key_usage() {
+            Ok(Some(ext)) => ext.value,
+            Ok(None) => continue,
+            Err(_) => return Some(unhandled(anchor, cert_path, depth)),
+        };
+        if usage.any || usage.server_auth || usage.client_auth {
+            continue;
+        }
+        return Some(fail_parsed(
+            &anchor.dn,
+            cert_path,
+            depth,
+            26,
+            "unsuitable certificate purpose",
+        ));
+    }
+    None
+}
+
+fn check_name_constraints(chain: &[Anchor], cert_path: &Path) -> Option<VerifyOutput> {
+    for depth in (0..chain.len()).rev() {
+        if depth > 0 && chain[depth].subject == chain[depth].issuer {
+            continue;
+        }
+        for issuer_depth in ((depth + 1)..chain.len()).rev() {
+            match constrain_pair(&chain[depth], depth, &chain[issuer_depth]) {
+                Ok(()) => {}
+                Err(code) => {
+                    return Some(fail_parsed(
+                        &chain[depth].dn,
+                        cert_path,
+                        depth,
+                        code,
+                        constraint_message(code),
+                    ));
+                }
+            }
+        }
+    }
+    None
+}
+
+fn constraint_message(code: i32) -> &'static str {
+    match code {
+        47 => "permitted subtree violation",
+        48 => "excluded subtree violation",
+        51 => "unsupported name constraint type",
+        52 => "unsupported or invalid name constraint syntax",
+        _ => "unsupported or invalid name syntax",
+    }
+}
+
+fn constrain_pair(subject: &Anchor, depth: usize, issuer: &Anchor) -> Result<(), i32> {
+    let subject_cert = load_cert(subject).map_err(|_| 34)?;
+    let issuer_cert = load_cert(issuer).map_err(|_| 34)?;
+    let Some(constraints) = name_constraints_of(&issuer_cert)? else {
+        return Ok(());
+    };
+    if let Some(san) = subject_cert.subject_alternative_name().map_err(|_| 34)? {
+        for name in &san.value.general_names {
+            check_general_name(name, constraints)?;
+        }
+    }
+    for email in subject_cert.subject().iter_by_oid(&OID_PKCS9_EMAIL_ADDRESS) {
+        if let Ok(value) = email.as_str() {
+            check_email(value, constraints)?;
+        }
+    }
+    if depth == 0 && !has_dns_san(&subject_cert) {
+        for cn in subject_cert.subject().iter_common_name() {
+            if let Ok(value) = cn.as_str()
+                && is_dns_name(value)
+            {
+                check_dns(value, constraints)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn name_constraints_of<'a>(
+    certificate: &'a X509Certificate<'a>,
+) -> Result<Option<&'a NameConstraints<'a>>, i32> {
+    match certificate.name_constraints() {
+        Ok(Some(ext)) => Ok(Some(ext.value)),
+        Ok(None) => Ok(None),
+        Err(_) => Err(34),
+    }
+}
+
+fn has_dns_san(certificate: &X509Certificate<'_>) -> bool {
+    certificate
+        .subject_alternative_name()
+        .ok()
+        .flatten()
+        .is_some_and(|san| {
+            san.value
+                .general_names
+                .iter()
+                .any(|name| matches!(name, GeneralName::DNSName(_)))
+        })
+}
+
+fn is_dns_name(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.is_empty() || bytes.len() > 255 || bytes[0] == b'.' || bytes[bytes.len() - 1] == b'.' {
+        return false;
+    }
+    let mut label = 0usize;
+    for &byte in bytes {
+        if byte == b'.' {
+            if label == 0 || label > 63 {
+                return false;
+            }
+            label = 0;
+            continue;
+        }
+        if !(byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_') {
+            return false;
+        }
+        label += 1;
+    }
+    (1..=63).contains(&label)
+}
+
+fn check_general_name(
+    name: &GeneralName<'_>,
+    constraints: &NameConstraints<'_>,
+) -> Result<(), i32> {
+    match name {
+        GeneralName::DNSName(value) => check_dns(value, constraints),
+        GeneralName::RFC822Name(value) => check_email(value, constraints),
+        GeneralName::URI(value) => check_uri(value, constraints),
+        GeneralName::IPAddress(value) => check_ip(value, constraints),
+        GeneralName::DirectoryName(value) => check_directory(value, constraints),
+        GeneralName::OtherName(_, _)
+        | GeneralName::X400Address(_)
+        | GeneralName::EDIPartyName(_)
+        | GeneralName::RegisteredID(_)
+        | GeneralName::Invalid(_, _) => {
+            if constraint_mentions(constraints, name) {
+                Err(51)
+            } else {
+                Ok(())
+            }
+        }
+    }
+}
+
+fn constraint_mentions(constraints: &NameConstraints<'_>, name: &GeneralName<'_>) -> bool {
+    let mentions = |base: &GeneralName<'_>| match (name, base) {
+        (GeneralName::OtherName(left, _), GeneralName::OtherName(right, _)) => left == right,
+        (GeneralName::X400Address(_), GeneralName::X400Address(_))
+        | (GeneralName::EDIPartyName(_), GeneralName::EDIPartyName(_))
+        | (GeneralName::RegisteredID(_), GeneralName::RegisteredID(_))
+        | (GeneralName::Invalid(_, _), GeneralName::Invalid(_, _)) => true,
+        _ => false,
+    };
+    constraints
+        .permitted_subtrees
+        .iter()
+        .flatten()
+        .chain(constraints.excluded_subtrees.iter().flatten())
+        .any(|subtree| mentions(&subtree.base))
+}
+
+fn check_dns(name: &str, constraints: &NameConstraints<'_>) -> Result<(), i32> {
+    excluded_then_permitted(constraints, |base| match base {
+        GeneralName::DNSName(constraint) => Some(Ok(dns_match(name, constraint))),
+        _ => None,
+    })
+}
+
+fn check_email(mail: &str, constraints: &NameConstraints<'_>) -> Result<(), i32> {
+    excluded_then_permitted(constraints, |base| match base {
+        GeneralName::RFC822Name(constraint) => Some(email_match(mail, constraint)),
+        _ => None,
+    })
+}
+
+fn check_uri(uri: &str, constraints: &NameConstraints<'_>) -> Result<(), i32> {
+    let host = uri_host(uri)?;
+    excluded_then_permitted(constraints, |base| match base {
+        GeneralName::URI(constraint) => {
+            Some(uri_base(constraint).map(|base| dns_match(host, base)))
+        }
+        _ => None,
+    })
+}
+
+fn check_ip(addr: &[u8], constraints: &NameConstraints<'_>) -> Result<(), i32> {
+    excluded_then_permitted(constraints, |base| match base {
+        GeneralName::IPAddress(constraint) => Some(ip_match(addr, constraint)),
+        _ => None,
+    })
+}
+
+fn check_directory(name: &X509Name<'_>, constraints: &NameConstraints<'_>) -> Result<(), i32> {
+    excluded_then_permitted(constraints, |base| match base {
+        GeneralName::DirectoryName(constraint) => Some(Ok(directory_match(name, constraint))),
+        _ => None,
+    })
+}
+
+fn excluded_then_permitted(
+    constraints: &NameConstraints<'_>,
+    same: impl Fn(&GeneralName<'_>) -> Option<Result<bool, i32>>,
+) -> Result<(), i32> {
+    if let Some(excluded) = &constraints.excluded_subtrees {
+        for subtree in excluded {
+            if let Some(matched) = same(&subtree.base)
+                && matched?
+            {
+                return Err(48);
+            }
+        }
+    }
+    let mut saw_type = false;
+    if let Some(permitted) = &constraints.permitted_subtrees {
+        for subtree in permitted {
+            if let Some(matched) = same(&subtree.base) {
+                saw_type = true;
+                if matched? {
+                    return Ok(());
+                }
+            }
+        }
+    }
+    if saw_type { Err(47) } else { Ok(()) }
+}
+
+fn dns_match(name: &str, base: &str) -> bool {
+    let name = name.as_bytes();
+    let base = base.as_bytes();
+    if base.is_empty() {
+        return true;
+    }
+    if name.len() > base.len() {
+        let start = name.len() - base.len();
+        if !eq_ascii(&name[start..], base) {
+            return false;
+        }
+        return base[0] == b'.' || name[start - 1] == b'.';
+    }
+    name.len() == base.len() && eq_ascii(name, base)
+}
+
+fn eq_ascii(left: &[u8], right: &[u8]) -> bool {
+    left.eq_ignore_ascii_case(right)
+}
+
+fn email_match(mail: &str, base: &str) -> Result<bool, i32> {
+    if !mail.contains('@') {
+        return Err(53);
+    }
+    if base.is_empty() {
+        return Ok(true);
+    }
+    if !base.contains('@') && base.starts_with('.') {
+        if mail.len() > base.len() {
+            let start = mail.len() - base.len();
+            return Ok(eq_ascii(&mail.as_bytes()[start..], base.as_bytes()));
+        }
+        return Ok(false);
+    }
+    if base.contains('@') {
+        return Ok(mail.len() == base.len() && eq_ascii(mail.as_bytes(), base.as_bytes()));
+    }
+    let host = mail.split_once('@').map(|(_, host)| host).ok_or(53)?;
+    Ok(dns_match(host, base))
+}
+
+fn uri_host(uri: &str) -> Result<&str, i32> {
+    let after_scheme = uri.split_once("://").map_or(uri, |(_, rest)| rest);
+    let no_path = after_scheme
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or(after_scheme);
+    let hostport = no_path.rsplit_once('@').map_or(no_path, |(_, host)| host);
+    if hostport.is_empty() {
+        return Err(53);
+    }
+    if let Some(rest) = hostport.strip_prefix('[') {
+        let end = rest.find(']').ok_or(53)?;
+        let host = &rest[..end];
+        if host.is_empty() {
+            return Err(53);
+        }
+        return Ok(host);
+    }
+    let host = hostport.split_once(':').map_or(hostport, |(host, _)| host);
+    if host.is_empty() { Err(53) } else { Ok(host) }
+}
+
+fn uri_base(base: &str) -> Result<&str, i32> {
+    if base.contains("://") {
+        uri_host(base)
+    } else {
+        Ok(base)
+    }
+}
+
+fn ip_match(addr: &[u8], base: &[u8]) -> Result<bool, i32> {
+    if addr.len() != 4 && addr.len() != 16 {
+        return Err(53);
+    }
+    if base.len() != addr.len() * 2 {
+        return Err(52);
+    }
+    let (network, mask) = base.split_at(addr.len());
+    Ok(addr
+        .iter()
+        .zip(network)
+        .zip(mask)
+        .all(|((addr, network), mask)| addr & mask == network & mask))
+}
+
+fn directory_match(name: &X509Name<'_>, base: &X509Name<'_>) -> bool {
+    let name_rdns: Vec<_> = name.iter_rdn().collect();
+    let base_rdns: Vec<_> = base.iter_rdn().collect();
+    if base_rdns.len() > name_rdns.len() {
+        return false;
+    }
+    for (name_rdn, base_rdn) in name_rdns.iter().zip(base_rdns.iter()) {
+        let name_attrs: Vec<_> = name_rdn.iter().collect();
+        let base_attrs: Vec<_> = base_rdn.iter().collect();
+        if name_attrs.len() != base_attrs.len() {
+            return false;
+        }
+        for (name_attr, base_attr) in name_attrs.iter().zip(base_attrs.iter()) {
+            if name_attr.attr_type() != base_attr.attr_type() {
+                return false;
+            }
+            match (name_attr.as_str(), base_attr.as_str()) {
+                (Ok(left), Ok(right)) if left.eq_ignore_ascii_case(right) => {}
+                _ if name_attr.as_slice() == base_attr.as_slice() => {}
+                _ => return false,
+            }
+        }
+    }
+    true
 }
 
 fn fail_load(path: &Path, message: &str) -> VerifyOutput {
