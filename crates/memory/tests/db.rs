@@ -1,130 +1,24 @@
 use std::collections::BTreeMap;
 
 use memory::{
-    CaptureBatch, CaptureMessage, CaptureOptions, MemoryStore, PostgresMemory, migrate_connection,
-    utf16_len, utf16_prefix,
+    CaptureBatch, CaptureMessage, CaptureOptions, MemoryStore, PostgresMemory, utf16_len,
+    utf16_prefix,
 };
 use serde_json::{Map, Value, json};
-use sqlx::postgres::PgPoolOptions;
-use sqlx::{Connection, PgConnection, PgPool, Row};
+use sqlx::{PgPool, Row};
 
-fn audited(sql: String) -> sqlx::AssertSqlSafe<String> {
-    sqlx::AssertSqlSafe(sql)
-}
-
-fn skip(test_name: &str, reason: &str) {
-    eprintln!("rr-2a db test {test_name} skipped: {reason}");
-}
-
-fn fixture(path: &str) -> std::path::PathBuf {
-    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(path)
-}
-
-async fn drop_schema(url: &str, schema: &str) {
-    let Ok(mut conn) = PgConnection::connect(url).await else {
-        return;
-    };
-    let ids: Vec<String> = sqlx::query_scalar(audited(format!(
-        "SELECT id::text FROM {schema}.ros_messages"
-    )))
-    .fetch_all(&mut conn)
-    .await
-    .unwrap_or_default();
-    if !ids.is_empty() {
-        let keys: Vec<String> = ids
-            .iter()
-            .map(|id| format!("embed-ros_messages-{id}"))
-            .collect();
-        let _ =
-            sqlx::query("DELETE FROM graphile_worker._private_jobs WHERE key = ANY($1::text[])")
-                .bind(&keys)
-                .execute(&mut conn)
-                .await;
-    }
-    let _ = sqlx::query(audited(format!("DROP SCHEMA IF EXISTS {schema} CASCADE")))
-        .execute(&mut conn)
-        .await;
-}
+mod common;
 
 async fn with_schema<F, Fut>(test_name: &str, prefix: &str, body: F)
 where
     F: FnOnce(PgPool) -> Fut,
     Fut: std::future::Future<Output = Result<(), String>>,
 {
-    let url = match std::env::var("RIVETOS_PG_URL") {
-        Ok(value) if !value.is_empty() => value,
-        _ => {
-            skip(
-                test_name,
-                "RIVETOS_PG_URL is unset; this runner cannot reach a database",
-            );
-            return;
-        }
-    };
-    let schema = format!("{prefix}_{}", std::process::id());
-    let mut admin = PgConnection::connect(&url).await.expect("connect");
-    let graphile: Option<String> =
-        sqlx::query_scalar("SELECT to_regclass('graphile_worker._private_jobs')::text")
-            .fetch_one(&mut admin)
-            .await
-            .expect("graphile probe");
-    if graphile.as_deref().unwrap_or("").is_empty() {
-        skip(
-            test_name,
-            "graphile_worker._private_jobs does not exist (graphile-worker SQL is not in this repository)",
-        );
-        return;
-    }
-    sqlx::query(audited(format!("DROP SCHEMA IF EXISTS {schema} CASCADE")))
-        .execute(&mut admin)
-        .await
-        .expect("drop leftover schema");
-    sqlx::query(audited(format!("CREATE SCHEMA {schema}")))
-        .execute(&mut admin)
-        .await
-        .expect("create schema");
-    sqlx::query(audited(format!("SET search_path TO {schema}, public")))
-        .execute(&mut admin)
-        .await
-        .expect("search_path");
-    if let Err(err) = migrate_connection(&mut admin, false).await {
-        drop(admin);
-        drop_schema(&url, &schema).await;
-        let message = err.to_string();
-        let lower = message.to_ascii_lowercase();
-        if lower.contains("extension") || lower.contains("vector") || lower.contains("pg_trgm") {
-            skip(
-                test_name,
-                &format!("migration extension is unavailable ({message})"),
-            );
-            return;
-        }
-        panic!("{test_name}: migrate failed: {message}");
-    }
-    drop(admin);
-    let schema_for_pool = schema.clone();
-    let pool = PgPoolOptions::new()
-        .max_connections(2)
-        .after_connect(move |conn, _meta| {
-            let schema_for_pool = schema_for_pool.clone();
-            Box::pin(async move {
-                sqlx::query(audited(format!(
-                    "SET search_path TO {schema_for_pool}, public"
-                )))
-                .execute(&mut *conn)
-                .await?;
-                Ok(())
-            })
-        })
-        .connect(&url)
-        .await
-        .expect("pool");
-    let outcome = body(pool.clone()).await;
-    pool.close().await;
-    drop_schema(&url, &schema).await;
-    if let Err(err) = outcome {
-        panic!("{test_name}: {err}");
-    }
+    common::with_db(test_name, prefix, true, 4, |db| body(db.pool)).await;
+}
+
+fn fixture(path: &str) -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(path)
 }
 
 fn opt_string(value: &Value, key: &str) -> Option<String> {
@@ -636,6 +530,38 @@ async fn fixture_capture_batches_body(pool: PgPool) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+#[tokio::test]
+async fn harness_reads_migration_files() {
+    let baseline = common::read_migration("0001_baseline.sql").expect("0001");
+    assert!(baseline.contains("ros_conversations"));
+    assert!(
+        common::migrations_dir()
+            .join("0020_tag_removals.sql")
+            .is_file()
+    );
+    common::with_db(
+        "harness_reads_migration_files",
+        "rr2a_help",
+        false,
+        2,
+        |db| async move {
+            let mut conn = db.pool.acquire().await.map_err(|err| err.to_string())?;
+            common::apply_file(&mut conn, "SELECT 1").await?;
+            let missing = sqlx::query("SELECT definitely_missing_rr2a_helper")
+                .execute(&mut *conn)
+                .await;
+            let Err(err) = missing else {
+                return Err("missing column was accepted".to_string());
+            };
+            if common::pg_code(&err).as_deref() != Some("42703") {
+                return Err(format!("expected 42703, got {err}"));
+            }
+            Ok(())
+        },
+    )
+    .await;
 }
 
 #[tokio::test]

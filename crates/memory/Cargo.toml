@@ -25,6 +25,7 @@ zstd = "0.13"
 [dev-dependencies]
 chrono = { version = "0.4", features = ["serde"] }
 hex = "0.4"
+rusqlite = { version = "0.32", features = ["bundled"] }
 serde_json.workspace = true
 sha2 = "0.10"
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json"] }
