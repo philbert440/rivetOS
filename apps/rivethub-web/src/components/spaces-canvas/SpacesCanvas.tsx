@@ -83,7 +83,7 @@ import {
   resolveDrop,
   type DropHit,
 } from './drop-target.js'
-import { HistoryPanel } from './HistoryPanel.js'
+import { HistoryPanel, loadHistoryWidth, saveHistoryWidth } from './HistoryPanel.js'
 import {
   applyChooser,
   startThreadInSpace,
@@ -288,6 +288,7 @@ export function SpacesCanvas(props: {
   const [trackedActive, setTrackedActive] = useState(activeId)
   const [spaceFocus, setSpaceFocus] = useState<string | undefined>(undefined)
   const [historyWanted, setHistoryWanted] = useState(false)
+  const [historyWidth, setHistoryWidth] = useState(loadHistoryWidth)
   const [pick, setPick] = useState<PickState | null>(null)
   const [findOpen, setFindOpen] = useState(false)
   const [findQuery, setFindQuery] = useState('')
@@ -1187,6 +1188,8 @@ export function SpacesCanvas(props: {
   const mruShown =
     previewId !== undefined && !mruHead.includes(previewId) ? [...mruHead, previewId] : mruHead
   const historyOpen = historyWanted || pick !== null
+  // The buttons and dock step left of the open History panel by its width.
+  const historyRight = historyOpen ? `${String(historyWidth + 16)}px` : '1rem'
   const removeSpace = spaces.find((space) => space.id === removePrompt)
   const removeRows = regions.find((region) => region.id === removePrompt)?.rows ?? []
   const editing = editSpace ? spaces.find((space) => space.id === editSpace) : undefined
@@ -1491,6 +1494,12 @@ export function SpacesCanvas(props: {
         open={historyOpen}
         highlighted={hover?.kind === 'history'}
         panelRef={panelRef}
+        width={historyWidth}
+        onResize={setHistoryWidth}
+        onCommitWidth={(width) => {
+          setHistoryWidth(width)
+          saveHistoryWidth(width)
+        }}
         pick={pick ? { title: pick.title, onCancel: () => setPick(null) } : undefined}
         onOpen={(id) => {
           if (consumedClickRef.current) {
@@ -1583,8 +1592,8 @@ export function SpacesCanvas(props: {
         <div
           data-hud=""
           className="pointer-events-auto absolute top-4 flex items-center gap-2"
-          // History opens on the right (w-60); the buttons step left of it.
-          style={{ right: historyOpen ? 'calc(15rem + 1rem)' : '1rem' }}
+          // History opens on the right; the buttons step left of it.
+          style={{ right: historyRight }}
         >
           <button
             type="button"
@@ -1625,7 +1634,7 @@ export function SpacesCanvas(props: {
           <div
             data-hud=""
             data-dock-bar=""
-            style={{ right: historyOpen ? 'calc(15rem + 1rem)' : '1rem' }}
+            style={{ right: historyRight }}
             className="pointer-events-auto absolute top-15 flex max-h-[calc(100%-5rem)] flex-col items-stretch gap-0.5 overflow-y-auto border border-line bg-panel p-1 [&>button]:flex [&>button]:items-baseline [&>button]:gap-2 [&>button]:text-left material:rounded-2xl material:border-line/40 material:shadow-pop"
           >
             <button
