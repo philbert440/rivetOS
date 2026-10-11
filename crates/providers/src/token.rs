@@ -2,17 +2,17 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::process::Stdio;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
+use parking_lot::Mutex;
+
 use futures_util::FutureExt;
-use protocol::js::js_trim;
+use protocol::js::{date_now, js_trim};
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 
 use crate::cli::group_has_live;
-use crate::error::now_ms;
-use crate::types::lock;
 
 pub const DEFAULT_TOKEN_TTL_MS: i64 = 300_000;
 pub const DEFAULT_TOKEN_COMMAND_TIMEOUT_MS: u64 = 5_000;
@@ -118,7 +118,7 @@ impl TokenSource {
             argv,
             ttl_ms: ttl_ms.unwrap_or(DEFAULT_TOKEN_TTL_MS),
             timeout_ms,
-            now: now.unwrap_or_else(|| Arc::new(now_ms)),
+            now: now.unwrap_or_else(|| Arc::new(|| date_now() as i64)),
             run,
             inner: Arc::new(Mutex::new(TokenInner {
                 cache: None,
@@ -130,7 +130,7 @@ impl TokenSource {
     pub async fn get_token(&self) -> Result<String, TokenError> {
         let now = (self.now)();
         let shared = {
-            let mut guard = lock(&self.inner);
+            let mut guard = self.inner.lock();
             if let Some(cache) = &guard.cache
                 && now < cache.expires_at
             {
@@ -168,7 +168,7 @@ impl TokenSource {
                     }
                     .await;
                     {
-                        let mut guard = lock(&inner);
+                        let mut guard = inner.lock();
                         if let Ok(token) = &result {
                             let stamped = (now_fn)();
                             guard.cache = Some(CacheEntry {
@@ -187,7 +187,7 @@ impl TokenSource {
     }
 
     pub fn get_cached_token(&self) -> Option<String> {
-        let guard = lock(&self.inner);
+        let guard = self.inner.lock();
         let cache = guard.cache.as_ref()?;
         if (self.now)() >= cache.expires_at {
             None
@@ -197,7 +197,7 @@ impl TokenSource {
     }
 
     pub fn invalidate(&self, rejected: Option<&str>) {
-        let mut guard = lock(&self.inner);
+        let mut guard = self.inner.lock();
         if let Some(rejected) = rejected
             && let Some(cache) = &guard.cache
             && cache.token != rejected

@@ -1,6 +1,8 @@
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+use parking_lot::Mutex;
 
 use protocol::ContentPart;
 use providers::{
@@ -59,16 +61,14 @@ fn extract_text_and_user_parts() {
     );
     assert_eq!(extract_text_value(&json!([])), "");
     assert_eq!(
-        parts_to_ai_sdk_user_content(&[ContentPart::Text {
-            text: "hi".to_string()
-        }]),
+        parts_to_ai_sdk_user_content(&[ContentPart::Text { text: "hi".into() }]),
         vec![AiUserPart::Text {
             text: "hi".to_string()
         }]
     );
     assert_eq!(
         parts_to_ai_sdk_user_content(&[ContentPart::Text {
-            text: String::new()
+            text: String::new().into(),
         }]),
         Vec::<AiUserPart>::new()
     );
@@ -136,7 +136,7 @@ fn convert_messages_matches_the_sdk_cases() {
     multi.content_text = None;
     multi.content_parts = Some(vec![
         ContentPart::Text {
-            text: "see this".to_string(),
+            text: "see this".into(),
         },
         ContentPart::Image {
             data: Some("AA".to_string()),
@@ -228,7 +228,7 @@ fn convert_messages_matches_the_sdk_cases() {
     image_tool.content_text = None;
     image_tool.content_parts = Some(vec![
         ContentPart::Text {
-            text: "screenshot:".to_string(),
+            text: "screenshot:".into(),
         },
         ContentPart::Image {
             data: Some("X".to_string()),
@@ -386,7 +386,7 @@ async fn token_source_cache_invalidate_and_auth() {
     let now = Arc::new(Mutex::new(1_000i64));
     let clock = {
         let now = Arc::clone(&now);
-        Arc::new(move || *now.lock().unwrap()) as Arc<dyn Fn() -> i64 + Send + Sync>
+        Arc::new(move || *now.lock()) as Arc<dyn Fn() -> i64 + Send + Sync>
     };
     let n = Arc::new(AtomicU64::new(0));
     let counter = Arc::clone(&n);
@@ -410,7 +410,7 @@ async fn token_source_cache_invalidate_and_auth() {
     assert_eq!(src.get_token().await.unwrap(), "token-1");
     assert_eq!(n.load(Ordering::SeqCst), 1);
     assert_eq!(src.get_cached_token().as_deref(), Some("token-1"));
-    *now.lock().unwrap() = 1_100;
+    *now.lock() = 1_100;
     assert!(src.get_cached_token().is_none());
     assert_eq!(src.get_token().await.unwrap(), "token-2");
     let minted = Arc::new(AtomicU64::new(0));
@@ -501,7 +501,7 @@ async fn token_coalesce_and_authorized_call() {
             let calls_run = Arc::clone(&calls_run);
             Box::pin(async move {
                 calls_run.fetch_add(1, Ordering::SeqCst);
-                let rx = rx_run.lock().unwrap().take().unwrap();
+                let rx = rx_run.lock().take().unwrap();
                 rx.await.unwrap_or_else(|_| Err("closed".to_string()))
             })
         })),
@@ -539,14 +539,14 @@ async fn token_coalesce_and_authorized_call() {
         let token = token.to_string();
         async move {
             let denied = token == "tok-1";
-            seen.lock().unwrap().push(token);
+            seen.lock().push(token);
             if denied { 401 } else { 200 }
         }
     })
     .await
     .unwrap();
     assert_eq!(status, 200);
-    assert_eq!(calls.lock().unwrap().as_slice(), ["tok-1", "tok-2"]);
+    assert_eq!(calls.lock().as_slice(), ["tok-1", "tok-2"]);
     let src = TokenSource::build(
         vec!["helper".to_string()],
         None,
@@ -643,7 +643,7 @@ async fn model_catalog_floor_merge_and_failure() {
     let now = Arc::new(Mutex::new(0i64));
     let clock = {
         let now = Arc::clone(&now);
-        Arc::new(move || *now.lock().unwrap()) as Arc<dyn Fn() -> i64 + Send + Sync>
+        Arc::new(move || *now.lock()) as Arc<dyn Fn() -> i64 + Send + Sync>
     };
     let cat = ModelCatalog::new(
         vec!["floor-a".to_string()],
@@ -656,7 +656,7 @@ async fn model_catalog_floor_merge_and_failure() {
     );
     cat.refresh();
     wait_for(|| cat.list() == vec!["floor-a".to_string(), "disc-1".to_string()]).await;
-    *now.lock().unwrap() = 20;
+    *now.lock() = 20;
     assert_eq!(
         cat.refresh(),
         vec!["floor-a".to_string(), "disc-1".to_string()]
@@ -664,7 +664,7 @@ async fn model_catalog_floor_merge_and_failure() {
     let now = Arc::new(Mutex::new(0i64));
     let clock = {
         let now = Arc::clone(&now);
-        Arc::new(move || *now.lock().unwrap()) as Arc<dyn Fn() -> i64 + Send + Sync>
+        Arc::new(move || *now.lock()) as Arc<dyn Fn() -> i64 + Send + Sync>
     };
     let fail = Arc::new(Mutex::new(false));
     let fail_fetch = Arc::clone(&fail);
@@ -675,7 +675,7 @@ async fn model_catalog_floor_merge_and_failure() {
         Arc::new(move || {
             let fail_fetch = Arc::clone(&fail_fetch);
             Box::pin(async move {
-                if *fail_fetch.lock().unwrap() {
+                if *fail_fetch.lock() {
                     Err("down".to_string())
                 } else {
                     Ok(vec!["disc".to_string()])
@@ -685,23 +685,21 @@ async fn model_catalog_floor_merge_and_failure() {
         Some(10),
         None,
         Some(clock),
-        Some(Arc::new(move |message| {
-            logs_fn.lock().unwrap().push(message)
-        })),
+        Some(Arc::new(move |message| logs_fn.lock().push(message))),
         Some("vllm".to_string()),
     );
     cat.refresh();
     wait_for(|| cat.list().iter().any(|id| id == "disc")).await;
-    *fail.lock().unwrap() = true;
-    *now.lock().unwrap() = 20;
+    *fail.lock() = true;
+    *now.lock() = 20;
     cat.refresh();
     wait_for(|| cat.last_error().as_deref() == Some("down")).await;
     assert_eq!(cat.list(), vec!["floor".to_string(), "disc".to_string()]);
-    assert_eq!(logs.lock().unwrap().len(), 1);
-    *now.lock().unwrap() = 40;
+    assert_eq!(logs.lock().len(), 1);
+    *now.lock() = 40;
     cat.refresh();
     tokio::time::sleep(Duration::from_millis(50)).await;
-    assert_eq!(logs.lock().unwrap().len(), 1);
+    assert_eq!(logs.lock().len(), 1);
 }
 
 async fn wait_for(mut ready: impl FnMut() -> bool) {

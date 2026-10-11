@@ -1,7 +1,6 @@
 use std::collections::BTreeMap;
-use std::fs::{DirBuilder, OpenOptions};
-use std::io::Write;
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+use std::fs::DirBuilder;
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::Path;
 
 use serde_json::{Map, Value};
@@ -55,7 +54,7 @@ pub fn save_session_map_merge(
     for (key, value) in changes {
         fresh.insert(key.clone(), value.clone());
     }
-    write_atomic(path, &fresh)
+    replace_session_map(path, &fresh)
 }
 
 pub fn delete_session_map_key(path: &str, key: &str) {
@@ -71,7 +70,7 @@ pub fn delete_session_map_key_merge(path: &str, key: &str) -> Result<(), String>
     if fresh.remove(key).is_none() {
         return Ok(());
     }
-    write_atomic(path, &fresh)
+    replace_session_map(path, &fresh)
 }
 
 pub fn uuid_for_conversation(key: &str) -> String {
@@ -180,7 +179,7 @@ fn write_pretty(path: &str, map: &BTreeMap<String, String>, newline: bool) -> Re
     std::fs::write(path, text).map_err(|err| err.to_string())
 }
 
-fn write_atomic(path: &str, map: &BTreeMap<String, String>) -> Result<(), String> {
+fn replace_session_map(path: &str, map: &BTreeMap<String, String>) -> Result<(), String> {
     let parent = parent_dir(path);
     let parent_existed = Path::new(&parent).exists();
     let mut builder = DirBuilder::new();
@@ -191,20 +190,11 @@ fn write_atomic(path: &str, map: &BTreeMap<String, String>) -> Result<(), String
         std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o700))
             .map_err(|err| err.to_string())?;
     }
-    let tmp = format!("{path}.{}.tmp", std::process::id());
     let text = format!("{}\n", pretty(map)?);
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&tmp)
+    protocol::host::atomic_replace(Path::new(path), text.as_bytes())
         .map_err(|err| err.to_string())?;
-    file.write_all(text.as_bytes())
-        .map_err(|err| err.to_string())?;
-    file.set_permissions(std::fs::Permissions::from_mode(0o600))
-        .map_err(|err| err.to_string())?;
-    std::fs::rename(&tmp, path).map_err(|err| err.to_string())
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+        .map_err(|err| err.to_string())
 }
 
 fn pretty(map: &BTreeMap<String, String>) -> Result<String, String> {

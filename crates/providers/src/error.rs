@@ -1,7 +1,5 @@
-use std::time::{SystemTime, UNIX_EPOCH};
-
+use protocol::js::{JsObject, date_now};
 use protocol::{ErrorJson, provider_error_json};
-use serde_json::Map;
 
 #[derive(Debug, Clone, thiserror::Error)]
 #[error("{message}")]
@@ -18,7 +16,7 @@ impl ProviderError {
             message: message.into(),
             status,
             provider_id: provider_id.into(),
-            timestamp: now_ms(),
+            timestamp: date_now() as i64,
         }
     }
 
@@ -34,18 +32,11 @@ impl ProviderError {
             self.timestamp,
             None,
             None,
-            Map::new(),
+            JsObject::new(),
         )
     }
 
     pub fn retryable(&self) -> bool {
         matches!(self.status, 429 | 503 | 529)
-    }
-}
-
-pub fn now_ms() -> i64 {
-    match SystemTime::now().duration_since(UNIX_EPOCH) {
-        Ok(duration) => i64::try_from(duration.as_millis()).unwrap_or(i64::MAX),
-        Err(_) => 0,
     }
 }

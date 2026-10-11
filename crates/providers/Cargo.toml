@@ -6,23 +6,25 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-bytes = "1"
-futures-util = "0.3"
+bytes = { workspace = true }
+futures-util = { workspace = true }
+parking_lot = { workspace = true }
 protocol = { path = "../protocol" }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "gzip", "deflate"] }
-rusqlite = { version = "0.37.0", default-features = false, features = ["bundled"] }
+reqwest = { workspace = true, features = ["stream", "gzip", "deflate"] }
+rusqlite = { workspace = true, default-features = false, features = ["bundled"] }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
-tracing = "0.1"
+tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
+tracing = { workspace = true }
 
 [dev-dependencies]
-futures-util = "0.3"
+futures-util = { workspace = true }
+parking_lot = { workspace = true }
 protocol = { path = "../protocol" }
-rusqlite = { version = "0.37.0", default-features = false, features = ["bundled"] }
+rusqlite = { workspace = true, default-features = false, features = ["bundled"] }
 serde_json.workspace = true
-tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 
 [lints]
 workspace = true

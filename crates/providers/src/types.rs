@@ -1,7 +1,9 @@
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
+
+use parking_lot::Mutex;
 
 use protocol::{LlmChunk, StreamEvent, ThinkingLevel};
 use serde_json::{Map, Value};
@@ -229,10 +231,6 @@ pub trait Provider: Send + Sync {
     }
 }
 
-pub fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|err| err.into_inner())
-}
-
 pub fn summarize_args(value: &Value) -> Value {
     match value {
         Value::String(text) if text.chars().count() > 200 => {
@@ -254,18 +252,18 @@ pub fn summarize_args(value: &Value) -> Value {
 pub fn text_event(kind: protocol::StreamEventType, content: &str) -> StreamEvent {
     StreamEvent {
         r#type: kind,
-        content: content.to_string(),
+        content: content.into(),
         metadata: None,
     }
 }
 
 pub fn tool_start_event(name: &str, args: &Value) -> StreamEvent {
-    let mut metadata = Map::new();
-    metadata.insert("tool".to_string(), Value::from(name));
-    metadata.insert("args".to_string(), summarize_args(args));
+    let mut metadata = protocol::js::JsObject::new();
+    metadata.insert("tool", protocol::js::JsValue::from_text(name));
+    metadata.insert("args", protocol::js::from_serde(&summarize_args(args)));
     StreamEvent {
         r#type: protocol::StreamEventType::ToolStart,
-        content: format!("🔧 {name}"),
+        content: format!("🔧 {name}").into(),
         metadata: Some(metadata),
     }
 }
@@ -273,11 +271,11 @@ pub fn tool_start_event(name: &str, args: &Value) -> StreamEvent {
 pub fn tool_result_event(name: &str, text: &str, is_error: bool) -> StreamEvent {
     let mark = if is_error { "❌" } else { "✅" };
     let sliced: String = text.chars().take(200).collect();
-    let mut metadata = Map::new();
-    metadata.insert("tool".to_string(), Value::from(name));
+    let mut metadata = protocol::js::JsObject::new();
+    metadata.insert("tool", protocol::js::JsValue::from_text(name));
     StreamEvent {
         r#type: protocol::StreamEventType::ToolResult,
-        content: format!("{mark} {name}: {sliced}"),
+        content: format!("{mark} {name}: {sliced}").into(),
         metadata: Some(metadata),
     }
 }

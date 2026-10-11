@@ -1,8 +1,10 @@
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+use parking_lot::Mutex;
 
 use futures_util::{Stream, StreamExt};
 use protocol::{LlmChunk, ThinkingLevel};
@@ -37,7 +39,7 @@ struct Gate {
 
 impl Gate {
     fn script(&self, items: &[(&str, u16)]) {
-        let mut responses = self.responses.lock().unwrap();
+        let mut responses = self.responses.lock();
         responses.clear();
         for (body, status) in items {
             responses.push(Resp {
@@ -45,11 +47,11 @@ impl Gate {
                 body: body.as_bytes().to_vec(),
             });
         }
-        self.hits.lock().unwrap().clear();
+        self.hits.lock().clear();
     }
 
     fn hits(&self) -> Vec<Hit> {
-        self.hits.lock().unwrap().clone()
+        self.hits.lock().clone()
     }
 }
 
@@ -121,7 +123,7 @@ async fn handle(mut sock: TcpStream, gate: Arc<Gate>) -> std::io::Result<()> {
             Vec::new()
         };
         let response = {
-            let mut responses = gate.responses.lock().unwrap();
+            let mut responses = gate.responses.lock();
             let response = if responses.is_empty() {
                 Resp {
                     status: 200,
@@ -130,7 +132,7 @@ async fn handle(mut sock: TcpStream, gate: Arc<Gate>) -> std::io::Result<()> {
             } else {
                 responses.remove(0)
             };
-            gate.hits.lock().unwrap().push(Hit {
+            gate.hits.lock().push(Hit {
                 method: parsed.method,
                 target: parsed.target,
                 headers: parsed.headers,
@@ -917,11 +919,11 @@ async fn permission_prompt_allow_deny_and_empty_tool() {
                 decision: "allow".to_string(),
             })
         },
-        move |event: PermissionEvent| seen.lock().unwrap().push(event),
+        move |event: PermissionEvent| seen.lock().push(event),
     )
     .await;
     assert_eq!(text, "{\"behavior\":\"allow\"}");
-    let events = events.lock().unwrap().clone();
+    let events = events.lock().clone();
     assert_eq!(events.len(), 2);
     assert_eq!(events[0].kind, "approval-request");
     assert_eq!(events[0].name.as_deref(), Some("Bash"));

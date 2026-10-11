@@ -17,6 +17,9 @@ mod token;
 mod turn;
 mod types;
 
+#[cfg(test)]
+mod js_goldens;
+
 pub use aisdk::{
     AiImage, AiModelContent, AiModelMessage, AiModelPart, AiSdkAccumulator, AiSdkError, AiSdkPart,
     AiUsage, AiUserPart, LooseMessage, LooseToolCall, build_done_chunk, convert_messages_to_ai_sdk,

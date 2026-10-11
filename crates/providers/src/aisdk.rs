@@ -87,7 +87,7 @@ impl LooseMessage {
             .map(|call| LooseToolCall {
                 id: call.id,
                 name: call.name,
-                arguments: Value::Object(call.arguments),
+                arguments: js_object_to_json(&call.arguments),
             })
             .collect();
         let role = match message.role {
@@ -134,7 +134,7 @@ pub fn extract_text_message(message: &LooseMessage) -> String {
     let mut out = String::new();
     for part in parts {
         if let ContentPart::Text { text } = part {
-            out.push_str(text);
+            out.push_str(text.to_utf8());
         }
     }
     out
@@ -146,7 +146,9 @@ pub fn parts_to_ai_sdk_user_content(parts: &[ContentPart]) -> Vec<AiUserPart> {
         match part {
             ContentPart::Text { text } => {
                 if !text.is_empty() {
-                    out.push(AiUserPart::Text { text: text.clone() });
+                    out.push(AiUserPart::Text {
+                        text: text.to_utf8().to_string(),
+                    });
                 }
             }
             ContentPart::Image {
@@ -283,6 +285,28 @@ pub fn convert_messages_to_ai_sdk(messages: &[LooseMessage]) -> Vec<AiModelMessa
         }
     }
     result
+}
+
+fn js_object_to_json(object: &protocol::js::JsObject) -> Value {
+    let mut map = Map::new();
+    for (key, value) in object.iter() {
+        map.insert(key.to_utf8().to_string(), js_to_json(value));
+    }
+    Value::Object(map)
+}
+
+fn js_to_json(value: &protocol::js::JsValue) -> Value {
+    match value {
+        protocol::js::JsValue::Null => Value::Null,
+        protocol::js::JsValue::Bool(flag) => Value::Bool(*flag),
+        protocol::js::JsValue::Number(number) => {
+            let text = protocol::js::number_to_string(*number);
+            serde_json::from_str(&text).unwrap_or(Value::Null)
+        }
+        protocol::js::JsValue::String(text) => Value::String(text.to_utf8().to_string()),
+        protocol::js::JsValue::Array(items) => Value::Array(items.iter().map(js_to_json).collect()),
+        protocol::js::JsValue::Object(object) => js_object_to_json(object),
+    }
 }
 
 fn tool_input(arguments: &Value) -> Value {

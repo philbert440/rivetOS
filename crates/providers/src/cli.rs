@@ -2,10 +2,12 @@ use std::collections::BTreeMap;
 use std::os::unix::io::{AsFd, OwnedFd};
 use std::path::Path;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
+
+use parking_lot::Mutex;
 
 use futures_util::Stream;
 use protocol::{LlmChunk, LlmChunkType, ThinkingLevel};
@@ -15,7 +17,7 @@ use tokio::process::{Child, Command};
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
 use crate::cli_machine::{Family, Machine, clip_utf16_tail};
-use crate::error::{ProviderError, now_ms};
+use crate::error::ProviderError;
 use crate::hermes_db::{
     HermesTokenCounts, HermesTokenSnapshot, read_hermes_session_tokens, tokens_for_turn,
     unknown_tokens,
@@ -27,7 +29,7 @@ use crate::session::{
     delete_session_map_key_merge, random_uuid_v4, save_session_map, save_session_map_merge,
     session_map_strings, session_not_found, uuid_for_conversation,
 };
-use crate::types::{BoxFuture, ChatRequest, ChatStream, Provider, TurnMessage, lock};
+use crate::types::{BoxFuture, ChatRequest, ChatStream, Provider, TurnMessage};
 
 pub const CLAUDE_DEFAULT_TOOLS: &str =
     "Bash,Read,Edit,Grep,Glob,WebFetch,WebSearch,TodoWrite,Write";
@@ -375,11 +377,11 @@ impl CliProvider {
     }
 
     pub fn set_session_map_path(&self, path: Option<String>) {
-        *lock(&self.session_map_path) = path;
+        *self.session_map_path.lock() = path;
     }
 
     pub fn set_hermes_db_path(&self, path: Option<String>) {
-        *lock(&self.hermes_db_path) = path;
+        *self.hermes_db_path.lock() = path;
     }
 
     pub fn set_session_replay(&self, replay: bool) {
@@ -387,11 +389,11 @@ impl CliProvider {
     }
 
     pub fn set_session_mint(&self, mint: Option<String>) {
-        *lock(&self.session_mint) = mint;
+        *self.session_mint.lock() = mint;
     }
 
     pub fn hermes_turn_counts(&self) -> HermesTokenCounts {
-        lock(&self.hermes_turn).clone()
+        self.hermes_turn.lock().clone()
     }
 
     pub fn warn_session_map(&self, message: &str) {
@@ -680,7 +682,7 @@ impl CliProvider {
     }
 
     fn map_path(&self) -> Option<String> {
-        if let Some(path) = lock(&self.session_map_path).clone() {
+        if let Some(path) = self.session_map_path.lock().clone() {
             return Some(path);
         }
         let file = match self.kind {
@@ -702,7 +704,7 @@ impl CliProvider {
     }
 
     fn hermes_db(&self) -> String {
-        if let Some(path) = lock(&self.hermes_db_path).clone() {
+        if let Some(path) = self.hermes_db_path.lock().clone() {
             return path;
         }
         let base = std::env::var("HERMES_HOME")
@@ -719,12 +721,12 @@ impl CliProvider {
     }
 
     async fn mint_session(&self) -> String {
-        if let Some(mint) = lock(&self.session_mint).clone() {
+        if let Some(mint) = self.session_mint.lock().clone() {
             return mint;
         }
         match tokio::task::spawn_blocking(random_uuid_v4).await {
             Ok(Ok(id)) => id,
-            _ => uuid_for_conversation(&now_ms().to_string()),
+            _ => uuid_for_conversation(&(protocol::js::date_now() as i64).to_string()),
         }
     }
 
@@ -854,11 +856,11 @@ impl Provider for CliProvider {
     }
 
     fn get_model(&self) -> String {
-        lock(&self.model).clone()
+        self.model.lock().clone()
     }
 
     fn set_model(&self, model: String) {
-        *lock(&self.model) = model;
+        *self.model.lock() = model;
     }
 
     fn context_window(&self) -> u64 {
@@ -1698,12 +1700,12 @@ fn warn_once(warned: &AtomicBool, provider_id: &str, message: &str) {
 }
 
 async fn mint_id(mint: &Mutex<Option<String>>) -> String {
-    if let Some(minted) = lock(mint).clone() {
+    if let Some(minted) = mint.lock().clone() {
         return minted;
     }
     match tokio::task::spawn_blocking(random_uuid_v4).await {
         Ok(Ok(id)) => id,
-        _ => uuid_for_conversation(&now_ms().to_string()),
+        _ => uuid_for_conversation(&(protocol::js::date_now() as i64).to_string()),
     }
 }
 
@@ -1814,7 +1816,7 @@ async fn persist_turn(ctx: Persist<'_>) {
                 tokio::task::spawn_blocking(move || read_hermes_session_tokens(&path, &after_id))
                     .await
                     .unwrap_or_else(|_| unknown_tokens());
-            *lock(hermes_turn) = tokens_for_turn(resumed, prior, &after);
+            *hermes_turn.lock() = tokens_for_turn(resumed, prior, &after);
         }
         CliKind::Kimi => {
             if let Some(id) =
@@ -1955,7 +1957,7 @@ impl Stream for LiveBody {
 }
 
 fn note_capture(capture: &Mutex<crate::types::StepCapture>, chunk: &LlmChunk) {
-    let mut cap = lock(capture);
+    let mut cap = capture.lock();
     match chunk.r#type {
         LlmChunkType::Text => {
             if let Some(delta) = &chunk.delta {
@@ -2633,11 +2635,11 @@ where
     }
     let request_id = format!(
         "perm-{}-{}",
-        now_ms(),
+        (protocol::js::date_now() as i64),
         PERMISSION_IDS.fetch_add(1, Ordering::Relaxed)
     );
     emit(PermissionEvent {
-        ts: now_ms(),
+        ts: (protocol::js::date_now() as i64),
         kind: "approval-request".to_string(),
         task_id: task_id.to_string(),
         request_id: request_id.clone(),
@@ -2663,7 +2665,7 @@ where
         },
     };
     emit(PermissionEvent {
-        ts: now_ms(),
+        ts: (protocol::js::date_now() as i64),
         kind: "approval-resolved".to_string(),
         task_id: task_id.to_string(),
         request_id,

@@ -1,10 +1,10 @@
 use std::collections::HashSet;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
-use crate::types::lock;
+use parking_lot::Mutex;
 
 pub const DEFAULT_CATALOG_TTL_MS: i64 = 60_000;
 pub const DEFAULT_CATALOG_TIMEOUT_MS: u64 = 5_000;
@@ -61,7 +61,7 @@ impl ModelCatalog {
     }
 
     pub fn list(&self) -> Vec<String> {
-        let guard = lock(&self.entry);
+        let guard = self.entry.lock();
         dedupe(
             self.floor
                 .iter()
@@ -74,7 +74,7 @@ impl ModelCatalog {
     pub fn refresh(&self) -> Vec<String> {
         let t = (self.now)();
         let start = {
-            let mut guard = lock(&self.entry);
+            let mut guard = self.entry.lock();
             let due = t.saturating_sub(guard.at) >= self.ttl_ms;
             if !guard.inflight && due {
                 guard.inflight = true;
@@ -93,7 +93,7 @@ impl ModelCatalog {
             tokio::spawn(async move {
                 let fetched =
                     tokio::time::timeout(Duration::from_millis(timeout_ms), fetch()).await;
-                let mut guard = lock(&entry);
+                let mut guard = entry.lock();
                 match fetched {
                     Ok(Ok(ids)) => {
                         guard.discovered =
@@ -121,7 +121,7 @@ impl ModelCatalog {
     }
 
     pub fn last_error(&self) -> Option<String> {
-        lock(&self.entry).last_error.clone()
+        self.entry.lock().last_error.clone()
     }
 }
 

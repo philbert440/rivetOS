@@ -1,7 +1,9 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+use parking_lot::Mutex;
 
 use protocol::ThinkingLevel;
 use reqwest::Method;
@@ -9,7 +11,7 @@ use serde_json::{Map, Value};
 
 use crate::catalog::{FetchIds, ModelCatalog};
 use crate::decode::{Decoder, Kind as DecKind};
-use crate::error::{ProviderError, now_ms};
+use crate::error::ProviderError;
 use crate::fold::{FoldContent, FoldMessage, split_and_fold_system};
 use crate::http::{
     HttpAttempt, build_client, connection_header, decode_response, read_limited, send, tail_headers,
@@ -24,7 +26,7 @@ use crate::token::{
 use crate::types::{
     BoxFuture, ChatRequest, ChatStream, MediaKind, MediaPart, PROBE_TIMEOUT, Provider, ReplayTool,
     TURN_TIMEOUT_MS, ToolDef, TurnMessage, UA_ANTHROPIC, UA_GOOGLE, UA_OLLAMA, UA_OPENAI, UA_PROBE,
-    UA_XAI, XAI_TIMEOUT_MS, lock,
+    UA_XAI, XAI_TIMEOUT_MS,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -329,11 +331,11 @@ impl HttpProvider {
         if let Some(window) = config.context_window
             && window > 0
         {
-            *lock(&provider.context) = window;
-            *lock(&provider.context_pinned) = true;
+            *provider.context.lock() = window;
+            *provider.context_pinned.lock() = true;
         }
         if let Some(effort) = config.reasoning_effort.clone() {
-            *lock(&provider.reasoning_effort) = Some(effort);
+            *provider.reasoning_effort.lock() = Some(effort);
         }
         let max_output = config.max_output_tokens.unwrap_or(provider.max_output);
         let probe_models = config.probe_models.unwrap_or(true);
@@ -349,18 +351,17 @@ impl HttpProvider {
             ..provider
         };
         if let Some(extra) = config.extra_body.clone() {
-            let mut slot = lock(&provider.extras);
+            let mut slot = provider.extras.lock();
             for (key, value) in extra {
                 slot.entry(key).or_insert(value);
             }
         }
-        *lock(provider.api_prefix.as_ref()) = if kind == Wire::Vllm {
+        *provider.api_prefix.lock() = if kind == Wire::Vllm {
             normalize_api_prefix(config.api_prefix.as_deref())
         } else {
             "/v1".to_string()
         };
-        *lock(provider.models_url.as_ref()) =
-            config.models_url.clone().filter(|url| !url.is_empty());
+        *provider.models_url.lock() = config.models_url.clone().filter(|url| !url.is_empty());
         if matches!(kind, Wire::Vllm | Wire::Llama) {
             let floor = if let Some(models) = config.models.clone() {
                 models
@@ -468,23 +469,23 @@ impl HttpProvider {
     }
 
     pub fn base_url(&self) -> String {
-        lock(self.base_url.as_ref()).clone()
+        self.base_url.lock().clone()
     }
 
     pub fn api_key(&self) -> Option<String> {
-        lock(self.api_key.as_ref()).clone()
+        self.api_key.lock().clone()
     }
 
     pub fn warnings(&self) -> Vec<String> {
-        lock(self.warnings.as_ref()).clone()
+        self.warnings.lock().clone()
     }
 
     pub fn set_api_key(&self, key: Option<String>) {
-        *lock(self.api_key.as_ref()) = key.filter(|key| !key.is_empty());
+        *self.api_key.lock() = key.filter(|key| !key.is_empty());
     }
 
     pub fn set_token_source(&self, source: Option<Arc<TokenSource>>) {
-        *lock(self.tokens.as_ref()) = source;
+        *self.tokens.lock() = source;
     }
 
     pub fn set_probe_models(&mut self, probe: bool) {
@@ -498,11 +499,11 @@ impl HttpProvider {
     }
 
     pub fn set_api_prefix(&self, prefix: Option<&str>) {
-        *lock(self.api_prefix.as_ref()) = normalize_api_prefix(prefix);
+        *self.api_prefix.lock() = normalize_api_prefix(prefix);
     }
 
     pub fn set_models_url(&self, url: Option<String>) {
-        *lock(self.models_url.as_ref()) = url.filter(|item| !item.is_empty());
+        *self.models_url.lock() = url.filter(|item| !item.is_empty());
     }
 
     pub fn set_verify_model(&mut self, verify: bool) {
@@ -537,7 +538,7 @@ impl HttpProvider {
     }
 
     pub fn set_num_ctx(&self, num_ctx: u64) {
-        *lock(&self.num_ctx) = num_ctx;
+        *self.num_ctx.lock() = num_ctx;
     }
 
     pub fn set_server_tools(&mut self, web: bool, x: bool, code: bool) {
@@ -547,20 +548,20 @@ impl HttpProvider {
     }
 
     pub fn set_reasoning_effort(&self, effort: Option<String>) {
-        *lock(&self.reasoning_effort) = effort;
+        *self.reasoning_effort.lock() = effort;
     }
 
     pub fn set_extra(&self, key: impl Into<String>, value: Value) {
-        lock(&self.extras).insert(key.into(), value);
+        self.extras.lock().insert(key.into(), value);
     }
 
     fn token_source(&self) -> Option<Arc<TokenSource>> {
-        lock(self.tokens.as_ref()).clone()
+        self.tokens.lock().clone()
     }
 
     fn note(&self, message: String) {
         tracing::warn!(provider = %self.id, "{message}");
-        lock(self.warnings.as_ref()).push(message);
+        self.warnings.lock().push(message);
     }
 
     fn warm(&self) {
@@ -575,7 +576,7 @@ impl HttpProvider {
             if let Err(err) = source.get_token().await {
                 let message = TokenSource::warm_log(&err);
                 tracing::warn!("{message}");
-                lock(warnings.as_ref()).push(message);
+                warnings.lock().push(message);
             }
         });
     }
@@ -602,10 +603,10 @@ impl HttpProvider {
             fetch,
             ttl_ms,
             None,
-            Some(Arc::new(now_ms)),
+            Some(Arc::new(|| protocol::js::date_now() as i64)),
             Some(Arc::new(move |message| {
                 tracing::warn!("{message}");
-                lock(warnings.as_ref()).push(message);
+                warnings.lock().push(message);
             })),
             Some(self.id.clone()),
         )
@@ -643,7 +644,7 @@ impl HttpProvider {
                 .map_err(|err| ProviderError::new(err.0, 0, &self.id))?;
             return Ok(Some(self.auth_header(&token, probe, true)));
         }
-        let key = lock(self.api_key.as_ref()).clone();
+        let key = self.api_key.lock().clone();
         let Some(key) = key else {
             return Ok(None);
         };
@@ -756,17 +757,15 @@ impl HttpProvider {
     }
 
     fn root(&self) -> String {
-        lock(self.base_url.as_ref())
-            .trim_end_matches('/')
-            .to_string()
+        self.base_url.lock().trim_end_matches('/').to_string()
     }
 
     fn stored_base(&self) -> String {
-        lock(self.base_url.as_ref()).clone()
+        self.base_url.lock().clone()
     }
 
     fn prefix(&self) -> String {
-        lock(self.api_prefix.as_ref()).clone()
+        self.api_prefix.lock().clone()
     }
 
     fn chat_url(&self, model: &str) -> String {
@@ -785,7 +784,7 @@ impl HttpProvider {
     }
 
     fn models_endpoint(&self) -> String {
-        let override_url = lock(self.models_url.as_ref()).clone();
+        let override_url = self.models_url.lock().clone();
         match self.wire {
             Wire::Llama => models_probe_url(&self.stored_base(), "/v1", None),
             _ => models_probe_url(&self.stored_base(), &self.prefix(), override_url.as_deref()),
@@ -862,7 +861,7 @@ impl HttpProvider {
                 .await
                 .map_err(|err| ProviderError::new(err.0, 0, &self.id));
         }
-        Ok(lock(self.api_key.as_ref()).clone().unwrap_or_default())
+        Ok(self.api_key.lock().clone().unwrap_or_default())
     }
 
     async fn exchange(
@@ -945,7 +944,7 @@ impl HttpProvider {
             && let Some(picked) = models.first().map(|model| model.id.clone())
             && !picked.is_empty()
         {
-            *lock(&self.model) = picked.clone();
+            *self.model.lock() = picked.clone();
             if self.wire == Wire::Vllm && models.len() > 1 {
                 let others = models
                     .iter()
@@ -964,7 +963,7 @@ impl HttpProvider {
                 ));
             }
         }
-        if *lock(&self.context_pinned) {
+        if *self.context_pinned.lock() {
             return;
         }
         let current = self.get_model();
@@ -973,7 +972,7 @@ impl HttpProvider {
             .find(|model| model.id == current)
             .or_else(|| models.first());
         if let Some(len) = chosen.and_then(|model| model.max_model_len) {
-            *lock(&self.context) = len;
+            *self.context.lock() = len;
         }
     }
 
@@ -1063,7 +1062,7 @@ impl HttpProvider {
                     let models = parse_listed_models(&text);
                     let ids: Vec<String> = models.iter().map(|model| model.id.clone()).collect();
                     self.apply_discovery(&models);
-                    *lock(self.pending_ids.as_ref()) = Some(ids.clone());
+                    *self.pending_ids.lock() = Some(ids.clone());
                     if let Some(catalog) = &self.catalog {
                         catalog.refresh();
                     }
@@ -1140,19 +1139,19 @@ impl Provider for HttpProvider {
     }
 
     fn get_model(&self) -> String {
-        lock(&self.model).clone()
+        self.model.lock().clone()
     }
 
     fn set_model(&self, model: String) {
-        *lock(&self.model) = model;
+        *self.model.lock() = model;
     }
 
     fn set_base_url(&self, url: String) {
-        *lock(self.base_url.as_ref()) = url;
+        *self.base_url.lock() = url;
     }
 
     fn context_window(&self) -> u64 {
-        *lock(&self.context)
+        *self.context.lock()
     }
 
     fn max_output_tokens(&self) -> u64 {
@@ -1252,12 +1251,12 @@ struct CatalogShared {
 
 impl CatalogShared {
     async fn fetch_ids(&self) -> Result<Vec<String>, String> {
-        if let Some(ids) = lock(self.pending.as_ref()).take() {
+        if let Some(ids) = self.pending.lock().take() {
             return Ok(ids);
         }
-        let base = lock(self.base_url.as_ref()).clone();
-        let prefix = lock(self.api_prefix.as_ref()).clone();
-        let override_url = lock(self.models_url.as_ref()).clone();
+        let base = self.base_url.lock().clone();
+        let prefix = self.api_prefix.lock().clone();
+        let override_url = self.models_url.lock().clone();
         let url = if self.wire == Wire::Llama {
             models_probe_url(&base, "/v1", None)
         } else {
@@ -1266,7 +1265,7 @@ impl CatalogShared {
         let (header, sent) = self.auth_header().await?;
         let mut response = self.get(&url, header.as_ref()).await?;
         if response.status == 401 && sent.is_some() {
-            if let Some(source) = lock(self.tokens.as_ref()).clone() {
+            if let Some(source) = self.tokens.lock().clone() {
                 source.invalidate(sent.as_deref());
             }
             let _ = read_limited(response.response, 2048).await;
@@ -1284,7 +1283,7 @@ impl CatalogShared {
     }
 
     async fn auth_header(&self) -> Result<(Option<(String, String)>, Option<String>), String> {
-        let source = lock(self.tokens.as_ref()).clone();
+        let source = self.tokens.lock().clone();
         if let Some(source) = source {
             let token = source.get_token().await.map_err(|err| err.0)?;
             return Ok((
@@ -1292,7 +1291,7 @@ impl CatalogShared {
                 Some(token),
             ));
         }
-        let key = lock(self.api_key.as_ref()).clone();
+        let key = self.api_key.lock().clone();
         if let Some(key) = key {
             return Ok((
                 Some(("Authorization".to_string(), format!("Bearer {key}"))),
@@ -1696,7 +1695,7 @@ fn xai_body(
         );
         map.insert("tool_choice".to_string(), Value::from("auto"));
     }
-    let configured = lock(&provider.reasoning_effort);
+    let configured = provider.reasoning_effort.lock();
     if let Some(effort) =
         map_xai_reasoning_effort(model, Some(request.thinking), configured.as_deref())
     {
@@ -2099,7 +2098,7 @@ fn openai_body(
         }
         map.insert("mm_processor_kwargs".to_string(), Value::Object(merged));
     }
-    for (key, value) in lock(&provider.extras).iter() {
+    for (key, value) in provider.extras.lock().iter() {
         map.entry(key.clone()).or_insert_with(|| value.clone());
     }
     Value::Object(map)
@@ -2132,7 +2131,7 @@ fn ollama_body(
         map.insert("tool_choice".to_string(), Value::from("auto"));
     }
     map.insert("stream".to_string(), Value::Bool(true));
-    let num_ctx = *lock(&provider.num_ctx);
+    let num_ctx = *provider.num_ctx.lock();
     if num_ctx > 0 {
         map.insert(
             "options".to_string(),

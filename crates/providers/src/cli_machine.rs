@@ -979,39 +979,20 @@ impl Machine {
 }
 
 pub fn clip_utf16(text: &str, limit: usize) -> String {
-    let mut units = 0usize;
-    let mut end = 0usize;
-    for (index, ch) in text.char_indices() {
-        let next = ch.len_utf16();
-        if units + next > limit {
-            break;
-        }
-        units += next;
-        end = index + ch.len_utf8();
-    }
-    text[..end].to_string()
+    slice_to_string(text, Some(0.0), Some(limit as f64))
 }
 
 pub fn clip_utf16_tail(text: &str, keep: usize) -> String {
-    let total = text.chars().map(char::len_utf16).sum::<usize>();
-    if total <= keep {
-        return text.to_string();
+    if keep == 0 {
+        return String::new();
     }
-    let mut skip = total - keep;
-    let mut start = 0usize;
-    for (index, ch) in text.char_indices() {
-        let next = ch.len_utf16();
-        if skip == 0 {
-            break;
-        }
-        if next > skip {
-            start = index + ch.len_utf8();
-            break;
-        }
-        skip -= next;
-        start = index + ch.len_utf8();
-    }
-    text[start..].to_string()
+    slice_to_string(text, Some(-(keep as f64)), None)
+}
+
+fn slice_to_string(text: &str, start: Option<f64>, end: Option<f64>) -> String {
+    protocol::js::js_slice(text, start, end)
+        .to_utf8()
+        .to_string()
 }
 
 fn fatal_stop(reason: &str) -> bool {

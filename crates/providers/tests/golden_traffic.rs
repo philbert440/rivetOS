@@ -1,6 +1,8 @@
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
+
+use parking_lot::Mutex;
 
 use protocol::ThinkingLevel;
 use providers::{HttpProvider, Provider, js_norm, run_agent_turn};
@@ -113,7 +115,7 @@ async fn run_scenario(
         });
     }
     {
-        let mut guard = slot.lock().unwrap();
+        let mut guard = slot.lock();
         guard.responses = responses;
         guard.index = 0;
         guard.seen.clear();
@@ -151,9 +153,8 @@ async fn run_scenario(
         let expected_events = std::fs::read_to_string(dir.join("events.json")).unwrap();
         let actual_chunks = serde_json::to_string(&output.chunks).unwrap();
         let actual_events = serde_json::to_string(&output.events).unwrap();
-        let seen = slot
-            .lock()
-            .unwrap()
+        let guard = slot.lock();
+        let seen = guard
             .seen
             .iter()
             .map(seen_text)
@@ -178,7 +179,7 @@ async fn run_scenario(
             &js_norm(&actual_events),
         );
     }
-    let seen = slot.lock().unwrap().clone_into_seen();
+    let seen = slot.lock().clone_into_seen();
     let expected = requests.as_array().unwrap();
     assert_eq!(
         seen.len(),
@@ -490,7 +491,7 @@ async fn handle(mut sock: TcpStream, slot: Arc<Mutex<Slot>>) -> std::io::Result<
             Vec::new()
         };
         let response = {
-            let mut guard = slot.lock().unwrap();
+            let mut guard = slot.lock();
             let response = guard.responses.get(guard.index).map(|resp| Resp {
                 status: resp.status,
                 headers: resp.headers.clone(),

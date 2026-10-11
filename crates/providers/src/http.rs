@@ -1,8 +1,10 @@
 use std::collections::VecDeque;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
+
+use parking_lot::Mutex;
 
 use bytes::Bytes;
 use futures_util::Stream;
@@ -11,7 +13,7 @@ use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use tokio::time::Sleep;
 
 use crate::error::ProviderError;
-use crate::types::{ChatStream, StepCapture, lock};
+use crate::types::{ChatStream, StepCapture};
 
 pub struct HttpAttempt {
     pub method: reqwest::Method,
@@ -148,7 +150,7 @@ impl Stream for Live {
             if live.incoming_done {
                 let mut chunks = Vec::new();
                 {
-                    let mut cap = lock(&live.capture);
+                    let mut cap = live.capture.lock();
                     live.decoder.finish(&mut chunks, &mut cap);
                 }
                 live.finish_ran = true;
@@ -180,7 +182,7 @@ impl Stream for Live {
                 Poll::Ready(Some(Ok(bytes))) => {
                     let mut chunks = Vec::new();
                     {
-                        let mut cap = lock(&live.capture);
+                        let mut cap = live.capture.lock();
                         live.decoder.push(&bytes, &mut chunks, &mut cap);
                     }
                     for chunk in chunks {

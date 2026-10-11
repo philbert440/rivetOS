@@ -3,7 +3,7 @@ use protocol::{LlmChunk, LlmChunkType, StreamEvent, ThinkingLevel};
 
 use crate::error::ProviderError;
 use crate::types::{
-    ChatRequest, Provider, TURN_TIMEOUT_MS, TurnMessage, execute_tool, lock, text_event,
+    ChatRequest, Provider, TURN_TIMEOUT_MS, TurnMessage, execute_tool, text_event,
     tool_result_event, tool_start_event, with_compact,
 };
 use std::time::Duration;
@@ -58,7 +58,7 @@ pub async fn run_agent_turn(
             }
             chunks.push(chunk);
         }
-        let capture = lock(&stream.capture).clone();
+        let capture = stream.capture.lock().clone();
         let replay = capture.replay_tools();
         if replay.is_empty() {
             break;
