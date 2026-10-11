@@ -1,10 +1,11 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Number, Value};
 
 use crate::error::{LocalDbError, Result};
 use crate::paths::{
-    default_pglite_dir, expand_tilde, lexical_absolute, postgres_bin_dir, postgres_data_dir,
+    cluster_dir_for, default_pglite_dir, expand_tilde, lexical_absolute, postgres_bin_dir,
 };
 
 pub const DEFAULT_PORT: i64 = 5433;
@@ -25,6 +26,40 @@ pub struct ResolvedEmbeddedPg {
     pub lite_mode: bool,
     pub engine_data_dir: PathBuf,
     pub installation_dir: PathBuf,
+    pub home: PathBuf,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EmbeddedEnv {
+    values: BTreeMap<String, String>,
+}
+
+impl EmbeddedEnv {
+    pub fn new() -> Self {
+        Self {
+            values: BTreeMap::new(),
+        }
+    }
+
+    pub fn insert(&mut self, key: impl Into<String>, value: impl Into<String>) {
+        self.values.insert(key.into(), value.into());
+    }
+
+    pub fn get(&self, key: &str) -> Option<&str> {
+        self.values.get(key).map(String::as_str)
+    }
+
+    pub fn lookup(&self, key: &str) -> Option<String> {
+        self.get(key).map(str::to_string)
+    }
+}
+
+pub fn process_embedded_env() -> EmbeddedEnv {
+    let mut env = EmbeddedEnv::new();
+    for (key, value) in std::env::vars() {
+        env.insert(key, value);
+    }
+    env
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,6 +110,7 @@ pub fn resolve_embedded_pg(
         .map(protocol::js::js_trim)
         .unwrap_or("");
     let embed_env = embed_url.map(protocol::js::js_trim).unwrap_or("");
+    let engine_data_dir = cluster_dir_for(&data_dir);
     Some(ResolvedEmbeddedPg {
         data_dir,
         port,
@@ -82,14 +118,18 @@ pub fn resolve_embedded_pg(
         max_connections,
         pg_url,
         lite_mode: endpoint.is_empty() && embed_env.is_empty(),
-        engine_data_dir: postgres_data_dir(home),
+        engine_data_dir,
         installation_dir: postgres_bin_dir(home),
+        home: home.to_path_buf(),
     })
 }
 
-pub fn resolve_embedded_pg_from_env(config: &Value, home: &Path) -> Option<ResolvedEmbeddedPg> {
-    let embed_url = std::env::var("RIVETOS_EMBED_URL").ok();
-    resolve_embedded_pg(config, home, embed_url.as_deref())
+pub fn resolve_embedded_pg_from_env(
+    config: &Value,
+    home: &Path,
+    env: &EmbeddedEnv,
+) -> Option<ResolvedEmbeddedPg> {
+    resolve_embedded_pg(config, home, env.get("RIVETOS_EMBED_URL"))
 }
 
 pub fn assert_embedded_port(config: &Value) -> Result<()> {
@@ -111,6 +151,14 @@ pub fn read_embedded_config(
     path: &Path,
     home: &Path,
 ) -> Result<Option<(Value, ResolvedEmbeddedPg)>> {
+    read_embedded_config_with(path, home, &process_embedded_env())
+}
+
+pub fn read_embedded_config_with(
+    path: &Path,
+    home: &Path,
+    env: &EmbeddedEnv,
+) -> Result<Option<(Value, ResolvedEmbeddedPg)>> {
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
         Err(_) => return Ok(None),
@@ -122,10 +170,10 @@ pub fn read_embedded_config(
     if !parsed.is_object() {
         return Ok(None);
     }
-    let resolved_doc = config::resolve_env_vars(&parsed);
+    let resolved_doc = config::resolve_env_vars_with(&parsed, |name| env.lookup(name));
     assert_embedded_port(&resolved_doc)?;
-    let embed_url = std::env::var("RIVETOS_EMBED_URL").ok();
-    let Some(resolved) = resolve_embedded_pg(&resolved_doc, home, embed_url.as_deref()) else {
+    let Some(resolved) = resolve_embedded_pg(&resolved_doc, home, env.get("RIVETOS_EMBED_URL"))
+    else {
         return Ok(None);
     };
     Ok(Some((resolved_doc, resolved)))
@@ -304,6 +352,59 @@ mod tests {
         )
         .expect("resolved");
         assert!(blank.lite_mode);
+        assert_eq!(
+            resolved.engine_data_dir,
+            PathBuf::from("/tmp/fakehome/db.postgres")
+        );
+        assert_eq!(resolved.home, PathBuf::from("/tmp/fakehome"));
+    }
+
+    #[test]
+    fn injected_embed_url_selects_full_mode_without_the_process_environment() {
+        let config = json!({"memory": {"postgres": {"embedded": {}}}});
+        let mut env = EmbeddedEnv::new();
+        env.insert("RIVETOS_EMBED_URL", "http://127.0.0.1:9/v1");
+        let resolved =
+            resolve_embedded_pg_from_env(&config, Path::new("/tmp/fakehome"), &env).expect("full");
+        assert!(!resolved.lite_mode);
+        let empty =
+            resolve_embedded_pg_from_env(&config, Path::new("/tmp/fakehome"), &EmbeddedEnv::new())
+                .expect("lite");
+        assert!(empty.lite_mode);
+        assert_eq!(
+            empty.engine_data_dir,
+            PathBuf::from("/tmp/fakehome/.rivetos/postgres")
+        );
+    }
+
+    #[test]
+    fn read_config_expands_placeholders_from_the_injected_map() {
+        let home = std::env::temp_dir().join(format!(
+            "local-db-cfg-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|elapsed| elapsed.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&home).expect("home");
+        let path = home.join("config.yaml");
+        std::fs::write(
+            &path,
+            "memory:\n  postgres:\n    embedded:\n      data_dir: \"${RIVET_DB}\"\n",
+        )
+        .expect("yaml");
+        let mut env = EmbeddedEnv::new();
+        env.insert("RIVET_DB", "/srv/rivet/db");
+        let (_doc, resolved) = read_embedded_config_with(&path, &home, &env)
+            .expect("read")
+            .expect("configured");
+        assert_eq!(resolved.data_dir, PathBuf::from("/srv/rivet/db"));
+        assert_eq!(
+            resolved.engine_data_dir,
+            PathBuf::from("/srv/rivet/db.postgres")
+        );
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]

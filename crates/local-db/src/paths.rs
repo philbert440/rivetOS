@@ -22,10 +22,6 @@ pub fn default_pglite_dir(home: &Path) -> PathBuf {
     rivet_dir(home).join(PGLITE_DIR_NAME)
 }
 
-pub fn postgres_data_dir(home: &Path) -> PathBuf {
-    rivet_dir(home).join(POSTGRES_DIR_NAME)
-}
-
 pub fn postgres_bin_dir(home: &Path) -> PathBuf {
     rivet_dir(home).join(PG_BIN_DIR_NAME)
 }
@@ -36,6 +32,52 @@ pub fn backups_dir(home: &Path) -> PathBuf {
 
 pub fn migrate_dir(home: &Path) -> PathBuf {
     rivet_dir(home).join(MIGRATE_DIR_NAME)
+}
+
+pub fn cluster_dir_for(data_dir: &Path) -> PathBuf {
+    if data_dir.file_name().and_then(|name| name.to_str()) == Some(PGLITE_DIR_NAME)
+        && let Some(parent) = data_dir.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        return parent.join(POSTGRES_DIR_NAME);
+    }
+    let mut name = data_dir.file_name().unwrap_or_default().to_os_string();
+    name.push(".postgres");
+    match data_dir.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent.join(name),
+        _ => PathBuf::from(name),
+    }
+}
+
+pub fn real_or_lexical(path: &Path) -> PathBuf {
+    match std::fs::canonicalize(path) {
+        Ok(real) => real,
+        Err(_) => lexical_absolute(path),
+    }
+}
+
+pub fn real_of_nearest(path: &Path) -> PathBuf {
+    let mut at = lexical_absolute(path);
+    let mut rest = Vec::new();
+    loop {
+        if at.exists() {
+            let mut resolved = real_or_lexical(&at);
+            for part in rest.iter().rev() {
+                resolved.push(part);
+            }
+            return resolved;
+        }
+        let Some(parent) = at.parent() else {
+            return lexical_absolute(path);
+        };
+        if parent == at {
+            return lexical_absolute(path);
+        }
+        if let Some(name) = at.file_name() {
+            rest.push(name.to_os_string());
+        }
+        at = parent.to_path_buf();
+    }
 }
 
 pub fn expand_tilde(raw: &str, home: &Path) -> PathBuf {
@@ -97,5 +139,21 @@ mod tests {
     fn lexical_absolute_normalizes_dot_segments() {
         let path = lexical_absolute(Path::new("/tmp/fake/../pglite"));
         assert_eq!(path, PathBuf::from("/tmp/pglite"));
+    }
+
+    #[test]
+    fn cluster_dir_keeps_the_default_and_suffixes_other_names() {
+        assert_eq!(
+            cluster_dir_for(Path::new("/home/rivet/.rivetos/pglite")),
+            PathBuf::from("/home/rivet/.rivetos/postgres")
+        );
+        assert_eq!(
+            cluster_dir_for(Path::new("/home/rivet/.rivetos/alt")),
+            PathBuf::from("/home/rivet/.rivetos/alt.postgres")
+        );
+        assert_eq!(
+            cluster_dir_for(Path::new("/tmp/fakehome/db")),
+            PathBuf::from("/tmp/fakehome/db.postgres")
+        );
     }
 }

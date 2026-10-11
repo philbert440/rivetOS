@@ -98,6 +98,11 @@ pub async fn claim_owner_lock(
                     let _ = tokio::fs::remove_file(&path).await;
                     return Err(error.into());
                 }
+                if let Err(error) = file.flush().await {
+                    drop(file);
+                    let _ = tokio::fs::remove_file(&path).await;
+                    return Err(error.into());
+                }
                 drop(file);
                 return Ok(LockClaim::Owned { lock_path: path });
             }
