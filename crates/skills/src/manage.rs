@@ -4,16 +4,17 @@ use std::sync::Arc;
 use schemars::JsonSchema;
 use serde_json::Value;
 
+use crate::confine::{ensure_inside, mkdir_confined, rename_confined, write_confined};
 use crate::helpers::{
-    ALLOWED_SUBDIRS, SkillMeta, atomic_write, bump_version_in_content, check_dedup, list_subdir,
-    now_iso, parse_patch_blocks, read_meta, scan_issues, title_case_hyphen, under_roots,
-    write_meta,
+    ALLOWED_SUBDIRS, SkillMeta, bump_version_in_content, check_dedup, list_subdir, now_iso,
+    parse_patch_blocks, read_meta, scan_issues, title_case_hyphen, write_meta,
 };
 use crate::list_tool::node_dirname;
 use crate::manager::{Skill, SkillManager};
 use crate::text;
 use tools::{
-    CancellationToken, Tool, ToolContext, ToolSurface, set_property_description, set_property_enum,
+    CancellationToken, Tool, ToolContext, ToolSurface, js_replace_once, set_property_description,
+    set_property_enum, set_property_type,
 };
 
 const AGENT_DESCRIPTION: &str = "Create, edit, patch, or delete skills. Use to save reusable knowledge, workflows, or procedures.";
@@ -198,6 +199,9 @@ impl Tool for SkillManageTool {
             "reason",
             "Reason for the change (added to changelog in SKILL.md on edit/patch)",
         );
+        if matches!(self.surface, ToolSurface::Sidecar) {
+            set_property_type(&mut schema, "level", "integer");
+        }
         schema
     }
 
@@ -314,15 +318,13 @@ impl SkillManageTool {
             return format!("Security scan failed:\n{issues}");
         }
         let skill_dir = Path::new(&target_dir).join(name);
-        if let Some(message) = jail(&skill_dir, &self.skill_dirs, &target_dir) {
-            return message;
-        }
-        if let Err(err) = tokio::fs::create_dir_all(&skill_dir).await {
-            return format!("Error: {err}");
+        let roots = roots_for(&self.skill_dirs, &target_dir);
+        if let Err(err) = mkdir_confined(&skill_dir, &roots).await {
+            return err;
         }
         let skill_md = skill_dir.join("SKILL.md");
-        if let Err(err) = atomic_write(&skill_md, &skill_content).await {
-            return format!("Error: {err}");
+        if let Err(err) = write_confined(&skill_md, &skill_content, &roots).await {
+            return err;
         }
         let meta = SkillMeta {
             created_by: "agent".to_string(),
@@ -334,8 +336,8 @@ impl SkillManageTool {
             retired_at: None,
             retired_reason: None,
         };
-        if let Err(err) = write_meta(&skill_dir, &meta).await {
-            return format!("Error: {err}");
+        if let Err(err) = write_meta(&skill_dir, &meta, &roots).await {
+            return err;
         }
         self.manager.rediscover(&target_dir).await;
         let shown = skill_dir.to_string_lossy();
@@ -368,18 +370,12 @@ impl SkillManageTool {
         if let Err(issues) = scan_issues(&updated) {
             return format!("Security scan failed:\n{issues}");
         }
-        if let Some(message) = jail(
-            Path::new(&skill.location),
-            &self.skill_dirs,
-            &skill_dir.to_string_lossy(),
-        ) {
-            return message;
+        let roots = roots_for(&self.skill_dirs, &skill_dir.to_string_lossy());
+        if let Err(err) = write_confined(Path::new(&skill.location), &updated, &roots).await {
+            return err;
         }
-        if let Err(err) = atomic_write(Path::new(&skill.location), &updated).await {
-            return format!("Error: {err}");
-        }
-        if let Err(err) = write_meta(&skill_dir, &meta).await {
-            return format!("Error: {err}");
+        if let Err(err) = write_meta(&skill_dir, &meta, &roots).await {
+            return err;
         }
         let parent = node_dirname(&skill_dir);
         self.manager.rediscover(&parent.to_string_lossy()).await;
@@ -416,7 +412,7 @@ impl SkillManageTool {
                 };
                 return format!("Patch failed: text not found: \"{preview}\"");
             }
-            current = current.replacen(find, replace, 1);
+            current = js_replace_once(&current, find, replace);
         }
         let skill_dir = node_dirname(Path::new(&skill.location));
         let mut meta = read_meta(&skill_dir).await.unwrap_or_else(|| SkillMeta {
@@ -436,18 +432,12 @@ impl SkillManageTool {
         if let Err(issues) = scan_issues(&current) {
             return format!("Security scan failed after patching:\n{issues}");
         }
-        if let Some(message) = jail(
-            Path::new(&skill.location),
-            &self.skill_dirs,
-            &skill_dir.to_string_lossy(),
-        ) {
-            return message;
+        let roots = roots_for(&self.skill_dirs, &skill_dir.to_string_lossy());
+        if let Err(err) = write_confined(Path::new(&skill.location), &current, &roots).await {
+            return err;
         }
-        if let Err(err) = atomic_write(Path::new(&skill.location), &current).await {
-            return format!("Error: {err}");
-        }
-        if let Err(err) = write_meta(&skill_dir, &meta).await {
-            return format!("Error: {err}");
+        if let Err(err) = write_meta(&skill_dir, &meta, &roots).await {
+            return err;
         }
         let parent = node_dirname(&skill_dir);
         self.manager.rediscover(&parent.to_string_lossy()).await;
@@ -468,14 +458,18 @@ impl SkillManageTool {
         let trash_dir = parent.join(".trash");
         let trash_name = format!("{name}-{}", chrono::Utc::now().timestamp_millis());
         let trash_path = trash_dir.join(&trash_name);
-        if let Some(message) = jail(&trash_path, &self.skill_dirs, &parent.to_string_lossy()) {
-            return message;
+        let roots = roots_for(&self.skill_dirs, &parent.to_string_lossy());
+        if let Err(err) = ensure_inside(&skill_dir, &roots).await {
+            return err;
         }
-        if let Err(err) = tokio::fs::create_dir_all(&trash_dir).await {
-            return format!("Error: {err}");
+        if let Err(err) = ensure_inside(&trash_path, &roots).await {
+            return err;
         }
-        if let Err(err) = tokio::fs::rename(&skill_dir, &trash_path).await {
-            return format!("Error: {err}");
+        if let Err(err) = mkdir_confined(&trash_dir, &roots).await {
+            return err;
+        }
+        if let Err(err) = rename_confined(&skill_dir, &trash_path, &roots).await {
+            return err;
         }
         self.manager.rediscover(&parent.to_string_lossy()).await;
         tracing::info!("Deleted skill: {name} → .trash/{trash_name}");
@@ -493,11 +487,15 @@ impl SkillManageTool {
         let parent = node_dirname(&skill_dir);
         let retired_dir = Path::new(first).join("retired");
         let retired_path = retired_dir.join(name);
-        if let Some(message) = jail(&retired_path, &self.skill_dirs, first) {
-            return message;
+        let roots = roots_for(&self.skill_dirs, first);
+        if let Err(err) = ensure_inside(&skill_dir, &roots).await {
+            return err;
         }
-        if let Err(err) = tokio::fs::create_dir_all(&retired_dir).await {
-            return format!("Error: {err}");
+        if let Err(err) = ensure_inside(&retired_path, &roots).await {
+            return err;
+        }
+        if let Err(err) = mkdir_confined(&retired_dir, &roots).await {
+            return err;
         }
         let mut meta = read_meta(&skill_dir).await.unwrap_or_else(|| SkillMeta {
             created_by: "unknown".to_string(),
@@ -513,11 +511,11 @@ impl SkillManageTool {
         meta.last_modified_by = Some("agent".to_string());
         meta.retired_at = Some(now_iso());
         meta.retired_reason = Some(reason.unwrap_or("No longer useful").to_string());
-        if let Err(err) = write_meta(&skill_dir, &meta).await {
-            return format!("Error: {err}");
+        if let Err(err) = write_meta(&skill_dir, &meta, &roots).await {
+            return err;
         }
-        if let Err(err) = tokio::fs::rename(&skill_dir, &retired_path).await {
-            return format!("Error: {err}");
+        if let Err(err) = rename_confined(&skill_dir, &retired_path, &roots).await {
+            return err;
         }
         self.manager.rediscover(&parent.to_string_lossy()).await;
         tracing::info!("Retired skill: {name} → retired/{name}");
@@ -612,15 +610,9 @@ impl SkillManageTool {
         }
         let skill_dir = node_dirname(Path::new(&skill.location));
         let full_path = skill_dir.join(&normalized);
-        if let Some(message) = jail(&full_path, &self.skill_dirs, &skill_dir.to_string_lossy()) {
-            return message;
-        }
-        let parent = full_path.parent().unwrap_or(Path::new("."));
-        if let Err(err) = tokio::fs::create_dir_all(parent).await {
-            return format!("Error: {err}");
-        }
-        if let Err(err) = atomic_write(&full_path, file_content).await {
-            return format!("Error: {err}");
+        let roots = roots_for(&self.skill_dirs, &skill_dir.to_string_lossy());
+        if let Err(err) = write_confined(&full_path, file_content, &roots).await {
+            return err;
         }
         tracing::info!("Wrote file: {name}/{file_path}");
         format!("File written: {name}/{file_path}")
@@ -696,19 +688,12 @@ fn name_ok(name: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn jail(path: &Path, roots: &[String], extra: &str) -> Option<String> {
-    let mut allowed = roots.to_vec();
+fn roots_for(skill_dirs: &[String], extra: &str) -> Vec<String> {
+    let mut allowed = skill_dirs.to_vec();
     if !extra.is_empty() {
         allowed.push(extra.to_string());
     }
-    if under_roots(path, &allowed) {
-        None
-    } else {
-        Some(format!(
-            "Refusing to write outside skill directories: {}",
-            path.display()
-        ))
-    }
+    allowed
 }
 
 fn arg_str<'a>(args: &'a Value, key: &str) -> Option<&'a str> {

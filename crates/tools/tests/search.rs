@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
 use tools::{
@@ -87,7 +87,33 @@ async fn search_glob_cases() {
             .unwrap()
             .contains("MCP server cwd")
     );
+    std::fs::write(dir.join(".gitignore"), "secret\n").unwrap();
+    std::fs::create_dir_all(dir.join(".hidden")).unwrap();
+    std::fs::write(dir.join(".hidden").join("file.ts"), "export {};").unwrap();
+    let star = run(&tool, json!({"pattern": "*"}), &ctx).await;
+    assert!(star.contains("src"), "{star}");
+    assert!(star.contains("README.md"), "{star}");
+    assert!(!star.contains(".gitignore"), "{star}");
+    assert!(!star.contains("index.ts"), "{star}");
+    let just_src = run(&tool, json!({"pattern": "src"}), &ctx).await;
+    assert!(
+        just_src.contains("\nsrc\n") || just_src.ends_with("\nsrc") || just_src.contains("src\n"),
+        "{just_src}"
+    );
+    assert!(!just_src.contains("index.ts"), "{just_src}");
+    let dotted = run(&tool, json!({"pattern": ".*"}), &ctx).await;
+    assert!(dotted.contains(".gitignore"), "{dotted}");
+    let hidden = run(&tool, json!({"pattern": "**/*.ts"}), &ctx).await;
+    assert!(!hidden.contains(".hidden"), "{hidden}");
+    let outside = temp_dir("glob-outside");
+    std::fs::write(outside.join("secret.txt"), "nope").unwrap();
+    std::os::unix::fs::symlink(&outside, dir.join("link")).unwrap();
+    let linked = run(&tool, json!({"pattern": "**/*.txt"}), &ctx).await;
+    assert!(!linked.contains("secret.txt"), "{linked}");
+    let link_name = run(&tool, json!({"pattern": "*"}), &ctx).await;
+    assert!(link_name.contains("link"), "{link_name}");
     let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&outside);
 }
 
 #[tokio::test]
@@ -166,5 +192,23 @@ async fn search_grep_cases() {
             .unwrap()
             .contains("MCP server cwd")
     );
+    let slow = SearchGrepTool::new(SearchGrepConfig {
+        timeout: Duration::from_millis(300),
+        ..SearchGrepConfig::default()
+    });
+    let started = std::time::Instant::now();
+    let timed = run(
+        &slow,
+        json!({"pattern": "zzzznotfound", "path": "/dev/zero"}),
+        &ToolContext::default(),
+    )
+    .await;
+    assert!(
+        started.elapsed() < Duration::from_secs(8),
+        "{timed} elapsed {:?}",
+        started.elapsed()
+    );
+    assert!(!timed.contains("Command timed out"), "{timed}");
+    assert!(timed.contains("No matches"), "{timed}");
     let _ = std::fs::remove_dir_all(&dir);
 }

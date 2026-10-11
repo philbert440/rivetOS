@@ -84,6 +84,20 @@ impl Provider {
     }
 }
 
+struct ProviderError {
+    message: String,
+    status: Option<u16>,
+}
+
+impl From<String> for ProviderError {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            status: None,
+        }
+    }
+}
+
 struct SearchHit {
     title: String,
     snippet: String,
@@ -209,7 +223,10 @@ impl Tool for WebSearchTool {
                     self.cache_set(cache_key, output.clone(), SEARCH_CACHE_TTL);
                     return text(output);
                 }
-                Err(err) => errors.push(format!("{}: {err}", provider.name())),
+                Err(err) => {
+                    let message = scrub_message(&err.message, &provider_secrets(provider));
+                    errors.push(format!("{}: {message}", provider.name()));
+                }
             }
         }
         let listed = errors
@@ -227,8 +244,8 @@ impl WebSearchTool {
         provider: &Provider,
         query: &str,
         count: f64,
-    ) -> Result<Vec<SearchHit>, String> {
-        let mut last = String::new();
+    ) -> Result<Vec<SearchHit>, ProviderError> {
+        let mut last = ProviderError::from(String::new());
         for attempt in 0..=2 {
             match self.search_once(provider, query, count).await {
                 Ok(results) => return Ok(results),
@@ -251,7 +268,7 @@ impl WebSearchTool {
         provider: &Provider,
         query: &str,
         count: f64,
-    ) -> Result<Vec<SearchHit>, String> {
+    ) -> Result<Vec<SearchHit>, ProviderError> {
         match provider {
             Provider::Xai {
                 key,
@@ -298,7 +315,7 @@ async fn xai_search(
     model: &str,
     query: &str,
     count: f64,
-) -> Result<Vec<SearchHit>, String> {
+) -> Result<Vec<SearchHit>, ProviderError> {
     let body = json!({
         "model": model,
         "input": query,
@@ -420,7 +437,7 @@ async fn google_search(
     cse: &str,
     query: &str,
     count: f64,
-) -> Result<Vec<SearchHit>, String> {
+) -> Result<Vec<SearchHit>, ProviderError> {
     let params = form_encode(&[
         ("key", key),
         ("cx", cse),
@@ -445,10 +462,7 @@ async fn google_search(
             ));
         }
         let snippet = utf16_prefix(&response.body, 200);
-        return Err(format!(
-            "Google CSE failed ({}): {snippet}",
-            response.status
-        ));
+        return Err(format!("Google CSE failed ({}): {snippet}", response.status).into());
     }
     let data: Value = serde_json::from_str(&response.body).unwrap_or(Value::Null);
     let items = data
@@ -484,7 +498,7 @@ async fn ddg_search(
     endpoint: &str,
     query: &str,
     count: f64,
-) -> Result<Vec<SearchHit>, String> {
+) -> Result<Vec<SearchHit>, ProviderError> {
     let params = form_encode(&[("q", query)]);
     let url = format!("{endpoint}?{params}");
     let response = http
@@ -613,21 +627,36 @@ fn js_slice_end(value: f64) -> usize {
     }
 }
 
-fn is_transient(err: &str) -> bool {
-    if err.contains("fetch failed") || err.contains("ECONNREFUSED") {
+fn is_transient(err: &ProviderError) -> bool {
+    if err.message.contains("fetch failed") || err.message.contains("ECONNREFUSED") {
         return true;
     }
-    status_of(err).is_some_and(|status| status == 429 || status >= 500)
+    err.status
+        .is_some_and(|status| status == 429 || status >= 500)
 }
 
-fn status_error(status: u16, message: String) -> String {
-    format!("status={status} {message}")
+fn status_error(status: u16, message: String) -> ProviderError {
+    ProviderError {
+        message,
+        status: Some(status),
+    }
 }
 
-fn status_of(err: &str) -> Option<u16> {
-    let rest = err.strip_prefix("status=")?;
-    let number = rest.split_whitespace().next()?;
-    number.parse().ok()
+fn provider_secrets(provider: &Provider) -> Vec<String> {
+    match provider {
+        Provider::Xai { key, .. } | Provider::Google { key, .. } => vec![key.clone()],
+        Provider::Ddg { .. } => Vec::new(),
+    }
+}
+
+fn scrub_message(message: &str, secrets: &[String]) -> String {
+    let mut out = super::http::redact_transport_error(message);
+    for secret in secrets {
+        if secret.len() >= 8 {
+            out = out.replace(secret.as_str(), "[redacted]");
+        }
+    }
+    out
 }
 
 fn resolve_optional(explicit: Option<&str>, env_names: &[&str]) -> String {

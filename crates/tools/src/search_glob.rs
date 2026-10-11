@@ -116,11 +116,27 @@ impl Tool for SearchGlobTool {
             Some(cwd) => resolve_user_path(cwd, context),
             None => context.base_dir(),
         };
-        let matcher = match compile_glob(pattern) {
-            Ok(matcher) => matcher,
-            Err(err) => return text(format!("Error: {err}")),
-        };
-        match collect(&search_dir, &matcher, &self.exclude_dirs, self.max_results).await {
+        let segments = split_pattern(pattern);
+        let mut matchers = Vec::with_capacity(segments.len());
+        for segment in &segments {
+            if segment == "**" {
+                matchers.push(None);
+                continue;
+            }
+            match compile_segment(segment) {
+                Ok(matcher) => matchers.push(Some(matcher)),
+                Err(err) => return text(format!("Error: {err}")),
+            }
+        }
+        match collect(
+            &search_dir,
+            &segments,
+            &matchers,
+            &self.exclude_dirs,
+            self.max_results,
+        )
+        .await
+        {
             Ok(mut results) => {
                 if results.is_empty() {
                     return text(format!(
@@ -142,8 +158,22 @@ impl Tool for SearchGlobTool {
     }
 }
 
-fn compile_glob(pattern: &str) -> Result<GlobMatcher, String> {
-    GlobBuilder::new(pattern)
+struct Frame {
+    path: std::path::PathBuf,
+    rel: String,
+    index: usize,
+}
+
+fn split_pattern(pattern: &str) -> Vec<String> {
+    pattern
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn compile_segment(segment: &str) -> Result<GlobMatcher, String> {
+    GlobBuilder::new(segment)
         .literal_separator(true)
         .backslash_escape(false)
         .build()
@@ -153,60 +183,154 @@ fn compile_glob(pattern: &str) -> Result<GlobMatcher, String> {
 
 async fn collect(
     root: &Path,
-    matcher: &GlobMatcher,
+    segments: &[String],
+    matchers: &[Option<GlobMatcher>],
     exclude: &HashSet<String>,
     max_results: usize,
 ) -> Result<Vec<String>, std::io::Error> {
     let mut matched = Vec::new();
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        let mut entries = tokio::fs::read_dir(&dir).await?;
-        let mut children = Vec::new();
-        while let Some(entry) = entries.next_entry().await? {
-            children.push(entry);
+    let mut stack = vec![Frame {
+        path: root.to_path_buf(),
+        rel: String::new(),
+        index: 0,
+    }];
+    let mut walk = Walk {
+        stack: &mut stack,
+        exclude,
+        matched: &mut matched,
+        max_results,
+    };
+    while let Some(frame) = walk.stack.pop() {
+        if walk.matched.len() >= walk.max_results {
+            break;
         }
-        for entry in children {
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            let file_type = entry.file_type().await?;
-            let path = entry.path();
-            if file_type.is_dir() {
-                if exclude.contains(name.as_ref()) {
-                    continue;
-                }
-                stack.push(path);
-                continue;
-            }
-            let is_file = if file_type.is_file() {
-                true
-            } else if file_type.is_symlink() {
-                tokio::fs::metadata(&path)
-                    .await
-                    .map(|meta| meta.is_file())
-                    .unwrap_or(false)
-            } else {
-                false
-            };
-            if !is_file || exclude.contains(name.as_ref()) {
-                continue;
-            }
-            let rel = relative_unix(root, &path);
-            if matcher.is_match(&rel) {
-                matched.push(rel);
-                if matched.len() >= max_results {
-                    return Ok(matched);
-                }
-            }
+        if frame.index >= segments.len() {
+            continue;
+        }
+        let segment = &segments[frame.index];
+        if segment == "**" {
+            push_globstar(&mut walk, &frame, segments).await?;
+        } else if let Some(matcher) = matchers.get(frame.index).and_then(Option::as_ref) {
+            push_segment(&mut walk, &frame, matcher, segments).await?;
         }
     }
     Ok(matched)
 }
 
-fn relative_unix(root: &Path, path: &Path) -> String {
-    path.strip_prefix(root)
-        .unwrap_or(path)
-        .components()
-        .map(|component| component.as_os_str().to_string_lossy().into_owned())
-        .collect::<Vec<_>>()
-        .join("/")
+struct Walk<'a> {
+    stack: &'a mut Vec<Frame>,
+    exclude: &'a HashSet<String>,
+    matched: &'a mut Vec<String>,
+    max_results: usize,
+}
+
+async fn push_globstar(
+    walk: &mut Walk<'_>,
+    frame: &Frame,
+    segments: &[String],
+) -> Result<(), std::io::Error> {
+    let entries = read_entries(&frame.path).await?;
+    let last = frame.index + 1 == segments.len();
+    let later_dot = segments[frame.index + 1..]
+        .iter()
+        .any(|segment| segment.starts_with('.'));
+    let mut descents = Vec::new();
+    for entry in &entries {
+        if walk.matched.len() >= walk.max_results {
+            break;
+        }
+        let name = entry_name(entry);
+        if walk.exclude.contains(&name) {
+            continue;
+        }
+        if name.starts_with('.') && !later_dot {
+            continue;
+        }
+        let file_type = entry.file_type().await?;
+        let rel = join_rel(&frame.rel, &name);
+        if last {
+            walk.matched.push(rel.clone());
+        }
+        if file_type.is_dir() {
+            descents.push(Frame {
+                path: entry.path(),
+                rel,
+                index: frame.index,
+            });
+        }
+    }
+    for descent in descents.into_iter().rev() {
+        walk.stack.push(descent);
+    }
+    if !last {
+        walk.stack.push(Frame {
+            path: frame.path.clone(),
+            rel: frame.rel.clone(),
+            index: frame.index + 1,
+        });
+    }
+    Ok(())
+}
+
+async fn push_segment(
+    walk: &mut Walk<'_>,
+    frame: &Frame,
+    matcher: &GlobMatcher,
+    segments: &[String],
+) -> Result<(), std::io::Error> {
+    let entries = read_entries(&frame.path).await?;
+    let last = frame.index + 1 == segments.len();
+    let segment = &segments[frame.index];
+    let mut descents = Vec::new();
+    for entry in entries {
+        if walk.matched.len() >= walk.max_results {
+            break;
+        }
+        let name = entry_name(&entry);
+        if walk.exclude.contains(&name) {
+            continue;
+        }
+        if name.starts_with('.') && !segment.starts_with('.') {
+            continue;
+        }
+        if !matcher.is_match(name.as_str()) {
+            continue;
+        }
+        let rel = join_rel(&frame.rel, &name);
+        let file_type = entry.file_type().await?;
+        if last {
+            walk.matched.push(rel);
+        } else if file_type.is_dir() {
+            descents.push(Frame {
+                path: entry.path(),
+                rel,
+                index: frame.index + 1,
+            });
+        }
+    }
+    for descent in descents.into_iter().rev() {
+        walk.stack.push(descent);
+    }
+    Ok(())
+}
+
+async fn read_entries(path: &Path) -> Result<Vec<tokio::fs::DirEntry>, std::io::Error> {
+    let mut entries = Vec::new();
+    let mut read = tokio::fs::read_dir(path).await?;
+    while let Some(entry) = read.next_entry().await? {
+        entries.push(entry);
+    }
+    Ok(entries)
+}
+
+fn entry_name(entry: &tokio::fs::DirEntry) -> String {
+    entry.file_name().to_string_lossy().into_owned()
+}
+
+fn join_rel(parent: &str, name: &str) -> String {
+    if parent.is_empty() {
+        name.to_string()
+    } else {
+        format!("{parent}/{name}")
+    }
 }

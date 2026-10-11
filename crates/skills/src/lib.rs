@@ -1,4 +1,5 @@
 mod catalog;
+mod confine;
 mod dirs;
 mod frontmatter;
 mod helpers;

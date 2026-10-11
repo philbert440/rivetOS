@@ -24,6 +24,7 @@ pub struct SearchGrepConfig {
     pub max_results: usize,
     pub exclude_dirs: Option<Vec<String>>,
     pub surface: ToolSurface,
+    pub timeout: Duration,
 }
 
 impl Default for SearchGrepConfig {
@@ -32,6 +33,7 @@ impl Default for SearchGrepConfig {
             max_results: DEFAULT_MAX_RESULTS,
             exclude_dirs: None,
             surface: ToolSurface::Agent,
+            timeout: Duration::from_secs(30),
         }
     }
 }
@@ -40,6 +42,7 @@ pub struct SearchGrepTool {
     max_results: usize,
     exclude_dirs: Vec<String>,
     surface: ToolSurface,
+    timeout: Duration,
 }
 
 #[derive(JsonSchema)]
@@ -63,6 +66,7 @@ impl SearchGrepTool {
             max_results: config.max_results,
             exclude_dirs,
             surface: config.surface,
+            timeout: config.timeout,
         }
     }
 
@@ -149,22 +153,12 @@ impl Tool for SearchGrepTool {
             &self.exclude_dirs,
         );
         let cwd = std::env::current_dir().unwrap_or_else(|_| Path::new("/").to_path_buf());
-        let output = run_shell(
-            &command,
-            &cwd,
-            Duration::from_secs(30),
-            1024 * 1024,
-            cancellation,
-        )
-        .await;
+        let output = run_shell(&command, &cwd, self.timeout, 1024 * 1024, cancellation).await;
         if output.aborted {
             return text("Search aborted");
         }
         if let Some(error) = output.error {
             return text(format!("Error: {error}"));
-        }
-        if output.timed_out {
-            return text("Error: Command timed out");
         }
         let body = js_trim(&output.stdout).to_string();
         if body.is_empty() {

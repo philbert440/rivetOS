@@ -365,9 +365,6 @@ impl Tool for ShellTool {
                 &format!("{truncated}\n[output exceeded buffer]"),
             ));
         }
-        if output.timed_out {
-            return text(format_output(&warnings, "Error: Command timed out"));
-        }
         if crate::textutil::utf16_len(&captured) > self.max_output {
             return text(format_output(
                 &warnings,

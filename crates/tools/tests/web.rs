@@ -401,6 +401,85 @@ fn http_request(call: &tools::RecordedCall) -> HttpRequest {
 }
 
 #[tokio::test]
+async fn google_transport_error_redacts_api_key() {
+    let key = "super-secret-google-key-value";
+    let client = RecordingClient::new(|request: &HttpRequest| {
+        Err(format!("error sending request for url ({})", request.url))
+    });
+    let http: Arc<dyn tools::HttpClient> = client;
+    let tool = WebSearchTool::with_http(
+        WebSearchConfig {
+            google_api_key: Some(key.to_string()),
+            google_cse_id: Some("test-cse".to_string()),
+            xai_api_key: Some(String::new()),
+            retry_base: Duration::from_millis(1),
+            ..WebSearchConfig::default()
+        },
+        http,
+    );
+    let result = run(&tool, json!({"query": "secret query"})).await;
+    assert!(result.contains("Search failed"), "{result}");
+    assert!(!result.contains(key), "{result}");
+    assert!(!result.contains("key="), "{result}");
+}
+
+#[tokio::test]
+async fn google_403_message_omits_status_prefix() {
+    let client = RecordingClient::new(|request: &HttpRequest| {
+        if request.url.contains("duckduckgo") {
+            Err("ddg down".to_string())
+        } else {
+            Ok(response(403, "Forbidden", "text/plain", "nope"))
+        }
+    });
+    let http: Arc<dyn tools::HttpClient> = client;
+    let tool = WebSearchTool::with_http(
+        WebSearchConfig {
+            google_api_key: Some("test-key".to_string()),
+            google_cse_id: Some("test-cse".to_string()),
+            xai_api_key: Some(String::new()),
+            retry_base: Duration::from_millis(1),
+            ..WebSearchConfig::default()
+        },
+        http,
+    );
+    let result = run(&tool, json!({"query": "status line"})).await;
+    assert!(result.contains("Google: Google CSE 403"), "{result}");
+    assert!(!result.contains("status="), "{result}");
+    assert!(result.contains("DuckDuckGo: ddg down"), "{result}");
+}
+
+#[tokio::test]
+async fn fetch_json_uses_js_number_and_key_order() {
+    let body = r#"{"a":"c","2":"b","value":1.0}"#;
+    let client = RecordingClient::new(move |_: &HttpRequest| {
+        Ok(response(200, "OK", "application/json", body))
+    });
+    let http: Arc<dyn tools::HttpClient> = client;
+    let tool = WebFetchTool::with_http(WebFetchConfig::default(), http);
+    let result = run(&tool, json!({"url": "https://api.test.com/order"})).await;
+    assert_eq!(
+        result,
+        "{\n  \"2\": \"b\",\n  \"a\": \"c\",\n  \"value\": 1\n}"
+    );
+}
+
+#[tokio::test]
+async fn fetch_negative_max_chars_drops_last_unit() {
+    let client =
+        RecordingClient::new(|_: &HttpRequest| Ok(response(200, "OK", "text/plain", "abc")));
+    let http: Arc<dyn tools::HttpClient> = client;
+    let tool = WebFetchTool::with_http(WebFetchConfig::default(), http);
+    let result = run(
+        &tool,
+        json!({"url": "https://test.com/short", "max_chars": -1}),
+    )
+    .await;
+    assert!(result.starts_with("ab\n"), "{result}");
+    assert!(result.contains("Truncated at -1 chars"), "{result}");
+}
+
+#[tokio::test]
 async fn fetch_invalid_url_returns_text() {
     let tool = WebFetchTool::new(WebFetchConfig::default());
     let result = run(

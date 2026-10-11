@@ -159,17 +159,14 @@ impl Tool for WebFetchTool {
             return text(PDF_MESSAGE);
         }
         let mut result = if content_type.contains("application/json") {
-            match serde_json::from_str::<Value>(&response.body) {
-                Ok(value) => serde_json::to_string_pretty(&value).unwrap_or(response.body),
-                Err(_) => response.body,
-            }
+            render_json(&response.body)
         } else if content_type.contains("text/html") {
             extract_markdown(&response.body)
         } else {
             response.body
         };
-        if utf16_len(&result) > js_slice_end(max_chars) && max_chars > 0.0 {
-            let end = js_slice_end(max_chars);
+        if js_len_exceeds(utf16_len(&result), max_chars) {
+            let end = js_end_index(utf16_len(&result), max_chars);
             let shown = protocol::JsNumber::from(max_chars);
             result = format!(
                 "{}\n\n[Truncated at {shown} chars. Use max_chars parameter to see more.]",
@@ -215,10 +212,105 @@ fn max_chars(value: Option<&Value>, default_max: f64) -> f64 {
     }
 }
 
-fn js_slice_end(value: f64) -> usize {
-    if !value.is_finite() || value <= 0.0 {
-        0
+fn render_json(raw: &str) -> String {
+    match protocol::js::parse(raw) {
+        Ok(value) => pretty_json(&protocol::js::stringify(&value)),
+        Err(_) => raw.to_string(),
+    }
+}
+
+fn pretty_json(compact: &str) -> String {
+    let mut out = String::with_capacity(compact.len().saturating_mul(2));
+    let mut rest = compact;
+    let mut indent = 0usize;
+    while let Some(ch) = rest.chars().next() {
+        if ch == '"' {
+            let (token, next) = take_string(rest);
+            out.push_str(token);
+            rest = next;
+            continue;
+        }
+        rest = &rest[ch.len_utf8()..];
+        match ch {
+            '{' | '[' => {
+                let close = if ch == '{' { '}' } else { ']' };
+                out.push(ch);
+                if rest.starts_with(close) {
+                    out.push(close);
+                    rest = &rest[close.len_utf8()..];
+                } else {
+                    indent += 1;
+                    out.push('\n');
+                    push_indent(&mut out, indent);
+                }
+            }
+            '}' | ']' => {
+                indent = indent.saturating_sub(1);
+                out.push('\n');
+                push_indent(&mut out, indent);
+                out.push(ch);
+            }
+            ',' => {
+                out.push(',');
+                out.push('\n');
+                push_indent(&mut out, indent);
+            }
+            ':' => {
+                out.push(':');
+                out.push(' ');
+            }
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+fn take_string(text: &str) -> (&str, &str) {
+    let mut escaped = false;
+    for (index, ch) in text.char_indices().skip(1) {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' {
+            escaped = true;
+            continue;
+        }
+        if ch == '"' {
+            let end = index + ch.len_utf8();
+            return (&text[..end], &text[end..]);
+        }
+    }
+    (text, "")
+}
+
+fn push_indent(out: &mut String, indent: usize) {
+    for _ in 0..indent.saturating_mul(2) {
+        out.push(' ');
+    }
+}
+
+fn js_len_exceeds(len: usize, max_chars: f64) -> bool {
+    max_chars.is_finite() && (len as f64) > max_chars
+}
+
+fn js_end_index(len: usize, index: f64) -> usize {
+    if !index.is_finite() {
+        return if index.is_sign_positive() { len } else { 0 };
+    }
+    let truncated = index.trunc();
+    if truncated < 0.0 {
+        len.saturating_sub(f64_magnitude(truncated))
     } else {
-        value.trunc() as usize
+        f64_magnitude(truncated).min(len)
+    }
+}
+
+fn f64_magnitude(value: f64) -> usize {
+    let magnitude = value.abs();
+    if magnitude >= usize::MAX as f64 {
+        usize::MAX
+    } else {
+        magnitude as usize
     }
 }

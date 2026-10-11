@@ -19,13 +19,14 @@ pub use context::{ToolContext, ToolSurface};
 pub use file_edit::FileEditTool;
 pub use file_read::{FileReadConfig, FileReadTool};
 pub use file_write::FileWriteTool;
-pub use schema::{schema_of, set_property_description, set_property_enum};
+pub use schema::{schema_of, set_property_description, set_property_enum, set_property_type};
 pub use search_glob::{SearchGlobConfig, SearchGlobTool};
 pub use search_grep::{SearchGrepConfig, SearchGrepTool};
 pub use shell::{
     Approval, ApprovalLevel, CommandCategory, ShellConfig, ShellTool, categorize_command,
     check_git_warnings,
 };
+pub use textutil::js_replace_once;
 pub use todo::TodoTool;
 pub use tokio_util::sync::CancellationToken;
 pub use web::{

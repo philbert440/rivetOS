@@ -296,3 +296,93 @@ fn category_names_match_wire_values() {
     assert_eq!(CommandCategory::Write.as_str(), "write");
     assert_eq!(CommandCategory::Dangerous.as_str(), "dangerous");
 }
+
+#[tokio::test]
+async fn timeout_keeps_partial_output() {
+    let tool = ShellTool::new(ShellConfig {
+        timeout: Duration::from_millis(400),
+        ..ShellConfig::default()
+    });
+    let started = std::time::Instant::now();
+    let result = exec(&tool, json!({"command": "echo hello; sleep 30"})).await;
+    assert!(
+        started.elapsed() < Duration::from_secs(8),
+        "elapsed {:?}",
+        started.elapsed()
+    );
+    assert!(result.contains("hello"), "{result}");
+    assert!(!result.contains("Command timed out"), "{result}");
+}
+
+#[tokio::test]
+async fn timeout_without_output_is_empty_success() {
+    let tool = ShellTool::new(ShellConfig {
+        timeout: Duration::from_millis(300),
+        ..ShellConfig::default()
+    });
+    let started = std::time::Instant::now();
+    let result = exec(&tool, json!({"command": "sleep 30"})).await;
+    assert!(
+        started.elapsed() < Duration::from_secs(8),
+        "elapsed {:?}",
+        started.elapsed()
+    );
+    assert_eq!(result, "(no output)");
+}
+
+#[tokio::test]
+async fn timeout_kills_background_process_group() {
+    let tool = ShellTool::new(ShellConfig {
+        timeout: Duration::from_millis(400),
+        ..ShellConfig::default()
+    });
+    let started = std::time::Instant::now();
+    let result = exec(&tool, json!({"command": "sleep 30 & echo $!"})).await;
+    assert!(
+        started.elapsed() < Duration::from_secs(8),
+        "{result} elapsed {:?}",
+        started.elapsed()
+    );
+    assert!(!result.contains("Command timed out"), "{result}");
+    let pid: u32 = result.trim().parse().expect("background pid");
+    let proc_path = format!("/proc/{pid}");
+    let mut gone = !std::path::Path::new(&proc_path).exists();
+    for _ in 0..20 {
+        if gone {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        gone = !std::path::Path::new(&proc_path).exists();
+    }
+    assert!(gone, "pid {pid} still alive after timeout: {result}");
+}
+
+#[test]
+fn shell_schema_fixtures_exclude_null() {
+    let agent = ShellTool::new(ShellConfig::default());
+    assert_eq!(
+        agent.parameters(),
+        json!({
+            "properties": {
+                "command": {
+                    "type": "string",
+                    "description": "Shell command to execute"
+                },
+                "cwd": {
+                    "type": "string",
+                    "description": "Working directory (optional)"
+                }
+            },
+            "required": ["command"],
+            "type": "object"
+        })
+    );
+    let sidecar = ShellTool::sidecar(ShellConfig::default());
+    assert_eq!(
+        sidecar.parameters()["properties"]["cwd"]["description"],
+        "Working directory override for this single call (does not affect session cwd)"
+    );
+    assert_eq!(sidecar.parameters()["properties"]["cwd"]["type"], "string");
+    assert!(!agent.parameters().to_string().contains("\"null\""));
+    assert!(!sidecar.parameters().to_string().contains("\"null\""));
+}

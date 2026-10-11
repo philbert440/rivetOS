@@ -976,3 +976,133 @@ async fn sidecar_seed_create_list_and_read() {
     let read = run(&manage, json!({"action": "read", "name": name, "level": 1})).await;
     assert!(read.contains("Seed Skill"), "{read}");
 }
+
+#[tokio::test]
+async fn skill_manage_confines_symlinks_and_dotdot_names() {
+    let dir = TempDir::new("confine");
+    let outside = TempDir::new("confine-out");
+    std::fs::write(outside.path().join("marker.txt"), "classified").unwrap();
+    let path = dir.path().display().to_string();
+    let manager = SkillManager::new();
+    manager.discover(vec![path.clone()]).await;
+    let tool = SkillManageTool::new(manager.clone(), vec![path.clone()]);
+    let created = run(
+        &tool,
+        json!({"action": "create", "name": "linked", "description": "Link test"}),
+    )
+    .await;
+    assert!(created.contains("created"), "{created}");
+    let skill = dir.path().join("linked");
+    std::os::unix::fs::symlink(outside.path(), skill.join("references")).unwrap();
+    let refused_dir = run(
+        &tool,
+        json!({
+            "action": "write_file",
+            "name": "linked",
+            "file_path": "references/pwned.md",
+            "file_content": "escaped"
+        }),
+    )
+    .await;
+    assert!(
+        refused_dir.contains("Refusing to write outside"),
+        "{refused_dir}"
+    );
+    assert!(!outside.path().join("pwned.md").exists());
+    assert_eq!(
+        std::fs::read_to_string(outside.path().join("marker.txt")).unwrap(),
+        "classified"
+    );
+    let _ = std::fs::remove_file(skill.join("references"));
+    std::fs::create_dir_all(skill.join("references")).unwrap();
+    std::os::unix::fs::symlink(
+        outside.path().join("marker.txt"),
+        skill.join("references").join("secret.md"),
+    )
+    .unwrap();
+    let refused_file = run(
+        &tool,
+        json!({
+            "action": "write_file",
+            "name": "linked",
+            "file_path": "references/secret.md",
+            "file_content": "pwned"
+        }),
+    )
+    .await;
+    assert!(
+        refused_file.contains("Refusing to write outside"),
+        "{refused_file}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(outside.path().join("marker.txt")).unwrap(),
+        "classified"
+    );
+
+    let _ = run(
+        &tool,
+        json!({"action": "create", "name": "trash-me", "description": "Trash"}),
+    )
+    .await;
+    std::os::unix::fs::symlink(outside.path(), dir.path().join(".trash")).unwrap();
+    let refused_trash = run(&tool, json!({"action": "delete", "name": "trash-me"})).await;
+    assert!(
+        refused_trash.contains("Refusing to write outside"),
+        "{refused_trash}"
+    );
+    assert!(dir.path().join("trash-me").join("SKILL.md").is_file());
+    let _ = std::fs::remove_file(dir.path().join(".trash"));
+
+    let _ = run(
+        &tool,
+        json!({"action": "create", "name": "retire-me", "description": "Retire"}),
+    )
+    .await;
+    std::os::unix::fs::symlink(outside.path(), dir.path().join("retired")).unwrap();
+    let refused_retire = run(&tool, json!({"action": "retire", "name": "retire-me"})).await;
+    assert!(
+        refused_retire.contains("Refusing to write outside"),
+        "{refused_retire}"
+    );
+    assert!(dir.path().join("retire-me").join("SKILL.md").is_file());
+
+    write_skill(
+        dir.path(),
+        "legit-dir",
+        "---\nname: ../../tmp/owned\ndescription: escape\n---\n# Stay\n",
+    );
+    manager.discover(vec![path.clone()]).await;
+    let refused_name = run(
+        &tool,
+        json!({"action": "delete", "name": "../../tmp/owned"}),
+    )
+    .await;
+    assert!(
+        refused_name.contains("Refusing to write outside"),
+        "{refused_name}"
+    );
+    assert!(dir.path().join("legit-dir").join("SKILL.md").is_file());
+
+    let patched = run(
+        &tool,
+        json!({
+            "action": "patch",
+            "name": "linked",
+            "content": "FIND: Link test\nREPLACE: echo $$"
+        }),
+    )
+    .await;
+    assert!(patched.contains("patched"), "{patched}");
+    let body = read_text(&skill.join("SKILL.md"));
+    assert!(body.contains("echo $"), "{body}");
+    assert!(!body.contains("echo $$"), "{body}");
+
+    let agent = tool.parameters();
+    assert_eq!(agent["properties"]["level"]["type"], "number");
+    assert!(!agent.to_string().contains("\"null\""));
+    let sidecar = SkillManageTool::sidecar(SkillManager::new(), vec![path]).parameters();
+    assert_eq!(sidecar["properties"]["level"]["type"], "integer");
+    assert!(!sidecar.to_string().contains("\"null\""));
+    assert!(agent.get("$schema").is_none());
+    assert!(agent.get("title").is_none());
+}

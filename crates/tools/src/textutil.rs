@@ -46,6 +46,67 @@ pub fn utf16_slice(text: &str, start: usize, end: usize) -> String {
     String::from_utf16_lossy(&units)
 }
 
+pub fn js_replace_once(content: &str, search: &str, replacement: &str) -> String {
+    if search.is_empty() {
+        return content.to_string();
+    }
+    let Some(index) = content.find(search) else {
+        return content.to_string();
+    };
+    let end = index + search.len();
+    let mut out = String::with_capacity(content.len() + replacement.len());
+    out.push_str(&content[..index]);
+    append_substitution(
+        &mut out,
+        replacement,
+        &content[index..end],
+        &content[..index],
+        &content[end..],
+    );
+    out.push_str(&content[end..]);
+    out
+}
+
+fn append_substitution(
+    out: &mut String,
+    replacement: &str,
+    matched: &str,
+    prefix: &str,
+    suffix: &str,
+) {
+    let chars: Vec<char> = replacement.chars().collect();
+    let mut index = 0;
+    while index < chars.len() {
+        if chars[index] != '$' {
+            out.push(chars[index]);
+            index += 1;
+            continue;
+        }
+        match chars.get(index + 1).copied() {
+            Some('$') => {
+                out.push('$');
+                index += 2;
+            }
+            Some('&') => {
+                out.push_str(matched);
+                index += 2;
+            }
+            Some('`') => {
+                out.push_str(prefix);
+                index += 2;
+            }
+            Some('\'') => {
+                out.push_str(suffix);
+                index += 2;
+            }
+            _ => {
+                out.push('$');
+                index += 1;
+            }
+        }
+    }
+}
+
 pub fn truncate_middle(text: &str, max: usize) -> String {
     let len = utf16_len(text);
     if len <= max {

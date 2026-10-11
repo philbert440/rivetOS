@@ -7,6 +7,7 @@ use crate::context::{ToolContext, ToolSurface};
 use crate::fsutil::map_file_err;
 use crate::pathutil::resolve_user_path;
 use crate::schema::{schema_of, set_property_description};
+use crate::textutil::js_replace_once;
 use crate::{Tool, text};
 
 const CONTEXT_LINES: usize = 3;
@@ -94,8 +95,8 @@ impl Tool for FileEditTool {
             return text("Error: old_string cannot be empty");
         }
         let resolved = resolve_user_path(file_path, context);
-        let content = match tokio::fs::read_to_string(&resolved).await {
-            Ok(content) => content,
+        let content = match tokio::fs::read(&resolved).await {
+            Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
             Err(err) => return text(map_file_err(&err, &resolved, false)),
         };
         let count = count_overlapping(&content, old_string);
@@ -107,7 +108,7 @@ impl Tool for FileEditTool {
                 "Error: old_string matches {count} times — be more specific"
             ));
         }
-        let updated = content.replacen(old_string, new_string, 1);
+        let updated = js_replace_once(&content, old_string, new_string);
         if let Err(err) = tokio::fs::write(&resolved, &updated).await {
             return text(map_file_err(&err, &resolved, false));
         }

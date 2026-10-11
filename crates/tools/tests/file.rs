@@ -301,6 +301,55 @@ async fn file_edit_cases() {
     assert!(required(&tool.parameters(), "path"));
     assert!(required(&tool.parameters(), "old_string"));
     assert!(required(&tool.parameters(), "new_string"));
+    let dollars = dir.join("edit-dollars.txt");
+    std::fs::write(&dollars, "echo $$\n").unwrap();
+    let result = run(
+        &tool,
+        json!({"path": dollars, "old_string": "echo $$", "new_string": "echo $$"}),
+        &ctx,
+    )
+    .await;
+    assert!(result.contains("Edited"), "{result}");
+    assert_eq!(std::fs::read_to_string(&dollars).unwrap(), "echo $\n");
+    let whole = dir.join("edit-whole.txt");
+    std::fs::write(&whole, "hello").unwrap();
+    let result = run(
+        &tool,
+        json!({"path": whole, "old_string": "hello", "new_string": "[$&]"}),
+        &ctx,
+    )
+    .await;
+    assert!(result.contains("Edited"), "{result}");
+    assert_eq!(std::fs::read_to_string(&whole).unwrap(), "[hello]");
+    let captured = dir.join("edit-capture.txt");
+    std::fs::write(&captured, "value\n").unwrap();
+    let result = run(
+        &tool,
+        json!({"path": captured, "old_string": "value", "new_string": "$1"}),
+        &ctx,
+    )
+    .await;
+    assert!(result.contains("Edited"), "{result}");
+    assert_eq!(std::fs::read_to_string(&captured).unwrap(), "$1\n");
+    let binary = dir.join("edit-binary.txt");
+    std::fs::write(&binary, b"hello\xff").unwrap();
+    let result = run(
+        &tool,
+        json!({"path": binary, "old_string": "hello", "new_string": "bye"}),
+        &ctx,
+    )
+    .await;
+    assert!(result.contains("Edited"), "{result}");
+    let bytes = std::fs::read(&binary).unwrap();
+    assert!(bytes.starts_with(b"bye"), "{bytes:?}");
+    assert!(
+        bytes.windows(3).any(|window| window == [0xef, 0xbf, 0xbd]),
+        "{bytes:?}"
+    );
+    assert!(
+        !result.contains("stream did not contain valid UTF-8"),
+        "{result}"
+    );
     let sidecar = FileEditTool::sidecar();
     assert!(
         sidecar.parameters()["properties"]["old_string"]["description"]

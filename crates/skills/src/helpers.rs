@@ -45,12 +45,6 @@ pub fn cosine_similarity(left: &[f64], right: &[f64]) -> f64 {
     if denom == 0.0 { 0.0 } else { dot / denom }
 }
 
-pub async fn atomic_write(path: &Path, content: &str) -> Result<(), std::io::Error> {
-    let tmp = format!("{}.tmp", path.display());
-    tokio::fs::write(&tmp, content).await?;
-    tokio::fs::rename(&tmp, path).await
-}
-
 pub async fn read_meta(skill_dir: &Path) -> Option<SkillMeta> {
     let raw = tokio::fs::read_to_string(skill_dir.join("_meta.json"))
         .await
@@ -58,9 +52,13 @@ pub async fn read_meta(skill_dir: &Path) -> Option<SkillMeta> {
     serde_json::from_str(&raw).ok()
 }
 
-pub async fn write_meta(skill_dir: &Path, meta: &SkillMeta) -> Result<(), std::io::Error> {
+pub async fn write_meta(
+    skill_dir: &Path,
+    meta: &SkillMeta,
+    roots: &[String],
+) -> Result<(), String> {
     let body = serde_json::to_string_pretty(meta).unwrap_or_else(|_| "{}".to_string());
-    atomic_write(&skill_dir.join("_meta.json"), &format!("{body}\n")).await
+    crate::confine::write_confined(&skill_dir.join("_meta.json"), &format!("{body}\n"), roots).await
 }
 
 pub async fn list_subdir(skill_dir: &Path, subdir: &str) -> Vec<String> {
@@ -207,13 +205,6 @@ pub fn title_case_hyphen(name: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join(" ")
-}
-
-pub fn under_roots(path: &Path, roots: &[String]) -> bool {
-    let path = normalize(path);
-    roots
-        .iter()
-        .any(|root| path.starts_with(normalize(Path::new(root))))
 }
 
 pub fn normalize(path: &Path) -> std::path::PathBuf {

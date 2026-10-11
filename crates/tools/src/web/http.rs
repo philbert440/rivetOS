@@ -38,7 +38,7 @@ pub struct ReqwestClient {
 impl Default for ReqwestClient {
     fn default() -> Self {
         let client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::limited(10))
+            .redirect(reqwest::redirect::Policy::limited(20))
             .build()
             .ok();
         Self { client }
@@ -153,8 +153,47 @@ pub fn request_header<'a>(request: &'a HttpRequest, name: &str) -> Option<&'a st
         .map(|(_, value)| value.as_str())
 }
 
+pub(crate) fn redact_transport_error(message: &str) -> String {
+    let bytes = message.as_bytes();
+    let mut out = String::with_capacity(message.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if has_prefix_ignore_ascii(&bytes[index..], b"https://")
+            || has_prefix_ignore_ascii(&bytes[index..], b"http://")
+        {
+            let start = index;
+            index += 1;
+            while index < bytes.len() && !url_terminator(bytes[index]) {
+                index += 1;
+            }
+            let url = &message[start..index];
+            let cut = url.find(['?', '#']).unwrap_or(url.len());
+            out.push_str(&url[..cut]);
+        } else {
+            let Some(ch) = message[index..].chars().next() else {
+                break;
+            };
+            out.push(ch);
+            index += ch.len_utf8();
+        }
+    }
+    out
+}
+
+fn has_prefix_ignore_ascii(bytes: &[u8], prefix: &[u8]) -> bool {
+    bytes.len() >= prefix.len()
+        && bytes
+            .iter()
+            .zip(prefix)
+            .all(|(byte, expected)| byte.eq_ignore_ascii_case(expected))
+}
+
+fn url_terminator(byte: u8) -> bool {
+    byte.is_ascii_whitespace() || matches!(byte, b'"' | b'\'' | b'<' | b'>' | b')' | b'`')
+}
+
 fn map_reqwest_error(err: reqwest::Error) -> String {
-    let message = err.to_string();
+    let message = redact_transport_error(&err.to_string());
     let lower = message.to_ascii_lowercase();
     if err.is_connect() || lower.contains("connection refused") {
         format!("fetch failed: ECONNREFUSED: {message}")

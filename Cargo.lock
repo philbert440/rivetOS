@@ -1355,6 +1355,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "indexmap",
+ "nix",
  "protocol",
  "regex",
  "regress",
