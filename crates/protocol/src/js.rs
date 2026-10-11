@@ -4,11 +4,48 @@ use serde::de::Deserializer;
 use serde::{Deserialize, Serialize, Serializer};
 use serde_json::{Map, Value};
 
+#[path = "js_collate.rs"]
+mod collate;
+#[path = "js_date.rs"]
+mod date;
+#[path = "js_format.rs"]
+mod format;
+#[path = "js_path.rs"]
+mod path;
+#[path = "js_replace.rs"]
+mod replace;
+#[path = "js_text.rs"]
+mod text;
+
+pub use collate::{CollateError, locale_compare};
+pub use date::{
+    InvalidTime, LocalParts, date_now, date_parse, default_locale, fmt_local_date, fmt_local_ts,
+    local_date_parts, local_timestamp, resolved_time_zone, system_time_zone, time_zone,
+    time_zone_name_short, timezone_offset_minutes, to_iso_string, to_locale_date_string,
+    to_locale_string, to_locale_string_en_us_time_zone, to_locale_string_month_short,
+    to_locale_time_string, to_locale_time_string_en_us_hour24, to_locale_time_string_hhmm,
+    to_locale_time_string_hhmmss, utc_day,
+};
+pub use format::{
+    ToFixedError, intl_number_format, number_to_locale_string, number_to_locale_string_en,
+    number_to_locale_string_en_us, to_fixed,
+};
+pub use path::{
+    posix_basename, posix_dirname, posix_extname, posix_is_absolute, posix_join, posix_normalize,
+    posix_relative, posix_resolve,
+};
+pub use replace::{ReplaceError, js_replace, js_replace_all_string, js_replace_string};
+pub use text::{
+    js_boolean, js_boolean_json, js_slice, js_slice_units, js_string, js_substring,
+    js_substring_units, js_to_string_json, js_trim_end, js_trim_end_units, js_trim_start,
+    js_trim_start_units, js_trim_units, number_to_string, utf16_len,
+};
+
 pub fn js_trim(text: &str) -> &str {
     text.trim_matches(is_js_whitespace)
 }
 
-pub(crate) fn is_js_whitespace(ch: char) -> bool {
+pub fn is_js_whitespace(ch: char) -> bool {
     matches!(
         ch,
         '\u{0009}'
@@ -75,13 +112,43 @@ impl JsString {
         }
     }
 
-    fn from_units(units: Vec<u16>) -> Self {
+    pub fn from_units(units: Vec<u16>) -> Self {
         let utf8 = utf8_from_units(&units);
         Self { units, utf8 }
     }
 
+    pub fn units(&self) -> &[u16] {
+        &self.units
+    }
+
+    pub fn len(&self) -> usize {
+        self.units.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.units.is_empty()
+    }
+
     pub fn to_utf8(&self) -> &str {
         &self.utf8
+    }
+}
+
+impl From<&str> for JsString {
+    fn from(text: &str) -> Self {
+        Self::from_text(text)
+    }
+}
+
+impl From<String> for JsString {
+    fn from(text: String) -> Self {
+        Self::from_text(&text)
+    }
+}
+
+impl std::fmt::Display for JsString {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.to_utf8())
     }
 }
 
@@ -129,8 +196,8 @@ impl JsObject {
         Self::default()
     }
 
-    pub fn insert(&mut self, key: &str, value: JsValue) {
-        self.insert_key(JsString::from_text(key), value);
+    pub fn insert(&mut self, key: impl Into<JsString>, value: JsValue) {
+        self.insert_key(key.into(), value);
     }
 
     fn insert_key(&mut self, key: JsString, value: JsValue) {
@@ -157,6 +224,33 @@ impl JsObject {
         let needle = JsString::from_text(key);
         let index = *self.lookup.get(&needle.units)?;
         self.entries.get(index).map(|(_, value)| value)
+    }
+
+    pub fn get_mut(&mut self, key: &str) -> Option<&mut JsValue> {
+        let needle = JsString::from_text(key);
+        let index = *self.lookup.get(&needle.units)?;
+        self.entries.get_mut(index).map(|(_, value)| value)
+    }
+
+    pub fn remove(&mut self, key: &str) -> Option<JsValue> {
+        let needle = JsString::from_text(key);
+        let index = self.lookup.remove(&needle.units)?;
+        let (_, value) = self.entries.remove(index);
+        for stored in self.lookup.values_mut() {
+            if *stored > index {
+                *stored -= 1;
+            }
+        }
+        Some(value)
+    }
+
+    pub fn contains_key(&self, key: &str) -> bool {
+        let needle = JsString::from_text(key);
+        self.lookup.contains_key(&needle.units)
+    }
+
+    pub fn keys(&self) -> impl Iterator<Item = &JsString> {
+        self.entries.iter().map(|(key, _)| key)
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (&JsString, &JsValue)> {
@@ -204,7 +298,21 @@ impl JsValue {
         }
     }
 
+    pub fn as_object_mut(&mut self) -> Option<&mut JsObject> {
+        match self {
+            Self::Object(object) => Some(object),
+            _ => None,
+        }
+    }
+
     pub fn as_array(&self) -> Option<&[JsValue]> {
+        match self {
+            Self::Array(items) => Some(items),
+            _ => None,
+        }
+    }
+
+    pub fn as_array_mut(&mut self) -> Option<&mut Vec<JsValue>> {
         match self {
             Self::Array(items) => Some(items),
             _ => None,
@@ -214,6 +322,20 @@ impl JsValue {
     pub fn as_str(&self) -> Option<&str> {
         match self {
             Self::String(text) => Some(text.to_utf8()),
+            _ => None,
+        }
+    }
+
+    pub fn as_js_string(&self) -> Option<&JsString> {
+        match self {
+            Self::String(text) => Some(text),
+            _ => None,
+        }
+    }
+
+    pub fn as_f64(&self) -> Option<f64> {
+        match self {
+            Self::Number(value) => Some(*value),
             _ => None,
         }
     }
@@ -248,6 +370,18 @@ impl JsValue {
 
     pub fn is_boolean(&self) -> bool {
         matches!(self, Self::Bool(_))
+    }
+
+    pub fn is_number(&self) -> bool {
+        matches!(self, Self::Number(_))
+    }
+
+    pub fn is_array(&self) -> bool {
+        matches!(self, Self::Array(_))
+    }
+
+    pub fn is_object(&self) -> bool {
+        matches!(self, Self::Object(_))
     }
 
     pub fn get(&self, key: &str) -> Option<&JsValue> {
@@ -954,6 +1088,62 @@ fn append_code_unit(unit: u32, out: &mut String) {
     }
 }
 
+impl Serialize for JsString {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut text = String::new();
+        write_units(&self.units, &mut text);
+        match serde_json::value::RawValue::from_string(text) {
+            Ok(raw) => raw.serialize(serializer),
+            Err(err) => Err(serde::ser::Error::custom(err)),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for JsString {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = Box::<serde_json::value::RawValue>::deserialize(deserializer)?;
+        match parse(raw.get()) {
+            Ok(value) => match value.as_js_string() {
+                Some(text) => Ok(text.clone()),
+                None => Err(serde::de::Error::custom("string")),
+            },
+            Err(err) => Err(serde::de::Error::custom(err)),
+        }
+    }
+}
+
+impl Serialize for JsValue {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let text = stringify(self);
+        match serde_json::value::RawValue::from_string(text) {
+            Ok(raw) => raw.serialize(serializer),
+            Err(err) => Err(serde::ser::Error::custom(err)),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for JsValue {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = Box::<serde_json::value::RawValue>::deserialize(deserializer)?;
+        match parse(raw.get()) {
+            Ok(value) => Ok(value),
+            Err(err) => Err(serde::de::Error::custom(err)),
+        }
+    }
+}
+
 fn push_hex(unit: u32, out: &mut String) {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     out.push(char::from(HEX[((unit >> 4) & 0xF) as usize]));
@@ -962,7 +1152,7 @@ fn push_hex(unit: u32, out: &mut String) {
 
 #[cfg(test)]
 mod code_units {
-    use super::{JsString, parse, stringify};
+    use super::{JsObject, JsString, JsValue, parse, stringify};
 
     #[test]
     fn lone_surrogates_escape() {
@@ -973,5 +1163,42 @@ mod code_units {
         assert_eq!(stringify(&high), r#""\udfff""#);
         let built = JsString::from_units(vec![0xD800]);
         assert_eq!(built.to_utf8(), "\u{FFFD}");
+        assert_eq!(built.len(), 1);
+        assert!(!built.is_empty());
+        assert_eq!(built.units(), &[0xD800]);
+        assert_eq!(built.to_string(), "\u{FFFD}");
+        let json = serde_json::to_string(&built).unwrap();
+        assert_eq!(json, r#""\ud800""#);
+        let back: JsString = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.units(), &[0xD800]);
+        let value_json = serde_json::to_string(&JsValue::String(built)).unwrap();
+        assert_eq!(value_json, r#""\ud800""#);
+        let value_back: JsValue = serde_json::from_str(&value_json).unwrap();
+        assert_eq!(value_back.as_js_string().unwrap().units(), &[0xD800]);
+    }
+
+    #[test]
+    fn object_order_remove_and_get_mut() {
+        let mut object = JsObject::new();
+        object.insert("b", JsValue::Number(1.0));
+        object.insert(String::from("a"), JsValue::Number(2.0));
+        object.insert("b", JsValue::Bool(true));
+        assert!(object.contains_key("a"));
+        assert_eq!(
+            object.keys().map(|key| key.to_utf8()).collect::<Vec<_>>(),
+            vec!["b", "a"]
+        );
+        *object.get_mut("a").unwrap() = JsValue::Null;
+        assert!(object.get("a").unwrap().is_null());
+        assert_eq!(object.remove("b").unwrap(), JsValue::Bool(true));
+        assert!(!object.contains_key("b"));
+        assert_eq!(object.len(), 1);
+        let mut array = JsValue::Array(vec![JsValue::Null]);
+        array.as_array_mut().unwrap().push(JsValue::Bool(false));
+        assert_eq!(array.as_array().unwrap().len(), 2);
+        assert!(JsValue::Number(1.5).is_number());
+        assert_eq!(JsValue::Number(1.5).as_f64(), Some(1.5));
+        assert!(JsValue::Array(Vec::new()).is_array());
+        assert!(JsValue::Object(JsObject::new()).is_object());
     }
 }

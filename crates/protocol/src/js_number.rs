@@ -162,6 +162,12 @@ impl Visitor<'_> for JsNumberVisitor {
     }
 }
 
+pub(crate) fn shortest_digits(magnitude: f64) -> (String, i32) {
+    let mut buffer = ryu::Buffer::new();
+    let printed = buffer.format_finite(magnitude);
+    extract_digits(printed)
+}
+
 pub(crate) fn json_number(value: f64) -> String {
     if value == 0.0 {
         return "0".to_string();

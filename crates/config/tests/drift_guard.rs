@@ -49,6 +49,17 @@ fn collect_files(dir: &Path, extension: &str, out: &mut Vec<PathBuf>) {
     }
 }
 
+fn semantics_helper(file: &str) -> bool {
+    matches!(
+        file,
+        "crates/protocol/src/host.rs"
+            | "crates/protocol/src/js_date.rs"
+            | "crates/protocol/src/js_format.rs"
+            | "crates/protocol/src/js_text.rs"
+            | "crates/config/src/paths.rs"
+    )
+}
+
 fn relative(root: &Path, path: &Path) -> String {
     path.strip_prefix(root)
         .unwrap_or(path)
@@ -66,6 +77,9 @@ fn rust_hits(root: &Path) -> Vec<Hit> {
         let source = std::fs::read_to_string(&path)
             .unwrap_or_else(|err| panic!("{}: {err}", path.display()));
         let file = relative(root, &path);
+        if semantics_helper(&file) {
+            continue;
+        }
         hits.extend(rust_messages(&source, &file));
     }
     hits

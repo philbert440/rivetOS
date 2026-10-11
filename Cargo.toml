@@ -9,10 +9,59 @@ publish = false
 version = "0.1.0"
 
 [workspace.dependencies]
+async-trait = "0.1.89"
+axum = "0.8"
+base64 = "0.23.1"
+bytes = "1"
+chrono = { version = "0.4.42", default-features = false, features = ["clock", "std"] }
+chrono-tz = "0.10.4"
+clap = { version = "4", features = ["derive"] }
+fd-lock = "4"
+futures = "0.3"
+futures-util = "0.3"
+getrandom = "0.2"
+globset = "0.4.16"
+hex = "0.4"
+hostname = "0.4"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio", "server-auto", "http1"] }
+iana-time-zone = "0.1"
+icu_collator = "2"
+icu_locale_core = "2"
+indexmap = "2.11.4"
+nix = "0.30"
+p12-keystore = "0.4.0"
+parking_lot = "0.12"
+postgresql_embedded = { version = "0.21", default-features = false, features = ["tokio", "theseus", "tls-rustls-ring"] }
+postgresql_extensions = { version = "0.21", default-features = false, features = ["tokio", "portal-corp", "tls-rustls-ring"] }
+rcgen = "0.13"
+regress = "0.12.0"
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+rsa = { version = "0.9.10", features = ["pem", "sha2"] }
+rusqlite = "0.37.0"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-pemfile = "2"
+ryu = "1.0.23"
+schemars = "0.8.22"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order", "raw_value", "float_roundtrip"] }
 serde_saphyr = { package = "serde-saphyr", version = "0.0.16" }
+sha2 = "0.10"
+signature = { version = "3", features = ["alloc"] }
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json"] }
 thiserror = "2"
+tokio = "1.47.1"
+tokio-rustls = "0.26"
+tokio-util = "0.7.16"
+tower = "0.5"
+tracing = "0.1.44"
+unicode-normalization = "0.1"
+url = "2.5.7"
+uuid = { version = "1", features = ["v4"] }
+x509-cert = { version = "0.3.0", features = ["builder", "pem", "std"] }
+x509-parser = "0.18.1"
+zstd = "0.13"
 
 [workspace.lints.rust]
 unsafe_code = "deny"

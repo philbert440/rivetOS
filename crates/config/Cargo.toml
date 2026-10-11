@@ -7,7 +7,7 @@ publish.workspace = true
 
 [dependencies]
 protocol = { path = "../protocol" }
-regress = "0.12.0"
+regress = { workspace = true }
 serde.workspace = true
 serde_json.workspace = true
 serde_saphyr.workspace = true

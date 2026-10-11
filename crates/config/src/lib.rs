@@ -1,5 +1,6 @@
 mod embedded;
 mod error;
+pub mod paths;
 mod resolve;
 mod validate;
 

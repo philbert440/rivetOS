@@ -1,9 +1,11 @@
 mod js_number;
 mod wire_enum;
 
+pub mod digest;
 pub mod error_json;
 pub mod events;
 pub mod hooks;
+pub mod host;
 pub mod js;
 pub mod message;
 pub mod session_id;

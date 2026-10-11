@@ -1,13 +1,7 @@
-use serde_json::{Number, Value};
+use serde_json::Value;
 
 pub(crate) fn is_falsy(value: &Value) -> bool {
-    match value {
-        Value::Null => true,
-        Value::Bool(flag) => !flag,
-        Value::Number(number) => number.as_f64().is_some_and(|n| n == 0.0 || n.is_nan()),
-        Value::String(text) => text.is_empty(),
-        Value::Array(_) | Value::Object(_) => false,
-    }
+    !protocol::js::js_boolean_json(value)
 }
 
 pub(crate) fn js_typeof(value: &Value) -> &'static str {
@@ -56,45 +50,13 @@ pub(crate) fn hour_ok(value: &Value) -> bool {
 }
 
 pub(crate) fn js_to_string(value: &Value) -> String {
-    match value {
-        Value::Null => "null".to_string(),
-        Value::Bool(true) => "true".to_string(),
-        Value::Bool(false) => "false".to_string(),
-        Value::Number(number) => number_to_string(number),
-        Value::String(text) => text.clone(),
-        Value::Array(items) => items
-            .iter()
-            .map(|item| match item {
-                Value::Null => String::new(),
-                other => js_to_string(other),
-            })
-            .collect::<Vec<_>>()
-            .join(","),
-        Value::Object(_) => "[object Object]".to_string(),
-    }
-}
-
-fn number_to_string(number: &Number) -> String {
-    if let Some(integer) = number.as_i64() {
-        return integer.to_string();
-    }
-    if let Some(integer) = number.as_u64() {
-        return integer.to_string();
-    }
-    match number.as_f64() {
-        Some(float) => float_to_string(float),
-        None => number.to_string(),
-    }
-}
-
-fn float_to_string(float: f64) -> String {
-    protocol::JsNumber::from(float).to_string()
+    protocol::js::js_to_string_json(value)
 }
 
 pub(crate) use protocol::js::js_trim;
 
 pub(crate) fn utf16_len(text: &str) -> usize {
-    text.encode_utf16().count()
+    protocol::js::utf16_len(text)
 }
 
 pub(crate) fn trimmed_nonempty(value: &Value) -> bool {
