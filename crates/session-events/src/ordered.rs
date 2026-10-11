@@ -1,10 +1,12 @@
 use serde::de::{self, DeserializeOwned, Deserializer};
-use serde::ser::{SerializeMap, Serializer};
+use serde::ser::Serializer;
 use serde::{Deserialize, Serialize};
+
+use protocol::js::{JsString, JsValue};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OrderedMap<T> {
-    entries: Vec<(String, T)>,
+    entries: Vec<(JsString, T)>,
 }
 
 impl<T> OrderedMap<T> {
@@ -14,7 +16,7 @@ impl<T> OrderedMap<T> {
         }
     }
 
-    pub(crate) fn insert(&mut self, key: String, value: T) {
+    pub(crate) fn insert(&mut self, key: JsString, value: T) {
         if let Some((_, slot)) = self
             .entries
             .iter_mut()
@@ -39,20 +41,23 @@ impl<T> OrderedMap<T> {
     }
 
     pub fn get(&self, key: &str) -> Option<&T> {
+        let needle = JsString::from_text(key);
+        self.get_key(&needle)
+    }
+
+    pub fn get_key(&self, key: &JsString) -> Option<&T> {
         self.entries
             .iter()
             .find(|(existing, _)| existing == key)
             .map(|(_, value)| value)
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (&str, &T)> {
-        self.entries
-            .iter()
-            .map(|(key, value)| (key.as_str(), value))
+    pub fn iter(&self) -> impl Iterator<Item = (&JsString, &T)> {
+        self.entries.iter().map(|(key, value)| (key, value))
     }
 
-    pub fn keys(&self) -> impl Iterator<Item = &str> {
-        self.entries.iter().map(|(key, _)| key.as_str())
+    pub fn keys(&self) -> impl Iterator<Item = &JsString> {
+        self.entries.iter().map(|(key, _)| key)
     }
 
     pub fn values(&self) -> impl Iterator<Item = &T> {
@@ -73,11 +78,19 @@ impl<T: Serialize> Serialize for OrderedMap<T> {
     where
         S: Serializer,
     {
-        let mut map = serializer.serialize_map(Some(self.entries.len()))?;
-        for (key, value) in &self.entries {
-            map.serialize_entry(key, value)?;
+        let mut body = String::from('{');
+        for (index, (key, value)) in self.entries.iter().enumerate() {
+            if index > 0 {
+                body.push(',');
+            }
+            body.push_str(&protocol::js::stringify(&JsValue::String(key.clone())));
+            body.push(':');
+            body.push_str(&serde_json::to_string(value).map_err(serde::ser::Error::custom)?);
         }
-        map.end()
+        body.push('}');
+        let raw =
+            serde_json::value::RawValue::from_string(body).map_err(serde::ser::Error::custom)?;
+        raw.serialize(serializer)
     }
 }
 
@@ -96,24 +109,27 @@ where
         for (key, item) in object.iter() {
             let json = protocol::js::stringify(item);
             let parsed = serde_json::from_str(&json).map_err(de::Error::custom)?;
-            ordered.insert(key.to_utf8().to_string(), parsed);
+            ordered.insert(key.clone(), parsed);
         }
         Ok(ordered)
     }
 }
 
-fn canonical_index(key: &str) -> Option<u32> {
-    let bytes = key.as_bytes();
-    if bytes.is_empty() || bytes.len() > 10 {
+fn canonical_index(key: &JsString) -> Option<u32> {
+    let units = key.units();
+    if units.is_empty() || units.len() > 10 {
         return None;
     }
-    if bytes.len() > 1 && bytes[0] == b'0' {
+    if units.len() > 1 && units[0] == u16::from(b'0') {
         return None;
     }
-    if !bytes.iter().all(|byte| byte.is_ascii_digit()) {
+    if !units
+        .iter()
+        .all(|unit| (u16::from(b'0')..=u16::from(b'9')).contains(unit))
+    {
         return None;
     }
-    let value: u64 = key.parse().ok()?;
+    let value: u64 = key.to_utf8().parse().ok()?;
     if value > 4_294_967_294 {
         return None;
     }

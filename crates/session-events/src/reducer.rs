@@ -4,7 +4,7 @@ use std::str::FromStr;
 use serde::de::{self, Deserializer};
 use serde::{Deserialize, Serialize};
 
-use protocol::js::{JsString, JsValue, is_js_whitespace};
+use protocol::js::{JsString, JsValue, js_replace, js_slice_units};
 
 use crate::JsNumber;
 use crate::activity::{Activity, tool_activity};
@@ -44,14 +44,14 @@ pub struct RoomState {
     pub ended: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionInfo {
-    pub id: String,
-    pub name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub harness: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: JsString,
+    pub name: JsString,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub harness: Option<JsString>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub last_event_ts: Option<JsNumber>,
 }
 
@@ -85,6 +85,16 @@ impl<'de> Deserialize<'de> for LogEntry {
     }
 }
 
+impl<'de> Deserialize<'de> for SessionInfo {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = js_from_deserializer(deserializer)?;
+        session_info_from_js(&value).ok_or_else(|| de::Error::custom("session"))
+    }
+}
+
 impl<'de> Deserialize<'de> for RoomState {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -95,14 +105,33 @@ impl<'de> Deserialize<'de> for RoomState {
     }
 }
 
+pub(crate) fn session_info_from_js(value: &JsValue) -> Option<SessionInfo> {
+    let object = value.as_object()?;
+    let harness = match object.get("harness") {
+        None | Some(JsValue::Null) => None,
+        Some(text) => Some(cloned_string(text)?),
+    };
+    let last_event_ts = match object.get("lastEventTs") {
+        None | Some(JsValue::Null) => None,
+        Some(JsValue::Number(number)) if number.is_finite() => Some(JsNumber::from(*number)),
+        Some(_) => return None,
+    };
+    Some(SessionInfo {
+        id: cloned_string(object.get("id")?)?,
+        name: cloned_string(object.get("name")?)?,
+        harness,
+        last_event_ts,
+    })
+}
+
 pub(crate) fn room_from_js(value: &JsValue) -> Option<RoomState> {
     let object = value.as_object()?;
     Some(RoomState {
-        title: js_string(object.get("title")?)?,
+        title: cloned_string(object.get("title")?)?,
         activity: Activity::from_str(object.get("activity")?.as_str()?).ok()?,
         tool: match object.get("tool")? {
             JsValue::Null => None,
-            other => Some(js_string(other)?),
+            other => Some(cloned_string(other)?),
         },
         tasks: object
             .get("tasks")?
@@ -110,8 +139,8 @@ pub(crate) fn room_from_js(value: &JsValue) -> Option<RoomState> {
             .iter()
             .map(task_from_js)
             .collect::<Option<Vec<_>>>()?,
-        thought: js_string(object.get("thought")?)?,
-        last_message: js_string(object.get("lastMessage")?)?,
+        thought: cloned_string(object.get("thought")?)?,
+        last_message: cloned_string(object.get("lastMessage")?)?,
         log: object
             .get("log")?
             .as_array()?
@@ -122,7 +151,7 @@ pub(crate) fn room_from_js(value: &JsValue) -> Option<RoomState> {
             .get("term")?
             .as_array()?
             .iter()
-            .map(js_string)
+            .map(cloned_string)
             .collect::<Option<Vec<_>>>()?,
         ended: object.get("ended")?.as_bool()?,
     })
@@ -131,7 +160,7 @@ pub(crate) fn room_from_js(value: &JsValue) -> Option<RoomState> {
 fn task_from_js(value: &JsValue) -> Option<Task> {
     let object = value.as_object()?;
     Some(Task {
-        label: js_string(object.get("label")?)?,
+        label: cloned_string(object.get("label")?)?,
         done: object.get("done")?.as_bool()?,
     })
 }
@@ -140,11 +169,11 @@ fn log_from_js(value: &JsValue) -> Option<LogEntry> {
     let object = value.as_object()?;
     Some(LogEntry {
         who: LogWho::from_str(object.get("who")?.as_str()?).ok()?,
-        text: js_string(object.get("text")?)?,
+        text: cloned_string(object.get("text")?)?,
     })
 }
 
-fn js_string(value: &JsValue) -> Option<JsString> {
+fn cloned_string(value: &JsValue) -> Option<JsString> {
     value.as_js_string().cloned()
 }
 
@@ -289,13 +318,13 @@ pub fn reduce_room(mut state: RoomState, event: &AgentEvent) -> RoomState {
 }
 
 pub fn reduce_den(mut state: DenState, event: &AgentEvent) -> DenState {
-    let session = event.session().to_string();
+    let session = event.session().clone();
     let room = state
         .rooms
-        .get(&session)
+        .get_key(&session)
         .cloned()
         .unwrap_or_else(initial_room_state);
-    let previous = state.sessions.get(&session).cloned();
+    let previous = state.sessions.get_key(&session).cloned();
     let info = SessionInfo {
         id: session.clone(),
         name: display_name(event, previous.as_ref()),
@@ -314,23 +343,23 @@ pub fn list_sessions(state: &DenState) -> Vec<SessionInfo> {
     sessions
 }
 
-fn display_name(event: &AgentEvent, previous: Option<&SessionInfo>) -> String {
+fn display_name(event: &AgentEvent, previous: Option<&SessionInfo>) -> JsString {
     if let Some(name) = event.name()
         && !name.is_empty()
     {
-        return name.to_string();
+        return name.clone();
     }
     if let Some(previous) = previous
         && !previous.name.is_empty()
     {
         return previous.name.clone();
     }
-    event.session().to_string()
+    event.session().clone()
 }
 
-fn display_harness(event: &AgentEvent, previous: Option<&SessionInfo>) -> Option<String> {
+fn display_harness(event: &AgentEvent, previous: Option<&SessionInfo>) -> Option<JsString> {
     if let Some(harness) = event.harness() {
-        Some(harness.to_string())
+        Some(harness.clone())
     } else {
         previous.and_then(|info| info.harness.clone())
     }
@@ -402,37 +431,12 @@ fn is_spinner_line(units: &[u16]) -> bool {
 }
 
 fn window_thought(existing: &JsString, delta: &JsString) -> JsString {
-    let mut units = Vec::with_capacity(existing.units().len() + delta.units().len());
+    let mut units = Vec::with_capacity(existing.len() + delta.len());
     units.extend_from_slice(existing.units());
     units.extend_from_slice(delta.units());
-    if units.len() > THOUGHT_MAX {
-        let start = units.len() - THOUGHT_MAX;
-        units.drain(0..start);
+    let sliced = JsString::from_units(js_slice_units(&units, Some(-(THOUGHT_MAX as f64)), None));
+    if sliced.len() != THOUGHT_MAX {
+        return sliced;
     }
-    if units.len() == THOUGHT_MAX {
-        units = trim_to_word_boundary(&units);
-    }
-    JsString::from_units(units)
-}
-
-fn trim_to_word_boundary(units: &[u16]) -> Vec<u16> {
-    let mut consumed_ws = false;
-    let mut cut = 0;
-    for (index, unit) in units.iter().enumerate() {
-        if is_whitespace_unit(*unit) {
-            consumed_ws = true;
-            cut = index + 1;
-        } else if consumed_ws {
-            return units[cut..].to_vec();
-        }
-    }
-    if consumed_ws {
-        Vec::new()
-    } else {
-        units.to_vec()
-    }
-}
-
-fn is_whitespace_unit(unit: u16) -> bool {
-    char::from_u32(u32::from(unit)).is_some_and(is_js_whitespace)
+    js_replace(&sliced, r"^\S*\s+", "", "").unwrap_or(sliced)
 }

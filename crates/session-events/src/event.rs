@@ -56,7 +56,7 @@ pub enum AgentEventBody {
     ToolStart {
         tool: JsString,
         activity: Option<Activity>,
-        args: Option<Value>,
+        args: Option<JsValue>,
     },
     ToolEnd {
         tool: Option<JsString>,
@@ -115,14 +115,14 @@ pub struct AgentEvent {
 const JSON_RAW_VALUE: &str = "$serde_json::private::RawValue";
 
 impl AgentEvent {
-    pub fn new(session: impl AsRef<str>, body: AgentEventBody) -> Self {
+    pub fn new(session: impl Into<JsString>, body: AgentEventBody) -> Self {
         let mut object = JsObject::new();
         put(
             &mut object,
             "v",
             JsValue::Number(f64::from(PROTOCOL_VERSION)),
         );
-        put(&mut object, "session", JsValue::from_text(session.as_ref()));
+        put(&mut object, "session", JsValue::String(session.into()));
         put(&mut object, "type", JsValue::from_text(body.type_name()));
         insert_body(&mut object, body);
         Self {
@@ -137,19 +137,19 @@ impl AgentEvent {
         }
     }
 
-    pub fn session(&self) -> &str {
-        self.string_field("session").unwrap_or("")
+    pub fn session(&self) -> &JsString {
+        self.string_field("session").unwrap_or(empty_js())
     }
 
-    pub fn name(&self) -> Option<&str> {
+    pub fn name(&self) -> Option<&JsString> {
         self.string_field("name")
     }
 
-    pub fn harness(&self) -> Option<&str> {
+    pub fn harness(&self) -> Option<&JsString> {
         self.string_field("harness")
     }
 
-    pub fn harness_session(&self) -> Option<&str> {
+    pub fn harness_session(&self) -> Option<&JsString> {
         self.string_field("harnessSession")
     }
 
@@ -172,9 +172,9 @@ impl AgentEvent {
         })
     }
 
-    pub fn with_session(mut self, session: impl AsRef<str>) -> Self {
+    pub fn with_session(mut self, session: impl Into<JsString>) -> Self {
         if let Some(object) = self.raw.as_object_mut() {
-            put(object, "session", JsValue::from_text(session.as_ref()));
+            put(object, "session", JsValue::String(session.into()));
         }
         self
     }
@@ -217,8 +217,8 @@ impl AgentEvent {
             .with_harness(harness)
     }
 
-    fn string_field(&self, key: &str) -> Option<&str> {
-        self.raw.get(key).and_then(JsValue::as_str)
+    fn string_field(&self, key: &str) -> Option<&JsString> {
+        self.raw.get(key).and_then(JsValue::as_js_string)
     }
 
     fn set_string(&mut self, key: &str, value: Option<&str>) {
@@ -312,9 +312,7 @@ fn parse_body(kind: &str, object: &JsObject) -> Option<AgentEventBody> {
         EventType::ToolStart => AgentEventBody::ToolStart {
             tool: required_js(object, "tool")?,
             activity: optional_activity(object)?,
-            args: object
-                .get("args")
-                .map(|value| json_value(value).unwrap_or(Value::Null)),
+            args: object.get("args").cloned(),
         },
         EventType::ToolEnd => AgentEventBody::ToolEnd {
             tool: optional_tool(object)?,
@@ -438,8 +436,9 @@ fn parse_usage(value: &JsValue) -> Option<TokenUsage> {
     })
 }
 
-fn json_value(value: &JsValue) -> Option<Value> {
-    serde_json::from_str(&protocol::js::stringify(value)).ok()
+fn empty_js() -> &'static JsString {
+    static EMPTY: std::sync::OnceLock<JsString> = std::sync::OnceLock::new();
+    EMPTY.get_or_init(|| JsString::from_text(""))
 }
 
 fn put(object: &mut JsObject, key: &str, value: JsValue) {
@@ -478,7 +477,7 @@ fn insert_body(object: &mut JsObject, body: AgentEventBody) {
                 put(object, "activity", JsValue::from_text(activity.as_str()));
             }
             if let Some(args) = args {
-                put(object, "args", protocol::js::from_serde(&args));
+                put(object, "args", args);
             }
         }
         AgentEventBody::ToolEnd { tool } => {

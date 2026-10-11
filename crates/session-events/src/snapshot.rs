@@ -4,12 +4,13 @@ use serde::de::{self, Deserializer};
 use serde::ser::{SerializeMap, Serializer};
 use serde::{Deserialize, Serialize};
 
-use protocol::js::JsValue;
+use protocol::js::{JsString, JsValue};
 
 use crate::event::js_from_deserializer;
 use crate::ordered::OrderedMap;
 use crate::reducer::{
     DenState, RoomState, SessionInfo, initial_room_state, list_sessions, room_from_js,
+    session_info_from_js,
 };
 use crate::{JsNumber, PROTOCOL_VERSION};
 
@@ -79,46 +80,27 @@ impl<'de> Deserialize<'de> for SnapshotFrame {
 }
 
 fn sessions_from_js(value: &JsValue) -> Option<Vec<SessionInfo>> {
-    value.as_array()?.iter().map(session_from_js).collect()
-}
-
-fn session_from_js(value: &JsValue) -> Option<SessionInfo> {
-    let object = value.as_object()?;
-    let harness = match object.get("harness") {
-        None | Some(JsValue::Null) => None,
-        Some(text) => Some(text.as_str()?.to_string()),
-    };
-    let last_event_ts = match object.get("lastEventTs") {
-        None | Some(JsValue::Null) => None,
-        Some(JsValue::Number(number)) if number.is_finite() => Some(JsNumber::from(*number)),
-        Some(_) => return None,
-    };
-    Some(SessionInfo {
-        id: object.get("id")?.as_str()?.to_string(),
-        name: object.get("name")?.as_str()?.to_string(),
-        harness,
-        last_event_ts,
-    })
+    value.as_array()?.iter().map(session_info_from_js).collect()
 }
 
 fn rooms_from_js(value: &JsValue) -> Option<OrderedMap<RoomState>> {
     let mut rooms = OrderedMap::new();
     for (key, room) in value.as_object()?.iter() {
-        rooms.insert(key.to_utf8().to_string(), room_from_js(room)?);
+        rooms.insert(key.clone(), room_from_js(room)?);
     }
     Some(rooms)
 }
 
-pub fn snapshot_frame(state: &DenState, session: Option<&str>) -> SnapshotFrame {
+pub fn snapshot_frame(state: &DenState, session: Option<&JsString>) -> SnapshotFrame {
     let rooms = match session {
         Some(session) => {
             let mut rooms = OrderedMap::new();
             let room = state
                 .rooms
-                .get(session)
+                .get_key(session)
                 .cloned()
                 .unwrap_or_else(initial_room_state);
-            rooms.insert(session.to_string(), room);
+            rooms.insert(session.clone(), room);
             rooms
         }
         None => state.rooms.clone(),

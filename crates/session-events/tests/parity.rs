@@ -1,10 +1,15 @@
 use serde_json::{Value, json};
 use session_events::{
     ACTIVITIES, Activity, AgentEvent, AgentEventBody, DenState, EventType, JsNumber, JsString,
-    LogEntry, LogWho, PROTOCOL_VERSION, RoomState, SessionInfo, SnapshotFrame, Task, TokenUsage,
-    initial_den_state, initial_room_state, list_sessions, parse_event, parse_event_str, reduce_den,
-    reduce_room, snapshot_frame, tool_activity,
+    JsValue, LogEntry, LogWho, PROTOCOL_VERSION, RoomState, SessionInfo, SnapshotFrame, Task,
+    TokenUsage, initial_den_state, initial_room_state, list_sessions, parse_event, parse_event_str,
+    reduce_den, reduce_room, snapshot_frame, tool_activity,
 };
+
+fn frame_for(state: &DenState, session: &str) -> SnapshotFrame {
+    let key = JsString::from_text(session);
+    snapshot_frame(state, Some(&key))
+}
 
 fn stamped(
     session: &str,
@@ -305,8 +310,11 @@ fn parse_event_keeps_harness_session() {
         "harnessSession": "20260802_225647_6ad0b9"
     }))
     .unwrap();
-    assert_eq!(event.harness_session(), Some("20260802_225647_6ad0b9"));
-    assert_eq!(event.harness(), Some("hermes"));
+    assert_eq!(
+        event.harness_session().map(JsString::to_utf8),
+        Some("20260802_225647_6ad0b9")
+    );
+    assert_eq!(event.harness().map(JsString::to_utf8), Some("hermes"));
 }
 
 #[test]
@@ -384,7 +392,7 @@ fn parse_event_preserves_unknown_fields_and_unvalidated_args() {
     .unwrap();
     match started.body() {
         AgentEventBody::ToolStart { args, .. } => {
-            assert_eq!(args, Some(Value::String("nope".into())));
+            assert_eq!(args, Some(JsValue::from_text("nope")));
         }
         _ => panic!("tool.start"),
     }
@@ -820,7 +828,10 @@ fn reduce_den_keeps_one_room_per_session() {
             None,
         ),
     ]);
-    assert_eq!(den.rooms.keys().collect::<Vec<_>>(), vec!["a", "b"]);
+    assert_eq!(
+        den.rooms.keys().map(JsString::to_utf8).collect::<Vec<_>>(),
+        vec!["a", "b"]
+    );
     assert_eq!(den.rooms.get("a").unwrap().activity, Activity::EditingCode);
     assert_eq!(den.rooms.get("b").unwrap().activity, Activity::Idle);
 }
@@ -846,12 +857,17 @@ fn list_sessions_orders_by_recency_and_keeps_name_and_harness() {
     ]);
     let list = list_sessions(&den);
     assert_eq!(
-        list.iter().map(|info| info.id.as_str()).collect::<Vec<_>>(),
+        list.iter()
+            .map(|info| info.id.to_utf8())
+            .collect::<Vec<_>>(),
         vec!["a", "b"]
     );
-    assert_eq!(list[0].name, "alpha");
-    assert_eq!(list[0].harness.as_deref(), Some("claude-code"));
-    assert_eq!(list[1].name, "b");
+    assert_eq!(list[0].name.to_utf8(), "alpha");
+    assert_eq!(
+        list[0].harness.as_ref().map(JsString::to_utf8),
+        Some("claude-code")
+    );
+    assert_eq!(list[1].name.to_utf8(), "b");
     assert!(list[1].harness.is_none());
 }
 
@@ -882,7 +898,7 @@ fn last_event_ts_is_monotonic_and_floors_a_negative_first_timestamp() {
     assert_eq!(
         list_sessions(&den)
             .iter()
-            .map(|info| info.id.as_str())
+            .map(|info| info.id.to_utf8())
             .collect::<Vec<_>>(),
         vec!["a", "b"]
     );
@@ -901,8 +917,16 @@ fn last_event_ts_is_monotonic_and_floors_a_negative_first_timestamp() {
         .with_name(Some(""))
         .with_harness(Some(""));
     let den = reduce_den(den, &follow);
-    assert_eq!(den.sessions.get("a").unwrap().name, "alpha");
-    assert_eq!(den.sessions.get("a").unwrap().harness.as_deref(), Some(""));
+    assert_eq!(den.sessions.get("a").unwrap().name.to_utf8(), "alpha");
+    assert_eq!(
+        den.sessions
+            .get("a")
+            .unwrap()
+            .harness
+            .as_ref()
+            .map(JsString::to_utf8),
+        Some("")
+    );
     let tied = run(vec![
         stamped(
             "a",
@@ -922,7 +946,7 @@ fn last_event_ts_is_monotonic_and_floors_a_negative_first_timestamp() {
     assert_eq!(
         list_sessions(&tied)
             .iter()
-            .map(|info| info.id.as_str())
+            .map(|info| info.id.to_utf8())
             .collect::<Vec<_>>(),
         vec!["a", "b"]
     );
@@ -985,14 +1009,17 @@ fn golden_coding_session_matches_the_room_snapshot() {
         serde_json::to_string(&parsed).unwrap(),
         text.trim_end_matches('\n')
     );
-    let filtered = snapshot_frame(&den, Some("missing"));
+    let filtered = frame_for(&den, "missing");
     assert_eq!(
         filtered.rooms.get("missing").cloned().unwrap(),
         initial_room_state()
     );
     assert_eq!(filtered.sessions.len(), 1);
-    let only = snapshot_frame(&den, Some("s1"));
-    assert_eq!(only.rooms.keys().collect::<Vec<_>>(), vec!["s1"]);
+    let only = frame_for(&den, "s1");
+    assert_eq!(
+        only.rooms.keys().map(JsString::to_utf8).collect::<Vec<_>>(),
+        vec!["s1"]
+    );
     assert_eq!(only.sessions.len(), 1);
 }
 
@@ -1053,7 +1080,7 @@ fn golden_voice_interruption_ends_asleep() {
     assert_eq!(room.thought.to_utf8(), "");
     assert!(room.tool.is_none());
     let info = den.sessions.get("s2").unwrap();
-    assert_eq!(info.name, "s2");
+    assert_eq!(info.name.to_utf8(), "s2");
     assert!(info.harness.is_none());
     assert_eq!(info.last_event_ts, Some(JsNumber::from(5_i64)));
 }
@@ -1121,7 +1148,7 @@ fn session_maps_enumerate_array_indexes_before_insertion_order() {
     assert_eq!(
         list_sessions(&den)
             .iter()
-            .map(|info| info.id.as_str())
+            .map(|info| info.id.to_utf8())
             .collect::<Vec<_>>(),
         vec!["2", "10", "b", "a"]
     );
@@ -1178,12 +1205,26 @@ fn session_filter_keeps_the_full_session_list() {
             None,
         ),
     ]);
-    let filtered = snapshot_frame(&den, Some("s1"));
+    let filtered = frame_for(&den, "s1");
     assert_eq!(filtered.sessions.len(), 2);
-    assert_eq!(filtered.rooms.keys().collect::<Vec<_>>(), vec!["s1"]);
-    let missing = snapshot_frame(&den, Some("missing"));
+    assert_eq!(
+        filtered
+            .rooms
+            .keys()
+            .map(JsString::to_utf8)
+            .collect::<Vec<_>>(),
+        vec!["s1"]
+    );
+    let missing = frame_for(&den, "missing");
     assert_eq!(missing.sessions.len(), 2);
-    assert_eq!(missing.rooms.keys().collect::<Vec<_>>(), vec!["missing"]);
+    assert_eq!(
+        missing
+            .rooms
+            .keys()
+            .map(JsString::to_utf8)
+            .collect::<Vec<_>>(),
+        vec!["missing"]
+    );
     assert_eq!(
         missing.rooms.get("missing").cloned().unwrap(),
         initial_room_state()
@@ -1201,15 +1242,15 @@ fn stamped_event_serializes_metadata_and_keeps_extensions() {
         r#"{"note":"x","v":1,"session":"s1","type":"session.end","ts":9,"name":"n","harness":"claude-code"}"#
     );
     assert_eq!(event.ts(), Some(JsNumber::from(9_i64)));
-    assert_eq!(event.name(), Some("n"));
-    assert_eq!(event.harness(), Some("claude-code"));
+    assert_eq!(event.name().map(JsString::to_utf8), Some("n"));
+    assert_eq!(event.harness().map(JsString::to_utf8), Some("claude-code"));
     let cleared = event.stamped(4_i64, None, None);
     assert_eq!(
         serde_json::to_string(&cleared).unwrap(),
         r#"{"note":"x","v":1,"session":"s1","type":"session.end","ts":4}"#
     );
-    assert_eq!(cleared.name(), None);
-    assert_eq!(cleared.harness(), None);
+    assert_eq!(cleared.name().map(JsString::to_utf8), None);
+    assert_eq!(cleared.harness().map(JsString::to_utf8), None);
 }
 
 #[test]
@@ -1220,7 +1261,7 @@ fn with_session_serializes_the_updated_session() {
         serde_json::to_string(&event).unwrap(),
         r#"{"note":"x","v":1,"session":"room","type":"session.end"}"#
     );
-    assert_eq!(event.session(), "room");
+    assert_eq!(event.session().to_utf8(), "room");
     let den = reduce_den(initial_den_state(), &event);
     assert!(den.rooms.get("room").is_some());
     assert!(den.rooms.get("s1").is_none());
@@ -1234,13 +1275,13 @@ fn with_name_serializes_the_updated_name() {
         serde_json::to_string(&event).unwrap(),
         r#"{"note":"x","v":1,"session":"s1","type":"session.end","name":"next"}"#
     );
-    assert_eq!(event.name(), Some("next"));
+    assert_eq!(event.name().map(JsString::to_utf8), Some("next"));
     let cleared = event.with_name(None);
     assert_eq!(
         serde_json::to_string(&cleared).unwrap(),
         r#"{"note":"x","v":1,"session":"s1","type":"session.end"}"#
     );
-    assert_eq!(cleared.name(), None);
+    assert_eq!(cleared.name().map(JsString::to_utf8), None);
 }
 
 #[test]
@@ -1253,10 +1294,10 @@ fn with_harness_serializes_the_updated_harness() {
         serde_json::to_string(&event).unwrap(),
         r#"{"note":"x","v":1,"session":"s1","type":"session.end","harness":"grok-build"}"#
     );
-    assert_eq!(event.harness(), Some("grok-build"));
+    assert_eq!(event.harness().map(JsString::to_utf8), Some("grok-build"));
     let cleared = event.with_harness(None);
     assert_eq!(serde_json::to_string(&cleared).unwrap(), raw);
-    assert_eq!(cleared.harness(), None);
+    assert_eq!(cleared.harness().map(JsString::to_utf8), None);
 }
 
 #[test]
@@ -1269,10 +1310,10 @@ fn with_harness_session_serializes_the_updated_harness_session() {
         serde_json::to_string(&event).unwrap(),
         r#"{"note":"x","v":1,"session":"s1","type":"session.end","harnessSession":"abc"}"#
     );
-    assert_eq!(event.harness_session(), Some("abc"));
+    assert_eq!(event.harness_session().map(JsString::to_utf8), Some("abc"));
     let cleared = event.with_harness_session(None);
     assert_eq!(serde_json::to_string(&cleared).unwrap(), raw);
-    assert_eq!(cleared.harness_session(), None);
+    assert_eq!(cleared.harness_session().map(JsString::to_utf8), None);
 }
 
 #[test]
@@ -1294,26 +1335,30 @@ fn with_ts_serializes_the_updated_timestamp() {
     assert_eq!(cleared.ts(), None);
 }
 
+fn thinking_delta_json(count: usize, unit: char) -> String {
+    let mut text = String::with_capacity(count + 64);
+    text.push_str(r#"{"v":1,"session":"s","type":"thinking.delta","text":""#);
+    text.extend(std::iter::repeat_n(unit, count));
+    text.push_str(r#""}"#);
+    text
+}
+
 #[test]
 fn long_thinking_delta_windows_the_tail() {
+    let small = thinking_delta_json(50_000, 'a');
+    let large = thinking_delta_json(200_000, 'a');
+    let (_, small_cost) = protocol::js::parse_cost(&small).unwrap();
+    let (_, large_cost) = protocol::js::parse_cost(&large).unwrap();
+    assert_eq!(small_cost.bytes, small.len() as u64);
+    assert_eq!(large_cost.bytes, large.len() as u64);
+    assert!(large_cost.bytes <= small_cost.bytes.saturating_mul(5));
+    assert!(large_cost.lookups <= small_cost.lookups.saturating_mul(5));
+    assert!(large.len() <= 256 * 1024);
     let mut state = reduce_room(
         initial_room_state(),
-        &AgentEvent::new(
-            "s",
-            AgentEventBody::ThinkingDelta {
-                text: "b".repeat(100).into(),
-            },
-        ),
+        &parse_event_str(&thinking_delta_json(100, 'b')).unwrap(),
     );
-    state = reduce_room(
-        state,
-        &AgentEvent::new(
-            "s",
-            AgentEventBody::ThinkingDelta {
-                text: "a".repeat(200_000).into(),
-            },
-        ),
-    );
+    state = reduce_room(state, &parse_event_str(&large).unwrap());
     assert_eq!(state.thought.units().len(), 220);
     assert_eq!(state.thought.to_utf8(), "a".repeat(220));
 }
@@ -1393,4 +1438,88 @@ fn hook_truncated_text_keeps_a_lone_surrogate_in_the_snapshot() {
         frame_parsed.rooms.get("s").unwrap().last_message.units(),
         state.last_message.units()
     );
+}
+
+#[test]
+fn hook_truncated_args_stay_on_the_typed_body() {
+    let content = format!("{}\\ud83d…", "a".repeat(199));
+    let raw = format!(
+        "{{\"v\":1,\"session\":\"s\",\"type\":\"tool.start\",\"tool\":\"Write\",\"args\":{{\"content\":\"{content}\",\"path\":\"note.ts\"}}}}"
+    );
+    let event = parse_event_str(&raw).unwrap();
+    let AgentEventBody::ToolStart {
+        args: Some(args), ..
+    } = event.body()
+    else {
+        panic!("tool.start");
+    };
+    assert!(!args.is_null());
+    let text = args.get("content").and_then(JsValue::as_js_string).unwrap();
+    assert_eq!(text.units().len(), 201);
+    assert_eq!(text.units()[199], 0xD83D);
+    assert_eq!(text.units()[200], 0x2026);
+    assert_eq!(args.get("path").and_then(JsValue::as_str), Some("note.ts"));
+    let json = serde_json::to_string(&event).unwrap();
+    assert!(json.contains(r#""path":"note.ts""#), "{json}");
+    assert!(json.contains(r#"\ud83d"#), "{json}");
+    assert!(!json.contains(r#""args":null"#), "{json}");
+}
+
+#[test]
+fn snapshot_keeps_unpaired_surrogates_on_session_identity() {
+    let first = parse_event_str(
+        r#"{"v":1,"session":"\ud800","type":"session.start","title":"t","name":"\ud801","harness":"\ud802"}"#,
+    )
+    .unwrap();
+    assert_eq!(first.session().units(), &[0xD800]);
+    assert_eq!(first.name().unwrap().units(), &[0xD801]);
+    assert_eq!(first.harness().unwrap().units(), &[0xD802]);
+    let second = parse_event_str(r#"{"v":1,"session":"\ud801","type":"session.end"}"#).unwrap();
+    let den = reduce_den(reduce_den(initial_den_state(), &first), &second);
+    assert_eq!(den.rooms.len(), 2);
+    assert!(
+        den.rooms
+            .get_key(&JsString::from_units(vec![0xD800]))
+            .is_some()
+    );
+    assert!(
+        den.rooms
+            .get_key(&JsString::from_units(vec![0xD801]))
+            .is_some()
+    );
+    let low = den
+        .sessions
+        .get_key(&JsString::from_units(vec![0xD800]))
+        .unwrap();
+    assert_eq!(low.id.units(), &[0xD800]);
+    assert_eq!(low.name.units(), &[0xD801]);
+    assert_eq!(low.harness.as_ref().unwrap().units(), &[0xD802]);
+    let high = den
+        .sessions
+        .get_key(&JsString::from_units(vec![0xD801]))
+        .unwrap();
+    assert_eq!(high.id.units(), &[0xD801]);
+    assert_eq!(high.name.units(), &[0xD801]);
+    let json = serde_json::to_string(&den).unwrap();
+    assert!(json.contains(r#""id":"\ud800""#), "{json}");
+    assert!(json.contains(r#""name":"\ud801""#), "{json}");
+    assert!(json.contains(r#""harness":"\ud802""#), "{json}");
+    assert!(json.contains(r#""\ud800":{"title""#), "{json}");
+    assert!(!json.contains(r#"\ufffd"#), "{json}");
+    let parsed: DenState = serde_json::from_str(&json).unwrap();
+    assert_eq!(parsed, den);
+    let frame = snapshot_frame(&den, None);
+    let frame_json = serde_json::to_string(&frame).unwrap();
+    assert!(frame_json.contains(r#""id":"\ud800""#), "{frame_json}");
+    assert!(frame_json.contains(r#""\ud800":{"title""#), "{frame_json}");
+    assert!(!frame_json.contains(r#"\ufffd"#), "{frame_json}");
+    let frame_parsed: SnapshotFrame = serde_json::from_str(&frame_json).unwrap();
+    assert_eq!(serde_json::to_string(&frame_parsed).unwrap(), frame_json);
+    assert_eq!(frame_parsed.sessions[0].id.units(), &[0xD800]);
+    assert_eq!(frame_parsed.sessions[1].id.units(), &[0xD801]);
+    let kept = JsString::from_units(vec![0xD800]);
+    let only = snapshot_frame(&den, Some(&kept));
+    assert_eq!(only.sessions.len(), 2);
+    assert_eq!(only.rooms.keys().next().unwrap().units(), &[0xD800]);
+    assert_eq!(only.rooms.get_key(&kept).unwrap().title.to_utf8(), "t");
 }
