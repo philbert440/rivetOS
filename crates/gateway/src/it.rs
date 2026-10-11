@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use std::collections::BTreeMap;
 use std::io::Cursor;
 use std::net::SocketAddr;
