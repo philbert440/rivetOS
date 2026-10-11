@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
 
 use crate::JsNumber;
+use crate::js::{JsObject, JsValue};
 
 crate::wire_enum! {
     pub enum ErrorSeverity {
@@ -25,7 +25,7 @@ pub struct ErrorJson {
     pub severity: ErrorSeverity,
     pub retryable: bool,
     pub timestamp: JsNumber,
-    pub context: Map<String, Value>,
+    pub context: JsObject,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cause: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -177,7 +177,7 @@ pub struct ErrorDetails {
     pub timestamp: i64,
     pub cause: Option<String>,
     pub stack: Option<String>,
-    pub context: Map<String, Value>,
+    pub context: JsObject,
 }
 
 fn base(
@@ -202,11 +202,11 @@ fn base(
     }
 }
 
-fn put_nonempty(context: &mut Map<String, Value>, key: &str, value: Option<&str>) {
+fn put_nonempty(context: &mut JsObject, key: &str, value: Option<&str>) {
     if let Some(text) = value
         && !text.is_empty()
     {
-        context.insert(key.to_string(), Value::String(text.to_string()));
+        context.insert(key, JsValue::from_text(text));
     }
 }
 
@@ -302,7 +302,7 @@ pub fn provider_error_json(
     timestamp: i64,
     cause: Option<String>,
     stack: Option<String>,
-    context: Map<String, Value>,
+    context: JsObject,
 ) -> ErrorJson {
     ErrorJson {
         name: "ProviderError".to_string(),

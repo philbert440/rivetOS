@@ -1,3 +1,4 @@
+use protocol::js::JsString;
 use protocol::{
     BLOCKED_PREFIX, ContentPart, TOOL_ERROR_PREFIX, ToolResult, is_blocked, is_thrown_error,
 };
@@ -5,7 +6,7 @@ use protocol::{
 #[test]
 fn string_result_round_trips() {
     let text = format!("{BLOCKED_PREFIX}rm -rf");
-    let value = serde_json::to_value(ToolResult::Text(text.clone())).unwrap();
+    let value = serde_json::to_value(ToolResult::Text(JsString::from_text(&text))).unwrap();
     assert_eq!(value, serde_json::Value::String(text));
     let parsed: ToolResult = serde_json::from_value(value).unwrap();
     assert!(is_blocked(&parsed));
@@ -17,6 +18,19 @@ fn thrown_error_prefix() {
     let parsed: ToolResult = serde_json::from_str(&format!("\"{TOOL_ERROR_PREFIX}boom\"")).unwrap();
     assert!(is_thrown_error(&parsed));
     assert!(!is_blocked(&parsed));
+}
+
+#[test]
+fn text_result_keeps_an_unpaired_surrogate() {
+    let raw = r#""\ud800""#;
+    let parsed: ToolResult = serde_json::from_str(raw).unwrap();
+    match &parsed {
+        ToolResult::Text(text) => assert_eq!(text.units(), &[0xD800]),
+        ToolResult::Parts(_) => panic!("text"),
+    }
+    assert_eq!(serde_json::to_string(&parsed).unwrap(), raw);
+    assert!(!is_blocked(&parsed));
+    assert!(!is_thrown_error(&parsed));
 }
 
 #[test]

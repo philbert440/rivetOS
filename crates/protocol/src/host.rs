@@ -197,7 +197,7 @@ fn write_exclusive(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     Ok(())
 }
 
-fn fs_error(
+pub fn fs_error(
     syscall: &'static str,
     path: Option<&Path>,
     dest: Option<&Path>,
@@ -232,12 +232,44 @@ fn node_code(errno: i32) -> (&'static str, &'static str) {
     match errno {
         1 => ("EPERM", "operation not permitted"),
         2 => ("ENOENT", "no such file or directory"),
+        4 => ("EINTR", "interrupted system call"),
+        5 => ("EIO", "i/o error"),
+        6 => ("ENXIO", "no such device or address"),
+        7 => ("E2BIG", "argument list too long"),
+        9 => ("EBADF", "bad file descriptor"),
+        11 => ("EAGAIN", "resource temporarily unavailable"),
+        12 => ("ENOMEM", "not enough memory"),
         13 => ("EACCES", "permission denied"),
+        14 => ("EFAULT", "bad address"),
+        16 => ("EBUSY", "resource busy or locked"),
         17 => ("EEXIST", "file already exists"),
+        18 => ("EXDEV", "cross-device link not permitted"),
+        19 => ("ENODEV", "no such device"),
         20 => ("ENOTDIR", "not a directory"),
         21 => ("EISDIR", "illegal operation on a directory"),
         22 => ("EINVAL", "invalid argument"),
+        23 => ("ENFILE", "file table overflow"),
+        24 => ("EMFILE", "too many open files"),
+        25 => ("ENOTTY", "inappropriate ioctl for device"),
+        26 => ("ETXTBSY", "text file is busy"),
+        27 => ("EFBIG", "file too large"),
+        28 => ("ENOSPC", "no space left on device"),
+        29 => ("ESPIPE", "invalid seek"),
+        30 => ("EROFS", "read-only file system"),
+        31 => ("EMLINK", "too many links"),
+        32 => ("EPIPE", "broken pipe"),
+        36 => ("ENAMETOOLONG", "name too long"),
+        38 => ("ENOSYS", "function not implemented"),
         39 => ("ENOTEMPTY", "directory not empty"),
+        40 => ("ELOOP", "too many symbolic links encountered"),
+        61 => ("ENODATA", "no data available"),
+        75 => ("EOVERFLOW", "value too large for defined data type"),
+        84 => ("EILSEQ", "illegal byte sequence"),
+        95 => ("ENOTSUP", "operation not supported on socket"),
+        116 => ("ESTALE", "stale file handle"),
+        121 => ("EREMOTEIO", "remote I/O error"),
+        122 => ("EDQUOT", "disk quota exceeded"),
+        125 => ("ECANCELED", "operation canceled"),
         _ => ("UNKNOWN", "unknown error"),
     }
 }
@@ -255,8 +287,11 @@ fn sync_parent(path: &Path) -> std::io::Result<()> {
 mod tests {
     use std::os::unix::fs::PermissionsExt;
 
+    use std::path::Path;
+
     use super::{
-        MapEnv, atomic_replace, env_trimmed, home_dir, read_text, read_text_capped, write_text,
+        MapEnv, atomic_replace, env_trimmed, fs_error, home_dir, read_text, read_text_capped,
+        write_text,
     };
 
     #[test]
@@ -287,5 +322,47 @@ mod tests {
         tmp_name.push(".tmp");
         assert!(!std::path::PathBuf::from(tmp_name).exists());
         std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn filesystem_errno_text_matches_libuv() {
+        let io = fs_error(
+            "open",
+            Some(Path::new("/tmp/x")),
+            None,
+            &std::io::Error::from_raw_os_error(5),
+        );
+        assert_eq!(io.code, "EIO");
+        assert_eq!(io.errno, -5);
+        assert_eq!(io.syscall, "open");
+        assert_eq!(io.to_string(), "EIO: i/o error, open '/tmp/x'");
+        assert_eq!(io.node_string(), "Error: EIO: i/o error, open '/tmp/x'");
+        let space = fs_error(
+            "write",
+            Some(Path::new("/tmp/full")),
+            None,
+            &std::io::Error::from_raw_os_error(28),
+        );
+        assert_eq!(
+            space.to_string(),
+            "ENOSPC: no space left on device, write '/tmp/full'"
+        );
+        let link = fs_error(
+            "open",
+            Some(Path::new("a")),
+            Some(Path::new("b")),
+            &std::io::Error::from_raw_os_error(40),
+        );
+        assert_eq!(
+            link.to_string(),
+            "ELOOP: too many symbolic links encountered, open 'a' -> 'b'"
+        );
+        assert_eq!(
+            link.node_string(),
+            "Error: ELOOP: too many symbolic links encountered, open 'a' -> 'b'"
+        );
+        let unknown = fs_error("stat", None, None, &std::io::Error::from_raw_os_error(3));
+        assert_eq!(unknown.code, "UNKNOWN");
+        assert_eq!(unknown.to_string(), "UNKNOWN: unknown error, stat");
     }
 }

@@ -1,27 +1,52 @@
+use serde::de::{self, Deserializer};
 use serde::{Deserialize, Serialize};
 
+use crate::js::{JsString, JsValue, parse};
 use crate::message::ContentPart;
 
 pub const BLOCKED_PREFIX: &str = "Blocked: ";
 pub const TOOL_ERROR_PREFIX: &str = "Error: ";
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(untagged)]
 pub enum ToolResult {
-    Text(String),
+    Text(JsString),
     Parts(Vec<ContentPart>),
+}
+
+impl<'de> Deserialize<'de> for ToolResult {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = Box::<serde_json::value::RawValue>::deserialize(deserializer)?;
+        let text = raw.get();
+        let mut value = parse(text).map_err(de::Error::custom)?;
+        if let JsValue::String(slot) = &mut value {
+            return Ok(Self::Text(std::mem::replace(
+                slot,
+                JsString::from_units(Vec::new()),
+            )));
+        }
+        if value.is_array() {
+            return serde_json::from_str(text)
+                .map(Self::Parts)
+                .map_err(de::Error::custom);
+        }
+        Err(de::Error::custom("tool-result"))
+    }
 }
 
 pub fn is_blocked(result: &ToolResult) -> bool {
     match result {
-        ToolResult::Text(text) => text.starts_with(BLOCKED_PREFIX),
+        ToolResult::Text(text) => text.to_utf8().starts_with(BLOCKED_PREFIX),
         ToolResult::Parts(_) => false,
     }
 }
 
 pub fn is_thrown_error(result: &ToolResult) -> bool {
     match result {
-        ToolResult::Text(text) => text.starts_with(TOOL_ERROR_PREFIX),
+        ToolResult::Text(text) => text.to_utf8().starts_with(TOOL_ERROR_PREFIX),
         ToolResult::Parts(_) => false,
     }
 }

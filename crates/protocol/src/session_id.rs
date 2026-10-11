@@ -1,11 +1,11 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
+use serde_json::Value;
 use thiserror::Error;
 
 use crate::error_json::{ErrorDetails, HarnessErrorCode, harness_error_json};
-use crate::js::js_trim;
+use crate::js::{JsObject, JsValue, js_trim};
 
 pub const HARNESS_IDS: &[&str] = &[
     "claude-code",
@@ -47,8 +47,8 @@ impl SessionIdError {
     }
 
     pub fn to_error_json(&self, id: &str) -> crate::ErrorJson {
-        let mut context = Map::new();
-        context.insert("id".to_string(), Value::String(id.to_string()));
+        let mut context = JsObject::new();
+        context.insert("id", JsValue::from_text(id));
         harness_error_json(
             HarnessErrorCode::InvalidSessionId,
             ErrorDetails {

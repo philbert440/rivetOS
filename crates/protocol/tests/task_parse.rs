@@ -181,6 +181,22 @@ fn signed_or_spaced_unicode_escape_is_not_a_task() {
 }
 
 #[test]
+fn artifact_serde_keeps_surrogate_and_orders_index_keys() {
+    let raw = r#"{"kind":"file","ref":"a","10":"ten","2":"two","note":"\ud800"}"#;
+    let artifact: protocol::ParsedArtifact = serde_json::from_str(raw).unwrap();
+    assert_eq!(
+        serde_json::to_string(&artifact).unwrap(),
+        r#"{"2":"two","10":"ten","kind":"file","ref":"a","note":"\ud800"}"#
+    );
+    let criterion: protocol::ParsedCriterion =
+        serde_json::from_str(r#"{"id":"c1","met":true,"evidence":"\udfff"}"#).unwrap();
+    assert_eq!(
+        serde_json::to_string(&criterion).unwrap(),
+        r#"{"id":"c1","met":true,"evidence":"\udfff"}"#
+    );
+}
+
+#[test]
 fn lone_surrogate_summary_is_replacement_and_kept() {
     let parsed = parse_task_result_json(r#"{"verdict":"completed","summary":"\ud83d"}"#).unwrap();
     assert_eq!(parsed.summary, "\u{FFFD}");

@@ -1,3 +1,4 @@
+use protocol::js::JsValue;
 use protocol::{ErrorSeverity, SessionIdError, parse_session_id, parse_session_id_str};
 use serde_json::json;
 
@@ -61,7 +62,7 @@ fn error_json_uses_invalid_session_id_and_context_id() {
     assert!(json.stack.is_none());
     assert!(json.cause.is_none());
     assert_eq!(
-        json.context.get("id").and_then(serde_json::Value::as_str),
+        json.context.get("id").and_then(JsValue::as_str),
         Some("nope:abc")
     );
     let text = serde_json::to_string(&json).unwrap();

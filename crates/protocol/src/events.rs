@@ -1,10 +1,10 @@
 use serde::de::{self, Deserializer, IgnoredAny, MapAccess, Visitor};
 use serde::ser::{SerializeMap, Serializer};
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
+use serde_json::Value;
 
 use crate::JsNumber;
-use crate::js::{JsObject, JsValue, parse};
+use crate::js::{JsObject, JsString, JsValue, parse};
 use crate::message::{Message, ToolCall};
 
 fn omit_false(value: &bool) -> bool {
@@ -39,9 +39,9 @@ crate::wire_enum! {
 pub struct StreamEvent {
     #[serde(rename = "type")]
     pub r#type: StreamEventType,
-    pub content: String,
+    pub content: JsString,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub metadata: Option<Map<String, Value>>,
+    pub metadata: Option<JsObject>,
 }
 
 crate::wire_enum! {
@@ -118,7 +118,7 @@ pub struct InboundMessage {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub attachments: Option<Vec<Attachment>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub metadata: Option<Map<String, Value>>,
+    pub metadata: Option<JsObject>,
     pub timestamp: JsNumber,
 }
 

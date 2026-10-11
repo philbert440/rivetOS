@@ -1,9 +1,8 @@
 use serde::de::Deserializer;
 use serde::{Deserialize, Serialize, Serializer};
-use serde_json::Value;
 
 use crate::JsNumber;
-use crate::js::{JsObject, JsValue, from_serde};
+use crate::js::{JsObject, JsValue};
 
 pub const TASK_RESULT_FENCE: &str = "TASK_RESULT";
 
@@ -182,11 +181,9 @@ impl<'de> Deserialize<'de> for ParsedArtifact {
     where
         D: Deserializer<'de>,
     {
-        let value = Value::deserialize(deserializer)?;
-        match from_serde(&value).into_object() {
-            Some(object) => Ok(Self { object }),
-            None => Err(serde::de::Error::custom("artifact")),
-        }
+        Ok(Self {
+            object: JsObject::deserialize(deserializer)?,
+        })
     }
 }
 
@@ -230,11 +227,9 @@ impl<'de> Deserialize<'de> for ParsedCriterion {
     where
         D: Deserializer<'de>,
     {
-        let value = Value::deserialize(deserializer)?;
-        match from_serde(&value).into_object() {
-            Some(object) => Ok(Self { object }),
-            None => Err(serde::de::Error::custom("criterion")),
-        }
+        Ok(Self {
+            object: JsObject::deserialize(deserializer)?,
+        })
     }
 }
 
