@@ -102,11 +102,11 @@ crate::wire_enum! {
 #[serde(rename_all = "camelCase")]
 pub struct InboundMessage {
     pub id: String,
-    pub user_id: String,
+    pub user_id: JsString,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub username: Option<String>,
+    pub username: Option<JsString>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub display_name: Option<String>,
+    pub display_name: Option<JsString>,
     pub channel_id: String,
     pub chat_type: String,
     pub text: JsString,

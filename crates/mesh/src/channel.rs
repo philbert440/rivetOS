@@ -22,7 +22,7 @@ use tokio_rustls::TlsAcceptor;
 
 use protocol::JsNumber;
 use protocol::events::InboundMessage;
-use protocol::js::{JsObject, JsString, JsValue};
+use protocol::js::{JsObject, JsString, JsValue, stringify};
 
 use crate::error::MeshError;
 use crate::model::{
@@ -207,7 +207,7 @@ impl AgentChannel {
         }
     }
 
-    pub async fn send_to_peer(&self, peer: &PeerConfig, body: &Value) -> Result<Value, String> {
+    pub async fn send_to_peer(&self, peer: &PeerConfig, body: &Value) -> Result<JsValue, String> {
         let url = format!("{}/api/message", peer.url.trim_end_matches('/'));
         let abort_after = scheduled_timeout(body.get("timeoutMs"), 5_000.0);
         let mut builder = reqwest::Client::builder();
@@ -240,7 +240,9 @@ impl AgentChannel {
                 .unwrap_or_else(|_| "unknown error".to_string());
             return Err(format!("HTTP {}: {text}", status.as_u16()));
         }
-        response.json().await.map_err(|err| err.to_string())
+        let bytes = response.bytes().await.map_err(|err| err.to_string())?;
+        let text = String::from_utf8_lossy(&bytes);
+        protocol::js::parse(&text).map_err(|err| err.to_string())
     }
 
     fn resolve_pending(&self, text: &str) {
@@ -289,7 +291,7 @@ impl AgentMessageTool {
         })
     }
 
-    pub async fn execute(&self, args: &Value) -> String {
+    pub async fn execute(&self, args: &Value) -> JsString {
         let to_agent = match args.get("to_agent") {
             None => "undefined".to_string(),
             Some(Value::String(text)) => text.clone(),
@@ -308,9 +310,9 @@ impl AgentMessageTool {
             .find(|(name, _)| name == &to_agent)
         else {
             let available = peer_names(&self.channel.inner.config.peers);
-            return format!(
+            return JsString::from(format!(
                 "Error: Unknown peer agent \"{to_agent}\". Available peers: {available}"
-            );
+            ));
         };
         let mut body = Map::new();
         body.insert(
@@ -329,26 +331,48 @@ impl AgentMessageTool {
         match self.channel.send_to_peer(peer, &Value::Object(body)).await {
             Ok(response) => {
                 if wait {
-                    match response.get("response") {
-                        Some(Value::String(text)) => text.clone(),
-                        Some(Value::Null) | None => "[no response]".to_string(),
-                        Some(other) => other.to_string(),
-                    }
+                    response_text(response.get("response"))
                 } else {
-                    let request_id = match response.get("requestId") {
-                        None => "undefined".to_string(),
-                        Some(Value::Null) => "null".to_string(),
-                        Some(Value::String(text)) => text.clone(),
-                        Some(other) => other.to_string(),
-                    };
-                    format!(
-                        "Message sent to {to_agent} (async — no response expected). Request ID: {request_id}"
+                    let request_id = request_id_text(response.get("requestId"));
+                    with_prefix(
+                        &format!(
+                            "Message sent to {to_agent} (async — no response expected). Request ID: "
+                        ),
+                        &request_id,
                     )
                 }
             }
-            Err(err) => format!("Error sending message to {to_agent}: {err}"),
+            Err(err) => JsString::from(format!("Error sending message to {to_agent}: {err}")),
         }
     }
+}
+
+fn response_text(value: Option<&JsValue>) -> JsString {
+    match value {
+        Some(JsValue::Null) | None => JsString::from("[no response]"),
+        Some(other) => json_text(other),
+    }
+}
+
+fn request_id_text(value: Option<&JsValue>) -> JsString {
+    match value {
+        None => JsString::from("undefined"),
+        Some(JsValue::Null) => JsString::from("null"),
+        Some(other) => json_text(other),
+    }
+}
+
+fn json_text(value: &JsValue) -> JsString {
+    match value {
+        JsValue::String(text) => text.clone(),
+        other => JsString::from(stringify(other)),
+    }
+}
+
+fn with_prefix(prefix: &str, text: &JsString) -> JsString {
+    let mut units: Vec<u16> = prefix.encode_utf16().collect();
+    units.extend_from_slice(text.units());
+    JsString::from_units(units)
 }
 
 pub fn agent_channel_from_plugin_config(cfg: &Value) -> AgentChannel {
@@ -567,19 +591,13 @@ impl Inner {
                 }
             });
             let timeout_ms = scheduled_timeout_js(body.get("timeoutMs"), 0.0);
-            let text = wait_for_text(self.pending.as_ref(), &request_id, rx, timeout_ms).await;
-            let mut response = Map::new();
-            response.insert("response".to_string(), Value::String(text));
-            response.insert(
-                "agent".to_string(),
-                Value::String(self.config.agent_id.clone()),
-            );
-            response.insert(
-                "fromAgent".to_string(),
-                Value::String(from_agent.to_utf8().to_string()),
-            );
-            response.insert("timestamp".to_string(), number_value(timestamp_ms()));
-            json_reply(StatusCode::OK, &Value::Object(response))
+            let reply = wait_for_text(self.pending.as_ref(), &request_id, rx, timeout_ms).await;
+            let mut response = JsObject::new();
+            response.insert("response", JsValue::String(JsString::from_text(&reply)));
+            response.insert("agent", JsValue::from_text(&self.config.agent_id));
+            response.insert("fromAgent", JsValue::String(from_agent));
+            response.insert("timestamp", JsValue::Number(timestamp_ms().as_f64()));
+            text_reply(StatusCode::OK, stringify(&JsValue::Object(response)))
         } else {
             if let Some(handler) = self.handler.lock().clone() {
                 tokio::spawn(async move {
@@ -1077,7 +1095,6 @@ fn inbound_message(
     conversation_id: Option<&JsString>,
     request_id: &str,
 ) -> InboundMessage {
-    let from_utf8 = from_agent.to_utf8();
     let mut metadata = JsObject::new();
     metadata.insert("fromAgent", JsValue::String(from_agent.clone()));
     if let Some(conversation_id) = conversation_id {
@@ -1086,9 +1103,9 @@ fn inbound_message(
     metadata.insert("isAgentMessage", JsValue::Bool(true));
     InboundMessage {
         id: request_id.to_string(),
-        user_id: format!("agent:{from_utf8}"),
-        username: Some(from_utf8.to_string()),
-        display_name: Some(format!("Agent: {from_utf8}")),
+        user_id: with_prefix("agent:", from_agent),
+        username: Some(from_agent.clone()),
+        display_name: Some(with_prefix("Agent: ", from_agent)),
         channel_id: request_id.to_string(),
         chat_type: "agent".to_string(),
         text: message.clone(),
