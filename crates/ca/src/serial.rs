@@ -39,7 +39,7 @@ pub fn same_serial(left: &str, right: &str) -> bool {
 }
 
 pub fn read_counter(path: &Path) -> Result<u128, Error> {
-    let text = fsutil::read_to_string(path)
+    let text = fsutil::read_text(path)
         .map_err(|err| Error::msg(format!("read {}: {err}", path.display())))?;
     parse_hex_u128(&text).map_err(|err| Error::msg(format!("{}: {err}", path.display())))
 }

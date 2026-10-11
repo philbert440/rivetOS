@@ -62,12 +62,12 @@ fn mint_device_p12_locked(
     let stem = format!("device-{device_id}");
     let key_path = paths.issued_dir().join(format!("{stem}.key"));
     let cert_path = paths.issued_dir().join(format!("{stem}.crt"));
-    let key_pem = fsutil::read_to_string(&key_path)
+    let key_pem = fsutil::read_text(&key_path)
         .map_err(|_| Error::msg(format!("no device key at {}", key_path.display())))?;
-    let cert_pem = fsutil::read_to_string(&cert_path)
+    let cert_pem = fsutil::read_text(&cert_path)
         .map_err(|_| Error::msg(format!("no device cert at {}", cert_path.display())))?;
     let chain_path = select_chain(paths)?;
-    let chain_pem = fsutil::read_to_string(&chain_path)?;
+    let chain_pem = fsutil::read_text(&chain_path)?;
     let bytes = export_pkcs12(&key_pem, &cert_pem, Some(&chain_pem), password)?;
     if let Some(parent) = output.parent()
         && !parent.as_os_str().is_empty()

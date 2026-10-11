@@ -25,9 +25,16 @@ pub fn ensure_dir(path: &Path) -> Result<(), Error> {
     Ok(())
 }
 
-pub fn read_to_string(path: &Path) -> Result<String, Error> {
+pub fn read_text(path: &Path) -> Result<String, Error> {
     reject_symlink(path)?;
-    fs::read_to_string(path).map_err(Into::into)
+    protocol::host::read_text(path).map_err(host_error)
+}
+
+fn host_error(err: protocol::host::FsError) -> Error {
+    if err.errno == 0 {
+        return Error::msg(err.to_string());
+    }
+    Error::Io(std::io::Error::from_raw_os_error(-err.errno))
 }
 
 pub fn read_optional(path: &Path) -> Result<Option<Vec<u8>>, Error> {
@@ -140,7 +147,7 @@ fn existing_mode(path: &Path) -> Result<Option<u32>, Error> {
 }
 
 fn current_umask() -> Result<u32, Error> {
-    let text = fs::read_to_string("/proc/self/status")?;
+    let text = protocol::host::read_text(Path::new("/proc/self/status")).map_err(host_error)?;
     for line in text.lines() {
         let Some(rest) = line.strip_prefix("Umask:") else {
             continue;

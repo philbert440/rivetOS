@@ -156,7 +156,7 @@ fn write_int_cnf(paths: &CaPaths) -> Result<(), Error> {
 fn load_or_create_key(path: &Path, bits: usize) -> Result<RsaPrivateKey, Error> {
     fsutil::reject_symlink(path)?;
     if path.exists() {
-        return load_rsa_pem(&fsutil::read_to_string(path)?);
+        return load_rsa_pem(&fsutil::read_text(path)?);
     }
     let key = generate_rsa(bits)?;
     fsutil::create_secret(path, private_pkcs8_pem(&key)?.as_bytes())?;
@@ -173,8 +173,8 @@ fn require_matching_pair(
     if !key_path.is_file() || !crt_path.is_file() {
         return Err(Error::msg(missing));
     }
-    let key = load_rsa_pem(&fsutil::read_to_string(key_path)?)?;
-    let crt_pem = fsutil::read_to_string(crt_path)?;
+    let key = load_rsa_pem(&fsutil::read_text(key_path)?)?;
+    let crt_pem = fsutil::read_text(crt_path)?;
     private_key_matches_cert(&key, &crt_pem)?;
     Ok((key, crt_pem))
 }
@@ -474,8 +474,8 @@ fn issue_intermediate_locked(paths: &CaPaths) -> Result<CommandOutput, Error> {
             int_key_path.display()
         )));
     }
-    let root_key = load_rsa_pem(&fsutil::read_to_string(&root_key_path)?)?;
-    let root_pem = fsutil::read_to_string(&root_crt_path)?;
+    let root_key = load_rsa_pem(&fsutil::read_text(&root_key_path)?)?;
+    let root_pem = fsutil::read_text(&root_crt_path)?;
     private_key_matches_cert(&root_key, &root_pem)?;
     let mut lines = vec![format!(
         "generating intermediate key + CSR ({DAYS_INT} days)"
