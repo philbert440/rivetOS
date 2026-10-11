@@ -22,7 +22,7 @@ export const PopoverContent = forwardRef<
         align={align}
         sideOffset={sideOffset}
         className={cn(
-          'z-50 rounded-lg border border-line bg-panel-2 text-ink shadow-xl outline-none',
+          'z-50 overflow-hidden rounded-2xl border border-line/50 bg-panel-2 text-ink shadow-pop outline-none classic:border-line',
           'data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0',
           className,
         )}

@@ -18,7 +18,8 @@ const store = memoryStorage()
 vi.stubGlobal('localStorage', store)
 afterAll(() => vi.unstubAllGlobals())
 
-const { useSpaces, SPACES_STORAGE_KEY, SPACES_MEMBERSHIP_CAP } = await import('./spaces.js')
+const { useSpaces, SPACES_STORAGE_KEY, SPACES_MEMBERSHIP_CAP, DEFAULT_SPACE_NAME } =
+  await import('./spaces.js')
 const { useArchived } = await import('./archived.js')
 
 describe('spaces store', () => {
@@ -99,6 +100,40 @@ describe('spaces store', () => {
     expect(useSpaces.getState().spaceOf('http://x::a')).toBeUndefined()
     expect(useSpaces.getState().spaceOf('http://x::b')).toBeUndefined()
     expect(useSpaces.getState().spaceOf('http://x::c')).toBe(home)
+  })
+
+  it('starts with a General space', () => {
+    expect(useSpaces.getInitialState().spaces).toMatchObject([{ name: DEFAULT_SPACE_NAME }])
+  })
+
+  it('removing the last space recreates General, and General is removable', () => {
+    const work = useSpaces.getState().addSpace('Work')
+    useSpaces.getState().place('http://x::a', work)
+    useSpaces.getState().removeSpace(work)
+    const [general] = useSpaces.getState().spaces
+    expect(useSpaces.getState().spaces).toHaveLength(1)
+    expect(general).toMatchObject({ name: DEFAULT_SPACE_NAME })
+    expect(useSpaces.getState().spaceOf('http://x::a')).toBeUndefined()
+    useSpaces.getState().addSpace('Home')
+    useSpaces.getState().removeSpace(general!.id)
+    expect(useSpaces.getState().spaces.map((space) => space.name)).toEqual(['Home'])
+  })
+
+  it('defaultSpaceId is the first space in order, seeding General when empty', () => {
+    const work = useSpaces.getState().addSpace('Work')
+    const home = useSpaces.getState().addSpace('Home')
+    useSpaces.getState().reorderSpace(home, -1)
+    expect(useSpaces.getState().defaultSpaceId()).toBe(home)
+    useSpaces.setState({ spaces: [] })
+    const seeded = useSpaces.getState().defaultSpaceId()
+    expect(useSpaces.getState().spaces).toMatchObject([{ id: seeded, name: DEFAULT_SPACE_NAME }])
+    expect(seeded).not.toBe(work)
+  })
+
+  it('rehydrating an empty space list keeps a General space', async () => {
+    store.setItem(SPACES_STORAGE_KEY, JSON.stringify({ state: { spaces: [], membership: {} } }))
+    await useSpaces.persist.rehydrate()
+    expect(useSpaces.getState().spaces).toMatchObject([{ name: DEFAULT_SPACE_NAME }])
   })
 
   it('removeSpace of an unknown id is a no-op', () => {

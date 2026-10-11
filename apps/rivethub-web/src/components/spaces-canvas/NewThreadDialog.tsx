@@ -3,7 +3,8 @@
  * default. Esc / Cancel close without writing. From History hands the canvas
  * the target space; the panel places the chosen row.
  *
- * When the chosen space has defaults, the Prompt fields start from them.
+ * When the chosen space has defaults, the Prompt fields start from them;
+ * otherwise from Settings → General's new-conversation defaults.
  * The agent is seeded first; the space's model and effort are applied
  * after that. Preset model and effort are copied only when the user picks
  * an agent, so a space override is not replaced on open — cached roster
@@ -20,6 +21,7 @@ import { launchModelOptions } from '../../lib/conversation-model-options.js'
 import { urlLabel } from '../../lib/node-name.js'
 import { useRosterAgents } from '../../lib/use-agent-roster.js'
 import { useConnection } from '../../stores/connection.js'
+import { usePreferences } from '../../stores/preferences.js'
 import type { SpaceDefaults } from '../../stores/spaces.js'
 import { Select } from '../select.js'
 import { EffortPicker } from '../pickers/effort-picker.js'
@@ -33,7 +35,7 @@ import {
   type SpaceRosterAgent,
   canStartThread,
 } from './new-thread.js'
-import { startsInDirectory } from './space-defaults.js'
+import { startablePreset, startsInDirectory } from './space-defaults.js'
 
 export function NewThreadDialog(props: {
   spaceId?: string
@@ -59,7 +61,17 @@ export function NewThreadDialog(props: {
   // roster row is not known while that query is loading.
   const [seedReady, setSeedReady] = useState(false)
   const target = locked ?? spaceId
-  const defaults = props.spaces.find((space) => space.id === target)?.defaults
+  const newChat = usePreferences((s) => s.newChat)
+  // A space without defaults starts from Settings → General's. Their preset
+  // counts only while it is on the roster (or the roster is still loading),
+  // so an absent one is never offered as this space's deleted default.
+  const defaults: SpaceDefaults | undefined =
+    props.spaces.find((space) => space.id === target)?.defaults ??
+    (isLoading || startablePreset(newChat, agents)
+      ? newChat
+      : newChat.effort
+        ? { effort: newChat.effort }
+        : undefined)
   const agent: PromptAgent | undefined = agents.find((row) => row.id === agentId)
   const agentsRef = useRef(agents)
   agentsRef.current = agents
@@ -161,9 +173,9 @@ export function NewThreadDialog(props: {
       }}
     >
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-50 bg-bg/70" />
+        <Dialog.Overlay className="fixed inset-0 z-50 bg-black/40 classic:bg-bg/70" />
         <Dialog.Content
-          className="fixed top-1/2 left-1/2 z-50 w-[28rem] max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 border border-line bg-panel p-4 font-mono shadow-lg outline-none"
+          className="fixed top-1/2 left-1/2 z-50 w-[28rem] max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 border border-line bg-panel p-4 shadow-pop outline-none material:rounded-3xl material:border-transparent material:bg-surface material:p-6"
           title={startsIn}
           onOpenAutoFocus={(event) => {
             event.preventDefault()
@@ -171,7 +183,9 @@ export function NewThreadDialog(props: {
             if (field instanceof HTMLElement) field.focus()
           }}
         >
-          <Dialog.Title className="mb-3 text-sm text-ink">New thread</Dialog.Title>
+          <Dialog.Title className="mb-5 text-sm leading-relaxed text-ink-dim classic:mb-3 classic:text-ink">
+            New thread
+          </Dialog.Title>
           <Dialog.Description className="sr-only">
             Send a prompt, or add a thread from History.
             {startsIn ? ` ${startsIn}.` : ''}
@@ -181,7 +195,7 @@ export function NewThreadDialog(props: {
               type="button"
               role="tab"
               aria-selected="true"
-              className="border border-em bg-em/15 px-3 py-1.5 text-xs text-em"
+              className="border border-em bg-em/15 px-3 py-1.5 text-xs text-em material:rounded-pill material:border-transparent material:bg-em-container material:text-on-em-container"
             >
               Prompt
             </button>
@@ -190,7 +204,7 @@ export function NewThreadDialog(props: {
               role="tab"
               aria-selected="false"
               disabled={!target}
-              className="border border-line px-3 py-1.5 text-xs text-ink-dim hover:border-em hover:text-em disabled:opacity-40"
+              className="border border-line px-3 py-1.5 text-xs text-ink-dim hover:bg-ink/6 hover:text-em disabled:opacity-40 classic:hover:bg-transparent classic:hover:border-em material:rounded-pill"
               onClick={() => {
                 if (target) props.onPickHistory(target)
               }}
@@ -255,7 +269,7 @@ export function NewThreadDialog(props: {
             }}
             rows={4}
             placeholder="What should it do?"
-            className="mb-3 w-full resize-none border border-line bg-bg px-2 py-1.5 text-sm text-ink outline-none placeholder:text-ink-dim"
+            className="mb-3 w-full resize-none border border-line bg-bg px-2 py-1.5 text-sm text-ink outline-none placeholder:text-ink-dim material:rounded-lg"
           />
           <div className="mb-4 flex flex-wrap items-center gap-1">
             <ModelPicker
@@ -270,7 +284,7 @@ export function NewThreadDialog(props: {
             <button
               type="button"
               onClick={props.onClose}
-              className="border border-line px-3 py-1.5 text-xs text-ink-dim hover:text-ink"
+              className="border border-line px-3 py-1.5 text-xs text-ink-dim hover:text-ink material:rounded-pill material:hover:bg-ink/6"
             >
               Cancel
             </button>
@@ -278,7 +292,7 @@ export function NewThreadDialog(props: {
               type="button"
               disabled={!canStart}
               onClick={start}
-              className="bg-em-dim px-3 py-1.5 text-xs font-medium text-bg hover:bg-em disabled:opacity-40"
+              className="bg-em px-3 py-1.5 text-xs font-medium text-on-em hover:bg-em-dim disabled:opacity-40 classic:bg-em-dim classic:hover:bg-em classic:text-bg"
             >
               Start
             </button>

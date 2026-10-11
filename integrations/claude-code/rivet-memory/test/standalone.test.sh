@@ -45,7 +45,8 @@ assert_match rivetos-status.sh
 # Directly executed files must survive a marketplace copy with mode 755.
 for script in "$KIT"/bin/*.sh "$KIT"/lib/rivetos-*.sh "$SHARED"/rivetos-*.sh \
   "$SHARED/rivet-paths.test.sh" "$KIT"/test/*.sh \
-  "$KIT/../../grok-bot/rivethub-grokbot/test/onboard-status.test.sh"; do
+  "$KIT/../../grok-bot/rivethub-grokbot/test/onboard-status.test.sh" \
+  "$KIT/../../grok-bot/rivethub-grokbot/test/mesh-delegate.test.sh"; do
   if [ -x "$script" ] && [ "$(python3 -c 'import os,stat,sys; print(oct(stat.S_IMODE(os.stat(sys.argv[1]).st_mode)))' "$script")" = 0o755 ]; then
     pass "${script##*/} is executable (755)"
   else

@@ -9,6 +9,7 @@ Checklist for a local or CI prove of this kit. Run from a RivetOS checkout
 - Cursor manifest `.cursor-plugin/plugin.json`: kebab-case `name`, version, description, skills/rules/mcpServers paths
 - Root `plugin.json` name matches (Cursor companion; no Agent Plugins `$schema` by design)
 - Skills `memory-recall`, `rivetos-onboard`, `rivetos-status`, `mesh-delegate` present with frontmatter
+- `mesh-delegate` names `list_agents` and `delegate_task`; no curl / raw den HTTP recipe
 - Rule `rules/rivethub-member.md` present
 - Launchers `bash -n` clean; sibling `rivet-memory` launcher present in tree
 - `integrations/shared/rivet-paths.test.sh` and `test/onboard-status.test.sh` pass

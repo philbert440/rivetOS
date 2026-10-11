@@ -251,11 +251,24 @@ export function startThreadInSpace(
   baseUrl: string,
   roster: readonly SpaceRosterAgent[],
 ): string | undefined {
+  const defaults = useSpaces.getState().spaces.find((space) => space.id === spaceId)?.defaults
+  return startThreadWithDefaults(spaceId, defaults, baseUrl, roster)
+}
+
+/**
+ * `startThreadInSpace` with the defaults given rather than read from the
+ * space — Settings → General's new-conversation defaults use this.
+ */
+export function startThreadWithDefaults(
+  spaceId: string,
+  defaults: SpaceDefaults | undefined,
+  baseUrl: string,
+  roster: readonly SpaceRosterAgent[],
+): string | undefined {
   if (!spaceExists(spaceId)) {
     offRosterNotice = undefined
     return undefined
   }
-  const defaults = useSpaces.getState().spaces.find((space) => space.id === spaceId)?.defaults
   const found = startablePreset(defaults, roster)
   const resolved = resolveRosterNode(
     found?.sourceNodeBaseUrl || defaults?.node,

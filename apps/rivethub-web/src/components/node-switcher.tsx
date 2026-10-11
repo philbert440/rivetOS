@@ -59,7 +59,7 @@ export function NodeSwitcher(props: { compact?: boolean }): JSX.Element {
   const readout = compact ? (
     <Server className="size-4 text-em" aria-hidden />
   ) : (
-    <span className="min-w-0 truncate font-mono text-[11px] text-em">● {currentName}</span>
+    <span className="min-w-0 truncate text-xs text-em classic:text-[11px]">● {currentName}</span>
   )
 
   if (hidden) {
@@ -96,7 +96,7 @@ export function NodeSwitcher(props: { compact?: boolean }): JSX.Element {
         >
           {readout}
           {!compact && (
-            <span className="font-mono text-[10px] text-ink-dim">{open ? '▾' : '▴'}</span>
+            <span className="text-[11px] text-ink-dim classic:text-[10px]">{open ? '▾' : '▴'}</span>
           )}
         </button>
       </Tooltip>
@@ -105,18 +105,18 @@ export function NodeSwitcher(props: { compact?: boolean }): JSX.Element {
         <div
           className={
             compact
-              ? 'absolute bottom-full left-full z-40 mb-1 ml-1 w-56 rounded-lg border border-line bg-panel-2 p-2 shadow-lg'
-              : 'absolute bottom-full left-2 right-2 z-40 mb-1 rounded-lg border border-line bg-panel-2 p-2 shadow-lg'
+              ? 'absolute bottom-full left-full z-40 mb-1 ml-1 w-56 rounded-lg border border-line bg-panel-2 p-2 shadow-pop'
+              : 'absolute bottom-full left-2 right-2 z-40 mb-1 rounded-lg border border-line bg-panel-2 p-2 shadow-pop'
           }
         >
-          <div className="mb-1 px-2 font-mono text-[10px] uppercase tracking-wide text-ink-dim">
+          <div className="mb-1 px-2 text-[11px] uppercase tracking-wider font-medium text-ink-dim classic:font-normal classic:text-[10px] classic:tracking-wide">
             nodes
           </div>
           {roster.map((n) => (
             <div key={n.baseUrl} className="flex items-center">
               <button
                 onClick={() => doSwitch(n.baseUrl)}
-                className={`flex-1 truncate rounded px-2 py-1.5 text-left font-mono text-xs ${
+                className={`flex-1 truncate rounded px-2 py-1.5 text-left text-xs ${
                   n.baseUrl === baseUrl ? 'text-em' : 'text-ink-dim hover:text-ink'
                 }`}
                 title={n.baseUrl}
@@ -136,14 +136,14 @@ export function NodeSwitcher(props: { compact?: boolean }): JSX.Element {
 
           {discovered.length > 0 && (
             <>
-              <div className="mb-1 mt-2 px-2 font-mono text-[10px] uppercase tracking-wide text-ink-dim">
+              <div className="mb-1 mt-2 px-2 text-[11px] uppercase tracking-wider font-medium text-ink-dim classic:font-normal classic:text-[10px] classic:tracking-wide">
                 on the mesh
               </div>
               {discovered.map((n) => (
                 <button
                   key={n.id}
                   onClick={() => addNode({ name: n.name, baseUrl: n.denUrl })}
-                  className="block w-full truncate rounded px-2 py-1.5 text-left font-mono text-xs text-ink-dim hover:text-em"
+                  className="block w-full truncate rounded px-2 py-1.5 text-left text-xs text-ink-dim hover:text-em"
                   title={`${n.denUrl} — click to save`}
                 >
                   + {n.name}
@@ -153,12 +153,12 @@ export function NodeSwitcher(props: { compact?: boolean }): JSX.Element {
             </>
           )}
           {mesh.isError && (
-            <div className="mt-1 px-2 font-mono text-[10px] text-ink-dim">
+            <div className="mt-1 px-2 text-[11px] text-ink-dim classic:text-[10px]">
               mesh roster unavailable on this node
             </div>
           )}
           {switchError && (
-            <div className="mt-1 px-2 font-mono text-[10px] text-red" role="alert">
+            <div className="mt-1 px-2 text-[11px] text-red classic:text-[10px]" role="alert">
               {switchError}
             </div>
           )}
