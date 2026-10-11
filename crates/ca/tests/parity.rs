@@ -1545,7 +1545,7 @@ fn verify_matches_openssl_on_critical_eku_constraints_and_path_length() {
         "unknown",
         "unknown.example",
         &format!(
-            "{}1.2.3.4.5=critical,ASN1:UTF8String:nope\n",
+            "{}2.999.1=critical,ASN1:UTF8String:nope\n",
             leaf("DNS:unknown.example", "clientAuth")
         ),
         &int_plain,
@@ -1557,7 +1557,7 @@ fn verify_matches_openssl_on_critical_eku_constraints_and_path_length() {
         "unknown-nc",
         "unknown.example",
         &format!(
-            "{}1.2.3.4.5=ASN1:UTF8String:nope\n",
+            "{}2.999.1=ASN1:UTF8String:nope\n",
             leaf("DNS:unknown.example", "clientAuth")
         ),
         &int_plain,
