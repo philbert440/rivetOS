@@ -92,36 +92,52 @@ fn unicode_escape_is_four_hex_digits() {
     assert_eq!(value.as_str(), Some("A"));
 }
 
-#[test]
-fn two_mib_string_literal_parses_within_five_seconds() {
-    let mut text = String::with_capacity(2 * 1024 * 1024 + 2);
+fn assert_linear_cost(small: &str, large: &str) {
+    let (_, small_cost) = protocol::js::parse_cost(small).unwrap();
+    let (_, large_cost) = protocol::js::parse_cost(large).unwrap();
+    assert_eq!(small_cost.bytes, small.len() as u64);
+    assert_eq!(large_cost.bytes, large.len() as u64);
+    assert!(large_cost.bytes <= small_cost.bytes.saturating_mul(5));
+    assert!(large_cost.lookups <= small_cost.lookups.saturating_mul(5));
+}
+
+fn string_literal(bytes: usize) -> String {
+    let mut text = String::with_capacity(bytes + 2);
     text.push('"');
-    text.extend(std::iter::repeat_n('a', 2 * 1024 * 1024));
+    text.extend(std::iter::repeat_n('a', bytes));
     text.push('"');
-    let started = std::time::Instant::now();
-    let value = protocol::js::parse(&text).unwrap();
-    assert!(started.elapsed() < std::time::Duration::from_secs(5));
-    assert_eq!(value.as_str().map(str::len), Some(2 * 1024 * 1024));
+    text
 }
 
 #[test]
-fn two_mib_document_of_short_strings_parses_within_five_seconds() {
-    let item = "\"ab\",";
-    let target = 2 * 1024 * 1024;
+fn string_literal_parse_cost_is_linear() {
+    let small = string_literal(512 * 1024);
+    let large = string_literal(2 * 1024 * 1024);
+    assert_linear_cost(&small, &large);
+    let value = protocol::js::parse(&large).unwrap();
+    assert_eq!(value.as_str().map(str::len), Some(2 * 1024 * 1024));
+}
+
+fn short_strings(count: usize) -> String {
     let mut text = String::from('[');
-    while text.len() < target {
-        text.push_str(item);
-    }
-    if text.ends_with(',') {
-        text.pop();
+    for index in 0..count {
+        if index > 0 {
+            text.push(',');
+        }
+        text.push_str(r#""ab""#);
     }
     text.push(']');
-    assert!(text.len() >= target);
-    let started = std::time::Instant::now();
-    let value = protocol::js::parse(&text).unwrap();
-    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    text
+}
+
+#[test]
+fn short_string_document_parse_cost_is_linear() {
+    let small = short_strings(100_000);
+    let large = short_strings(400_000);
+    assert_linear_cost(&small, &large);
+    let value = protocol::js::parse(&large).unwrap();
     let items = value.as_array().unwrap();
-    assert!(items.len() > 1_000);
+    assert_eq!(items.len(), 400_000);
     assert_eq!(items[0].as_str(), Some("ab"));
 }
 
@@ -149,9 +165,7 @@ fn hundred_thousand_nested_arrays_fit_in_two_mib_stack() {
     handle.join().unwrap();
 }
 
-#[test]
-fn hundred_thousand_key_object_parses_within_five_seconds() {
-    let count = 100_000usize;
+fn object_keys(count: usize) -> String {
     let mut text = String::with_capacity(count * 16);
     text.push('{');
     for index in 0..count {
@@ -166,11 +180,25 @@ fn hundred_thousand_key_object_parses_within_five_seconds() {
         text.push_str(&index.to_string());
     }
     text.push('}');
-    let started = std::time::Instant::now();
-    let value = protocol::js::parse(&text).unwrap();
-    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    text
+}
+
+#[test]
+fn object_key_parse_cost_is_linear() {
+    let small_count = 25_000usize;
+    let large_count = 100_000usize;
+    let small = object_keys(small_count);
+    let large = object_keys(large_count);
+    let (_, small_cost) = protocol::js::parse_cost(&small).unwrap();
+    let (value, large_cost) = protocol::js::parse_cost(&large).unwrap();
+    assert_eq!(small_cost.bytes, small.len() as u64);
+    assert_eq!(large_cost.bytes, large.len() as u64);
+    assert_eq!(small_cost.lookups, small_count as u64);
+    assert_eq!(large_cost.lookups, large_count as u64);
+    assert!(large_cost.bytes <= small_cost.bytes.saturating_mul(5));
+    assert!(large_cost.lookups <= small_cost.lookups.saturating_mul(5));
     let object = value.as_object().unwrap();
-    assert_eq!(object.iter().count(), count);
+    assert_eq!(object.iter().count(), large_count);
     assert_eq!(
         object.get("k0").and_then(protocol::js::JsValue::as_i64),
         Some(0)

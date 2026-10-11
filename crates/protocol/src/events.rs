@@ -1,9 +1,10 @@
-use serde::de::{self, Deserializer};
+use serde::de::{self, Deserializer, IgnoredAny, MapAccess, Visitor};
 use serde::ser::{SerializeMap, Serializer};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::JsNumber;
+use crate::js::{JsObject, JsValue, parse};
 use crate::message::{Message, ToolCall};
 
 fn omit_false(value: &bool) -> bool {
@@ -232,7 +233,7 @@ pub enum JsonField<T> {
 pub struct PartialToolCall {
     pub id: JsonField<String>,
     pub name: JsonField<String>,
-    pub arguments: JsonField<Map<String, Value>>,
+    pub arguments: JsonField<JsObject>,
     pub thought_signature: JsonField<String>,
     pub index: JsonField<JsNumber>,
     order: Vec<String>,
@@ -265,9 +266,23 @@ impl PartialToolCall {
         self
     }
 
-    pub fn set_arguments(mut self, arguments: Map<String, Value>) -> Self {
+    pub fn set_arguments(mut self, arguments: JsObject) -> Self {
         self.arguments = JsonField::Value(arguments);
         self
+    }
+
+    pub fn argument(&self, key: &str) -> Option<&JsValue> {
+        match &self.arguments {
+            JsonField::Value(object) => object.get(key),
+            JsonField::Absent | JsonField::Null => None,
+        }
+    }
+
+    pub fn arguments_json(&self) -> Option<String> {
+        match &self.arguments {
+            JsonField::Value(object) => Some(crate::js::stringify_object(object)),
+            JsonField::Absent | JsonField::Null => None,
+        }
     }
 
     pub fn set_thought_signature(mut self, signature: impl Into<String>) -> Self {
@@ -351,36 +366,80 @@ impl<'de> Deserialize<'de> for PartialToolCall {
     where
         D: Deserializer<'de>,
     {
-        let map = Map::<String, Value>::deserialize(deserializer)?;
-        let mut order = Vec::new();
-        for key in map.keys() {
-            if !PARTIAL_TOOL_CALL_KEYS.contains(&key.as_str()) {
-                return Err(de::Error::unknown_field(key, PARTIAL_TOOL_CALL_KEYS));
-            }
-            order.push(key.clone());
-        }
-        Ok(PartialToolCall {
-            id: read_json_field(&map, "id")?,
-            name: read_json_field(&map, "name")?,
-            arguments: read_json_field(&map, "arguments")?,
-            thought_signature: read_json_field(&map, "thoughtSignature")?,
-            index: read_json_field(&map, "index")?,
-            order,
-        })
+        deserializer.deserialize_map(PartialToolCallVisitor)
     }
 }
 
-fn read_json_field<T, E>(map: &Map<String, Value>, key: &str) -> Result<JsonField<T>, E>
-where
-    T: de::DeserializeOwned,
-    E: de::Error,
-{
-    match map.get(key) {
-        None => Ok(JsonField::Absent),
-        Some(Value::Null) => Ok(JsonField::Null),
-        Some(value) => T::deserialize(value)
-            .map(JsonField::Value)
-            .map_err(E::custom),
+struct PartialToolCallVisitor;
+
+impl<'de> Visitor<'de> for PartialToolCallVisitor {
+    type Value = PartialToolCall;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("partial tool call")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut call = PartialToolCall::default();
+        while let Some(key) = map.next_key::<String>()? {
+            if !PARTIAL_TOOL_CALL_KEYS.contains(&key.as_str()) {
+                map.next_value::<IgnoredAny>()?;
+                return Err(de::Error::unknown_field(&key, PARTIAL_TOOL_CALL_KEYS));
+            }
+            call.order.push(key.clone());
+            match key.as_str() {
+                "id" => call.id = json_field_from_option(map.next_value::<Option<String>>()?),
+                "name" => call.name = json_field_from_option(map.next_value::<Option<String>>()?),
+                "arguments" => call.arguments = map.next_value::<ArgumentsWire>()?.field,
+                "thoughtSignature" => {
+                    call.thought_signature =
+                        json_field_from_option(map.next_value::<Option<String>>()?);
+                }
+                "index" => {
+                    call.index = json_field_from_option(map.next_value::<Option<JsNumber>>()?);
+                }
+                _ => {
+                    map.next_value::<IgnoredAny>()?;
+                    return Err(de::Error::unknown_field(&key, PARTIAL_TOOL_CALL_KEYS));
+                }
+            }
+        }
+        Ok(call)
+    }
+}
+
+fn json_field_from_option<T>(value: Option<T>) -> JsonField<T> {
+    match value {
+        Some(value) => JsonField::Value(value),
+        None => JsonField::Null,
+    }
+}
+
+struct ArgumentsWire {
+    field: JsonField<JsObject>,
+}
+
+impl<'de> Deserialize<'de> for ArgumentsWire {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = Box::<serde_json::value::RawValue>::deserialize(deserializer)?;
+        match parse(raw.get()) {
+            Ok(JsValue::Null) => Ok(Self {
+                field: JsonField::Null,
+            }),
+            Ok(value) => match value.into_object() {
+                Some(object) => Ok(Self {
+                    field: JsonField::Value(object),
+                }),
+                None => Err(de::Error::custom("arguments")),
+            },
+            Err(err) => Err(de::Error::custom(err)),
+        }
     }
 }
 

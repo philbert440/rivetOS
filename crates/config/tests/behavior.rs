@@ -164,6 +164,38 @@ fn lenient_embedded_port_renders_got_json() {
     let null_port =
         config::parse_yaml("memory:\n  postgres:\n    embedded:\n      port: null\n").unwrap();
     assert!(config::assert_embedded_port(&null_port).is_ok());
+    let float =
+        config::parse_yaml("memory:\n  postgres:\n    embedded:\n      port: 70000.0\n").unwrap();
+    let err = config::assert_embedded_port(&float).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "memory.postgres.embedded.port must be an integer between 1 and 65535 (got 70000)"
+    );
+    let scientific =
+        config::parse_yaml("memory:\n  postgres:\n    embedded:\n      port: 1e21\n").unwrap();
+    let err = config::assert_embedded_port(&scientific).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "memory.postgres.embedded.port must be an integer between 1 and 65535 (got 1e+21)"
+    );
+    let items = config::parse_yaml(
+        "memory:\n  postgres:\n    embedded:\n      port:\n        - 70000.0\n        - nope\n",
+    )
+    .unwrap();
+    let err = config::assert_embedded_port(&items).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "memory.postgres.embedded.port must be an integer between 1 and 65535 (got [70000,\"nope\"])"
+    );
+    let nested = config::parse_yaml(
+        "memory:\n  postgres:\n    embedded:\n      port:\n        \"10\": ten\n        \"2\": two\n        limit: 1.0\n        label: nope\n",
+    )
+    .unwrap();
+    let err = config::assert_embedded_port(&nested).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "memory.postgres.embedded.port must be an integer between 1 and 65535 (got {\"2\":\"two\",\"10\":\"ten\",\"limit\":1,\"label\":\"nope\"})"
+    );
 }
 
 #[test]

@@ -1,5 +1,4 @@
 use serde::de::Deserializer;
-use serde::ser::Error;
 use serde::{Deserialize, Serialize, Serializer};
 use serde_json::Value;
 
@@ -223,11 +222,7 @@ fn serialize_preserved<S>(object: &JsObject, serializer: S) -> Result<S::Ok, S::
 where
     S: Serializer,
 {
-    let text = crate::js::stringify(&JsValue::Object(object.clone()));
-    match serde_json::value::RawValue::from_string(text) {
-        Ok(raw) => raw.serialize(serializer),
-        Err(err) => Err(S::Error::custom(err)),
-    }
+    object.serialize(serializer)
 }
 
 impl<'de> Deserialize<'de> for ParsedCriterion {

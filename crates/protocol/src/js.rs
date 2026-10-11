@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use serde::de::Deserializer;
+use serde::{Deserialize, Serialize, Serializer};
 use serde_json::{Map, Value};
 
 pub fn js_trim(text: &str) -> &str {
@@ -89,7 +91,7 @@ fn utf8_from_units(units: &[u16]) -> String {
         .collect()
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct JsObject {
     entries: Vec<(JsString, JsValue)>,
     lookup: HashMap<Vec<u16>, usize>,
@@ -116,21 +118,22 @@ impl Clone for JsObject {
     fn clone(&self) -> Self {
         let mut object = JsObject::new();
         for (key, value) in &self.entries {
-            object.insert(key.clone(), value.clone());
+            object.insert_key(key.clone(), value.clone());
         }
         object
     }
 }
 
 impl JsObject {
-    fn new() -> Self {
-        Self {
-            entries: Vec::new(),
-            lookup: HashMap::new(),
-        }
+    pub fn new() -> Self {
+        Self::default()
     }
 
-    fn insert(&mut self, key: JsString, value: JsValue) {
+    pub fn insert(&mut self, key: &str, value: JsValue) {
+        self.insert_key(JsString::from_text(key), value);
+    }
+
+    fn insert_key(&mut self, key: JsString, value: JsValue) {
         if let Some(index) = self.lookup.get(&key.units).copied() {
             if let Some(slot) = self.entries.get_mut(index) {
                 slot.1 = value;
@@ -140,6 +143,14 @@ impl JsObject {
         let index = self.entries.len();
         self.lookup.insert(key.units.clone(), index);
         self.entries.push((key, value));
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
     }
 
     pub fn get(&self, key: &str) -> Option<&JsValue> {
@@ -251,7 +262,7 @@ impl JsValue {
     }
 }
 
-pub(crate) fn from_serde(value: &Value) -> JsValue {
+pub fn from_serde(value: &Value) -> JsValue {
     match value {
         Value::Null => JsValue::Null,
         Value::Bool(value) => JsValue::Bool(*value),
@@ -265,16 +276,32 @@ pub(crate) fn from_serde(value: &Value) -> JsValue {
 fn object_from_map(map: &Map<String, Value>) -> JsObject {
     let mut object = JsObject::new();
     for (key, value) in map {
-        object.insert(JsString::from_text(key), from_serde(value));
+        object.insert_key(JsString::from_text(key), from_serde(value));
     }
     object
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ParseCost {
+    pub bytes: u64,
+    pub lookups: u64,
+}
+
 pub fn parse(text: &str) -> Result<JsValue, ParseError> {
+    parse_with_cost(text).map(|(value, _)| value)
+}
+
+pub fn parse_cost(text: &str) -> Result<(JsValue, ParseCost), ParseError> {
+    parse_with_cost(text)
+}
+
+fn parse_with_cost(text: &str) -> Result<(JsValue, ParseCost), ParseError> {
     let mut parser = Parser {
         text,
         index: 0,
         stack: Vec::new(),
+        bytes: 0,
+        lookups: 0,
     };
     parser.skip_ws();
     if parser.done() {
@@ -292,7 +319,11 @@ pub fn parse(text: &str) -> Result<JsValue, ParseError> {
                             message: "trailing",
                         });
                     }
-                    return Ok(value);
+                    let cost = ParseCost {
+                        bytes: parser.bytes,
+                        lookups: parser.lookups,
+                    };
+                    return Ok((value, cost));
                 }
                 parser.adopt(value)?
             }
@@ -319,6 +350,8 @@ struct Parser<'a> {
     text: &'a str,
     index: usize,
     stack: Vec<Frame>,
+    bytes: u64,
+    lookups: u64,
 }
 
 impl<'a> Parser<'a> {
@@ -330,9 +363,14 @@ impl<'a> Parser<'a> {
         self.text.as_bytes().get(self.index).copied()
     }
 
+    fn advance(&mut self, count: usize) {
+        self.index += count;
+        self.bytes = self.bytes.saturating_add(count as u64);
+    }
+
     fn skip_ws(&mut self) {
         while matches!(self.peek(), Some(b' ' | b'\t' | b'\n' | b'\r')) {
-            self.index += 1;
+            self.advance(1);
         }
     }
 
@@ -355,10 +393,10 @@ impl<'a> Parser<'a> {
     }
 
     fn open_array(&mut self) -> Result<ParseState, ParseError> {
-        self.index += 1;
+        self.advance(1);
         self.skip_ws();
         if self.peek() == Some(b']') {
-            self.index += 1;
+            self.advance(1);
             return Ok(ParseState::Have(JsValue::Array(Vec::new())));
         }
         self.stack.push(Frame::Array(Vec::new()));
@@ -366,10 +404,10 @@ impl<'a> Parser<'a> {
     }
 
     fn open_object(&mut self) -> Result<ParseState, ParseError> {
-        self.index += 1;
+        self.advance(1);
         self.skip_ws();
         if self.peek() == Some(b'}') {
-            self.index += 1;
+            self.advance(1);
             return Ok(ParseState::Have(JsValue::Object(JsObject::new())));
         }
         let key = self.parse_key()?;
@@ -390,20 +428,24 @@ impl<'a> Parser<'a> {
         if self.peek() != Some(b':') {
             return Err(ParseError { message: "colon" });
         }
-        self.index += 1;
+        self.advance(1);
         Ok(key)
     }
 
     fn adopt(&mut self, value: JsValue) -> Result<ParseState, ParseError> {
+        let inserted = matches!(self.stack.last(), Some(Frame::Object(_)));
         match self.stack.last_mut() {
             Some(Frame::Array(items)) => items.push(value),
             Some(Frame::Object(frame)) => {
                 let Some(key) = frame.key.take() else {
                     return Err(ParseError { message: "key" });
                 };
-                frame.object.insert(key, value);
+                frame.object.insert_key(key, value);
             }
             None => return Err(ParseError { message: "value" }),
+        }
+        if inserted {
+            self.lookups = self.lookups.saturating_add(1);
         }
         self.skip_ws();
         let closing = match self.stack.last() {
@@ -413,7 +455,7 @@ impl<'a> Parser<'a> {
         };
         match self.peek() {
             Some(b',') => {
-                self.index += 1;
+                self.advance(1);
                 self.skip_ws();
                 if self.peek() == Some(closing) {
                     return Err(ParseError { message: "comma" });
@@ -427,7 +469,7 @@ impl<'a> Parser<'a> {
                 Ok(ParseState::Need)
             }
             Some(byte) if byte == closing => {
-                self.index += 1;
+                self.advance(1);
                 match self.stack.pop() {
                     Some(Frame::Array(items)) => Ok(ParseState::Have(JsValue::Array(items))),
                     Some(Frame::Object(frame)) => {
@@ -447,7 +489,7 @@ impl<'a> Parser<'a> {
             return Err(ParseError { message: "literal" });
         };
         if rest.starts_with(word) {
-            self.index += word.len();
+            self.advance(word.len());
             Ok(value)
         } else {
             Err(ParseError { message: "literal" })
@@ -455,18 +497,18 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_string(&mut self) -> Result<JsString, ParseError> {
-        self.index += 1;
+        self.advance(1);
         let mut units = Vec::new();
         loop {
             let Some(byte) = self.peek() else {
                 return Err(ParseError { message: "string" });
             };
             if byte == b'"' {
-                self.index += 1;
+                self.advance(1);
                 return Ok(JsString::from_units(units));
             }
             if byte == b'\\' {
-                self.index += 1;
+                self.advance(1);
                 self.push_escape(&mut units)?;
                 continue;
             }
@@ -486,7 +528,7 @@ impl<'a> Parser<'a> {
             .get(self.index..)
             .ok_or(ParseError { message: "utf8" })?;
         let ch = rest.chars().next().ok_or(ParseError { message: "utf8" })?;
-        self.index += ch.len_utf8();
+        self.advance(ch.len_utf8());
         Ok(ch)
     }
 
@@ -494,7 +536,7 @@ impl<'a> Parser<'a> {
         let Some(byte) = self.peek() else {
             return Err(ParseError { message: "escape" });
         };
-        self.index += 1;
+        self.advance(1);
         let unit = match byte {
             b'"' => u16::from(b'"'),
             b'\\' => u16::from(b'\\'),
@@ -525,47 +567,47 @@ impl<'a> Parser<'a> {
             .get(self.index..self.index + 4)
             .ok_or(ParseError { message: "hex" })?;
         let value = u16::from_str_radix(text, 16).map_err(|_| ParseError { message: "hex" })?;
-        self.index += 4;
+        self.advance(4);
         Ok(value)
     }
 
     fn parse_number(&mut self) -> Result<f64, ParseError> {
         let start = self.index;
         if self.peek() == Some(b'-') {
-            self.index += 1;
+            self.advance(1);
         }
         match self.peek() {
             Some(b'0') => {
-                self.index += 1;
+                self.advance(1);
                 if matches!(self.peek(), Some(b'0'..=b'9')) {
                     return Err(ParseError { message: "number" });
                 }
             }
             Some(b'1'..=b'9') => {
                 while matches!(self.peek(), Some(b'0'..=b'9')) {
-                    self.index += 1;
+                    self.advance(1);
                 }
             }
             _ => return Err(ParseError { message: "number" }),
         }
         if self.peek() == Some(b'.') {
-            self.index += 1;
+            self.advance(1);
             let frac = self.index;
             while matches!(self.peek(), Some(b'0'..=b'9')) {
-                self.index += 1;
+                self.advance(1);
             }
             if self.index == frac {
                 return Err(ParseError { message: "number" });
             }
         }
         if matches!(self.peek(), Some(b'e' | b'E')) {
-            self.index += 1;
+            self.advance(1);
             if matches!(self.peek(), Some(b'+' | b'-')) {
-                self.index += 1;
+                self.advance(1);
             }
             let exp = self.index;
             while matches!(self.peek(), Some(b'0'..=b'9')) {
-                self.index += 1;
+                self.advance(1);
             }
             if self.index == exp {
                 return Err(ParseError { message: "number" });
@@ -584,9 +626,28 @@ impl<'a> Parser<'a> {
 pub fn stringify(value: &JsValue) -> String {
     let mut out = String::new();
     let mut jobs = vec![WriteJob::Value(value)];
+    write_jobs(&mut out, &mut jobs);
+    out
+}
+
+pub fn stringify_object(object: &JsObject) -> String {
+    let mut out = String::from("{");
+    if object.is_empty() {
+        out.push('}');
+        return out;
+    }
+    let mut jobs = vec![WriteJob::Object {
+        pairs: ordered_pairs(object),
+        next: 0,
+    }];
+    write_jobs(&mut out, &mut jobs);
+    out
+}
+
+fn write_jobs<'a>(out: &mut String, jobs: &mut Vec<WriteJob<'a>>) {
     while let Some(job) = jobs.pop() {
         match job {
-            WriteJob::Value(current) => write_opened(current, &mut out, &mut jobs),
+            WriteJob::Value(current) => write_opened(current, out, jobs),
             WriteJob::Array { items, next } => {
                 if next >= items.len() {
                     out.push(']');
@@ -611,7 +672,7 @@ pub fn stringify(value: &JsValue) -> String {
                     out.push(',');
                 }
                 let (key, child) = pairs[next];
-                write_units(&key.units, &mut out);
+                write_units(&key.units, out);
                 out.push(':');
                 jobs.push(WriteJob::Object {
                     pairs,
@@ -621,7 +682,40 @@ pub fn stringify(value: &JsValue) -> String {
             }
         }
     }
-    out
+}
+
+impl Serialize for JsObject {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let text = stringify_object(self);
+        match serde_json::value::RawValue::from_string(text) {
+            Ok(raw) => raw.serialize(serializer),
+            Err(err) => Err(serde::ser::Error::custom(err)),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for JsObject {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = Box::<serde_json::value::RawValue>::deserialize(deserializer)?;
+        match object_from_json(raw.get()) {
+            Ok(object) => Ok(object),
+            Err(err) => Err(serde::de::Error::custom(err)),
+        }
+    }
+}
+
+fn object_from_json(text: &str) -> Result<JsObject, ParseError> {
+    let value = parse(text)?;
+    match value.into_object() {
+        Some(object) => Ok(object),
+        None => Err(ParseError { message: "object" }),
+    }
 }
 
 enum WriteJob<'a> {
@@ -777,7 +871,7 @@ fn clone_value(root: &JsValue) -> JsValue {
                 let values = built.split_off(start);
                 let mut object = JsObject::new();
                 for (key, value) in keys.into_iter().zip(values) {
-                    object.insert(key, value);
+                    object.insert_key(key, value);
                 }
                 built.push(JsValue::Object(object));
             }

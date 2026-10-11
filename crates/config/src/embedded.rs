@@ -1,3 +1,4 @@
+use protocol::js;
 use serde_json::Value;
 
 use crate::error::ConfigError;
@@ -18,7 +19,7 @@ pub fn assert_embedded_port(config: &Value) -> Result<(), ConfigError> {
         None | Some(Value::Null) => Ok(()),
         Some(port) if js_i64(port).is_some_and(|n| (1..=65535).contains(&n)) => Ok(()),
         Some(port) => {
-            let rendered = serde_json::to_string(port).unwrap_or_else(|_| "null".to_string());
+            let rendered = js::stringify(&js::from_serde(port));
             Err(ConfigError::EmbeddedPort(format!(
                 "memory.postgres.embedded.port must be an integer between 1 and 65535 (got {rendered})"
             )))

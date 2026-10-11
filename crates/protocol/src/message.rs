@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
-use serde_json::Map;
-use serde_json::Value;
+
+use crate::js::{JsObject, JsValue};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -100,9 +100,19 @@ crate::wire_enum! {
 pub struct ToolCall {
     pub id: String,
     pub name: String,
-    pub arguments: Map<String, Value>,
+    pub arguments: JsObject,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thought_signature: Option<String>,
+}
+
+impl ToolCall {
+    pub fn argument(&self, key: &str) -> Option<&JsValue> {
+        self.arguments.get(key)
+    }
+
+    pub fn arguments_json(&self) -> String {
+        crate::js::stringify_object(&self.arguments)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
