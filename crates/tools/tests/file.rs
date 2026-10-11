@@ -359,3 +359,34 @@ async fn file_edit_cases() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[tokio::test]
+async fn file_read_directory_stays_custom() {
+    let dir = temp_dir("file-read-dir");
+    let ctx = ToolContext::default();
+    let tool = FileReadTool::new(FileReadConfig::default());
+    let result = run(&tool, json!({"path": dir.display().to_string()}), &ctx).await;
+    assert_eq!(
+        result,
+        format!("Error: Path is a directory: {}", dir.display())
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn file_edit_directory_is_eisdir_read() {
+    let dir = temp_dir("file-edit-dir");
+    let ctx = ToolContext::default();
+    let tool = FileEditTool::new();
+    let result = run(
+        &tool,
+        json!({"path": dir.display().to_string(), "old_string": "a", "new_string": "b"}),
+        &ctx,
+    )
+    .await;
+    assert_eq!(
+        result,
+        "Error: EISDIR: illegal operation on a directory, read"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -1,7 +1,9 @@
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+
+use parking_lot::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
@@ -55,6 +57,10 @@ impl Drop for RestoreMode {
     }
 }
 
+fn eacces_enforced() -> bool {
+    !nix::unistd::geteuid().is_root()
+}
+
 fn write_skill(dir: &Path, name: &str, content: &str) {
     let skill = dir.join(name);
     std::fs::create_dir_all(&skill).unwrap();
@@ -70,8 +76,8 @@ async fn run(tool: &impl Tool, args: Value) -> String {
     .to_string()
 }
 
-fn read_text(path: &Path) -> String {
-    std::fs::read_to_string(path).unwrap()
+fn skill_body(path: &Path) -> String {
+    protocol::host::read_text(path).unwrap()
 }
 
 #[tokio::test]
@@ -237,10 +243,10 @@ async fn load_list_and_hooks() {
         let before_location = Arc::clone(&before_location);
         let before_score = Arc::clone(&before_score);
         move |ctx| {
-            events.lock().unwrap().push("before".to_string());
-            *before_name.lock().unwrap() = ctx.skill_name.clone();
-            *before_location.lock().unwrap() = ctx.skill_location.clone();
-            *before_score.lock().unwrap() = ctx.match_score;
+            events.lock().push("before".to_string());
+            *before_name.lock() = ctx.skill_name.clone();
+            *before_location.lock() = ctx.skill_location.clone();
+            *before_score.lock() = ctx.match_score;
             Ok(())
         }
     });
@@ -249,9 +255,9 @@ async fn load_list_and_hooks() {
         let after_name = Arc::clone(&after_name);
         let after_success = Arc::clone(&after_success);
         move |ctx| {
-            events.lock().unwrap().push("after".to_string());
-            *after_name.lock().unwrap() = ctx.skill_name.clone();
-            *after_success.lock().unwrap() = ctx.success;
+            events.lock().push("after".to_string());
+            *after_name.lock() = ctx.skill_name.clone();
+            *after_success.lock() = ctx.success;
             let _ = ctx.duration_ms;
             Ok(())
         }
@@ -262,14 +268,14 @@ async fn load_list_and_hooks() {
         "---\nname: Hooked\ndescription: Hook test\ntriggers: hook\n---\n# Hooked"
     );
     assert_eq!(
-        events.lock().unwrap().as_slice(),
+        events.lock().as_slice(),
         ["before".to_string(), "after".to_string()]
     );
-    assert_eq!(before_name.lock().unwrap().as_str(), "Hooked");
-    assert!(before_location.lock().unwrap().contains("SKILL.md"));
-    assert_eq!(*before_score.lock().unwrap(), 0.0);
-    assert_eq!(after_name.lock().unwrap().as_str(), "Hooked");
-    assert!(*after_success.lock().unwrap());
+    assert_eq!(before_name.lock().as_str(), "Hooked");
+    assert!(before_location.lock().contains("SKILL.md"));
+    assert_eq!(*before_score.lock(), 0.0);
+    assert_eq!(after_name.lock().as_str(), "Hooked");
+    assert!(*after_success.lock());
 
     let skip_dir = TempDir::new("skip");
     write_skill(
@@ -423,11 +429,11 @@ async fn skill_manage_create_edit_patch_delete() {
     )
     .await;
     assert!(created.contains("created"), "{created}");
-    let body = read_text(&dir.path().join("my-skill").join("SKILL.md"));
+    let body = skill_body(&dir.path().join("my-skill").join("SKILL.md"));
     assert!(body.contains("name: my-skill"));
     assert!(body.contains("A test skill"));
     let meta: Value =
-        serde_json::from_str(&read_text(&dir.path().join("my-skill").join("_meta.json"))).unwrap();
+        serde_json::from_str(&skill_body(&dir.path().join("my-skill").join("_meta.json"))).unwrap();
     assert_eq!(meta["version"], 1);
     assert_eq!(meta["created_by"], "agent");
 
@@ -439,7 +445,7 @@ async fn skill_manage_create_edit_patch_delete() {
     .await;
     assert!(result.contains("created"), "{result}");
     assert_eq!(
-        read_text(&dir.path().join("custom").join("SKILL.md")),
+        skill_body(&dir.path().join("custom").join("SKILL.md")),
         custom
     );
 
@@ -481,7 +487,7 @@ async fn skill_manage_create_edit_patch_delete() {
     .await;
     assert!(edited.contains("updated"), "{edited}");
     assert!(edited.contains("version 2"));
-    let edited_body = read_text(&dir.path().join("editable").join("SKILL.md"));
+    let edited_body = skill_body(&dir.path().join("editable").join("SKILL.md"));
     assert!(edited_body.contains("name: editable"));
     assert!(edited_body.contains("description: Updated"));
     assert!(edited_body.contains("version: 2"));
@@ -504,7 +510,7 @@ async fn skill_manage_create_edit_patch_delete() {
     .await;
     assert!(patched.contains("patched"), "{patched}");
     assert!(patched.contains("1 replacements"));
-    let patched_body = read_text(&dir.path().join("patchable").join("SKILL.md"));
+    let patched_body = skill_body(&dir.path().join("patchable").join("SKILL.md"));
     assert!(patched_body.contains("Patched text instead."));
     assert!(!patched_body.contains("Original text here."));
 
@@ -599,7 +605,7 @@ async fn skill_manage_read_write_and_list_metadata() {
     .await;
     assert!(written.contains("File written"), "{written}");
     assert!(
-        read_text(
+        skill_body(
             &dir.path()
                 .join("with-files")
                 .join("references")
@@ -756,7 +762,7 @@ async fn version_bump_changelog_and_retire() {
     )
     .await;
     assert!(updated.contains("version 2"), "{updated}");
-    let body = read_text(&dir.path().join("versioned").join("SKILL.md"));
+    let body = skill_body(&dir.path().join("versioned").join("SKILL.md"));
     assert!(body.contains("version: 2"));
     assert!(body.contains("## Changelog"));
     assert!(body.contains("Improved instructions"));
@@ -779,7 +785,7 @@ async fn version_bump_changelog_and_retire() {
     )
     .await;
     assert!(patched.contains("version 2"), "{patched}");
-    let body = read_text(&dir.path().join("patchver").join("SKILL.md"));
+    let body = skill_body(&dir.path().join("patchver").join("SKILL.md"));
     assert!(body.contains("version: 2"));
     assert!(body.contains("## Changelog"));
     assert!(body.contains("Fixed wording"));
@@ -801,7 +807,7 @@ async fn version_bump_changelog_and_retire() {
         }),
     )
     .await;
-    let after_v2 = read_text(&dir.path().join("multi-edit").join("SKILL.md"));
+    let after_v2 = skill_body(&dir.path().join("multi-edit").join("SKILL.md"));
     let _ = run(
         &tool,
         json!({
@@ -812,7 +818,7 @@ async fn version_bump_changelog_and_retire() {
         }),
     )
     .await;
-    let final_body = read_text(&dir.path().join("multi-edit").join("SKILL.md"));
+    let final_body = skill_body(&dir.path().join("multi-edit").join("SKILL.md"));
     assert!(final_body.contains("First update"));
     assert!(final_body.contains("Second update"));
     assert!(final_body.contains("**v3**"));
@@ -831,7 +837,7 @@ async fn version_bump_changelog_and_retire() {
         }),
     )
     .await;
-    assert!(read_text(&dir.path().join("no-reason").join("SKILL.md")).contains("Updated"));
+    assert!(skill_body(&dir.path().join("no-reason").join("SKILL.md")).contains("Updated"));
 
     let _ = run(
         &tool,
@@ -851,7 +857,7 @@ async fn version_bump_changelog_and_retire() {
     assert!(retired.contains("Superseded by new-skill"));
     assert!(!dir.path().join("old-skill").exists());
     assert!(dir.path().join("retired").join("old-skill").is_dir());
-    let meta: Value = serde_json::from_str(&read_text(
+    let meta: Value = serde_json::from_str(&skill_body(
         &dir.path()
             .join("retired")
             .join("old-skill")
@@ -1110,7 +1116,7 @@ async fn skill_manage_confines_symlinks_and_dotdot_names() {
     )
     .await;
     assert!(patched.contains("patched"), "{patched}");
-    let body = read_text(&skill.join("SKILL.md"));
+    let body = skill_body(&skill.join("SKILL.md"));
     assert!(body.contains("echo $"), "{body}");
     assert!(!body.contains("echo $$"), "{body}");
 
@@ -1295,7 +1301,11 @@ async fn inaccessible_secondary_root_does_not_block_writes() {
     };
     let blocked = locked.path().join("private").join("skills");
     let err = std::fs::symlink_metadata(&blocked).unwrap_err();
-    assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+    if eacces_enforced() {
+        assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+    } else {
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+    }
     let tool = SkillManageTool::new(
         SkillManager::new(),
         vec![
@@ -1356,6 +1366,9 @@ async fn inaccessible_secondary_root_does_not_block_writes() {
 
 #[tokio::test]
 async fn inaccessible_destination_root_still_fails() {
+    if !eacces_enforced() {
+        return;
+    }
     let locked = TempDir::new("dest-locked");
     let mut perms = std::fs::metadata(locked.path()).unwrap().permissions();
     let original = perms.mode();

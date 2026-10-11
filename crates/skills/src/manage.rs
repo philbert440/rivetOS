@@ -6,8 +6,8 @@ use serde_json::Value;
 
 use crate::confine::{ensure_inside, mkdir_confined, rename_confined, write_confined};
 use crate::helpers::{
-    ALLOWED_SUBDIRS, SkillMeta, bump_version_in_content, check_dedup, list_subdir, now_iso,
-    parse_patch_blocks, read_meta, scan_issues, title_case_hyphen, write_meta,
+    ALLOWED_SUBDIRS, SkillMeta, bump_version_in_content, check_dedup, current_iso_timestamp,
+    list_subdir, parse_patch_blocks, read_meta, scan_issues, title_case_hyphen, write_meta,
 };
 use crate::list_tool::node_dirname;
 use crate::manager::{Skill, SkillManager};
@@ -234,7 +234,7 @@ impl Tool for SkillManageTool {
         let category = arg_str(&args, "category").map(str::to_string);
         let tags = arg_str(&args, "tags").map(str::to_string);
         let level = args.get("level").and_then(Value::as_f64).unwrap_or(1.0);
-        let force = js_truthy(args.get("force"));
+        let force = args.get("force").is_some_and(protocol::js::js_boolean_json);
         let reason = arg_str(&args, "reason").map(str::to_string);
         let result = match action.as_str() {
             "create" => {
@@ -309,7 +309,13 @@ impl SkillManageTool {
         {
             let desc = description
                 .map(str::to_string)
-                .or_else(|| content.map(|value| utf16_prefix(value, 500)))
+                .or_else(|| {
+                    content.map(|value| {
+                        protocol::js::js_substring(value, Some(0.0), Some(500.0))
+                            .to_utf8()
+                            .to_string()
+                    })
+                })
                 .unwrap_or_else(|| name.to_string());
             let existing = self
                 .manager
@@ -323,7 +329,8 @@ impl SkillManageTool {
             {
                 return format!(
                     "Possible duplicate: \"{dup_name}\" (similarity: {}). Use a different name, edit the existing skill, or pass force: true to create anyway.",
-                    fixed2(similarity)
+                    protocol::js::to_fixed(similarity, 2.0)
+                        .unwrap_or_else(|_| protocol::js::number_to_string(similarity))
                 );
             }
         }
@@ -342,7 +349,7 @@ impl SkillManageTool {
         }
         let meta = SkillMeta {
             created_by: "agent".to_string(),
-            created_at: now_iso(),
+            created_at: current_iso_timestamp(),
             version: 1,
             source: None,
             last_modified_at: None,
@@ -369,7 +376,7 @@ impl SkillManageTool {
         let skill_dir = node_dirname(Path::new(&skill.location));
         let mut meta = read_meta(&skill_dir).await.unwrap_or_else(|| SkillMeta {
             created_by: "unknown".to_string(),
-            created_at: now_iso(),
+            created_at: current_iso_timestamp(),
             version: 0,
             source: None,
             last_modified_at: None,
@@ -378,7 +385,7 @@ impl SkillManageTool {
             retired_reason: None,
         });
         meta.version += 1;
-        meta.last_modified_at = Some(now_iso());
+        meta.last_modified_at = Some(current_iso_timestamp());
         meta.last_modified_by = Some("agent".to_string());
         let updated = bump_version_in_content(content, meta.version, reason);
         if let Err(issues) = scan_issues(&updated) {
@@ -419,8 +426,11 @@ impl SkillManageTool {
         };
         for (find, replace) in &blocks {
             if !current.contains(find) {
-                let preview = if utf16_len(find) > 50 {
-                    format!("{}...", utf16_prefix(find, 50))
+                let preview = if protocol::js::utf16_len(find) > 50 {
+                    format!(
+                        "{}...",
+                        protocol::js::js_substring(find, Some(0.0), Some(50.0)).to_utf8()
+                    )
                 } else {
                     find.clone()
                 };
@@ -431,7 +441,7 @@ impl SkillManageTool {
         let skill_dir = node_dirname(Path::new(&skill.location));
         let mut meta = read_meta(&skill_dir).await.unwrap_or_else(|| SkillMeta {
             created_by: "unknown".to_string(),
-            created_at: now_iso(),
+            created_at: current_iso_timestamp(),
             version: 0,
             source: None,
             last_modified_at: None,
@@ -440,7 +450,7 @@ impl SkillManageTool {
             retired_reason: None,
         });
         meta.version += 1;
-        meta.last_modified_at = Some(now_iso());
+        meta.last_modified_at = Some(current_iso_timestamp());
         meta.last_modified_by = Some("agent".to_string());
         current = bump_version_in_content(&current, meta.version, reason);
         if let Err(issues) = scan_issues(&current) {
@@ -470,7 +480,10 @@ impl SkillManageTool {
         let skill_dir = node_dirname(Path::new(&skill.location));
         let parent = node_dirname(&skill_dir);
         let trash_dir = parent.join(".trash");
-        let trash_name = format!("{name}-{}", chrono::Utc::now().timestamp_millis());
+        let trash_name = format!(
+            "{name}-{}",
+            protocol::js::number_to_string(protocol::js::date_now())
+        );
         let trash_path = trash_dir.join(&trash_name);
         let roots = self.allowed_roots();
         if let Err(err) = ensure_inside(&skill_dir, &roots).await {
@@ -513,7 +526,7 @@ impl SkillManageTool {
         }
         let mut meta = read_meta(&skill_dir).await.unwrap_or_else(|| SkillMeta {
             created_by: "unknown".to_string(),
-            created_at: now_iso(),
+            created_at: current_iso_timestamp(),
             version: 1,
             source: None,
             last_modified_at: None,
@@ -521,9 +534,9 @@ impl SkillManageTool {
             retired_at: None,
             retired_reason: None,
         });
-        meta.last_modified_at = Some(now_iso());
+        meta.last_modified_at = Some(current_iso_timestamp());
         meta.last_modified_by = Some("agent".to_string());
-        meta.retired_at = Some(now_iso());
+        meta.retired_at = Some(current_iso_timestamp());
         meta.retired_reason = Some(reason.unwrap_or("No longer useful").to_string());
         if let Err(err) = write_meta(&skill_dir, &meta, &roots).await {
             return err;
@@ -696,37 +709,12 @@ fn not_found(manager: &SkillManager, name: &str) -> String {
 }
 
 fn name_ok(name: &str) -> bool {
-    regex::Regex::new(NAME_RE)
+    regress::Regex::new(NAME_RE)
         .ok()
-        .and_then(|regex| regex.find(name).map(|item| item.as_str() == name))
-        .unwrap_or(false)
+        .and_then(|regex| regex.find(name))
+        .is_some_and(|found| found.start() == 0 && found.end() == name.len())
 }
 
 fn arg_str<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
     args.get(key).and_then(Value::as_str)
-}
-
-fn js_truthy(value: Option<&Value>) -> bool {
-    match value {
-        Some(Value::Bool(flag)) => *flag,
-        Some(Value::Number(number)) => number.as_f64().is_some_and(|number| number != 0.0),
-        Some(Value::String(text)) => !text.is_empty(),
-        Some(Value::Array(_)) | Some(Value::Object(_)) => true,
-        _ => false,
-    }
-}
-
-fn fixed2(value: f64) -> String {
-    let factor = 100.0;
-    let rounded = (value * factor).round() / factor;
-    format!("{rounded:.2}")
-}
-
-fn utf16_len(text: &str) -> usize {
-    text.encode_utf16().count()
-}
-
-fn utf16_prefix(text: &str, max: usize) -> String {
-    let units: Vec<u16> = text.encode_utf16().take(max).collect();
-    String::from_utf16_lossy(&units)
 }

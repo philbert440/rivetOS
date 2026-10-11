@@ -1,27 +1,18 @@
 use std::ffi::OsString;
 use std::fs::OpenOptions;
 use std::io::Write;
+use std::os::fd::{AsFd, AsRawFd, OwnedFd};
 use std::os::unix::fs::OpenOptionsExt;
-use std::os::unix::io::RawFd;
 use std::path::{Component, Path, PathBuf};
 
 use nix::errno::Errno;
 use nix::fcntl::{self, AtFlags, OFlag};
 use nix::sys::stat::{FileStat, Mode, SFlag, fstatat, mkdirat};
-use nix::unistd::{UnlinkatFlags, close, unlinkat};
+use nix::unistd::{UnlinkatFlags, unlinkat};
 
 const MAX_LINKS: u32 = 32;
 
-struct DirFd(RawFd);
-
-impl Drop for DirFd {
-    fn drop(&mut self) {
-        if self.0 >= 0 {
-            let _ = close(self.0);
-            self.0 = -1;
-        }
-    }
-}
+struct DirFd(OwnedFd);
 
 struct PreparedRoot {
     original: PathBuf,
@@ -102,7 +93,7 @@ fn write_here(
     }
     let final_name = &names[last];
     match fstatat(
-        Some(dir.0),
+        dir.0.as_fd(),
         final_name.as_os_str(),
         AtFlags::AT_SYMLINK_NOFOLLOW,
     ) {
@@ -167,7 +158,7 @@ fn rename_blocking(from: &Path, to: &Path, roots: &[String]) -> Result<(), Strin
         return Err(refuse(to));
     };
     if let Ok(stat) = fstatat(
-        Some(to_dir.0),
+        to_dir.0.as_fd(),
         to_name.as_os_str(),
         AtFlags::AT_SYMLINK_NOFOLLOW,
     ) && is_symlink(&stat)
@@ -175,9 +166,9 @@ fn rename_blocking(from: &Path, to: &Path, roots: &[String]) -> Result<(), Strin
         let _ = link_target(&to_dir, to_name, &prepared, to)?;
     }
     fcntl::renameat(
-        Some(from_dir.0),
+        from_dir.0.as_fd(),
         from_name.as_os_str(),
-        Some(to_dir.0),
+        to_dir.0.as_fd(),
         to_name.as_os_str(),
     )
     .map_err(|err| format!("Error: {err}"))
@@ -213,7 +204,7 @@ fn ensure_into(
         Ok(fd) => Ok(fd),
         Err(Errno::ENOENT) => {
             match mkdirat(
-                Some(parent.0),
+                parent.0.as_fd(),
                 name.as_os_str(),
                 Mode::from_bits_truncate(0o755),
             ) {
@@ -263,7 +254,7 @@ fn follow_symlink(
     err: Errno,
 ) -> Result<DirFd, String> {
     if let Ok(stat) = fstatat(
-        Some(parent.0),
+        parent.0.as_fd(),
         name.as_os_str(),
         AtFlags::AT_SYMLINK_NOFOLLOW,
     ) && is_symlink(&stat)
@@ -297,9 +288,9 @@ fn link_target(
     roots: &[PreparedRoot],
     display: &Path,
 ) -> Result<PathBuf, String> {
-    let raw = fcntl::readlinkat(Some(parent.0), name.as_os_str())
+    let raw = fcntl::readlinkat(parent.0.as_fd(), name.as_os_str())
         .map_err(|err| format!("Error: {err}"))?;
-    let parent_real = std::fs::read_link(format!("/proc/self/fd/{}", parent.0))
+    let parent_real = std::fs::read_link(format!("/proc/self/fd/{}", parent.0.as_raw_fd()))
         .map_err(|err| format!("Error: {err}"))?;
     let joined = if Path::new(&raw).is_absolute() {
         absolute_lexical(Path::new(&raw))
@@ -315,8 +306,16 @@ fn link_target(
 fn place_file(parent: &DirFd, name: &OsString, content: &str) -> Result<(), String> {
     let mut tmp = name.clone();
     tmp.push(".tmp");
-    let _ = unlinkat(Some(parent.0), tmp.as_os_str(), UnlinkatFlags::NoRemoveDir);
-    let proc_path = format!("/proc/self/fd/{}/{}", parent.0, tmp.to_string_lossy());
+    let _ = unlinkat(
+        parent.0.as_fd(),
+        tmp.as_os_str(),
+        UnlinkatFlags::NoRemoveDir,
+    );
+    let proc_path = format!(
+        "/proc/self/fd/{}/{}",
+        parent.0.as_raw_fd(),
+        tmp.to_string_lossy()
+    );
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -327,9 +326,9 @@ fn place_file(parent: &DirFd, name: &OsString, content: &str) -> Result<(), Stri
         .map_err(|err| format!("Error: {err}"))?;
     drop(file);
     fcntl::renameat(
-        Some(parent.0),
+        parent.0.as_fd(),
         tmp.as_os_str(),
-        Some(parent.0),
+        parent.0.as_fd(),
         name.as_os_str(),
     )
     .map_err(|err| format!("Error: {err}"))
@@ -343,7 +342,7 @@ fn open_root(path: &Path) -> Result<DirFd, String> {
 
 fn open_child(parent: &DirFd, name: &OsString) -> Result<DirFd, Errno> {
     let flags = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC | OFlag::O_NOFOLLOW;
-    let fd = fcntl::openat(Some(parent.0), name.as_os_str(), flags, Mode::empty())?;
+    let fd = fcntl::openat(parent.0.as_fd(), name.as_os_str(), flags, Mode::empty())?;
     Ok(DirFd(fd))
 }
 
@@ -464,7 +463,7 @@ fn materialize_missing(root: &Path) -> Result<(), String> {
     let mut dir = open_root(&ancestor)?;
     for name in &missing {
         match mkdirat(
-            Some(dir.0),
+            dir.0.as_fd(),
             name.as_os_str(),
             Mode::from_bits_truncate(0o755),
         ) {

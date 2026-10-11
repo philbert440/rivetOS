@@ -1,16 +1,17 @@
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
+use parking_lot::Mutex;
 use std::time::{Duration, Instant};
 
-use regex::Regex;
 use schemars::JsonSchema;
 use serde_json::{Value, json};
 
 use crate::args::{self, string};
 use crate::context::{ToolContext, ToolSurface};
 use crate::schema::{schema_of, set_property_description};
-use crate::textutil::js_trim;
 use crate::{Tool, text};
+use protocol::js::js_trim;
 
 use super::http::{HttpClient, HttpRequest, default_http};
 
@@ -285,7 +286,7 @@ impl WebSearchTool {
     }
 
     fn cache_get(&self, key: &str) -> Option<String> {
-        let mut cache = self.cache.lock().unwrap_or_else(|err| err.into_inner());
+        let mut cache = self.cache.lock();
         let entry = cache.get(key)?;
         if Instant::now() > entry.expires {
             cache.remove(key);
@@ -295,16 +296,13 @@ impl WebSearchTool {
     }
 
     fn cache_set(&self, key: String, data: String, ttl: Duration) {
-        self.cache
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .insert(
-                key,
-                CacheEntry {
-                    data,
-                    expires: Instant::now() + ttl,
-                },
-            );
+        self.cache.lock().insert(
+            key,
+            CacheEntry {
+                data,
+                expires: Instant::now() + ttl,
+            },
+        );
     }
 }
 
@@ -335,14 +333,16 @@ async fn xai_search(
         })
         .await?;
     if response.status < 200 || response.status >= 300 {
-        let snippet = utf16_prefix(&error_body(&mut response).await, 160);
+        let body = error_body(&mut response).await;
+        let snippet = protocol::js::js_substring(&body, Some(0.0), Some(160.0));
         return Err(status_error(
             response.status,
-            format!("web search {}: {snippet}", response.status),
+            format!("web search {}: {}", response.status, snippet.to_utf8()),
         ));
     }
     let body = response.text().await?;
-    let data: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+    let data: Value =
+        serde_json::from_str(&body).map_err(|err| ProviderError::from(err.to_string()))?;
     let output = data
         .get("output")
         .and_then(Value::as_array)
@@ -462,11 +462,18 @@ async fn google_search(
                 format!("Google CSE {}", response.status),
             ));
         }
-        let snippet = utf16_prefix(&error_body(&mut response).await, 200);
-        return Err(format!("Google CSE failed ({}): {snippet}", response.status).into());
+        let body = error_body(&mut response).await;
+        let snippet = protocol::js::js_substring(&body, Some(0.0), Some(200.0));
+        return Err(format!(
+            "Google CSE failed ({}): {}",
+            response.status,
+            snippet.to_utf8()
+        )
+        .into());
     }
     let body = response.text().await?;
-    let data: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+    let data: Value =
+        serde_json::from_str(&body).map_err(|err| ProviderError::from(err.to_string()))?;
     let items = data
         .get("items")
         .and_then(Value::as_array)
@@ -536,42 +543,50 @@ async fn error_body(response: &mut super::http::HttpResponse) -> String {
 }
 
 fn parse_ddg(html: &str, max_results: f64) -> Vec<SearchHit> {
-    let Ok(blocks) =
-        Regex::new(r#"(?i)<div[^>]*class="[^"]*result[^"]*"[^>]*>[\s\S]*?</div>\s*</div>"#)
+    let Some(blocks) = crate::reutil::compile(
+        r#"(?i)<div[^>]*class="[^"]*result[^"]*"[^>]*>[\s\S]*?</div>\s*</div>"#,
+    ) else {
+        return Vec::new();
+    };
+    let Some(title_re) = crate::reutil::compile(
+        r#"(?i)<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>([\s\S]*?)</a>"#,
+    ) else {
+        return Vec::new();
+    };
+    let Some(snippet_a) =
+        crate::reutil::compile(r#"(?i)<a[^>]*class="result__snippet"[^>]*>([\s\S]*?)</a>"#)
     else {
         return Vec::new();
     };
-    let Ok(title_re) =
-        Regex::new(r#"(?i)<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>([\s\S]*?)</a>"#)
+    let Some(snippet_td) =
+        crate::reutil::compile(r#"(?i)<td[^>]*class="result__snippet"[^>]*>([\s\S]*?)</td>"#)
     else {
         return Vec::new();
     };
-    let Ok(snippet_a) = Regex::new(r#"(?i)<a[^>]*class="result__snippet"[^>]*>([\s\S]*?)</a>"#)
-    else {
-        return Vec::new();
-    };
-    let Ok(snippet_td) = Regex::new(r#"(?i)<td[^>]*class="result__snippet"[^>]*>([\s\S]*?)</td>"#)
-    else {
-        return Vec::new();
-    };
-    let Ok(tags) = Regex::new(r"<[^>]+>") else {
+    let Some(tags) = crate::reutil::compile(r"<[^>]+>") else {
         return Vec::new();
     };
     let mut results = Vec::new();
-    for block in blocks.find_iter(html) {
+    for found in blocks.find_iter(html) {
         if results.len() as f64 >= max_results {
             break;
         }
-        let block = block.as_str();
-        let Some(title_match) = title_re.captures(block) else {
+        let Some(block) = html.get(found.start()..found.end()) else {
             continue;
         };
-        let href = title_match.get(1).map(|item| item.as_str()).unwrap_or("");
-        let raw_title = title_match.get(2).map(|item| item.as_str()).unwrap_or("");
+        let Some(title_match) = title_re.find(block) else {
+            continue;
+        };
+        let href = crate::reutil::group(block, &title_match, 1);
+        let raw_title = crate::reutil::group(block, &title_match, 2);
         let snippet_raw = snippet_a
-            .captures(block)
-            .or_else(|| snippet_td.captures(block))
-            .and_then(|caps| caps.get(1).map(|item| item.as_str()))
+            .find(block)
+            .map(|item| crate::reutil::group(block, &item, 1))
+            .or_else(|| {
+                snippet_td
+                    .find(block)
+                    .map(|item| crate::reutil::group(block, &item, 1))
+            })
             .unwrap_or("");
         let after_uddg = match href.rfind("uddg=") {
             Some(index) => &href[index + "uddg=".len()..],
@@ -581,8 +596,14 @@ fn parse_ddg(html: &str, max_results: f64) -> Vec<SearchHit> {
         let Ok(url) = decode_uri_component(&stripped) else {
             continue;
         };
-        let title = js_trim(&tags.replace_all(raw_title, "")).to_string();
-        let snippet = js_trim(&tags.replace_all(snippet_raw, "")).to_string();
+        let title = js_trim(&crate::reutil::replace_with(&tags, raw_title, |_| {
+            String::new()
+        }))
+        .to_string();
+        let snippet = js_trim(&crate::reutil::replace_with(&tags, snippet_raw, |_| {
+            String::new()
+        }))
+        .to_string();
         if !url.is_empty() && !title.is_empty() && !url.contains("duckduckgo.com") {
             results.push(SearchHit {
                 title,
@@ -727,8 +748,4 @@ fn decode_uri_component(value: &str) -> Result<String, ()> {
         }
     }
     String::from_utf8(out).map_err(|_| ())
-}
-
-fn utf16_prefix(text: &str, max: usize) -> String {
-    crate::textutil::utf16_slice(text, 0, max)
 }

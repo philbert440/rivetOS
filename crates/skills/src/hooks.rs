@@ -1,4 +1,6 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
+use parking_lot::Mutex;
 
 #[derive(Debug, Clone)]
 pub struct SkillBeforeContext {
@@ -47,33 +49,26 @@ impl SkillHookPipeline {
     where
         F: Fn(&mut SkillBeforeContext) -> Result<(), String> + Send + Sync + 'static,
     {
-        self.before
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .push(BeforeHook {
-                continue_on_error,
-                handler: Arc::new(handler),
-            });
+        self.before.lock().push(BeforeHook {
+            continue_on_error,
+            handler: Arc::new(handler),
+        });
     }
 
     pub fn on_after<F>(&self, continue_on_error: bool, handler: F)
     where
         F: Fn(&SkillAfterContext) -> Result<(), String> + Send + Sync + 'static,
     {
-        self.after
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .push(AfterHook {
-                continue_on_error,
-                handler: Arc::new(handler),
-            });
+        self.after.lock().push(AfterHook {
+            continue_on_error,
+            handler: Arc::new(handler),
+        });
     }
 
     pub fn run_before(&self, ctx: &mut SkillBeforeContext) -> Result<(), String> {
         let hooks = self
             .before
             .lock()
-            .unwrap_or_else(|err| err.into_inner())
             .iter()
             .map(|hook| (hook.continue_on_error, Arc::clone(&hook.handler)))
             .collect::<Vec<_>>();
@@ -91,7 +86,6 @@ impl SkillHookPipeline {
         let hooks = self
             .after
             .lock()
-            .unwrap_or_else(|err| err.into_inner())
             .iter()
             .map(|hook| (hook.continue_on_error, Arc::clone(&hook.handler)))
             .collect::<Vec<_>>();

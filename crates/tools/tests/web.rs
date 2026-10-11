@@ -502,7 +502,12 @@ fn http_message(status_line: &str, headers: &str, length: usize, body: &str) -> 
     )
 }
 
-async fn spawn_local_http(response: String, stall: bool, hits: Option<Arc<AtomicUsize>>) -> u16 {
+async fn spawn_local_http(
+    response: impl Into<Vec<u8>>,
+    stall: bool,
+    hits: Option<Arc<AtomicUsize>>,
+) -> u16 {
+    let response = response.into();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     tokio::spawn(async move {
@@ -532,7 +537,7 @@ async fn spawn_local_http(response: String, stall: bool, hits: Option<Arc<Atomic
                         return;
                     }
                 }
-                if socket.write_all(response.as_bytes()).await.is_err() {
+                if socket.write_all(&response).await.is_err() {
                     return;
                 }
                 if stall {
@@ -666,5 +671,92 @@ async fn google_status_retries_before_a_stalled_body() {
         started.elapsed() < Duration::from_secs(5),
         "{:?} {result}",
         started.elapsed()
+    );
+}
+
+fn raw_http(status_line: &str, headers: &str, body: &[u8]) -> Vec<u8> {
+    let mut message = format!(
+        "{status_line}\r\n{headers}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    )
+    .into_bytes();
+    message.extend_from_slice(body);
+    message
+}
+
+#[tokio::test]
+async fn fetch_ignores_charset_and_strips_bom() {
+    let latin1 = raw_http(
+        "HTTP/1.1 200 OK",
+        "Content-Type: text/plain; charset=iso-8859-1",
+        &[0x63, 0x61, 0x66, 0xe9],
+    );
+    let port = spawn_local_http(latin1, false, None).await;
+    let tool = WebFetchTool::new(WebFetchConfig::default());
+    let result = run(
+        &tool,
+        json!({"url": format!("http://127.0.0.1:{port}/cafe")}),
+    )
+    .await;
+    assert_eq!(result, "caf\u{FFFD}");
+    let bom = raw_http(
+        "HTTP/1.1 200 OK",
+        "Content-Type: text/plain; charset=utf-16",
+        &[0xEF, 0xBB, 0xBF, 0x68, 0x69],
+    );
+    let port = spawn_local_http(bom, false, None).await;
+    let tool = WebFetchTool::new(WebFetchConfig::default());
+    let result = run(
+        &tool,
+        json!({"url": format!("http://127.0.0.1:{port}/bom")}),
+    )
+    .await;
+    assert_eq!(result, "hi");
+}
+
+#[tokio::test]
+async fn malformed_provider_json_is_not_no_results() {
+    let google = http_message(
+        "HTTP/1.1 200 OK",
+        "Content-Type: application/json",
+        "not-json".len(),
+        "not-json",
+    );
+    let google_port = spawn_local_http(google, false, None).await;
+    let ddg = http_message("HTTP/1.1 200 OK", "Content-Type: text/html", 0, "");
+    let ddg_port = spawn_local_http(ddg, false, None).await;
+    let tool = WebSearchTool::new(WebSearchConfig {
+        google_api_key: Some("test-key".to_string()),
+        google_cse_id: Some("test-cse".to_string()),
+        xai_api_key: Some(String::new()),
+        google_endpoint: Some(format!("http://127.0.0.1:{google_port}/search")),
+        ddg_endpoint: Some(format!("http://127.0.0.1:{ddg_port}/html/")),
+        retry_base: Duration::from_millis(1),
+        ..WebSearchConfig::default()
+    });
+    let result = run(&tool, json!({"query": "broken json"})).await;
+    assert!(result.contains("Google:"), "{result}");
+    assert!(!result.contains("Google: no results"), "{result}");
+    assert!(result.contains("expected"), "{result}");
+    let empty = http_message(
+        "HTTP/1.1 200 OK",
+        "Content-Type: application/json",
+        "{}".len(),
+        "{}",
+    );
+    let empty_port = spawn_local_http(empty, false, None).await;
+    let empty_tool = WebSearchTool::new(WebSearchConfig {
+        google_api_key: Some("test-key".to_string()),
+        google_cse_id: Some("test-cse".to_string()),
+        xai_api_key: Some(String::new()),
+        google_endpoint: Some(format!("http://127.0.0.1:{empty_port}/search")),
+        ddg_endpoint: Some(format!("http://127.0.0.1:{ddg_port}/html/")),
+        retry_base: Duration::from_millis(1),
+        ..WebSearchConfig::default()
+    });
+    let empty_result = run(&empty_tool, json!({"query": "empty json"})).await;
+    assert!(
+        empty_result.contains("Google: no results"),
+        "{empty_result}"
     );
 }

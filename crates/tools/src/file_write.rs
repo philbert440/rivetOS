@@ -4,7 +4,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::args::{self, string};
 use crate::context::{ToolContext, ToolSurface};
-use crate::fsutil::map_file_err;
+use crate::fsutil::{write_copy_error, write_mkdir_error, write_open_error};
 use crate::pathutil::resolve_user_path;
 use crate::schema::{schema_of, set_property_description};
 use crate::{Tool, text};
@@ -92,17 +92,21 @@ impl Tool for FileWriteTool {
         let resolved = resolve_user_path(file_path, context);
         let parent = resolved.parent().unwrap_or(std::path::Path::new("."));
         if let Err(err) = tokio::fs::create_dir_all(parent).await {
-            return text(map_file_err(&err, &resolved, false));
+            return text(write_mkdir_error(&err, &resolved, parent));
         }
         let existed = tokio::fs::metadata(&resolved).await.is_ok();
         if backup && existed {
             let bak = format!("{}.bak", resolved.display());
             if let Err(err) = tokio::fs::copy(&resolved, &bak).await {
-                return text(map_file_err(&err, &resolved, false));
+                return text(write_copy_error(
+                    &err,
+                    &resolved,
+                    std::path::Path::new(&bak),
+                ));
             }
         }
         if let Err(err) = tokio::fs::write(&resolved, content).await {
-            return text(map_file_err(&err, &resolved, false));
+            return text(write_open_error(&err, &resolved));
         }
         let bytes = content.len();
         let action = if existed { "Updated" } else { "Created" };

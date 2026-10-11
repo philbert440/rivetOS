@@ -22,5 +22,5 @@ pub use security::{ScanResult, scan_skill_content};
 use protocol::ToolResult;
 
 pub(crate) fn text(value: impl Into<String>) -> ToolResult {
-    ToolResult::Text(value.into())
+    ToolResult::Text(value.into().into())
 }

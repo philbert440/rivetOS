@@ -1,8 +1,8 @@
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
 use std::time::Duration;
 
-use regex::Regex;
+use parking_lot::Mutex;
 use schemars::JsonSchema;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
@@ -12,8 +12,9 @@ use crate::command::run_shell;
 use crate::context::{ToolContext, ToolSurface};
 use crate::pathutil::node_resolve;
 use crate::schema::{schema_of, set_property_description};
-use crate::textutil::{js_split_ws, js_trim, strip_one_quote_pair, truncate_middle};
+use crate::textutil::{js_split_ws, strip_one_quote_pair, truncate_middle};
 use crate::{Tool, text};
+use protocol::js::js_trim;
 
 const DEFAULT_BLOCKED: &[&str] = &["rm -rf /", "mkfs", ":(){:|:&};:"];
 
@@ -241,24 +242,15 @@ impl ShellTool {
     }
 
     pub fn get_session_cwd(&self) -> String {
-        self.session_cwd
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .clone()
+        self.session_cwd.lock().clone()
     }
 
     pub fn reset_session_cwd(&self) {
-        *self
-            .session_cwd
-            .lock()
-            .unwrap_or_else(|err| err.into_inner()) = self.config_cwd.clone();
+        *self.session_cwd.lock() = self.config_cwd.clone();
     }
 
     fn set_session_cwd(&self, cwd: String) {
-        *self
-            .session_cwd
-            .lock()
-            .unwrap_or_else(|err| err.into_inner()) = cwd;
+        *self.session_cwd.lock() = cwd;
     }
 }
 
@@ -365,7 +357,7 @@ impl Tool for ShellTool {
                 &format!("{truncated}\n[output exceeded buffer]"),
             ));
         }
-        if crate::textutil::utf16_len(&captured) > self.max_output {
+        if protocol::js::utf16_len(&captured) > self.max_output {
             return text(format_output(
                 &warnings,
                 &truncate_middle(&captured, self.max_output),
@@ -420,8 +412,8 @@ pub fn check_git_warnings(command: &str) -> Option<String> {
 
 fn cd_target(command: &str) -> Option<String> {
     let regex = cd_regex()?;
-    let matched = regex.captures(command)?;
-    let raw = matched.get(1)?.as_str();
+    let matched = regex.find(command)?;
+    let raw = command.get(matched.group(1)?)?;
     let trimmed = js_trim(raw);
     let stripped = strip_one_quote_pair(trimmed);
     if stripped.is_empty() {
@@ -431,10 +423,12 @@ fn cd_target(command: &str) -> Option<String> {
     }
 }
 
-fn cd_regex() -> Option<&'static Regex> {
-    static RE: OnceLock<Option<Regex>> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"(?i)^\s*cd\s+([^;&|]+?)(?:\s*(?:&&|\|\||;|\||&)|$)").ok())
-        .as_ref()
+fn cd_regex() -> Option<&'static regress::Regex> {
+    static RE: OnceLock<Option<regress::Regex>> = OnceLock::new();
+    RE.get_or_init(|| {
+        regress::Regex::with_flags(r"^\s*cd\s+([^;&|]+?)(?:\s*(?:&&|\|\||;|\||&)|$)", "i").ok()
+    })
+    .as_ref()
 }
 
 fn combine_output(stdout: &str, stderr: &str) -> String {

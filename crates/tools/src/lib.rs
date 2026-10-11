@@ -6,6 +6,7 @@ mod file_read;
 mod file_write;
 mod fsutil;
 mod pathutil;
+mod reutil;
 mod schema;
 mod search_glob;
 mod search_grep;
@@ -56,11 +57,11 @@ pub trait Tool: Send + Sync {
 
 pub fn result_text(result: &ToolResult) -> &str {
     match result {
-        ToolResult::Text(text) => text,
+        ToolResult::Text(text) => text.to_utf8(),
         ToolResult::Parts(_) => "",
     }
 }
 
 pub(crate) fn text(value: impl Into<String>) -> ToolResult {
-    ToolResult::Text(value.into())
+    ToolResult::Text(value.into().into())
 }

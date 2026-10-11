@@ -10,8 +10,8 @@ use crate::command::run_shell;
 use crate::context::{ToolContext, ToolSurface};
 use crate::pathutil::resolve_user_path;
 use crate::schema::{schema_of, set_property_description};
-use crate::textutil::js_trim;
 use crate::{Tool, text};
+use protocol::js::js_trim;
 
 const DEFAULT_MAX_RESULTS: usize = 100;
 const DEFAULT_EXCLUDE: &[&str] = &["node_modules", ".git", "dist", "build", ".next", "coverage"];

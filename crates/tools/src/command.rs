@@ -1,7 +1,9 @@
 use std::path::Path;
 use std::process::Stdio;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+
+use parking_lot::Mutex;
 use std::time::Duration;
 
 use nix::sys::signal::{Signal, kill};
@@ -57,14 +59,14 @@ pub async fn run_shell(
     let stdout_buf = Arc::new(Mutex::new(Vec::new()));
     let stderr_buf = Arc::new(Mutex::new(Vec::new()));
     let notified = notify.notified();
-    let stdout_task = tokio::spawn(read_capped(
+    let stdout_task = tokio::spawn(drain_limited(
         stdout,
         max_buffer,
         Arc::clone(&exceeded),
         Arc::clone(&notify),
         Arc::clone(&stdout_buf),
     ));
-    let stderr_task = tokio::spawn(read_capped(
+    let stderr_task = tokio::spawn(drain_limited(
         stderr,
         max_buffer,
         Arc::clone(&exceeded),
@@ -203,11 +205,11 @@ fn kill_group(pid: Option<u32>, signal: Signal) {
 }
 
 fn bytes_to_string(buf: &Mutex<Vec<u8>>) -> String {
-    let guard = buf.lock().unwrap_or_else(|err| err.into_inner());
+    let guard = buf.lock();
     String::from_utf8_lossy(&guard).into_owned()
 }
 
-async fn read_capped(
+async fn drain_limited(
     reader: Option<impl AsyncRead + Unpin>,
     cap: usize,
     exceeded: Arc<AtomicBool>,
@@ -222,7 +224,7 @@ async fn read_capped(
         match reader.read(&mut tmp).await {
             Ok(0) => break,
             Ok(n) => {
-                let mut guard = buf.lock().unwrap_or_else(|err| err.into_inner());
+                let mut guard = buf.lock();
                 let room = cap.saturating_sub(guard.len());
                 if room == 0 || n > room {
                     if room > 0 {

@@ -1,6 +1,5 @@
 use std::path::Path;
 
-use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 use crate::security::scan_skill_content;
@@ -25,8 +24,12 @@ pub struct SkillMeta {
     pub retired_reason: Option<String>,
 }
 
-pub fn now_iso() -> String {
-    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+pub fn current_iso_timestamp() -> String {
+    protocol::js::to_iso_string(protocol::js::date_now()).unwrap_or_default()
+}
+
+pub fn current_utc_day() -> String {
+    protocol::js::utc_day(protocol::js::date_now()).unwrap_or_default()
 }
 
 pub fn cosine_similarity(left: &[f64], right: &[f64]) -> f64 {
@@ -125,7 +128,10 @@ pub fn parse_patch_blocks(content: &str) -> Vec<(String, String)> {
         let Some(replace) = regress_group(part, &replace_caps, 1) else {
             continue;
         };
-        blocks.push((trim_end(find), trim_end(replace)));
+        blocks.push((
+            protocol::js::js_trim_end(find).to_string(),
+            protocol::js::js_trim_end(replace).to_string(),
+        ));
     }
     blocks
 }
@@ -144,15 +150,17 @@ pub fn bump_version_in_content(content: &str, new_version: i64, reason: Option<&
         let end_idx = end_rel + 3;
         let frontmatter = &content[3..end_idx];
         let after = &content[end_idx..];
-        if let Ok(version_re) = Regex::new(r"(?m)^version:\s*\d+") {
-            if version_re.is_match(frontmatter) {
-                let new_fm = version_re
-                    .replace(frontmatter, format!("version: {new_version}"))
-                    .into_owned();
-                updated = format!("---{new_fm}{after}");
+        if let Ok(version_re) = regress::Regex::with_flags(r"^version:\s*\d+", "m") {
+            updated = if let Some(found) = version_re.find(frontmatter) {
+                let new_fm = format!(
+                    "{}version: {new_version}{}",
+                    &frontmatter[..found.start()],
+                    &frontmatter[found.end()..]
+                );
+                format!("---{new_fm}{after}")
             } else {
-                updated = format!("---{frontmatter}version: {new_version}\n{after}");
-            }
+                format!("---{frontmatter}version: {new_version}\n{after}")
+            };
         }
     }
     let entry = changelog_entry(new_version, reason);
@@ -165,13 +173,16 @@ pub fn bump_version_in_content(content: &str, new_version: i64, reason: Option<&
         next.push_str(&updated[index + "## Changelog\n".len()..]);
         updated = next;
     } else {
-        updated = format!("{}\n\n## Changelog\n{entry}\n", updated.trim_end());
+        updated = format!(
+            "{}\n\n## Changelog\n{entry}\n",
+            protocol::js::js_trim_end(&updated)
+        );
     }
     updated
 }
 
 pub fn changelog_entry(version: i64, reason: Option<&str>) -> String {
-    let date = now_iso().chars().take(10).collect::<String>();
+    let date = current_utc_day();
     let message = reason.unwrap_or("Updated");
     format!("- **v{version}** ({date}): {message}")
 }
@@ -225,10 +236,6 @@ pub fn normalize(path: &Path) -> std::path::PathBuf {
     }
 }
 
-fn trim_end(value: &str) -> String {
-    value.trim_end().to_string()
-}
-
 pub async fn embed_text(
     http: &dyn tools::HttpClient,
     endpoint: &str,
@@ -238,7 +245,9 @@ pub async fn embed_text(
     if model.is_empty() {
         return None;
     }
-    let input = utf16_prefix(text, 8000);
+    let input = protocol::js::js_substring(text, Some(0.0), Some(8000.0))
+        .to_utf8()
+        .to_string();
     let body = serde_json::json!({ "input": input, "model": model }).to_string();
     let mut response = http
         .send(tools::HttpRequest {
@@ -293,9 +302,4 @@ pub async fn check_dedup(
         }
     }
     best
-}
-
-fn utf16_prefix(text: &str, max: usize) -> String {
-    let units: Vec<u16> = text.encode_utf16().take(max).collect();
-    String::from_utf16_lossy(&units)
 }

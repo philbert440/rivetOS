@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
-use std::sync::Mutex;
+
+use parking_lot::Mutex;
 
 use schemars::JsonSchema;
 use serde_json::Value;
@@ -8,8 +9,8 @@ use tokio_util::sync::CancellationToken;
 use crate::args::{self, string};
 use crate::context::ToolContext;
 use crate::schema::{schema_of, set_property_description, set_property_enum};
-use crate::textutil::js_trim;
 use crate::{Tool, text};
+use protocol::js::js_trim;
 
 const DESCRIPTION: &str = "Session-scoped task list. Track multi-step plans with add/update/complete/remove/list operations.";
 
@@ -144,20 +145,17 @@ impl TodoTool {
         if task.is_empty() {
             return text("Error: task text is required for add");
         }
-        let mut next = self.next_id.lock().unwrap_or_else(|err| err.into_inner());
+        let mut next = self.next_id.lock();
         let id = *next;
         *next += 1;
         drop(next);
-        self.tasks
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .insert(
-                id,
-                Task {
-                    text: task.to_string(),
-                    status: TaskStatus::Pending,
-                },
-            );
+        self.tasks.lock().insert(
+            id,
+            Task {
+                text: task.to_string(),
+                status: TaskStatus::Pending,
+            },
+        );
         text(format!("Added task #{id}: {task}"))
     }
 
@@ -165,7 +163,7 @@ impl TodoTool {
         let Some(id) = task_id(args) else {
             return text("Error: valid task id is required for update");
         };
-        let mut tasks = self.tasks.lock().unwrap_or_else(|err| err.into_inner());
+        let mut tasks = self.tasks.lock();
         let Some(task) = tasks.get_mut(&id) else {
             return text(format!("Error: task #{id} not found"));
         };
@@ -201,7 +199,7 @@ impl TodoTool {
         let Some(id) = task_id(args) else {
             return text("Error: valid task id is required for complete");
         };
-        let mut tasks = self.tasks.lock().unwrap_or_else(|err| err.into_inner());
+        let mut tasks = self.tasks.lock();
         let Some(task) = tasks.get_mut(&id) else {
             return text(format!("Error: task #{id} not found"));
         };
@@ -213,7 +211,7 @@ impl TodoTool {
         let Some(id) = task_id(args) else {
             return text("Error: valid task id is required for remove");
         };
-        let mut tasks = self.tasks.lock().unwrap_or_else(|err| err.into_inner());
+        let mut tasks = self.tasks.lock();
         if tasks.remove(&id).is_none() {
             return text(format!("Error: task #{id} not found"));
         }
@@ -221,7 +219,7 @@ impl TodoTool {
     }
 
     fn list(&self) -> protocol::ToolResult {
-        let tasks = self.tasks.lock().unwrap_or_else(|err| err.into_inner());
+        let tasks = self.tasks.lock();
         if tasks.is_empty() {
             return text("No tasks yet.");
         }

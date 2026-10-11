@@ -28,7 +28,7 @@ pub fn js_number(value: Option<&Value>) -> f64 {
         Some(Value::Bool(false)) => 0.0,
         Some(Value::Number(number)) => number.as_f64().unwrap_or(f64::NAN),
         Some(Value::String(text)) => {
-            let trimmed = crate::textutil::js_trim(text);
+            let trimmed = protocol::js::js_trim(text);
             if trimmed.is_empty() {
                 0.0
             } else {

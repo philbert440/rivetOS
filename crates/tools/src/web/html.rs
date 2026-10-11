@@ -1,7 +1,3 @@
-use regex::Regex;
-
-use crate::textutil::js_trim;
-
 const NAMED_ENTITIES: &[(&str, &str)] = &[
     ("&amp;", "&"),
     ("&lt;", "<"),
@@ -32,62 +28,66 @@ pub fn extract_markdown(html: &str) -> String {
     content = replace_capture(
         &content,
         r"(?i)<pre[^>]*><code[^>]*>([\s\S]*?)</code></pre>",
-        |caps| format!("\n```\n{}\n```\n", group(caps, 1)),
+        |text, found| format!("\n```\n{}\n```\n", group(text, found, 1)),
     );
-    content = replace_capture(&content, r"(?i)<pre[^>]*>([\s\S]*?)</pre>", |caps| {
-        format!("\n```\n{}\n```\n", group(caps, 1))
+    content = replace_capture(
+        &content,
+        r"(?i)<pre[^>]*>([\s\S]*?)</pre>",
+        |text, found| format!("\n```\n{}\n```\n", group(text, found, 1)),
+    );
+    content = replace_capture(
+        &content,
+        r"(?i)<code[^>]*>([\s\S]*?)</code>",
+        |text, found| format!("`{}`", group(text, found, 1)),
+    );
+    content = replace_capture(&content, r"(?i)<h1[^>]*>([\s\S]*?)</h1>", |text, found| {
+        format!("\n# {}\n", group(text, found, 1))
     });
-    content = replace_capture(&content, r"(?i)<code[^>]*>([\s\S]*?)</code>", |caps| {
-        format!("`{}`", group(caps, 1))
+    content = replace_capture(&content, r"(?i)<h2[^>]*>([\s\S]*?)</h2>", |text, found| {
+        format!("\n## {}\n", group(text, found, 1))
     });
-    content = replace_capture(&content, r"(?i)<h1[^>]*>([\s\S]*?)</h1>", |caps| {
-        format!("\n# {}\n", group(caps, 1))
+    content = replace_capture(&content, r"(?i)<h3[^>]*>([\s\S]*?)</h3>", |text, found| {
+        format!("\n### {}\n", group(text, found, 1))
     });
-    content = replace_capture(&content, r"(?i)<h2[^>]*>([\s\S]*?)</h2>", |caps| {
-        format!("\n## {}\n", group(caps, 1))
+    content = replace_capture(&content, r"(?i)<h4[^>]*>([\s\S]*?)</h4>", |text, found| {
+        format!("\n#### {}\n", group(text, found, 1))
     });
-    content = replace_capture(&content, r"(?i)<h3[^>]*>([\s\S]*?)</h3>", |caps| {
-        format!("\n### {}\n", group(caps, 1))
+    content = replace_capture(&content, r"(?i)<h5[^>]*>([\s\S]*?)</h5>", |text, found| {
+        format!("\n##### {}\n", group(text, found, 1))
     });
-    content = replace_capture(&content, r"(?i)<h4[^>]*>([\s\S]*?)</h4>", |caps| {
-        format!("\n#### {}\n", group(caps, 1))
-    });
-    content = replace_capture(&content, r"(?i)<h5[^>]*>([\s\S]*?)</h5>", |caps| {
-        format!("\n##### {}\n", group(caps, 1))
-    });
-    content = replace_capture(&content, r"(?i)<h6[^>]*>([\s\S]*?)</h6>", |caps| {
-        format!("\n###### {}\n", group(caps, 1))
+    content = replace_capture(&content, r"(?i)<h6[^>]*>([\s\S]*?)</h6>", |text, found| {
+        format!("\n###### {}\n", group(text, found, 1))
     });
     content = replace_capture(
         &content,
         r#"(?i)<a[^>]*href="([^"]*)"[^>]*>([\s\S]*?)</a>"#,
-        |caps| format!("[{}]({})", group(caps, 2), group(caps, 1)),
+        |text, found| format!("[{}]({})", group(text, found, 2), group(text, found, 1)),
     );
-    content = replace_capture(&content, r"(?i)<li[^>]*>([\s\S]*?)</li>", |caps| {
-        format!("- {}\n", group(caps, 1))
+    content = replace_capture(&content, r"(?i)<li[^>]*>([\s\S]*?)</li>", |text, found| {
+        format!("- {}\n", group(text, found, 1))
     });
     content = replace(&content, r"(?i)</?[ou]l[^>]*>", "\n");
-    content = replace_capture(&content, r"(?i)<p[^>]*>([\s\S]*?)</p>", |caps| {
-        format!("\n\n{}\n\n", group(caps, 1))
+    content = replace_capture(&content, r"(?i)<p[^>]*>([\s\S]*?)</p>", |text, found| {
+        format!("\n\n{}\n\n", group(text, found, 1))
     });
     content = replace(&content, r"(?i)<br\s*/?>", "\n");
     content = replace(&content, r"(?i)<hr\s*/?>", "\n---\n");
     content = replace_capture(
         &content,
         r"(?i)<(?:strong|b)[^>]*>([\s\S]*?)</(?:strong|b)>",
-        |caps| format!("**{}**", group(caps, 1)),
+        |text, found| format!("**{}**", group(text, found, 1)),
     );
     content = replace_capture(
         &content,
         r"(?i)<(?:em|i)[^>]*>([\s\S]*?)</(?:em|i)>",
-        |caps| format!("*{}*", group(caps, 1)),
+        |text, found| format!("*{}*", group(text, found, 1)),
     );
     content = replace(&content, r"<[^>]+>", "");
     content = decode_entities(&content);
     content = replace(&content, r"\n{3,}", "\n\n");
     content = replace(&content, r"[ \t]+", " ");
     content = replace(&content, r"(?m)^ +", "");
-    js_trim(&content).to_string()
+    protocol::js::js_trim(&content).to_string()
 }
 
 fn prefer_region(content: &str) -> String {
@@ -108,12 +108,12 @@ fn decode_entities(text: &str) -> String {
     for (entity, ch) in NAMED_ENTITIES {
         result = result.replace(entity, ch);
     }
-    result = replace_capture(&result, r"&#(\d+);", |caps| {
-        let code = group(caps, 1).parse::<u64>().unwrap_or(0);
+    result = replace_capture(&result, r"&#(\d+);", |text, found| {
+        let code = group(text, found, 1).parse::<u64>().unwrap_or(0);
         from_char_code(code)
     });
-    replace_capture(&result, r"&#x([0-9a-fA-F]+);", |caps| {
-        let code = u64::from_str_radix(&group(caps, 1), 16).unwrap_or(0);
+    replace_capture(&result, r"&#x([0-9a-fA-F]+);", |text, found| {
+        let code = u64::from_str_radix(group(text, found, 1), 16).unwrap_or(0);
         from_char_code(code)
     })
 }
@@ -123,33 +123,26 @@ fn from_char_code(code: u64) -> String {
     String::from_utf16_lossy(&[unit])
 }
 
-fn group(caps: &regex::Captures<'_>, index: usize) -> String {
-    caps.get(index)
-        .map(|item| item.as_str())
-        .unwrap_or("")
-        .to_string()
+fn group<'a>(text: &'a str, matched: &regress::Match, index: usize) -> &'a str {
+    crate::reutil::group(text, matched, index)
 }
 
 fn replace(text: &str, pattern: &str, replacement: &str) -> String {
-    let Ok(regex) = Regex::new(pattern) else {
-        return text.to_string();
-    };
-    regex.replace_all(text, replacement).into_owned()
+    crate::reutil::replace_all(text, pattern, replacement)
 }
 
-fn replace_capture<F>(text: &str, pattern: &str, replacer: F) -> String
+fn replace_capture<F>(text: &str, pattern: &str, mut replacer: F) -> String
 where
-    F: FnMut(&regex::Captures<'_>) -> String,
+    F: FnMut(&str, &regress::Match) -> String,
 {
-    let Ok(regex) = Regex::new(pattern) else {
+    let Some(regex) = crate::reutil::compile(pattern) else {
         return text.to_string();
     };
-    regex.replace_all(text, replacer).into_owned()
+    crate::reutil::replace_with(&regex, text, |found| replacer(text, found))
 }
 
 fn first_capture(text: &str, pattern: &str) -> Option<String> {
-    let regex = Regex::new(pattern).ok()?;
-    regex
-        .captures(text)
-        .and_then(|caps| caps.get(1).map(|item| item.as_str().to_string()))
+    let regex = crate::reutil::compile(pattern)?;
+    let found = regex.find(text)?;
+    Some(group(text, &found, 1).to_string())
 }

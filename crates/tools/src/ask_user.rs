@@ -5,8 +5,8 @@ use tokio_util::sync::CancellationToken;
 use crate::args::{self, string};
 use crate::context::ToolContext;
 use crate::schema::{schema_of, set_property_description, set_property_enum};
-use crate::textutil::js_trim;
 use crate::{Tool, text};
+use protocol::js::js_trim;
 
 const DESCRIPTION: &str = "Ask the user a question when you need clarification, confirmation, or a choice. Use instead of guessing. Supports free text, yes/no, and multiple choice questions.";
 

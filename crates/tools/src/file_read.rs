@@ -6,7 +6,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::args::{self, string};
 use crate::context::{ToolContext, ToolSurface};
-use crate::fsutil::{js_to_fixed, map_file_err};
+use crate::fsutil::{fixed_digits, read_body_error, read_stat_error};
 use crate::pathutil::resolve_user_path;
 use crate::schema::{schema_of, set_property_description};
 use crate::{Tool, text};
@@ -118,7 +118,7 @@ impl Tool for FileReadTool {
             args::bool_opt(&args, "line_numbers").unwrap_or(self.default_line_numbers);
         let start_line = args::finite_number(&args, "start_line");
         let end_line = args::finite_number(&args, "end_line");
-        match read_text(
+        match read_ranged(
             &resolved,
             self.max_file_size,
             show_line_numbers,
@@ -133,7 +133,7 @@ impl Tool for FileReadTool {
     }
 }
 
-async fn read_text(
+async fn read_ranged(
     resolved: &PathBuf,
     max_file_size: u64,
     show_line_numbers: bool,
@@ -142,7 +142,7 @@ async fn read_text(
 ) -> Result<String, String> {
     let meta = tokio::fs::metadata(resolved)
         .await
-        .map_err(|err| map_file_err(&err, resolved, true))?;
+        .map_err(|err| read_stat_error(&err, resolved))?;
     if meta.is_dir() {
         return Err(format!(
             "Error: Path is a directory: {}",
@@ -150,15 +150,15 @@ async fn read_text(
         ));
     }
     if meta.len() > max_file_size {
-        let size_mb = js_to_fixed(meta.len() as f64 / (1024.0 * 1024.0), 1);
-        let max_mb = js_to_fixed(max_file_size as f64 / (1024.0 * 1024.0), 1);
+        let size_mb = fixed_digits(meta.len() as f64 / (1024.0 * 1024.0), 1.0);
+        let max_mb = fixed_digits(max_file_size as f64 / (1024.0 * 1024.0), 1.0);
         return Err(format!(
             "Error: File is {size_mb}MB, exceeds {max_mb}MB limit"
         ));
     }
     let buffer = tokio::fs::read(resolved)
         .await
-        .map_err(|err| map_file_err(&err, resolved, true))?;
+        .map_err(|err| read_body_error(&err, resolved))?;
     if is_binary(&buffer) {
         return Ok(format!(
             "Binary file detected ({} bytes). Cannot display as text.",

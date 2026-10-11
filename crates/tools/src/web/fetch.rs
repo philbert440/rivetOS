@@ -1,5 +1,7 @@
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
+use parking_lot::Mutex;
 use std::time::{Duration, Instant};
 
 use schemars::JsonSchema;
@@ -9,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 use crate::args::{self, string};
 use crate::context::{ToolContext, ToolSurface};
 use crate::schema::{schema_of, set_property_description};
-use crate::textutil::{utf16_len, utf16_slice};
+
 use crate::{Tool, text};
 
 use super::html::extract_markdown;
@@ -171,12 +173,13 @@ impl Tool for WebFetchTool {
         } else {
             body
         };
-        if js_len_exceeds(utf16_len(&result), max_chars) {
-            let end = js_end_index(utf16_len(&result), max_chars);
+        if js_len_exceeds(protocol::js::utf16_len(&result), max_chars) {
+            let end = js_end_index(protocol::js::utf16_len(&result), max_chars);
             let shown = protocol::JsNumber::from(max_chars);
+            let head = protocol::js::js_substring(&result, Some(0.0), Some(end as f64));
             result = format!(
                 "{}\n\n[Truncated at {shown} chars. Use max_chars parameter to see more.]",
-                utf16_slice(&result, 0, end)
+                head.to_utf8()
             );
         }
         self.cache_set(cache_key, result.clone(), FETCH_CACHE_TTL);
@@ -186,7 +189,7 @@ impl Tool for WebFetchTool {
 
 impl WebFetchTool {
     fn cache_get(&self, key: &str) -> Option<String> {
-        let mut cache = self.cache.lock().unwrap_or_else(|err| err.into_inner());
+        let mut cache = self.cache.lock();
         let entry = cache.get(key)?;
         if Instant::now() > entry.expires {
             cache.remove(key);
@@ -196,16 +199,13 @@ impl WebFetchTool {
     }
 
     fn cache_set(&self, key: String, data: String, ttl: Duration) {
-        self.cache
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .insert(
-                key,
-                CacheEntry {
-                    data,
-                    expires: Instant::now() + ttl,
-                },
-            );
+        self.cache.lock().insert(
+            key,
+            CacheEntry {
+                data,
+                expires: Instant::now() + ttl,
+            },
+        );
     }
 }
 

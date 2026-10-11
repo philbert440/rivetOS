@@ -1,4 +1,6 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
+use parking_lot::Mutex;
 use std::time::Duration;
 
 #[derive(Debug, Clone)]
@@ -116,7 +118,8 @@ impl HttpResponse {
                 let Some(response) = slot else {
                     return Ok(String::new());
                 };
-                response.text().await.map_err(map_reqwest_error)
+                let bytes = response.bytes().await.map_err(map_reqwest_error)?;
+                Ok(decode_http_body(&bytes))
             }
         }
     }
@@ -141,25 +144,19 @@ impl RecordingClient {
     }
 
     pub fn calls(&self) -> Vec<RecordedCall> {
-        self.calls
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .clone()
+        self.calls.lock().clone()
     }
 }
 
 #[async_trait::async_trait]
 impl HttpClient for RecordingClient {
     async fn send(&self, request: HttpRequest) -> Result<HttpResponse, String> {
-        self.calls
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .push(RecordedCall {
-                method: request.method.clone(),
-                url: request.url.clone(),
-                headers: request.headers.clone(),
-                body: request.body.clone(),
-            });
+        self.calls.lock().push(RecordedCall {
+            method: request.method.clone(),
+            url: request.url.clone(),
+            headers: request.headers.clone(),
+            body: request.body.clone(),
+        });
         (self.handler)(&request)
     }
 }
@@ -242,6 +239,11 @@ fn strip_url_credentials(url: &str) -> String {
     stripped.push_str(&authority[at + 1..]);
     stripped.push_str(&url[path_at..]);
     stripped
+}
+
+fn decode_http_body(bytes: &[u8]) -> String {
+    let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
+    String::from_utf8_lossy(bytes).into_owned()
 }
 
 fn map_reqwest_error(err: reqwest::Error) -> String {
