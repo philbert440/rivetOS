@@ -1510,6 +1510,18 @@ fn verify_matches_openssl_on_critical_eku_constraints_and_path_length() {
         &int_key,
         &int_srl,
     );
+    let urn = sign(
+        &leaf_key,
+        "urn",
+        "www.allowed.example",
+        &leaf(
+            "DNS:www.allowed.example,URI:urn:uuid:550e8400-e29b-41d4-a716-446655440000",
+            "clientAuth",
+        ),
+        &int_nc,
+        &int_key,
+        &int_srl,
+    );
     let excluded = sign(
         &leaf_key,
         "excluded",
@@ -1668,6 +1680,7 @@ fn verify_matches_openssl_on_critical_eku_constraints_and_path_length() {
     check(&nc_chain, &nc_crl, &apex);
     check(&nc_chain, &nc_crl, &cn_only);
     check(&nc_chain, &nc_crl, &san_wins);
+    check(&nc_chain, &nc_crl, &urn);
     check(&ex_chain, &ex_crl, &excluded);
     check(&ex_chain, &ex_crl, &excluded_ok);
     check(&plain_chain, &plain_crl, &unknown);
@@ -1958,6 +1971,18 @@ fn verify_matches_openssl_on_dirname_email_uri_ip_path_and_subtree() {
         "DNS:ok.example",
         &dir_exclude,
     );
+    let dir_case = issue_leaf(
+        "dir-case",
+        "/O=allowed org/CN=leaf.example",
+        "DNS:leaf.example",
+        &dir_permit,
+    );
+    let dir_space = issue_leaf(
+        "dir-space",
+        "/O=Denied  Org/CN=device:test",
+        "DNS:space.example",
+        &dir_exclude,
+    );
     let email_sub = issue_leaf(
         "email-sub",
         "/O=Rivet Collective/CN=email-sub.example",
@@ -2106,84 +2131,107 @@ fn verify_matches_openssl_on_dirname_email_uri_ip_path_and_subtree() {
         fs::write(paths.crl_path(), fs::read(crl_path).unwrap()).unwrap();
         compare_verify(&paths, cert);
     };
+    let expect_rejected = |chain: &[u8], crl_path: &Path, cert: &Path| {
+        fs::write(paths.chain_path(), chain).unwrap();
+        fs::write(paths.crl_path(), fs::read(crl_path).unwrap()).unwrap();
+        let ours = run(&paths, &["verify", &cert.display().to_string()]);
+        assert_eq!(ours.0, 2, "{}", ours.2);
+        assert!(
+            ours.2
+                .contains("error 51 at 0 depth lookup: name constraint type cannot be verified"),
+            "{}",
+            ours.2
+        );
+        assert!(!ours.1.contains(": OK"), "{}", ours.1);
+    };
     let with_root = |ca_crt: &Path| join(&[ca_crt, &root_crt]);
-    check(
+    expect_rejected(
         &with_root(&dir_permit),
         &crl(&dir_permit, "dir-permit"),
         &outside,
     );
-    check(
+    expect_rejected(
         &with_root(&dir_permit),
         &crl(&dir_permit, "dir-permit"),
         &inside,
     );
-    check(
+    expect_rejected(
         &with_root(&dir_permit),
         &crl(&dir_permit, "dir-permit"),
         &no_san,
     );
-    check(
+    expect_rejected(
+        &with_root(&dir_permit),
+        &crl(&dir_permit, "dir-permit"),
+        &dir_case,
+    );
+    expect_rejected(
         &with_root(&dir_exclude),
         &crl(&dir_exclude, "dir-exclude"),
         &denied,
     );
-    check(
+    expect_rejected(
         &with_root(&dir_exclude),
         &crl(&dir_exclude, "dir-exclude"),
         &dir_ok,
     );
-    check(
+    expect_rejected(
+        &with_root(&dir_exclude),
+        &crl(&dir_exclude, "dir-exclude"),
+        &dir_space,
+    );
+    expect_rejected(
         &with_root(&email_host),
         &crl(&email_host, "email-host"),
         &email_sub,
     );
-    check(
+    expect_rejected(
         &with_root(&email_host),
         &crl(&email_host, "email-host"),
         &email_exact,
     );
-    check(
+    expect_rejected(
         &with_root(&email_dot),
         &crl(&email_dot, "email-dot"),
         &email_dot_sub,
     );
-    check(
+    expect_rejected(
         &with_root(&email_dot),
         &crl(&email_dot, "email-dot"),
         &email_dot_apex,
     );
-    check(
+    expect_rejected(
         &with_root(&email_box),
         &crl(&email_box, "email-box"),
         &email_case,
     );
-    check(
+    expect_rejected(
         &with_root(&email_box),
         &crl(&email_box, "email-box"),
         &email_box_ok,
     );
-    check(
+    expect_rejected(
         &with_root(&email_ex),
         &crl(&email_ex, "email-ex"),
         &email_ex_sub,
     );
-    check(
+    expect_rejected(
         &with_root(&email_ex),
         &crl(&email_ex, "email-ex"),
         &email_ex_exact,
     );
-    check(&with_root(&uri_host), &crl(&uri_host, "uri-host"), &uri_sub);
-    check(
+    expect_rejected(&with_root(&uri_host), &crl(&uri_host, "uri-host"), &uri_sub);
+    expect_rejected(
         &with_root(&uri_host),
         &crl(&uri_host, "uri-host"),
         &uri_exact,
     );
-    check(
+    expect_rejected(
         &with_root(&uri_dot),
         &crl(&uri_dot, "uri-dot"),
         &uri_dot_sub,
     );
-    check(
+    expect_rejected(
         &with_root(&uri_dot),
         &crl(&uri_dot, "uri-dot"),
         &uri_dot_apex,

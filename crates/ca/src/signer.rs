@@ -104,7 +104,31 @@ impl rsa::rand_core::RngCore for OsEntropy {
 }
 
 pub fn generate_rsa(bits: usize) -> Result<RsaPrivateKey, Error> {
-    RsaPrivateKey::new(&mut OsEntropy, bits).map_err(wrap)
+    let mut rng = OsEntropy;
+    generate_rsa_with(&mut rng, bits)
+}
+
+fn generate_rsa_with(
+    rng: &mut impl rsa::rand_core::CryptoRngCore,
+    bits: usize,
+) -> Result<RsaPrivateKey, Error> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        RsaPrivateKey::new(rng, bits)
+    })) {
+        Ok(Ok(key)) => Ok(key),
+        Ok(Err(err)) => Err(wrap(err)),
+        Err(payload) => Err(Error::msg(panic_text(payload))),
+    }
+}
+
+fn panic_text(payload: Box<dyn std::any::Any + Send>) -> String {
+    match payload.downcast::<String>() {
+        Ok(text) => *text,
+        Err(payload) => match payload.downcast::<&str>() {
+            Ok(text) => (*text).to_string(),
+            Err(_) => "os entropy unavailable".to_string(),
+        },
+    }
 }
 
 pub fn private_key_matches_cert(key: &RsaPrivateKey, cert_pem: &str) -> Result<(), Error> {
@@ -160,4 +184,39 @@ pub fn private_pkcs8_pem(key: &RsaPrivateKey) -> Result<String, Error> {
     let pem = rsa::pkcs8::EncodePrivateKey::to_pkcs8_pem(key, rsa::pkcs8::LineEnding::LF)
         .map_err(wrap)?;
     Ok(pem.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use rsa::rand_core::{CryptoRng, RngCore};
+
+    use super::generate_rsa_with;
+
+    struct PanicEntropy;
+
+    impl CryptoRng for PanicEntropy {}
+
+    impl RngCore for PanicEntropy {
+        fn next_u32(&mut self) -> u32 {
+            panic!("os entropy unavailable: test");
+        }
+
+        fn next_u64(&mut self) -> u64 {
+            panic!("os entropy unavailable: test");
+        }
+
+        fn fill_bytes(&mut self, _dest: &mut [u8]) {
+            panic!("os entropy unavailable: test");
+        }
+
+        fn try_fill_bytes(&mut self, _dest: &mut [u8]) -> Result<(), rsa::rand_core::Error> {
+            panic!("os entropy unavailable: test");
+        }
+    }
+
+    #[test]
+    fn key_generation_returns_entropy_failure() {
+        let err = generate_rsa_with(&mut PanicEntropy, 2048).unwrap_err();
+        assert_eq!(err.to_string(), "os entropy unavailable: test");
+    }
 }

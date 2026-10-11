@@ -58,12 +58,14 @@ pub fn old_path(path: &Path) -> PathBuf {
 
 pub fn replace_bytes(path: &Path, bytes: &[u8], mode: u32, keep_old: bool) -> Result<(), Error> {
     reject_symlink(path)?;
+    let previous = existing_mode(path)?;
     if keep_old && path.is_file() {
         backup_to_old(path)?;
     }
     protocol::host::atomic_replace(path, bytes)?;
-    if mode != 0o600 {
-        fs::set_permissions(path, fs::Permissions::from_mode(mode))?;
+    let applied = applied_mode(previous, mode)?;
+    if applied != 0o600 {
+        fs::set_permissions(path, fs::Permissions::from_mode(applied))?;
         let file = File::open(path)?;
         file.sync_all()?;
     }
@@ -126,6 +128,48 @@ fn open_lock(dir: &Path) -> Result<RwLock<File>, Error> {
     Ok(RwLock::new(file))
 }
 
+fn existing_mode(path: &Path) -> Result<Option<u32>, Error> {
+    match fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            Err(Error::msg(format!("refusing symlink {}", path.display())))
+        }
+        Ok(meta) => Ok(Some(meta.permissions().mode() & 0o777)),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(err.into()),
+    }
+}
+
+fn current_umask() -> Result<u32, Error> {
+    let text = fs::read_to_string("/proc/self/status")?;
+    for line in text.lines() {
+        let Some(rest) = line.strip_prefix("Umask:") else {
+            continue;
+        };
+        let value =
+            u32::from_str_radix(rest.trim(), 8).map_err(|_| Error::msg("umask unavailable"))?;
+        return Ok(value & 0o777);
+    }
+    Err(Error::msg("umask unavailable"))
+}
+
+fn applied_mode(previous: Option<u32>, requested: u32) -> Result<u32, Error> {
+    let requested = requested & 0o777;
+    let umask = current_umask()?;
+    let base = if requested == 0o600 { 0o600 } else { 0o666 };
+    let created = base & !umask;
+    Ok(match previous {
+        Some(existing) => {
+            let existing = existing & 0o777;
+            if requested == 0o600 {
+                existing & 0o600
+            } else {
+                existing
+            }
+        }
+        None => created,
+    })
+}
+
 fn backup_to_old(path: &Path) -> Result<(), Error> {
     let bytes = match read_optional(path)? {
         Some(bytes) => bytes,
@@ -175,14 +219,15 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("index.txt");
+        let public = 0o666 & !super::current_umask().unwrap();
         replace_bytes(&path, b"one\n", 0o644, true).unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), b"one\n");
-        assert_eq!(mode(&path), 0o644);
+        assert_eq!(mode(&path), public);
         assert!(!old_path(&path).exists());
         replace_bytes(&path, b"two\n", 0o644, true).unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), b"two\n");
         assert_eq!(std::fs::read(old_path(&path)).unwrap(), b"one\n");
-        assert_eq!(mode(&old_path(&path)), 0o644);
+        assert_eq!(mode(&old_path(&path)), public);
         let secret = dir.join("ca.key");
         replace_bytes(&secret, b"secret", 0o600, false).unwrap();
         assert_eq!(mode(&secret), 0o600);
@@ -202,6 +247,62 @@ mod tests {
             format!("refusing symlink {}", old_link.display())
         );
         assert_eq!(std::fs::read(&secret).unwrap(), b"secret");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn replace_keeps_script_modes_under_restrictive_umask() {
+        if std::env::var_os("RR9C_UMASK_CHILD").is_some() {
+            let dir = std::path::PathBuf::from(std::env::var("RR9C_UMASK_DIR").unwrap());
+            replace_bytes(&dir.join("openssl.cnf"), b"new\n", 0o644, false).unwrap();
+            replace_bytes(&dir.join("kept.cnf"), b"next\n", 0o644, false).unwrap();
+            replace_bytes(&dir.join("wide.cnf"), b"wide\n", 0o644, false).unwrap();
+            replace_bytes(&dir.join("device.p12"), b"p12", 0o600, false).unwrap();
+            replace_bytes(&dir.join("tight.p12"), b"p12", 0o600, false).unwrap();
+            std::process::exit(0);
+        }
+        let dir = std::env::temp_dir().join(format!(
+            "rr9c-umask-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let kept = dir.join("kept.cnf");
+        std::fs::write(&kept, b"old\n").unwrap();
+        std::fs::set_permissions(&kept, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let wide = dir.join("wide.cnf");
+        std::fs::write(&wide, b"old\n").unwrap();
+        std::fs::set_permissions(&wide, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let secret = dir.join("device.p12");
+        std::fs::write(&secret, b"old").unwrap();
+        std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o640)).unwrap();
+        let tight = dir.join("tight.p12");
+        std::fs::write(&tight, b"old").unwrap();
+        std::fs::set_permissions(&tight, std::fs::Permissions::from_mode(0o400)).unwrap();
+        let name = std::thread::current().name().unwrap().to_string();
+        let status = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("umask 077; exec \"$0\" \"$@\"")
+            .arg(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg(&name)
+            .env("RR9C_UMASK_CHILD", "1")
+            .env("RR9C_UMASK_DIR", &dir)
+            .status()
+            .unwrap();
+        assert!(status.success(), "{status}");
+        assert_eq!(mode(&dir.join("openssl.cnf")), 0o600);
+        assert_eq!(std::fs::read(dir.join("openssl.cnf")).unwrap(), b"new\n");
+        assert_eq!(mode(&kept), 0o600);
+        assert_eq!(std::fs::read(&kept).unwrap(), b"next\n");
+        assert_eq!(mode(&wide), 0o644);
+        assert_eq!(std::fs::read(&wide).unwrap(), b"wide\n");
+        assert_eq!(mode(&secret), 0o600);
+        assert_eq!(mode(&tight), 0o400);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

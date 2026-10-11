@@ -6,10 +6,9 @@ use rustls_pki_types::{CertificateDer, SignatureVerificationAlgorithm, UnixTime}
 use webpki::{EndEntityCert, ExtendedKeyUsageValidator, KeyPurposeIdIter};
 use x509_parser::certificate::X509Certificate;
 use x509_parser::extensions::{GeneralName, NameConstraints};
-use x509_parser::oid_registry::{OID_PKCS1_SHA256WITHRSA, OID_PKCS9_EMAIL_ADDRESS};
+use x509_parser::oid_registry::OID_PKCS1_SHA256WITHRSA;
 use x509_parser::prelude::FromDer;
 use x509_parser::revocation_list::CertificateRevocationList;
-use x509_parser::x509::X509Name;
 
 use crate::namefmt::openssl_dn;
 use crate::pemutil;
@@ -476,7 +475,7 @@ fn constraint_message(code: i32) -> &'static str {
         47 => "permitted subtree violation",
         48 => "excluded subtree violation",
         49 => "name constraints minimum and maximum not supported",
-        51 => "unsupported name constraint type",
+        51 => "name constraint type cannot be verified",
         52 => "unsupported or invalid name constraint syntax",
         _ => "unsupported or invalid name syntax",
     }
@@ -491,15 +490,14 @@ fn constrain_pair(subject: &Anchor, depth: usize, issuer: &Anchor) -> Result<(),
     let Some(constraints) = name_constraints_of(&issuer_cert)? else {
         return Ok(());
     };
-    check_directory(subject_cert.subject(), constraints)?;
+    if unsupported_name_constraint(constraints) {
+        return Err(51);
+    }
     if let Some(san) = subject_cert.subject_alternative_name().map_err(|_| 34)? {
         for name in &san.value.general_names {
-            check_general_name(name, constraints)?;
-        }
-    }
-    for email in subject_cert.subject().iter_by_oid(&OID_PKCS9_EMAIL_ADDRESS) {
-        if let Ok(value) = email.as_str() {
-            check_email(value, constraints)?;
+            if let GeneralName::DNSName(value) = name {
+                check_dns(value, constraints)?;
+            }
         }
     }
     if depth == 0 && !has_dns_san(&subject_cert) {
@@ -559,81 +557,21 @@ fn is_dns_name(value: &str) -> bool {
     (1..=63).contains(&label)
 }
 
-fn check_general_name(
-    name: &GeneralName<'_>,
-    constraints: &NameConstraints<'_>,
-) -> Result<(), i32> {
-    match name {
-        GeneralName::DNSName(value) => check_dns(value, constraints),
-        GeneralName::RFC822Name(value) => check_email(value, constraints),
-        GeneralName::URI(value) => check_uri(value, constraints),
-        GeneralName::IPAddress(value) => check_ip(value, constraints),
-        GeneralName::DirectoryName(value) => check_directory(value, constraints),
-        GeneralName::OtherName(_, _)
-        | GeneralName::X400Address(_)
-        | GeneralName::EDIPartyName(_)
-        | GeneralName::RegisteredID(_)
-        | GeneralName::Invalid(_, _) => {
-            if constraint_mentions(constraints, name) {
-                Err(51)
-            } else {
-                Ok(())
-            }
-        }
-    }
-}
-
-fn constraint_mentions(constraints: &NameConstraints<'_>, name: &GeneralName<'_>) -> bool {
-    let mentions = |base: &GeneralName<'_>| match (name, base) {
-        (GeneralName::OtherName(left, _), GeneralName::OtherName(right, _)) => left == right,
-        (GeneralName::X400Address(_), GeneralName::X400Address(_))
-        | (GeneralName::EDIPartyName(_), GeneralName::EDIPartyName(_))
-        | (GeneralName::RegisteredID(_), GeneralName::RegisteredID(_))
-        | (GeneralName::Invalid(_, _), GeneralName::Invalid(_, _)) => true,
-        _ => false,
+fn unsupported_name_constraint(constraints: &NameConstraints<'_>) -> bool {
+    let unsupported = |base: &GeneralName<'_>| {
+        !matches!(base, GeneralName::DNSName(_) | GeneralName::IPAddress(_))
     };
     constraints
         .permitted_subtrees
         .iter()
         .flatten()
         .chain(constraints.excluded_subtrees.iter().flatten())
-        .any(|subtree| mentions(&subtree.base))
+        .any(|subtree| unsupported(&subtree.base))
 }
 
 fn check_dns(name: &str, constraints: &NameConstraints<'_>) -> Result<(), i32> {
     excluded_then_permitted(constraints, |base| match base {
         GeneralName::DNSName(constraint) => Some(Ok(dns_match(name, constraint))),
-        _ => None,
-    })
-}
-
-fn check_email(mail: &str, constraints: &NameConstraints<'_>) -> Result<(), i32> {
-    excluded_then_permitted(constraints, |base| match base {
-        GeneralName::RFC822Name(constraint) => Some(email_match(mail, constraint)),
-        _ => None,
-    })
-}
-
-fn check_uri(uri: &str, constraints: &NameConstraints<'_>) -> Result<(), i32> {
-    let host = uri_host(uri)?;
-    excluded_then_permitted(constraints, |base| match base {
-        GeneralName::URI(constraint) => {
-            Some(uri_base(constraint).map(|base| host_constraint(host, base)))
-        }
-        _ => None,
-    })
-}
-
-fn check_ip(addr: &[u8], constraints: &NameConstraints<'_>) -> Result<(), i32> {
-    excluded_then_permitted(constraints, |base| match base {
-        GeneralName::IPAddress(constraint) => Some(ip_match(addr, constraint)),
-        _ => None,
-    })
-}
-
-fn check_directory(name: &X509Name<'_>, constraints: &NameConstraints<'_>) -> Result<(), i32> {
-    excluded_then_permitted(constraints, |base| match base {
-        GeneralName::DirectoryName(constraint) => Some(Ok(directory_match(name, constraint))),
         _ => None,
     })
 }
@@ -685,82 +623,6 @@ fn eq_ascii(left: &[u8], right: &[u8]) -> bool {
     left.eq_ignore_ascii_case(right)
 }
 
-fn email_match(mail: &str, base: &str) -> Result<bool, i32> {
-    let Some((local, host)) = mail.split_once('@') else {
-        return Err(53);
-    };
-    if local.is_empty() || host.is_empty() || host.contains('@') {
-        return Err(53);
-    }
-    if base.is_empty() {
-        return Ok(true);
-    }
-    if let Some(base_host) = base.strip_prefix('.') {
-        if base_host.is_empty() {
-            return Ok(false);
-        }
-        return Ok(mail.len() > base.len()
-            && eq_ascii(&mail.as_bytes()[mail.len() - base.len()..], base.as_bytes()));
-    }
-    if let Some((base_local, base_host)) = base.split_once('@') {
-        if base_host.is_empty() {
-            return Err(52);
-        }
-        if base_local.is_empty() {
-            return Ok(eq_ascii(host.as_bytes(), base_host.as_bytes()));
-        }
-        return Ok(local.as_bytes() == base_local.as_bytes()
-            && eq_ascii(host.as_bytes(), base_host.as_bytes()));
-    }
-    Ok(eq_ascii(host.as_bytes(), base.as_bytes()))
-}
-
-fn host_constraint(host: &str, base: &str) -> bool {
-    if base.is_empty() {
-        return true;
-    }
-    if let Some(suffix) = base.strip_prefix('.') {
-        if suffix.is_empty() {
-            return false;
-        }
-        return host.len() > base.len()
-            && eq_ascii(&host.as_bytes()[host.len() - base.len()..], base.as_bytes());
-    }
-    eq_ascii(host.as_bytes(), base.as_bytes())
-}
-
-fn uri_host(uri: &str) -> Result<&str, i32> {
-    let Some((_, after_scheme)) = uri.split_once("://") else {
-        return Err(53);
-    };
-    let no_path = after_scheme
-        .split(['/', '?', '#'])
-        .next()
-        .unwrap_or(after_scheme);
-    let hostport = no_path.rsplit_once('@').map_or(no_path, |(_, host)| host);
-    if hostport.is_empty() {
-        return Err(53);
-    }
-    if let Some(rest) = hostport.strip_prefix('[') {
-        let end = rest.find(']').ok_or(53)?;
-        let host = &rest[..end];
-        if host.is_empty() {
-            return Err(53);
-        }
-        return Ok(host);
-    }
-    let host = hostport.split_once(':').map_or(hostport, |(host, _)| host);
-    if host.is_empty() { Err(53) } else { Ok(host) }
-}
-
-fn uri_base(base: &str) -> Result<&str, i32> {
-    if base.contains("://") {
-        uri_host(base)
-    } else {
-        Ok(base)
-    }
-}
-
 fn ip_match(addr: &[u8], base: &[u8]) -> Result<bool, i32> {
     if addr.len() != 4 && addr.len() != 16 {
         return Err(53);
@@ -799,30 +661,53 @@ fn prefix_mask(mask: &[u8]) -> bool {
     true
 }
 
-fn directory_match(name: &X509Name<'_>, base: &X509Name<'_>) -> bool {
-    let name_rdns: Vec<_> = name.iter_rdn().collect();
-    let base_rdns: Vec<_> = base.iter_rdn().collect();
-    if base_rdns.len() > name_rdns.len() {
-        return false;
-    }
-    for (name_rdn, base_rdn) in name_rdns.iter().zip(base_rdns.iter()) {
-        let name_attrs: Vec<_> = name_rdn.iter().collect();
-        let base_attrs: Vec<_> = base_rdn.iter().collect();
-        if name_attrs.len() != base_attrs.len() {
-            return false;
+fn excluded_ip_matches(chain: &[Anchor]) -> bool {
+    for depth in 0..chain.len() {
+        if depth > 0 && chain[depth].subject == chain[depth].issuer {
+            continue;
         }
-        for (name_attr, base_attr) in name_attrs.iter().zip(base_attrs.iter()) {
-            if name_attr.attr_type() != base_attr.attr_type() {
-                return false;
-            }
-            match (name_attr.as_str(), base_attr.as_str()) {
-                (Ok(left), Ok(right)) if left.eq_ignore_ascii_case(right) => {}
-                _ if name_attr.as_slice() == base_attr.as_slice() => {}
-                _ => return false,
+        let Ok(subject_cert) = load_cert(&chain[depth]) else {
+            continue;
+        };
+        let Ok(Some(san)) = subject_cert.subject_alternative_name() else {
+            continue;
+        };
+        let ips: Vec<&[u8]> = san
+            .value
+            .general_names
+            .iter()
+            .filter_map(|name| match name {
+                GeneralName::IPAddress(addr) => Some(*addr),
+                _ => None,
+            })
+            .collect();
+        if ips.is_empty() {
+            continue;
+        }
+        for issuer in chain.iter().skip(depth + 1) {
+            let Ok(issuer_cert) = load_cert(issuer) else {
+                continue;
+            };
+            let Ok(Some(ext)) = issuer_cert.name_constraints() else {
+                continue;
+            };
+            let Some(excluded) = &ext.value.excluded_subtrees else {
+                continue;
+            };
+            for subtree in excluded {
+                let GeneralName::IPAddress(constraint) = &subtree.base else {
+                    continue;
+                };
+                if ips
+                    .iter()
+                    .any(|addr| ip_match(addr, constraint) == Ok(true))
+                {
+                    return true;
+                }
             }
         }
     }
-    true
+    false
 }
 
 fn raw_name_constraints<'a>(certificate: &'a X509Certificate<'a>) -> Option<&'a [u8]> {
@@ -1009,7 +894,6 @@ fn webpki_gap(chain: &[Anchor], err: &webpki::Error) -> bool {
         | webpki::Error::UnsupportedCriticalExtension
         | webpki::Error::CaUsedAsEndEntity => true,
         webpki::Error::InvalidSignatureForPublicKey => chain_has_self_issued(chain),
-        webpki::Error::NameConstraintViolation => chain_has_name_webpki_skips(chain),
         _ => false,
     }
 }
@@ -1018,33 +902,6 @@ fn chain_has_self_issued(chain: &[Anchor]) -> bool {
     chain
         .iter()
         .any(|cert| cert.subject == cert.issuer && !signature_ok(cert, cert))
-}
-
-fn chain_has_name_webpki_skips(chain: &[Anchor]) -> bool {
-    chain.iter().any(|anchor| {
-        let Ok(certificate) = load_cert(anchor) else {
-            return true;
-        };
-        match certificate.name_constraints() {
-            Ok(Some(ext)) => constraints_webpki_skips(ext.value),
-            Ok(None) => false,
-            Err(_) => true,
-        }
-    })
-}
-
-fn constraints_webpki_skips(constraints: &NameConstraints<'_>) -> bool {
-    constraints
-        .permitted_subtrees
-        .iter()
-        .flatten()
-        .chain(constraints.excluded_subtrees.iter().flatten())
-        .any(|subtree| {
-            matches!(
-                &subtree.base,
-                GeneralName::DirectoryName(_) | GeneralName::RFC822Name(_) | GeneralName::URI(_)
-            )
-        })
 }
 
 fn webpki_failure(chain: &[Anchor], cert_path: &Path, err: &webpki::Error) -> VerifyOutput {
@@ -1074,7 +931,13 @@ fn webpki_failure(chain: &[Anchor], cert_path: &Path, err: &webpki::Error) -> Ve
             (52, "unsupported or invalid name constraint syntax")
         }
         webpki::Error::MalformedDnsIdentifier => (53, "unsupported or invalid name syntax"),
-        webpki::Error::NameConstraintViolation => (47, "permitted subtree violation"),
+        webpki::Error::NameConstraintViolation => {
+            if excluded_ip_matches(chain) {
+                (48, "excluded subtree violation")
+            } else {
+                (47, "permitted subtree violation")
+            }
+        }
         webpki::Error::PathLenConstraintViolated => (25, "path length constraint exceeded"),
         webpki::Error::UnsupportedCriticalExtension => (34, "unhandled critical extension"),
         _ => (34, "unhandled critical extension"),
