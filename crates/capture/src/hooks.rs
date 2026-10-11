@@ -136,16 +136,28 @@ pub fn arm_worker_deadline(opts: DeadlineOptions) -> DeadlineHandle {
     DeadlineHandle { flag, notify }
 }
 
-pub fn log_path(env: &dyn protocol::host::Env) -> PathBuf {
-    PathBuf::from(protocol::host::home_dir(env).unwrap_or_default())
-        .join(".rivetos")
-        .join("claude-capture.log")
+const HOMEDIR_MISSING: &str = "ENOENT: no such file or directory, uv_os_homedir";
+
+fn joined_home(home: Option<String>, parts: &[&str]) -> Result<PathBuf, String> {
+    let Some(home) = home else {
+        return Err(HOMEDIR_MISSING.to_string());
+    };
+    let mut path = PathBuf::from(home);
+    for part in parts {
+        path.push(part);
+    }
+    Ok(path)
 }
 
-pub fn settings_path(env: &dyn protocol::host::Env) -> PathBuf {
-    PathBuf::from(protocol::host::home_dir(env).unwrap_or_default())
-        .join(".claude")
-        .join("settings.json")
+pub fn log_path(env: &dyn protocol::host::Env) -> Result<PathBuf, String> {
+    joined_home(
+        protocol::host::home_dir(env),
+        &[".rivetos", "claude-capture.log"],
+    )
+}
+
+pub fn settings_path(env: &dyn protocol::host::Env) -> Result<PathBuf, String> {
+    joined_home(protocol::host::home_dir(env), &[".claude", "settings.json"])
 }
 
 pub fn spool_dir(env: &dyn protocol::host::Env) -> PathBuf {
@@ -774,7 +786,9 @@ async fn emit_process(message: &str) {
 }
 
 fn append_log_sync(message: &str) {
-    let path = log_path(&crate::ProcessEnv);
+    let Ok(path) = log_path(&crate::ProcessEnv) else {
+        return;
+    };
     let line = format!("{} {message}\n", iso_now());
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -1147,4 +1161,36 @@ fn matcher(command: &str) -> Value {
 
 fn literal_path(path: &Path) -> PathBuf {
     std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+#[cfg(test)]
+mod home_paths {
+    use std::path::PathBuf;
+
+    use protocol::host::MapEnv;
+
+    use super::{joined_home, log_path, settings_path};
+
+    #[test]
+    fn home_paths_use_the_directory_and_fail_when_it_is_missing() {
+        let mut env = MapEnv::new();
+        env.set("HOME", "/home/example");
+        assert_eq!(
+            log_path(&env).unwrap(),
+            PathBuf::from("/home/example/.rivetos/claude-capture.log")
+        );
+        assert_eq!(
+            settings_path(&env).unwrap(),
+            PathBuf::from("/home/example/.claude/settings.json")
+        );
+        env.set("HOME", "");
+        assert_eq!(
+            log_path(&env).unwrap(),
+            PathBuf::from(".rivetos/claude-capture.log")
+        );
+        assert_eq!(
+            joined_home(None, &[".claude", "settings.json"]).unwrap_err(),
+            "ENOENT: no such file or directory, uv_os_homedir"
+        );
+    }
 }

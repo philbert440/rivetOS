@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use protocol::js::JsString;
 use serde_json::Value;
 
 pub const CONTENT_LIMIT: usize = 16_000;
@@ -20,7 +21,7 @@ pub fn safe_json(value: &Value) -> String {
 }
 
 pub struct CappedText {
-    pub text: String,
+    pub text: JsString,
     pub truncated: bool,
     pub full_length: usize,
 }
@@ -30,7 +31,7 @@ pub fn cap_for_storage(text: &str, limit: Option<usize>) -> CappedText {
     let full_length = protocol::js::utf16_len(text);
     let sliced = protocol::js::js_slice(text, Some(0.0), Some(limit as f64));
     CappedText {
-        text: sliced.to_utf8().to_string(),
+        text: sliced,
         truncated: full_length > limit,
         full_length,
     }

@@ -62,7 +62,6 @@ uuid = { version = "1", features = ["v4"] }
 x509-cert = { version = "0.3.0", features = ["builder", "pem", "std"] }
 x509-parser = "0.18.1"
 zstd = "0.13"
-regex = "1"
 anyhow = "1"
 tempfile = "3"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }

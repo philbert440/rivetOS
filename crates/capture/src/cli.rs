@@ -56,7 +56,7 @@ async fn dispatch(args: CaptureArgs) -> Result<(), String> {
         CaptureCommand::Hook { harness } => run_hook(&harness).await,
         CaptureCommand::Replay { file } => run_replay(file).await,
         CaptureCommand::Status => {
-            let settings = settings_path(&ProcessEnv);
+            let settings = settings_path(&ProcessEnv)?;
             let text = tokio::task::spawn_blocking(move || status_text(&settings))
                 .await
                 .map_err(|error| error.to_string())??;
@@ -66,8 +66,8 @@ async fn dispatch(args: CaptureArgs) -> Result<(), String> {
         CaptureCommand::Install => {
             let env = ProcessEnv;
             let exe = std::env::current_exe().map_err(|error| error.to_string())?;
-            let settings = settings_path(&env);
-            let log = log_path(&env);
+            let settings = settings_path(&env)?;
+            let log = log_path(&env)?;
             let command = hook_command(&exe);
             let text =
                 tokio::task::spawn_blocking(move || install_hooks(&settings, &command, &log))
@@ -77,7 +77,7 @@ async fn dispatch(args: CaptureArgs) -> Result<(), String> {
             Ok(())
         }
         CaptureCommand::Uninstall => {
-            let settings = settings_path(&ProcessEnv);
+            let settings = settings_path(&ProcessEnv)?;
             let text = tokio::task::spawn_blocking(move || uninstall_hooks(&settings))
                 .await
                 .map_err(|error| error.to_string())??;

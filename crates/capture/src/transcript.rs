@@ -824,7 +824,7 @@ fn parse_transcript_text(file: &Path, text: &str) -> ParsedTranscript {
         if cwd_units.is_none()
             && let Some(value) = object.get("cwd").and_then(JsValue::as_js_string)
         {
-            let trimmed = JsString::from_units(trim_units(value.units()));
+            let trimmed = JsString::from_units(protocol::js::js_trim_units(value.units()).to_vec());
             if !trimmed.to_utf8().is_empty() {
                 cwd_units = Some(trimmed);
             }
@@ -1529,32 +1529,8 @@ fn join_units(parts: &[JsString], separator: u16) -> JsString {
 }
 
 fn join_trimmed(parts: &[JsString]) -> JsString {
-    JsString::from_units(trim_units(join_units(parts, u16::from(b'\n')).units()))
-}
-
-fn trim_units(units: &[u16]) -> Vec<u16> {
-    let start = units
-        .iter()
-        .position(|unit| !unit_is_js_space(*unit))
-        .unwrap_or(units.len());
-    let end = units
-        .iter()
-        .rposition(|unit| !unit_is_js_space(*unit))
-        .map(|index| index + 1)
-        .unwrap_or(start);
-    units[start..end].to_vec()
-}
-
-fn unit_is_js_space(unit: u16) -> bool {
-    if (0xD800..=0xDFFF).contains(&unit) {
-        return false;
-    }
-    let Some(ch) = char::from_u32(u32::from(unit)) else {
-        return false;
-    };
-    let mut buf = [0u8; 4];
-    let text = ch.encode_utf8(&mut buf);
-    protocol::js::js_trim(text).is_empty()
+    let joined = join_units(parts, u16::from(b'\n'));
+    JsString::from_units(protocol::js::js_trim_units(joined.units()).to_vec())
 }
 
 fn skipped_hook(session_key: String, reason: &str) -> HookEventResult {

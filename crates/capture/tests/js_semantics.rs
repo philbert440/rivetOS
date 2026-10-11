@@ -72,7 +72,7 @@ fn utf16_length_and_slice_drive_storage_caps() {
         }
         let limit = end as usize;
         let capped = cap_for_storage(&utf8, Some(limit));
-        assert_eq!(capped.text, js_slice(&utf8, Some(0.0), Some(end)).to_utf8());
+        assert_eq!(capped.text.units(), units_of(&case["result"]).as_slice());
         assert_eq!(capped.full_length, utf16_len(&utf8));
         assert_eq!(capped.truncated, utf16_len(&utf8) > limit);
     }

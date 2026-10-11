@@ -682,12 +682,25 @@ fn shell_lengths(batch: &JsValue) -> Shell {
     }
 }
 
-fn chunk_len(base: usize, lengths: &[usize]) -> usize {
-    if lengths.is_empty() {
+fn chunk_len_parts(base: usize, sum: usize, count: usize) -> usize {
+    if count == 0 {
         base
     } else {
-        base + lengths.iter().sum::<usize>() + lengths.len() - 1
+        base + sum + count - 1
     }
+}
+
+fn chunk_len(base: usize, lengths: &[usize]) -> usize {
+    chunk_len_parts(base, lengths.iter().sum(), lengths.len())
+}
+
+fn totals_fit(shell: &Shell, sum: usize, count: usize, is_last: bool, limit: usize) -> bool {
+    let base = if is_last {
+        shell.with_finalize
+    } else {
+        shell.without_finalize
+    };
+    chunk_len_parts(base, sum, count) <= limit
 }
 
 fn lengths_fit(shell: &Shell, lengths: &[usize], is_last: bool, limit: usize) -> bool {
@@ -718,8 +731,8 @@ fn split_chunks(batch: &mut JsValue, limit: usize, log: &Option<LogFn>) -> Vec<J
         return vec![project_chunk(batch, &[], true)];
     }
     let messages: Vec<Tracked> = messages.into_iter().map(track).collect();
-    let mut groups: Vec<Vec<Tracked>> = Vec::new();
-    let mut current: Vec<Tracked> = Vec::new();
+    let mut groups: Vec<ChunkGroup> = Vec::new();
+    let mut current = ChunkGroup::new();
     for original in messages {
         let alone = lengths_fit(&shell, &[original.wire_len], false, limit)
             || lengths_fit(&shell, &[original.wire_len], true, limit);
@@ -729,14 +742,8 @@ fn split_chunks(batch: &mut JsValue, limit: usize, log: &Option<LogFn>) -> Vec<J
             elide_tool_args(original, log)
         };
         let solo = !alone;
-        let overflows = !current.is_empty()
-            && !fits_messages(
-                &shell,
-                &current,
-                std::slice::from_ref(&message),
-                false,
-                limit,
-            );
+        let overflows =
+            !current.is_empty() && !current.fits_plus(message.wire_len, &shell, false, limit);
         if solo || overflows {
             push_group(&mut groups, &mut current);
             current.push(message);
@@ -753,23 +760,26 @@ fn split_chunks(batch: &mut JsValue, limit: usize, log: &Option<LogFn>) -> Vec<J
     while guard < guard_limit && !groups.is_empty() {
         guard += 1;
         let last_index = groups.len() - 1;
-        if fits_group(&shell, &groups[last_index], true, limit) {
+        if groups[last_index].fits(&shell, true, limit) {
             break;
         }
         if groups[last_index].len() <= 1 {
-            let only = match groups[last_index].first() {
-                Some(only) => only.clone(),
-                None => break,
+            let Some(only) = groups[last_index].first().cloned() else {
+                break;
             };
             let next = shrink_singleton(only.clone(), true, &shell, limit, log);
             if same_tracked(&only, &next) {
                 break;
             }
-            groups[last_index][0] = next;
+            groups[last_index].set_only(next);
             continue;
         }
         match groups[last_index].pop() {
-            Some(peeled) => groups.push(vec![peeled]),
+            Some(peeled) => {
+                let mut peeled_group = ChunkGroup::new();
+                peeled_group.push(peeled);
+                groups.push(peeled_group);
+            }
             None => break,
         }
     }
@@ -779,27 +789,83 @@ fn split_chunks(batch: &mut JsValue, limit: usize, log: &Option<LogFn>) -> Vec<J
             continue;
         }
         let is_last = index + 1 == group_count;
-        if fits_group(&shell, group, is_last, limit) {
+        if group.fits(&shell, is_last, limit) {
             continue;
         }
-        let only = group[0].clone();
-        *group = vec![shrink_singleton(only, is_last, &shell, limit, log)];
+        let Some(only) = group.first().cloned() else {
+            continue;
+        };
+        group.set_only(shrink_singleton(only, is_last, &shell, limit, log));
     }
     groups
         .into_iter()
         .enumerate()
         .map(|(index, group)| {
-            let messages: Vec<JsValue> = group.into_iter().map(|item| item.message).collect();
+            let messages: Vec<JsValue> = group.items.into_iter().map(|item| item.message).collect();
             project_chunk(batch, &messages, index + 1 == group_count)
         })
         .collect()
 }
 
-fn push_group(groups: &mut Vec<Vec<Tracked>>, current: &mut Vec<Tracked>) {
+struct ChunkGroup {
+    items: Vec<Tracked>,
+    sum: usize,
+}
+
+impl ChunkGroup {
+    fn new() -> Self {
+        Self {
+            items: Vec::new(),
+            sum: 0,
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.items.len()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+
+    fn first(&self) -> Option<&Tracked> {
+        self.items.first()
+    }
+
+    fn push(&mut self, item: Tracked) {
+        self.sum += item.wire_len;
+        self.items.push(item);
+    }
+
+    fn pop(&mut self) -> Option<Tracked> {
+        let item = self.items.pop()?;
+        self.sum -= item.wire_len;
+        Some(item)
+    }
+
+    fn set_only(&mut self, item: Tracked) {
+        self.sum = item.wire_len;
+        self.items.clear();
+        self.items.push(item);
+    }
+
+    fn fits(&self, shell: &Shell, is_last: bool, limit: usize) -> bool {
+        totals_fit(shell, self.sum, self.len(), is_last, limit)
+    }
+
+    fn fits_plus(&self, extra: usize, shell: &Shell, is_last: bool, limit: usize) -> bool {
+        totals_fit(shell, self.sum + extra, self.len() + 1, is_last, limit)
+    }
+}
+
+fn push_group(groups: &mut Vec<ChunkGroup>, current: &mut ChunkGroup) {
     if current.is_empty() {
         return;
     }
-    groups.push(std::mem::take(current));
+    groups.push(ChunkGroup {
+        items: std::mem::take(&mut current.items),
+        sum: std::mem::take(&mut current.sum),
+    });
 }
 
 fn same_tracked(left: &Tracked, right: &Tracked) -> bool {
@@ -912,24 +978,6 @@ fn elided_value(bytes: usize) -> JsValue {
     JsValue::Object(map)
 }
 
-fn fits_messages(
-    shell: &Shell,
-    current: &[Tracked],
-    extra: &[Tracked],
-    is_last: bool,
-    limit: usize,
-) -> bool {
-    let mut lengths = Vec::with_capacity(current.len() + extra.len());
-    lengths.extend(current.iter().map(|item| item.wire_len));
-    lengths.extend(extra.iter().map(|item| item.wire_len));
-    lengths_fit(shell, &lengths, is_last, limit)
-}
-
-fn fits_group(shell: &Shell, group: &[Tracked], is_last: bool, limit: usize) -> bool {
-    let lengths = group.iter().map(|item| item.wire_len).collect::<Vec<_>>();
-    lengths_fit(shell, &lengths, is_last, limit)
-}
-
 fn project_chunk(batch: &JsValue, messages: &[JsValue], is_last: bool) -> JsValue {
     let Some(object) = batch.as_object() else {
         return JsValue::Object(JsObject::new());
@@ -1009,5 +1057,49 @@ mod chunk_math {
                 );
             }
         }
+    }
+
+    #[test]
+    fn short_rows_split_on_the_running_total() {
+        let mut messages = String::from("[");
+        for index in 0..30 {
+            if index > 0 {
+                messages.push(',');
+            }
+            messages.push_str(&format!(
+                r#"{{"event_id":"e{index:02}","role":"user","content":"hi"}}"#
+            ));
+        }
+        messages.push(']');
+        let raw =
+            format!(r#"{{"session_key":"s","agent":"a","finalize":true,"messages":{messages}}}"#);
+        let mut batch = protocol::js::parse(&raw).unwrap();
+        let shell = shell_lengths(&batch);
+        let tracked: Vec<usize> = batch
+            .get("messages")
+            .and_then(|value| value.as_array())
+            .unwrap()
+            .iter()
+            .map(|message| protocol::js::stringify(message).len())
+            .collect();
+        let limit = chunk_len(shell.without_finalize, &tracked[..3]);
+        let log = None;
+        let chunks = super::split_chunks(&mut batch, limit, &log);
+        let mut total = 0usize;
+        let mut saw_full = false;
+        for chunk in &chunks {
+            let body = protocol::js::stringify(chunk);
+            assert!(body.len() <= limit, "{}", body.len());
+            let count = chunk
+                .get("messages")
+                .and_then(|value| value.as_array())
+                .unwrap()
+                .len();
+            assert!(count > 0 && count <= 3);
+            saw_full |= count == 3;
+            total += count;
+        }
+        assert!(saw_full);
+        assert_eq!(total, 30);
     }
 }

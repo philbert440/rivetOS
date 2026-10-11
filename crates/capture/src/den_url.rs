@@ -203,13 +203,8 @@ pub fn den_tls_configured(
     if (cert.is_empty() || key.is_empty())
         && let Some(node_name) = config.node_name.as_deref().filter(|name| !name.is_empty())
     {
-        let shared_env = env.var("RIVETOS_SHARED_DIR");
-        let shared = shared_env
-            .as_deref()
-            .map(protocol::js::js_trim)
-            .filter(|value| !value.is_empty())
-            .unwrap_or("/rivet-shared");
-        let issued = Path::new(shared).join("rivet-ca").join("issued");
+        let shared = config::paths::shared_dir(env);
+        let issued = Path::new(&shared).join("rivet-ca").join("issued");
         if cert.is_empty() {
             let path = issued.join(format!("{node_name}.crt"));
             if exists(&path) {

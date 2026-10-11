@@ -58,21 +58,23 @@ fn helper_semantics() {
 #[test]
 fn caps_at_the_configured_limit() {
     let plain = cap_for_storage("abc", None);
-    assert_eq!(plain.text, "abc");
+    assert_eq!(plain.text.units(), "abc".encode_utf16().collect::<Vec<_>>());
     assert_eq!(plain.full_length, 3);
     assert!(!plain.truncated);
     let capped = cap_for_storage("abc", Some(2));
-    assert_eq!(capped.text, "ab");
+    assert_eq!(capped.text.units(), "ab".encode_utf16().collect::<Vec<_>>());
     assert_eq!(capped.full_length, 3);
     assert!(capped.truncated);
     let long = "x".repeat(16_001);
-    assert_eq!(
-        cap_for_storage(&long, None).text.chars().count(),
-        CONTENT_LIMIT
-    );
+    assert_eq!(cap_for_storage(&long, None).text.len(), CONTENT_LIMIT);
     let emoji = format!("{}😀", "z".repeat(15_999));
     let split = cap_for_storage(&emoji, Some(CONTENT_LIMIT));
-    assert_eq!(split.text, format!("{}\u{FFFD}", "z".repeat(15_999)));
+    let mut expected = vec![u16::from(b'z'); 15_999];
+    expected.push(0xD83D);
+    assert_eq!(split.text.units(), expected.as_slice());
+    assert_eq!(split.text.len(), CONTENT_LIMIT);
+    let encoded = protocol::js::stringify(&protocol::js::JsValue::String(split.text));
+    assert_eq!(encoded, format!("\"{}\\ud83d\"", "z".repeat(15_999)));
     assert_eq!(split.full_length, 16_001);
     assert!(split.truncated);
 }
