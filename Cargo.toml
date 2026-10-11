@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/protocol", "crates/config", "crates/identity", "crates/memory", "crates/rivetos"]
+members = ["crates/protocol", "crates/config", "crates/identity", "crates/memory", "crates/rivetos", "crates/session-events"]
 
 [workspace.package]
 edition = "2024"

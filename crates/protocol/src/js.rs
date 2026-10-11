@@ -1,10 +1,12 @@
+use serde::ser::SerializeStruct;
+use serde::{Serialize, Serializer};
 use serde_json::{Map, Value};
 
 pub fn js_trim(text: &str) -> &str {
     text.trim_matches(is_js_whitespace)
 }
 
-pub(crate) fn is_js_whitespace(ch: char) -> bool {
+pub fn is_js_whitespace(ch: char) -> bool {
     matches!(
         ch,
         '\u{0009}'
@@ -71,13 +73,44 @@ impl JsString {
         }
     }
 
-    fn from_units(units: Vec<u16>) -> Self {
+    pub fn from_units(units: Vec<u16>) -> Self {
         let utf8 = utf8_from_units(&units);
         Self { units, utf8 }
     }
 
+    pub fn units(&self) -> &[u16] {
+        &self.units
+    }
+
     pub fn to_utf8(&self) -> &str {
         &self.utf8
+    }
+}
+
+impl From<&str> for JsString {
+    fn from(text: &str) -> Self {
+        Self::from_text(text)
+    }
+}
+
+impl From<String> for JsString {
+    fn from(text: String) -> Self {
+        Self::from_text(&text)
+    }
+}
+
+const SERDE_JSON_RAW_VALUE: &str = "$serde_json::private::RawValue";
+
+impl Serialize for JsString {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut json = String::new();
+        write_units(&self.units, &mut json);
+        let mut state = serializer.serialize_struct(SERDE_JSON_RAW_VALUE, 1)?;
+        state.serialize_field(SERDE_JSON_RAW_VALUE, &json)?;
+        state.end()
     }
 }
 
@@ -87,7 +120,7 @@ fn utf8_from_units(units: &[u16]) -> String {
         .collect()
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct JsObject {
     entries: Vec<(JsString, JsValue)>,
 }
@@ -109,13 +142,13 @@ impl PartialEq for JsObject {
 impl Eq for JsObject {}
 
 impl JsObject {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             entries: Vec::new(),
         }
     }
 
-    fn insert(&mut self, key: JsString, value: JsValue) {
+    pub fn insert(&mut self, key: JsString, value: JsValue) {
         if let Some(slot) = self
             .entries
             .iter_mut()
@@ -125,6 +158,15 @@ impl JsObject {
         } else {
             self.entries.push((key, value));
         }
+    }
+
+    pub fn remove(&mut self, key: &str) -> Option<JsValue> {
+        let needle = JsString::from_text(key);
+        let index = self
+            .entries
+            .iter()
+            .position(|(existing, _)| existing == &needle)?;
+        Some(self.entries.remove(index).1)
     }
 
     pub fn get(&self, key: &str) -> Option<&JsValue> {
@@ -180,6 +222,13 @@ impl JsValue {
         }
     }
 
+    pub fn as_object_mut(&mut self) -> Option<&mut JsObject> {
+        match self {
+            Self::Object(object) => Some(object),
+            _ => None,
+        }
+    }
+
     pub fn as_array(&self) -> Option<&[JsValue]> {
         match self {
             Self::Array(items) => Some(items),
@@ -190,6 +239,13 @@ impl JsValue {
     pub fn as_str(&self) -> Option<&str> {
         match self {
             Self::String(text) => Some(text.to_utf8()),
+            _ => None,
+        }
+    }
+
+    pub fn as_js_string(&self) -> Option<&JsString> {
+        match self {
+            Self::String(text) => Some(text),
             _ => None,
         }
     }
@@ -231,7 +287,7 @@ impl JsValue {
     }
 }
 
-pub(crate) fn from_serde(value: &Value) -> JsValue {
+pub fn from_serde(value: &Value) -> JsValue {
     match value {
         Value::Null => JsValue::Null,
         Value::Bool(value) => JsValue::Bool(*value),
