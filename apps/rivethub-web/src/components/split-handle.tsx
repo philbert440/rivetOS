@@ -4,9 +4,14 @@ export const DRAWER_WIDTH_DEFAULT = 240
 export const DRAWER_WIDTH_MIN = 180
 export const DRAWER_WIDTH_MAX = 480
 
-export function clampDrawerWidth(w: number): number {
-  if (!Number.isFinite(w)) return DRAWER_WIDTH_DEFAULT
-  return Math.min(DRAWER_WIDTH_MAX, Math.max(DRAWER_WIDTH_MIN, Math.round(w)))
+export function clampDrawerWidth(
+  w: number,
+  min = DRAWER_WIDTH_MIN,
+  max = DRAWER_WIDTH_MAX,
+  fallback = DRAWER_WIDTH_DEFAULT,
+): number {
+  if (!Number.isFinite(w)) return fallback
+  return Math.min(max, Math.max(min, Math.round(w)))
 }
 
 const KEY_STEP = 16
@@ -26,8 +31,19 @@ export function SplitHandle(props: {
   onCommit: (width: number) => void
   onReset: () => void
   width: number
+  /** Which side of its pane the handle sits on. A right-hand pane (handle on
+   *  its left edge) grows as the pointer moves left. Default 'right'. */
+  edge?: 'left' | 'right'
+  min?: number
+  max?: number
+  label?: string
+  className?: string
 }): JSX.Element {
   const drag = useRef<{ startX: number; base: number } | null>(null)
+  const min = props.min ?? DRAWER_WIDTH_MIN
+  const max = props.max ?? DRAWER_WIDTH_MAX
+  const sign = props.edge === 'left' ? -1 : 1
+  const clamp = (w: number): number => clampDrawerWidth(w, min, max, props.width)
   const endDrag = (e: ReactPointerEvent<HTMLDivElement>, commit: boolean): void => {
     const d = drag.current
     if (!d) return
@@ -37,15 +53,15 @@ export function SplitHandle(props: {
     } catch {
       /* capture already gone */
     }
-    if (commit) props.onCommit(clampDrawerWidth(d.base + e.clientX - d.startX))
+    if (commit) props.onCommit(clamp(d.base + sign * (e.clientX - d.startX)))
   }
   return (
     <div
       role="separator"
       aria-orientation="vertical"
-      aria-label="resize conversations pane"
-      aria-valuemin={DRAWER_WIDTH_MIN}
-      aria-valuemax={DRAWER_WIDTH_MAX}
+      aria-label={props.label ?? 'resize conversations pane'}
+      aria-valuemin={min}
+      aria-valuemax={max}
       aria-valuenow={props.width}
       tabIndex={0}
       title="drag to resize · double-click to reset"
@@ -63,7 +79,7 @@ export function SplitHandle(props: {
           endDrag(e, true)
           return
         }
-        props.onResize(clampDrawerWidth(d.base + e.clientX - d.startX))
+        props.onResize(clamp(d.base + sign * (e.clientX - d.startX)))
       }}
       // detail === 2: second click of a double-click — let onDoubleClick's
       // reset stand instead of committing a 0px "drag" over it
@@ -76,11 +92,10 @@ export function SplitHandle(props: {
       onKeyDown={(e) => {
         if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return
         e.preventDefault()
-        props.onCommit(
-          clampDrawerWidth(props.width + (e.key === 'ArrowRight' ? KEY_STEP : -KEY_STEP)),
-        )
+        const grow = (e.key === 'ArrowRight' ? KEY_STEP : -KEY_STEP) * sign
+        props.onCommit(clamp(props.width + grow))
       }}
-      className="w-1 shrink-0 cursor-col-resize bg-transparent transition-colors outline-none hover:bg-em/40 focus-visible:bg-em/40 active:bg-em/60"
+      className={`w-1 shrink-0 cursor-col-resize bg-transparent transition-colors outline-none hover:bg-em/40 focus-visible:bg-em/40 active:bg-em/60 ${props.className ?? ''}`}
     />
   )
 }
