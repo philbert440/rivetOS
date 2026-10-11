@@ -96,6 +96,7 @@ pub struct MeshNode {
     pub install_root: Option<String>,
     pub platform: Option<String>,
     pub extra: JsEntries,
+    pub origin: Option<JsValue>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -340,7 +341,7 @@ pub fn assert_record_mesh_file(
             if value.is_null() {
                 continue;
             }
-            match parse_mesh_node(&key, value, path) {
+            match parse_mesh_node(&key, value, path, false) {
                 Ok(node) => nodes.push((key, node)),
                 Err(err) => {
                     if options.on_invalid_node == OnInvalidNode::Skip
@@ -393,10 +394,77 @@ pub fn mesh_node_from_value(
     value: &JsValue,
     path: &str,
 ) -> Result<MeshNode, MeshParseError> {
-    parse_mesh_node(key, value, path)
+    parse_mesh_node(key, value, path, false)
 }
 
-pub fn mesh_node_from_join(value: &JsValue) -> Result<MeshNode, JoinNodeError> {
+pub fn mesh_node_from_network(
+    key: &str,
+    value: &JsValue,
+    path: &str,
+) -> Result<MeshNode, MeshParseError> {
+    parse_mesh_node(key, value, path, true)
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct JoinedMeshNode {
+    original: JsValue,
+}
+
+impl JoinedMeshNode {
+    pub fn original(&self) -> &JsValue {
+        &self.original
+    }
+
+    pub fn id(&self) -> &str {
+        self.string_field("id").unwrap_or("")
+    }
+
+    pub fn port(&self) -> Option<JsNumber> {
+        finite_js(self.original.get("port")).map(JsNumber::from)
+    }
+
+    pub fn status(&self) -> Option<&str> {
+        self.string_field("status")
+    }
+
+    pub fn agents(&self) -> Option<Vec<String>> {
+        let value = self.original.get("agents")?;
+        if is_string_array(value) {
+            Some(string_array(Some(value)))
+        } else {
+            None
+        }
+    }
+
+    pub fn ssh_user(&self) -> Option<&str> {
+        self.string_field("sshUser")
+    }
+
+    pub fn metadata(&self) -> Option<&JsValue> {
+        self.original
+            .get("metadata")
+            .filter(|value| value.as_object().is_some())
+    }
+
+    pub fn get(&self, key: &str) -> Option<&JsValue> {
+        self.original.get(key)
+    }
+
+    pub fn into_mesh_node(self) -> MeshNode {
+        let mut node = match self.original.as_object() {
+            Some(object) => assemble_node(object, ""),
+            None => return blank_mesh_node(),
+        };
+        node.origin = Some(self.original);
+        node
+    }
+
+    fn string_field(&self, key: &str) -> Option<&str> {
+        self.original.get(key).and_then(JsValue::as_str)
+    }
+}
+
+pub fn mesh_node_from_join(value: &JsValue) -> Result<JoinedMeshNode, JoinNodeError> {
     let Some(object) = value.as_object() else {
         return Err(JoinNodeError::MissingFields);
     };
@@ -406,10 +474,41 @@ pub fn mesh_node_from_join(value: &JsValue) -> Result<MeshNode, JoinNodeError> {
     {
         return Err(JoinNodeError::MissingFields);
     }
-    Ok(assemble_node(object, ""))
+    Ok(JoinedMeshNode {
+        original: value.clone(),
+    })
 }
 
-fn parse_mesh_node(key: &str, raw: &JsValue, path: &str) -> Result<MeshNode, MeshParseError> {
+fn blank_mesh_node() -> MeshNode {
+    MeshNode {
+        id: String::new(),
+        name: String::new(),
+        role: None,
+        agents: Vec::new(),
+        host: String::new(),
+        port: JsNumber::from(0_u32),
+        providers: Vec::new(),
+        models: Vec::new(),
+        capabilities: Vec::new(),
+        status: "offline".to_string(),
+        last_seen: JsNumber::from(0_u32),
+        registered_at: JsNumber::from(0_u32),
+        version: String::new(),
+        metadata: None,
+        ssh_user: None,
+        install_root: None,
+        platform: None,
+        extra: JsEntries::new(),
+        origin: None,
+    }
+}
+
+fn parse_mesh_node(
+    key: &str,
+    raw: &JsValue,
+    path: &str,
+    null_operators: bool,
+) -> Result<MeshNode, MeshParseError> {
     let Some(object) = raw.as_object() else {
         let mut context = Map::new();
         context.insert("nodeId".to_string(), Value::String(key.to_string()));
@@ -421,16 +520,16 @@ fn parse_mesh_node(key: &str, raw: &JsValue, path: &str) -> Result<MeshNode, Mes
             None,
         ));
     };
-    check_string(object, path, key, "id")?;
-    check_string(object, path, key, "name")?;
-    check_string(object, path, key, "host")?;
+    check_string(object, path, key, "id", false)?;
+    check_string(object, path, key, "name", false)?;
+    check_string(object, path, key, "host", false)?;
     check_finite(object, path, key, "port")?;
-    check_string(object, path, key, "role")?;
-    check_string(object, path, key, "status")?;
-    check_string(object, path, key, "version")?;
-    check_string(object, path, key, "sshUser")?;
-    check_string(object, path, key, "installRoot")?;
-    check_string(object, path, key, "platform")?;
+    check_string(object, path, key, "role", false)?;
+    check_string(object, path, key, "status", false)?;
+    check_string(object, path, key, "version", false)?;
+    check_string(object, path, key, "sshUser", null_operators)?;
+    check_string(object, path, key, "installRoot", null_operators)?;
+    check_string(object, path, key, "platform", null_operators)?;
     check_finite(object, path, key, "lastSeen")?;
     check_finite(object, path, key, "registeredAt")?;
     check_string_array(object, path, key, "agents")?;
@@ -489,6 +588,7 @@ fn assemble_node(object: &JsObject, record_key: &str) -> MeshNode {
         install_root: optional_string(object, "installRoot"),
         platform: optional_string(object, "platform"),
         extra,
+        origin: None,
     }
 }
 
@@ -497,11 +597,15 @@ fn check_string(
     path: &str,
     key: &str,
     field: &str,
+    null_operator: bool,
 ) -> Result<(), MeshParseError> {
-    if let Some(value) = object.get(field)
-        && !value.is_string()
-    {
-        return Err(node_field_error(path, key, field, "must be a string"));
+    if let Some(value) = object.get(field) {
+        if null_operator && value.is_null() {
+            return Ok(());
+        }
+        if !value.is_string() {
+            return Err(node_field_error(path, key, field, "must be a string"));
+        }
     }
     Ok(())
 }
@@ -629,6 +733,69 @@ impl JsonObject {
 }
 
 fn node_compact(node: &MeshNode) -> String {
+    if let Some(origin) = &node.origin {
+        return joined_compact(origin, node);
+    }
+    typed_node_compact(node)
+}
+
+fn joined_compact(origin: &JsValue, node: &MeshNode) -> String {
+    let Some(object) = origin.as_object() else {
+        return typed_node_compact(node);
+    };
+    let mut out = JsonObject::new();
+    let mut seen = [false; 3];
+    for (key, value) in object.iter() {
+        let name = key.to_utf8();
+        if let Some(index) = operator_index(name) {
+            seen[index] = true;
+            push_operator(&mut out, name, value, operator_text(node, name));
+            continue;
+        }
+        out.field(name, protocol::js::stringify(value));
+    }
+    for (index, key) in ["sshUser", "installRoot", "platform"]
+        .into_iter()
+        .enumerate()
+    {
+        if !seen[index]
+            && let Some(text) = operator_text(node, key)
+        {
+            out.field(key, js_string_literal(text));
+        }
+    }
+    out.finish()
+}
+
+fn operator_index(key: &str) -> Option<usize> {
+    match key {
+        "sshUser" => Some(0),
+        "installRoot" => Some(1),
+        "platform" => Some(2),
+        _ => None,
+    }
+}
+
+fn operator_text<'a>(node: &'a MeshNode, key: &str) -> Option<&'a str> {
+    match key {
+        "sshUser" => node.ssh_user.as_deref(),
+        "installRoot" => node.install_root.as_deref(),
+        "platform" => node.platform.as_deref(),
+        _ => None,
+    }
+}
+
+fn push_operator(out: &mut JsonObject, key: &str, value: &JsValue, inherited: Option<&str>) {
+    if value.is_null() {
+        if let Some(text) = inherited {
+            out.field(key, js_string_literal(text));
+        }
+        return;
+    }
+    out.field(key, protocol::js::stringify(value));
+}
+
+fn typed_node_compact(node: &MeshNode) -> String {
     let mut object = JsonObject::new();
     object.field("id", js_string_literal(&node.id));
     object.field("name", js_string_literal(&node.name));
@@ -974,6 +1141,7 @@ pub fn build_local_node(args: BuildLocalNodeArgs) -> MeshNode {
         install_root: None,
         platform: None,
         extra: JsEntries::new(),
+        origin: None,
     }
 }
 

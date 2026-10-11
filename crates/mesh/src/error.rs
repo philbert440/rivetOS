@@ -148,6 +148,14 @@ impl MeshError {
         Self::Message(text.into())
     }
 
+    pub fn stopped() -> Self {
+        Self::Message("mesh registry is stopped".to_string())
+    }
+
+    pub fn is_stopped(&self) -> bool {
+        matches!(self, Self::Message(text) if text == "mesh registry is stopped")
+    }
+
     pub fn is_flat_array(&self) -> bool {
         match self {
             Self::Parse(err) => err.is_flat_array(),

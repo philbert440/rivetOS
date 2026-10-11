@@ -62,6 +62,22 @@ fn install_root_from_matches_the_typescript_rules() {
 }
 
 #[test]
+fn roots_stay_lexical_until_a_segment_is_joined() {
+    assert_eq!(
+        install_root_from(Some("/srv/current/..")),
+        "/srv/current/.."
+    );
+    assert_eq!(shared_dir_from(Some("/mnt/link/..")), "/mnt/link/..");
+    assert_eq!(shared_dir_from(Some("/mnt/shared//")), "/mnt/shared//");
+    assert_eq!(path_join("/srv/current/..", &["packages"]), "/srv/packages");
+    assert_eq!(path_join("/srv/current/..", &[]), "/srv");
+    assert_eq!(
+        path_join("/mnt/shared//", &["mesh.json"]),
+        "/mnt/shared/mesh.json"
+    );
+}
+
+#[test]
 fn live_dir_functions_agree_with_the_join_helpers() {
     assert_eq!(shared_path(&[]), shared_dir());
     assert_eq!(

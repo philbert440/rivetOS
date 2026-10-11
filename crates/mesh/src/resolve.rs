@@ -141,6 +141,7 @@ fn local_placeholder() -> MeshNode {
         install_root: None,
         platform: None,
         extra: crate::model::JsEntries::new(),
+        origin: None,
     }
 }
 

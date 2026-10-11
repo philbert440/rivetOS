@@ -295,7 +295,7 @@ async fn mesh_routes_use_bearer_auth_and_ping_is_open() {
     config.on_mesh_join = Some(Arc::new(move |node| {
         let joined_cb = Arc::clone(&joined_cb);
         Box::pin(async move {
-            joined_cb.lock().unwrap().push(node.id);
+            joined_cb.lock().unwrap().push(node.id().to_string());
             Ok(())
         })
     }));
@@ -741,23 +741,52 @@ async fn join_keeps_typed_fields_and_omits_null_operators() {
     assert_eq!(status, 200);
     assert_eq!(body["status"], json!("joined"));
     let node = seen.lock().unwrap().clone().unwrap();
-    assert!(node.ssh_user.is_none());
-    assert_eq!(node.port.as_f64(), 3100.0);
-    assert_eq!(node.agents, vec!["opus".to_string()]);
-    assert_eq!(node.status, "online");
+    assert!(node.ssh_user().is_none());
+    assert!(node.original().get("sshUser").unwrap().is_null());
+    assert_eq!(node.port().unwrap().as_f64(), 3100.0);
+    assert_eq!(node.agents().unwrap(), vec!["opus".to_string()]);
+    assert_eq!(node.status(), Some("online"));
     assert_eq!(
-        node.metadata
+        node.metadata()
             .unwrap()
             .get("k")
             .and_then(protocol::js::JsValue::as_str),
         Some("v")
     );
     assert_eq!(
-        node.extra
-            .get("custom")
-            .and_then(protocol::js::JsValue::as_bool),
+        node.get("custom").and_then(protocol::js::JsValue::as_bool),
         Some(true)
     );
+    let partial = Arc::new(Mutex::new(None));
+    let partial_cb = Arc::clone(&partial);
+    let mut partial_config = plain("opus");
+    partial_config.on_mesh_join = Some(Arc::new(move |node| {
+        let partial_cb = Arc::clone(&partial_cb);
+        Box::pin(async move {
+            *partial_cb.lock().unwrap() = Some(node);
+            Ok(())
+        })
+    }));
+    let partial_channel = AgentChannel::new(partial_config);
+    partial_channel.start().await.unwrap();
+    let (partial_status, _, _) = exchange(
+        partial_channel.bound_port(),
+        "POST",
+        "/api/mesh/join",
+        Some(r#"{"id":"only","name":"N","host":"h"}"#),
+        &[("authorization", "Bearer test-secret-123")],
+    )
+    .await;
+    assert_eq!(partial_status, 200);
+    let forwarded = partial.lock().unwrap().clone().unwrap();
+    assert!(forwarded.port().is_none());
+    assert!(forwarded.status().is_none());
+    assert!(forwarded.agents().is_none());
+    assert_eq!(
+        protocol::js::stringify(forwarded.original()),
+        r#"{"id":"only","name":"N","host":"h"}"#
+    );
+    partial_channel.stop().await;
     let (numeric, numeric_body, _) = exchange(
         channel.bound_port(),
         "POST",

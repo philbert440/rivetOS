@@ -6,8 +6,7 @@ pub const DEFAULT_SHARED_DIR: &str = "/rivet-shared";
 pub const DEFAULT_INSTALL_ROOT: &str = "/opt/rivetos";
 
 pub fn shared_dir() -> String {
-    let raw = shared_dir_from(std::env::var("RIVETOS_SHARED_DIR").ok().as_deref());
-    posix_join(&[&raw])
+    shared_dir_from(std::env::var("RIVETOS_SHARED_DIR").ok().as_deref())
 }
 
 pub fn shared_dir_from(raw: Option<&str>) -> String {
@@ -29,8 +28,7 @@ pub fn shared_path(segments: &[&str]) -> String {
 }
 
 pub fn install_root() -> String {
-    let raw = install_root_from(std::env::var("RIVETOS_INSTALL_ROOT").ok().as_deref());
-    posix_join(&[&raw])
+    install_root_from(std::env::var("RIVETOS_INSTALL_ROOT").ok().as_deref())
 }
 
 pub fn install_root_from(raw: Option<&str>) -> String {

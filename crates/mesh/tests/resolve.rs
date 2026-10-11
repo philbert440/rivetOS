@@ -24,6 +24,7 @@ fn node(name: &str, agents: &[&str], status: &str, last_seen: u64) -> MeshNode {
         install_root: None,
         platform: None,
         extra: mesh::JsEntries::new(),
+        origin: None,
     }
 }
 

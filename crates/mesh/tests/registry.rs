@@ -220,6 +220,68 @@ async fn prunes_stale_agent_nodes_and_skips_self_and_infrastructure() {
 }
 
 #[tokio::test]
+async fn empty_role_is_pruned_like_a_missing_role() {
+    let scratch = Scratch::new();
+    let registry = registry(scratch.path());
+    let mut node = sample("blank-role", &["opus"], "10.0.0.4");
+    node.role = Some(String::new());
+    node.last_seen = JsNumber::from(mesh::now_ms_u64().saturating_sub(100_000));
+    registry.register(node.clone()).await.unwrap();
+    let pruned = registry.prune(Some(5_000)).await.unwrap();
+    assert_eq!(pruned.len(), 1);
+    assert_eq!(pruned[0].id, node.id);
+    assert_eq!(
+        registry.get_node(&node.id).await.unwrap().unwrap().status,
+        "offline"
+    );
+}
+
+#[tokio::test]
+async fn join_register_keeps_the_supplied_object() {
+    let scratch = Scratch::new();
+    let registry = registry(scratch.path());
+    let mut existing = sample("n1", &["old"], "10.0.0.9");
+    existing.id = "n1".into();
+    existing.ssh_user = Some("desk".to_string());
+    existing.last_seen = JsNumber::from(1_u32);
+    registry.register(existing).await.unwrap();
+    let parsed = protocol::js::parse(
+        r#"{"host":"10.0.0.9","id":"n1","name":"N","sshUser":null,"agents":["opus"],"note":"keep"}"#,
+    )
+    .unwrap();
+    let joined = mesh::mesh_node_from_join(&parsed).unwrap();
+    assert!(joined.port().is_none());
+    assert!(joined.status().is_none());
+    registry.register(joined.into_mesh_node()).await.unwrap();
+    let raw = std::fs::read_to_string(scratch.path().join(MESH_FILE_NAME)).unwrap();
+    let saved = protocol::js::parse(&raw).unwrap();
+    let node = saved
+        .get("nodes")
+        .and_then(|nodes| nodes.get("n1"))
+        .unwrap();
+    assert_eq!(
+        protocol::js::stringify(node),
+        r#"{"host":"10.0.0.9","id":"n1","name":"N","sshUser":"desk","agents":["opus"],"note":"keep"}"#
+    );
+    let partial = protocol::js::parse(r#"{"id":"p","name":"P","host":"h"}"#).unwrap();
+    registry
+        .register(
+            mesh::mesh_node_from_join(&partial)
+                .unwrap()
+                .into_mesh_node(),
+        )
+        .await
+        .unwrap();
+    let raw = std::fs::read_to_string(scratch.path().join(MESH_FILE_NAME)).unwrap();
+    let saved = protocol::js::parse(&raw).unwrap();
+    let node = saved.get("nodes").and_then(|nodes| nodes.get("p")).unwrap();
+    assert_eq!(
+        protocol::js::stringify(node),
+        r#"{"id":"p","name":"P","host":"h"}"#
+    );
+}
+
+#[tokio::test]
 async fn build_local_node_matches_the_typescript_defaults() {
     let generated = sample("test", &["opus"], "192.168.1.101");
     assert!(generated.id.len() == 36);

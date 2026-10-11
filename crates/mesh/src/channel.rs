@@ -23,7 +23,8 @@ use protocol::events::InboundMessage;
 
 use crate::error::MeshError;
 use crate::model::{
-    JoinNodeError, MeshNode, fill_random, mesh_node_from_join, mesh_nodes_json, now_ms, now_ms_u64,
+    JoinNodeError, JoinedMeshNode, MeshNode, fill_random, mesh_node_from_join, mesh_nodes_json,
+    now_ms, now_ms_u64,
 };
 use crate::tls::{TlsMaterial, client_config, server_config};
 
@@ -35,7 +36,7 @@ pub type MessageHandler = Arc<dyn Fn(InboundMessage) -> MessageFuture + Send + S
 pub type MeshNodesFuture = Pin<Box<dyn Future<Output = Result<Vec<MeshNode>, String>> + Send>>;
 pub type MeshNodesFn = Arc<dyn Fn() -> MeshNodesFuture + Send + Sync>;
 pub type MeshJoinFuture = Pin<Box<dyn Future<Output = Result<(), String>> + Send>>;
-pub type MeshJoinFn = Arc<dyn Fn(MeshNode) -> MeshJoinFuture + Send + Sync>;
+pub type MeshJoinFn = Arc<dyn Fn(JoinedMeshNode) -> MeshJoinFuture + Send + Sync>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeerConfig {
@@ -743,12 +744,15 @@ async fn run_tls(
                 lock(&inner.connections).retain(|task| !task.is_finished());
                 let acceptor = acceptor.clone();
                 let task_inner = Arc::clone(&inner);
-                let task = tokio::spawn(async move {
-                    if let Err(err) = serve_tls(task_inner, acceptor, stream).await {
-                        tracing::debug!("agent channel connection closed: {err}");
-                    }
-                });
-                lock(&inner.connections).push(task);
+                let tracked = TrackedConnection::arm(
+                    Arc::clone(&inner.connections),
+                    tokio::spawn(async move {
+                        if let Err(err) = serve_tls(task_inner, acceptor, stream).await {
+                            tracing::debug!("agent channel connection closed: {err}");
+                        }
+                    }),
+                );
+                drop(tracked);
             }
         }
     }
@@ -776,6 +780,29 @@ async fn serve_tls(
         .serve_connection(io, service)
         .await
         .map_err(|err| err.to_string())
+}
+
+struct TrackedConnection {
+    connections: Arc<Mutex<Vec<JoinHandle<()>>>>,
+    task: Option<JoinHandle<()>>,
+}
+
+impl TrackedConnection {
+    fn arm(connections: Arc<Mutex<Vec<JoinHandle<()>>>>, task: JoinHandle<()>) -> Self {
+        Self {
+            connections,
+            task: Some(task),
+        }
+    }
+}
+
+impl Drop for TrackedConnection {
+    fn drop(&mut self) {
+        let Some(task) = self.task.take() else {
+            return;
+        };
+        lock(&self.connections).push(task);
+    }
 }
 
 fn abort_connections(connections: &Mutex<Vec<JoinHandle<()>>>) {
