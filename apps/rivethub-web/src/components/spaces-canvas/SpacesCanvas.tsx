@@ -36,6 +36,7 @@ import { bindFocusedSpace, bindSpaceThreadStarter } from '../../lib/new-conversa
 import { useKeyLabel } from '../../lib/use-key-label.js'
 import { storageKey } from '../../lib/session-rekey.js'
 import { useRosterAgents } from '../../lib/use-agent-roster.js'
+import { modelNamesFrom } from './tile-label.js'
 import { useArchived } from '../../stores/archived.js'
 import { useChat } from '../../stores/chat.js'
 import { useConnection } from '../../stores/connection.js'
@@ -260,6 +261,7 @@ export function SpacesCanvas(props: {
   const membership = useSpaces((s) => s.membership)
   const baseUrl = useConnection((s) => s.baseUrl)
   const { agents: rosterAgents } = useRosterAgents()
+  const modelNames = useMemo(() => modelNamesFrom(rosterAgents), [rosterAgents])
   const rosterRef = useRef(rosterAgents)
   rosterRef.current = rosterAgents
   const archivedKeys = useArchived((s) => s.keys)
@@ -1381,6 +1383,7 @@ export function SpacesCanvas(props: {
                   fallbackTab={nothingSelected && item.row.key === firstTileId}
                   descriptors={descriptors}
                   renderThread={renderKeyedThread}
+                  modelNames={modelNames}
                 />
               </div>
             )
