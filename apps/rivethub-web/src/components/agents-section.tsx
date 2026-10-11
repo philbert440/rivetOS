@@ -93,6 +93,7 @@ import { useSidebarPrefs } from '../stores/sidebar-prefs.js'
 import { useAgentFilter } from '../stores/agent-filter.js'
 import { Tooltip } from './ui/tooltip.js'
 import { cn } from '../lib/utils.js'
+import { AGENT_DRAG_MIME } from '../lib/agent-drag.js'
 
 type RosterAgent = ResolvedRosterAgent
 
@@ -1517,8 +1518,11 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
                 title="drag or Alt+↑/↓ to reorder"
                 onDragStart={(e) => {
                   setDragId(agent.id)
-                  e.dataTransfer.effectAllowed = 'move'
+                  // copyMove: a reorder within the rail, or a copy onto an
+                  // empty canvas thread slot (which starts a session).
+                  e.dataTransfer.effectAllowed = 'copyMove'
                   e.dataTransfer.setData('text/plain', agent.id)
+                  e.dataTransfer.setData(AGENT_DRAG_MIME, agent.id)
                 }}
                 onDragOver={(e) => {
                   if (dragId === null) return

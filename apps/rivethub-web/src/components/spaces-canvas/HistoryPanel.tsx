@@ -149,7 +149,7 @@ export function HistoryPanel(props: {
       data-history-panel=""
       aria-label={props.pick ? props.pick.title : 'History'}
       data-history-mode={props.pick ? 'pick' : 'browse'}
-      className="absolute inset-y-0 left-0 z-30 flex w-60 flex-col border border-line bg-panel material:rounded-2xl material:border-line/40 material:shadow-pop"
+      className="absolute inset-y-0 right-0 z-30 flex w-60 flex-col border border-line bg-panel material:rounded-2xl material:border-line/40 material:shadow-pop"
       style={{
         outline: props.highlighted ? '2px solid var(--color-em)' : undefined,
       }}
