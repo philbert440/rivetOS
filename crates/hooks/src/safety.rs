@@ -129,6 +129,7 @@ pub struct WorkspaceFenceConfig {
     pub allowed_dirs: Vec<String>,
     pub always_allow: Option<Vec<String>>,
     pub tools: Option<Vec<String>>,
+    pub home: Option<String>,
 }
 
 impl WorkspaceFenceConfig {
@@ -141,6 +142,7 @@ impl WorkspaceFenceConfig {
             allowed_dirs: allowed_dirs.into_iter().map(Into::into).collect(),
             always_allow: None,
             tools: None,
+            home: None,
         }
     }
 }
@@ -227,7 +229,8 @@ pub fn push_warning(metadata: &mut JsObject, text: &str) -> Result<(), HookFailu
 }
 
 pub fn create_workspace_fence_hook(config: WorkspaceFenceConfig) -> HookRegistration {
-    let home = home_dir();
+    let home_at_create = config.home.clone().unwrap_or_else(home_dir);
+    let home = config.home;
     let extras = match &config.always_allow {
         Some(dirs) => dirs.clone(),
         None => DEFAULT_ALWAYS_ALLOW
@@ -240,7 +243,7 @@ pub fn create_workspace_fence_hook(config: WorkspaceFenceConfig) -> HookRegistra
         .iter()
         .cloned()
         .chain(extras)
-        .map(|dir| normalize_fence_path(&dir, &home))
+        .map(|dir| normalize_fence_path(&dir, &home_at_create))
         .collect::<Vec<_>>();
     let listed = config.allowed_dirs.clone();
     let tools = match &config.tools {
@@ -253,7 +256,10 @@ pub fn create_workspace_fence_hook(config: WorkspaceFenceConfig) -> HookRegistra
     HookRegistration {
         id: "safety:workspace-fence".to_string(),
         event: HookEventName::ToolBefore,
-        handler: HookHandler::from_sync(move |ctx| fence(ctx, &allowed, &listed, &tools)),
+        handler: HookHandler::from_sync(move |ctx| {
+            let resolved = home.clone().unwrap_or_else(home_dir);
+            fence(ctx, &allowed, &listed, &tools, &resolved)
+        }),
         priority: 15,
         on_error: HookErrorMode::Abort,
         agent_filter: None,
@@ -268,6 +274,7 @@ fn fence(
     allowed: &[String],
     listed: &[String],
     tools: &[String],
+    home: &str,
 ) -> Result<HookSignal, HookFailure> {
     let tool_name = ctx.tool_name.clone().unwrap_or_default();
     if !tools.iter().any(|tool| tool == &tool_name) {
@@ -278,7 +285,7 @@ fn fence(
     if target.is_empty() {
         return Ok(HookSignal::Continue);
     }
-    let normalized = normalize_fence_path(&target, &home_dir());
+    let normalized = normalize_fence_path(&target, home);
     let permitted = allowed.iter().any(|dir| normalized.starts_with(dir));
     if !permitted {
         ctx.blocked = Some(true);

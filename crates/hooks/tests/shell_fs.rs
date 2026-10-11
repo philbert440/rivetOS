@@ -58,7 +58,7 @@ async fn process_shell_stays_inside_temp_dirs() {
     assert_eq!(err_cut.exit_code, 1);
     let mixed = ProcessShell::new(&dir)
         .with_output_cap(4)
-        .exec("printf 123456789; printf xyz >&2; exit 0", None)
+        .exec("printf xyz >&2; printf 123456789; exit 0", None)
         .await
         .expect("mixed cap");
     assert_eq!(mixed.stdout, "1234");
@@ -122,7 +122,8 @@ async fn file_writer_creates_parents_and_swallows_missing_reads() {
         .await
         .expect("missing");
     assert_eq!(missing, None);
-    let invalid = dir.join("memory").join(format!("{}.md", hooks::utc_date()));
+    let day = "2020-01-15";
+    let invalid = dir.join("memory").join(format!("{day}.md"));
     let invalid_text = invalid.to_str().expect("utf8");
     tokio::fs::write(invalid_text, b"hello \xff world")
         .await
@@ -135,6 +136,7 @@ async fn file_writer_creates_parents_and_swallows_missing_reads() {
         shell: None,
         file_writer: Some(Arc::new(FsFileWriter)),
         workspace_dir: Some(workspace),
+        utc_day: Some(day.to_string()),
     }));
     let mut ctx = HookContext::session_start();
     pipeline.run(&mut ctx).await;

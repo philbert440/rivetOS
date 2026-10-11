@@ -289,4 +289,27 @@ mod tests {
         assert_eq!(wide.last_index, 3);
         assert!(!wide.test("😀a"));
     }
+
+    #[test]
+    fn zero_width_matches_leave_last_index_at_the_match_end() {
+        let mut empty = super::compile_user_pattern("(?:)", "g").expect("empty");
+        assert!(empty.test("abc"));
+        assert_eq!(empty.last_index, 0);
+        assert!(empty.test("abc"));
+        assert_eq!(empty.last_index, 0);
+        assert!(empty.test("abc"));
+        assert_eq!(empty.last_index, 0);
+        let mut sticky = super::compile_user_pattern("x*", "y").expect("sticky");
+        assert!(sticky.test("abc"));
+        assert_eq!(sticky.last_index, 0);
+        assert!(sticky.test("abc"));
+        assert_eq!(sticky.last_index, 0);
+        let mut boundary = super::compile_user_pattern(r"\b", "g").expect("boundary");
+        assert!(boundary.test("abc"));
+        assert_eq!(boundary.last_index, 0);
+        assert!(boundary.test("abc"));
+        assert_eq!(boundary.last_index, 0);
+        assert!(boundary.test("abc"));
+        assert_eq!(boundary.last_index, 0);
+    }
 }

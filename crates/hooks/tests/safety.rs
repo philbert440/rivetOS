@@ -5,8 +5,7 @@ use hooks::{
     AuditWriter, HookErrorMode, HookEventName, HookPipeline, JsonlAuditWriter, SafetyAction,
     SafetyHooksConfig, SafetyRule, WorkspaceFenceConfig, boot_custom_rules, create_audit_hooks,
     create_custom_rules_hook, create_safety_hooks, create_shell_danger_hook,
-    create_workspace_fence_hook, home_dir, rule_no_delete_git, rule_npm_dry_run,
-    rule_warn_config_write,
+    create_workspace_fence_hook, rule_no_delete_git, rule_npm_dry_run, rule_warn_config_write,
 };
 use serde_json::json;
 
@@ -73,7 +72,6 @@ async fn shell_danger_blocks_warns_and_ignores_other_tools() {
     let mut both = tool_before("shell", json!({"command": "npm publish && npx publish"}));
     pipeline.run(&mut both).await;
     assert_eq!(warnings(&both).len(), 2);
-    assert!(!home_dir().is_empty());
     let hook = create_shell_danger_hook();
     assert_eq!(hook.priority, 10);
     assert_eq!(hook.on_error, HookErrorMode::Abort);
@@ -135,6 +133,30 @@ async fn workspace_fence_uses_prefix_matching_and_default_allows() {
     let mut allowed = tool_before("file_read", json!({"path": "/opt/file"}));
     pipeline.run(&mut allowed).await;
     assert_eq!(allowed.blocked, None);
+
+    let pipeline = HookPipeline::new();
+    let mut injected = WorkspaceFenceConfig::new(["/home/injected"]);
+    injected.home = Some("/home/injected".to_string());
+    injected.always_allow = Some(Vec::new());
+    pipeline.register(create_workspace_fence_hook(injected));
+    let mut tilde = tool_before("file_read", json!({"path": "~/notes"}));
+    pipeline.run(&mut tilde).await;
+    assert_eq!(tilde.blocked, None);
+    let mut outside = tool_before("file_read", json!({"path": "/etc/passwd"}));
+    pipeline.run(&mut outside).await;
+    assert_eq!(outside.blocked, Some(true));
+
+    let pipeline = HookPipeline::new();
+    let mut empty_home = WorkspaceFenceConfig::new(["/secret"]);
+    empty_home.home = Some(String::new());
+    empty_home.always_allow = Some(Vec::new());
+    pipeline.register(create_workspace_fence_hook(empty_home));
+    let mut expanded = tool_before("file_read", json!({"path": "~/secret"}));
+    pipeline.run(&mut expanded).await;
+    assert_eq!(expanded.blocked, None);
+    let mut elsewhere = tool_before("file_read", json!({"path": "/etc/passwd"}));
+    pipeline.run(&mut elsewhere).await;
+    assert_eq!(elsewhere.blocked, Some(true));
 }
 
 #[tokio::test]
@@ -332,7 +354,9 @@ async fn create_safety_hooks_counts_and_priority_order() {
 #[tokio::test]
 async fn jsonl_writer_appends_integer_duration_lines() {
     let dir = super::common::make_temp().await;
-    let writer = JsonlAuditWriter::new(&dir);
+    let day = "2020-01-15";
+    let writer = JsonlAuditWriter::new(&dir).with_utc_day(day);
+    let path = writer.path_for(day);
     let hooks = create_audit_hooks(Arc::new(writer));
     let pipeline = HookPipeline::new();
     for hook in hooks {
@@ -346,8 +370,6 @@ async fn jsonl_writer_appends_integer_duration_lines() {
     );
     ctx.agent_id = Some("opus".to_string());
     pipeline.run(&mut ctx).await;
-    let day = hooks::utc_date();
-    let path = dir.join(".data").join("audit").join(format!("{day}.jsonl"));
     let text = tokio::fs::read_to_string(&path).await.expect("jsonl");
     assert!(text.ends_with('\n'));
     assert!(text.contains("\"durationMs\":42"));

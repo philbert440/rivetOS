@@ -556,6 +556,24 @@ async fn registration_replace_keeps_position_and_logs_the_warning() {
     );
     assert!(pipeline.unregister("dupe"));
     assert!(!pipeline.unregister("missing"));
+    seen.lock().unwrap_or_else(|err| err.into_inner()).clear();
+    let mut ctx = provider_before();
+    pipeline.run(&mut ctx).await;
+    assert_eq!(
+        seen.lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .as_slice(),
+        ["kept"]
+    );
+    assert!(pipeline.unregister("kept"));
+    seen.lock().unwrap_or_else(|err| err.into_inner()).clear();
+    let mut ctx = provider_before();
+    pipeline.run(&mut ctx).await;
+    assert!(
+        seen.lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .is_empty()
+    );
     pipeline.clear();
     assert!(pipeline.get_hooks(None).is_empty());
     let _ = HookPipeline::default();

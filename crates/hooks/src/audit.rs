@@ -179,13 +179,20 @@ async fn audit_after(
 
 pub struct JsonlAuditWriter {
     workspace_dir: PathBuf,
+    utc_day: Option<String>,
 }
 
 impl JsonlAuditWriter {
     pub fn new(workspace_dir: impl Into<PathBuf>) -> Self {
         Self {
             workspace_dir: workspace_dir.into(),
+            utc_day: None,
         }
+    }
+
+    pub fn with_utc_day(mut self, day: impl Into<String>) -> Self {
+        self.utc_day = Some(day.into());
+        self
     }
 
     pub fn path_for(&self, day: &str) -> PathBuf {
@@ -198,7 +205,11 @@ impl JsonlAuditWriter {
 
 impl AuditWriter for JsonlAuditWriter {
     fn write<'a>(&'a self, entry: &'a AuditEntry) -> BoxFuture<'a, Result<(), AuditError>> {
-        let path = self.path_for(&crate::time_format::utc_date());
+        let day = self
+            .utc_day
+            .clone()
+            .unwrap_or_else(crate::time_format::utc_date);
+        let path = self.path_for(&day);
         Box::pin(async move { append_jsonl(&path, entry).await })
     }
 }

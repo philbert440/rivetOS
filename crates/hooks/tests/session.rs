@@ -33,6 +33,7 @@ fn context(
         shell,
         file_writer: files.map(|files| files as Arc<dyn hooks::FileWriter>),
         workspace_dir: workspace.map(str::to_string),
+        utc_day: None,
     }
 }
 
@@ -94,6 +95,19 @@ async fn session_start_records_metadata_and_daily_context() {
     )));
     let mut ctx = HookContext::session_start();
     pipeline.run(&mut ctx).await;
+    assert!(ctx.metadata.get("dailyContext").is_none());
+
+    let files = files_with_read(Err(hooks::FileError::read_timed_out()));
+    let pipeline = HookPipeline::new();
+    pipeline.register(create_session_start_hook(context(
+        None,
+        Some(files),
+        Some("/home/user/workspace"),
+    )));
+    let mut ctx = HookContext::session_start();
+    let result = pipeline.run(&mut ctx).await;
+    assert!(!result.aborted);
+    assert!(result.errors.is_empty());
     assert!(ctx.metadata.get("dailyContext").is_none());
 
     let long = "é".repeat(2001);

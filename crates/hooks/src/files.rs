@@ -17,6 +17,14 @@ impl FileError {
             message: message.into(),
         }
     }
+
+    pub fn read_timed_out() -> Self {
+        Self::new("file read timed out")
+    }
+
+    pub fn is_read_timeout(&self) -> bool {
+        self == &Self::read_timed_out()
+    }
 }
 
 impl From<std::io::Error> for FileError {
@@ -59,8 +67,8 @@ impl FileWriter for FsFileWriter {
                 Ok(Ok(bytes)) => Ok(Some(String::from_utf8_lossy(&bytes).into_owned())),
                 Ok(Err(_)) => Ok(None),
                 Err(_) => {
-                    tracing::warn!("file read timed out");
-                    Ok(None)
+                    tracing::warn!("file read timed out: {path}");
+                    Err(FileError::read_timed_out())
                 }
             }
         })

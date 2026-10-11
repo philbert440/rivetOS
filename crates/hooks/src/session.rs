@@ -18,6 +18,7 @@ pub struct SessionHooksContext {
     pub shell: Option<Arc<dyn ShellExecutor>>,
     pub file_writer: Option<Arc<dyn FileWriter>>,
     pub workspace_dir: Option<String>,
+    pub utc_day: Option<String>,
 }
 
 pub struct SessionHooksConfig {
@@ -162,14 +163,18 @@ async fn session_start(
             .insert_key("userId", JsValue::from_text(&user_id));
     }
     if let (Some(writer), Some(workspace)) = (ctx.file_writer.clone(), ctx.workspace_dir.clone()) {
-        let path = daily_note_path(&workspace);
-        if let Ok(Some(note)) = writer.read(&path).await
-            && !note.is_empty()
-        {
-            hook_ctx.metadata.insert_key(
-                "dailyContext",
-                JsValue::String(protocol::js::slice_units(&note, 0, Some(DAILY_NOTE_CAP))),
-            );
+        let path = daily_note_path(&workspace, ctx.utc_day.as_deref());
+        match writer.read(&path).await {
+            Ok(Some(note)) if !note.is_empty() => {
+                hook_ctx.metadata.insert_key(
+                    "dailyContext",
+                    JsValue::String(protocol::js::slice_units(&note, 0, Some(DAILY_NOTE_CAP))),
+                );
+            }
+            Err(err) if err.is_read_timeout() => {
+                tracing::warn!("daily note read timed out: {path}");
+            }
+            Ok(_) | Err(_) => {}
         }
     }
     Ok(HookSignal::Continue)
@@ -206,7 +211,7 @@ async fn session_summary(
     }
     lines.push(String::new());
     let body = lines.join("\n");
-    let path = daily_note_path(&workspace);
+    let path = daily_note_path(&workspace, ctx.utc_day.as_deref());
     let written = writer.append(&path, &body).await.is_ok();
     hook_ctx
         .metadata
@@ -346,7 +351,7 @@ async fn post_compact(
         let entry = format!(
             "\n### Compaction {now}\n- Messages: {count_text} → {remaining_text}\n- Summary: {summary}\n"
         );
-        let path = daily_note_path(&workspace);
+        let path = daily_note_path(&workspace, ctx.utc_day.as_deref());
         let _ = writer.append(&path, &entry).await;
     }
     Ok(HookSignal::Continue)
@@ -360,8 +365,11 @@ fn snapshot_message_count(metadata: &JsObject) -> Option<i64> {
         .and_then(JsValue::as_i64)
 }
 
-fn daily_note_path(workspace: &str) -> String {
-    format!("{workspace}/memory/{}.md", utc_date())
+fn daily_note_path(workspace: &str, day: Option<&str>) -> String {
+    match day {
+        Some(day) => format!("{workspace}/memory/{day}.md"),
+        None => format!("{workspace}/memory/{}.md", utc_date()),
+    }
 }
 
 async fn clock_hhmm() -> String {
