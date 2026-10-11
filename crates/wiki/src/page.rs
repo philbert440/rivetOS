@@ -51,6 +51,12 @@ impl WikiMarkdown for JsText {
     }
 }
 
+impl WikiMarkdown for protocol::js::JsString {
+    fn to_markdown_text(&self) -> JsText {
+        JsText::from_units(self.units().to_vec())
+    }
+}
+
 pub fn parse_wiki_page(input: &(impl WikiMarkdown + ?Sized)) -> Result<WikiPage, WikiParseError> {
     let text = input.to_markdown_text();
     match String::from_utf16(text.units()) {

@@ -1219,13 +1219,76 @@ fn block_header_before(text: &str, offset: usize) -> bool {
     if end == 0 {
         return false;
     }
+    let mut line_start = end;
+    while line_start > 0 && !is_line_break(chars[line_start - 1]) {
+        line_start -= 1;
+    }
+    end = line_start + comment_trimmed_end(&chars[line_start..end]);
+    if end <= line_start {
+        return false;
+    }
     let mut start = end;
     let mut taken = 0usize;
-    while start > 0 && taken < 3 && !is_yaml_space(chars[start - 1]) {
+    while start > line_start && taken < 3 && !is_yaml_space(chars[start - 1]) {
         start -= 1;
         taken += 1;
     }
     is_block_header(&chars[start..end])
+}
+
+fn is_line_break(ch: char) -> bool {
+    matches!(ch, '\n' | '\r')
+}
+
+fn comment_trimmed_end(line: &[char]) -> usize {
+    let mut index = 0usize;
+    let mut quote: Option<char> = None;
+    while index < line.len() {
+        let ch = line[index];
+        if quote == Some('\'') {
+            if ch == '\'' {
+                if line.get(index + 1) == Some(&'\'') {
+                    index += 2;
+                    continue;
+                }
+                quote = None;
+            }
+            index += 1;
+            continue;
+        }
+        if quote == Some('"') {
+            if ch == '\\' {
+                index += 1;
+                if index < line.len() {
+                    index += 1;
+                }
+                continue;
+            }
+            if ch == '"' {
+                quote = None;
+            }
+            index += 1;
+            continue;
+        }
+        if ch == '"' || ch == '\'' {
+            quote = Some(ch);
+            index += 1;
+            continue;
+        }
+        if ch == '#' && index > 0 && is_yaml_space(line[index - 1]) {
+            let mut end = index;
+            while end > 0 && is_yaml_space(line[end - 1]) {
+                end -= 1;
+            }
+            return end;
+        }
+        index += 1;
+    }
+    let mut end = line.len();
+    while end > 0 && is_yaml_space(line[end - 1]) {
+        end -= 1;
+    }
+    end
 }
 
 fn is_yaml_space(ch: char) -> bool {

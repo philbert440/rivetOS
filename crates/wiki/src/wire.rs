@@ -3,6 +3,7 @@ use serde::Serialize;
 
 use crate::model::{SourceSpan, WikiCitation, WikiHistoryEntry};
 use protocol::JsNumber;
+use protocol::js::JsString;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -57,7 +58,7 @@ pub struct WikiIndexEntry {
     pub tags: Vec<String>,
     pub entities: Vec<String>,
     pub updated_at: String,
-    pub excerpt: String,
+    pub excerpt: JsString,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

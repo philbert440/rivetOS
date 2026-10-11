@@ -1,6 +1,6 @@
 use crate::error::WikiParseError;
 use crate::model::WikiPage;
-use crate::page::parse_wiki_page;
+use crate::page::{WikiMarkdown, parse_wiki_page};
 use crate::text::{JsText, fmt_count, fmt_kb};
 
 pub const WIKI_READ_VERBATIM_MAX_CHARS: usize = 24_000;
@@ -18,57 +18,62 @@ const SECTION_CITATIONS: usize = 40;
 const DEFAULT_TAGS: usize = 16;
 const MALFORMED_RAW_CHARS: usize = 8_000;
 
-pub fn format_wiki_read(markdown: &str, slug: &str, section: Option<&str>) -> JsText {
-    let page = match parse_wiki_page(markdown) {
+pub fn format_wiki_read(
+    markdown: &(impl WikiMarkdown + ?Sized),
+    slug: &str,
+    section: Option<&str>,
+) -> JsText {
+    let markdown = markdown.to_markdown_text();
+    let page = match parse_wiki_page(&markdown) {
         Ok(page) => page,
-        Err(err) => return format_malformed(markdown, slug, &err),
+        Err(err) => return format_malformed(&markdown, slug, &err),
     };
     let section = section.unwrap_or("");
-    let oversized = protocol::js::utf16_len(markdown) > WIKI_READ_VERBATIM_MAX_CHARS;
+    let oversized = markdown.len() > WIKI_READ_VERBATIM_MAX_CHARS;
     if section == "full" {
         if !oversized {
-            return JsText::from(markdown);
+            return markdown;
         }
         return JsText::join(
             &[
-                JsText::from(refuse_full_banner(&page, markdown, slug)),
+                JsText::from(refuse_full_banner(&page, &markdown, slug)),
                 JsText::from(""),
-                format_encyclopedia(&page, markdown, slug, true),
+                format_encyclopedia(&page, &markdown, slug, true),
             ],
             "\n",
         );
     }
     if section.is_empty() && !oversized {
-        return JsText::from(markdown);
+        return markdown;
     }
     match section {
-        "summary" => format_summary_slice(&page, markdown, slug),
-        "article" => format_article_slice(&page, markdown, slug),
-        "history" => format_history_slice(&page, markdown, slug),
-        "aliases" => JsText::from(format_aliases_slice(&page, markdown, slug)),
-        "citations" => JsText::from(format_citations_slice(&page, markdown, slug)),
-        _ => format_encyclopedia(&page, markdown, slug, false),
+        "summary" => format_summary_slice(&page, &markdown, slug),
+        "article" => format_article_slice(&page, &markdown, slug),
+        "history" => format_history_slice(&page, &markdown, slug),
+        "aliases" => JsText::from(format_aliases_slice(&page, &markdown, slug)),
+        "citations" => JsText::from(format_citations_slice(&page, &markdown, slug)),
+        _ => format_encyclopedia(&page, &markdown, slug, false),
     }
 }
 
-fn format_malformed(markdown: &str, slug: &str, err: &WikiParseError) -> JsText {
+fn format_malformed(markdown: &JsText, slug: &str, err: &WikiParseError) -> JsText {
     let header = format!(
         "⚠ Page \"{slug}\" is malformed ({err}) — raw content follows; the next extractor pass will re-structure it."
     );
-    if protocol::js::utf16_len(markdown) <= WIKI_READ_VERBATIM_MAX_CHARS {
-        return JsText::from(format!("{header}\n\n{markdown}"));
+    if markdown.len() <= WIKI_READ_VERBATIM_MAX_CHARS {
+        return JsText::concat(&[JsText::from(header), JsText::from("\n\n"), markdown.clone()]);
     }
     JsText::join(
         &[
             JsText::from(header),
             JsText::from(format!(
                 "Page is also oversized ({} chars); showing the first {}.",
-                fmt_count(protocol::js::utf16_len(markdown)),
+                fmt_count(markdown.len()),
                 fmt_count(MALFORMED_RAW_CHARS)
             )),
             JsText::from(""),
             cap_text(
-                &JsText::from(markdown),
+                markdown,
                 MALFORMED_RAW_CHARS,
                 &format!("wiki_read slug={slug} after the next extractor pass"),
             ),
@@ -77,7 +82,12 @@ fn format_malformed(markdown: &str, slug: &str, err: &WikiParseError) -> JsText 
     )
 }
 
-fn format_encyclopedia(page: &WikiPage, markdown: &str, slug: &str, skip_banner: bool) -> JsText {
+fn format_encyclopedia(
+    page: &WikiPage,
+    markdown: &JsText,
+    slug: &str,
+    skip_banner: bool,
+) -> JsText {
     let mut parts = Vec::new();
     if !skip_banner {
         parts.push(JsText::from(oversized_banner(page, markdown, slug)));
@@ -145,7 +155,7 @@ fn format_encyclopedia(page: &WikiPage, markdown: &str, slug: &str, skip_banner:
     JsText::join(&parts, "\n")
 }
 
-fn format_summary_slice(page: &WikiPage, markdown: &str, slug: &str) -> JsText {
+fn format_summary_slice(page: &WikiPage, markdown: &JsText, slug: &str) -> JsText {
     let summary = page.current_state.trimmed();
     let summary = if summary.is_empty() {
         JsText::from("(empty)")
@@ -165,7 +175,7 @@ fn format_summary_slice(page: &WikiPage, markdown: &str, slug: &str) -> JsText {
     )
 }
 
-fn format_article_slice(page: &WikiPage, markdown: &str, slug: &str) -> JsText {
+fn format_article_slice(page: &WikiPage, markdown: &JsText, slug: &str) -> JsText {
     let article = JsText::from(protocol::js::js_trim(&page.article));
     let article = if article.is_empty() {
         JsText::from("(empty)")
@@ -189,7 +199,7 @@ fn format_article_slice(page: &WikiPage, markdown: &str, slug: &str) -> JsText {
     )
 }
 
-fn format_history_slice(page: &WikiPage, markdown: &str, slug: &str) -> JsText {
+fn format_history_slice(page: &WikiPage, markdown: &JsText, slug: &str) -> JsText {
     let shown = SECTION_HISTORY.min(page.history.len());
     JsText::join(
         &[
@@ -207,7 +217,7 @@ fn format_history_slice(page: &WikiPage, markdown: &str, slug: &str) -> JsText {
     )
 }
 
-fn format_aliases_slice(page: &WikiPage, markdown: &str, slug: &str) -> String {
+fn format_aliases_slice(page: &WikiPage, markdown: &JsText, slug: &str) -> String {
     let aliases = &page.meta.aliases;
     let shown = SECTION_ALIASES.min(aliases.len());
     let body = if aliases.is_empty() {
@@ -234,7 +244,7 @@ fn format_aliases_slice(page: &WikiPage, markdown: &str, slug: &str) -> String {
     .join("\n")
 }
 
-fn format_citations_slice(page: &WikiPage, markdown: &str, slug: &str) -> String {
+fn format_citations_slice(page: &WikiPage, markdown: &JsText, slug: &str) -> String {
     let shown = SECTION_CITATIONS.min(page.citations.len());
     [
         slice_banner(page, markdown, slug, "citations"),
@@ -250,7 +260,7 @@ fn format_citations_slice(page: &WikiPage, markdown: &str, slug: &str) -> String
     .join("\n")
 }
 
-fn oversized_banner(page: &WikiPage, markdown: &str, slug: &str) -> String {
+fn oversized_banner(page: &WikiPage, markdown: &JsText, slug: &str) -> String {
     [
         format!(
             "⚠ Oversized wiki page \"{slug}\" ({}).",
@@ -265,8 +275,8 @@ fn oversized_banner(page: &WikiPage, markdown: &str, slug: &str) -> String {
     .join("\n")
 }
 
-fn slice_banner(page: &WikiPage, markdown: &str, slug: &str, section: &str) -> String {
-    let prefix = if protocol::js::utf16_len(markdown) > WIKI_READ_VERBATIM_MAX_CHARS {
+fn slice_banner(page: &WikiPage, markdown: &JsText, slug: &str, section: &str) -> String {
+    let prefix = if markdown.len() > WIKI_READ_VERBATIM_MAX_CHARS {
         format!(
             "⚠ Oversized wiki page \"{slug}\" ({}). ",
             page_stats(page, markdown)
@@ -277,7 +287,7 @@ fn slice_banner(page: &WikiPage, markdown: &str, slug: &str, section: &str) -> S
     format!("{prefix}section={section}\n")
 }
 
-fn refuse_full_banner(page: &WikiPage, markdown: &str, slug: &str) -> String {
+fn refuse_full_banner(page: &WikiPage, markdown: &JsText, slug: &str) -> String {
     [
         format!(
             "section=full refused for \"{slug}\": page is {} (limit {} characters).",
@@ -291,10 +301,10 @@ fn refuse_full_banner(page: &WikiPage, markdown: &str, slug: &str) -> String {
     .join("\n")
 }
 
-fn page_stats(page: &WikiPage, markdown: &str) -> String {
+fn page_stats(page: &WikiPage, markdown: &JsText) -> String {
     format!(
         "{} KB · {} aliases · {} history · {} citations · {} see-also",
-        fmt_kb(protocol::js::utf16_len(markdown)),
+        fmt_kb(markdown.len()),
         fmt_count(page.meta.aliases.len()),
         fmt_count(page.history.len()),
         fmt_count(page.citations.len()),
@@ -469,4 +479,24 @@ fn unique(items: &[String]) -> Vec<String> {
         out.push(item.clone());
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_wiki_read;
+
+    #[test]
+    fn format_wiki_read_accepts_js_string() {
+        let page = "---\ntitle: T\nslug: example-topic\n---\n\n## Summary\n\nLead";
+        let mut units: Vec<u16> = page.encode_utf16().collect();
+        units.push(0xD83D);
+        let markdown = protocol::js::JsString::from_units(units);
+        let out = format_wiki_read(&markdown, "example-topic", None);
+        assert_eq!(out.units(), markdown.units());
+        let summary = format_wiki_read(&markdown, "example-topic", Some("summary"));
+        assert_eq!(summary.units().last().copied(), Some(0xD83D));
+        let json = serde_json::to_string(&summary).expect("json");
+        assert!(json.contains("\\ud83d"), "{json}");
+        assert!(!json.contains("\\ufffd"), "{json}");
+    }
 }

@@ -999,7 +999,7 @@ fn wire_index_total_is_a_json_number_and_git_sha_is_null() {
             tags: vec!["draft".to_string()],
             entities: Vec::new(),
             updated_at: "2026-07-01T00:00:00Z".to_string(),
-            excerpt: "node-a".to_string(),
+            excerpt: "node-a".into(),
         }],
         total: 1.into(),
     };
@@ -1063,6 +1063,56 @@ fn source_objects_keep_original_order_and_unknown_keys() {
     );
     let round = parse_wiki_page(&again).expect("round");
     assert_eq!(serialize_wiki_page(&round), again);
+}
+
+#[test]
+fn read_format_keeps_serialized_surrogate_units() {
+    let mut first = patch(PatchAction::Create, "example-topic", "2026-07-01T00:00:00Z");
+    first.current_state = Some(format!("{}😀", "a".repeat(2399)));
+    let page = apply_patch(None, &first);
+    let serialized = serialize_wiki_page(&page);
+    assert!(serialized.units().contains(&0xD83D));
+    assert!(!serialized.units().contains(&0xFFFD));
+    let verbatim = format_wiki_read(&serialized, "example-topic", None);
+    assert_eq!(verbatim.units(), serialized.units());
+    let full = format_wiki_read(&serialized, "example-topic", Some("full"));
+    assert_eq!(full.units(), serialized.units());
+    let summary = format_wiki_read(&serialized, "example-topic", Some("summary"));
+    assert_eq!(summary.units().last().copied(), Some(0xD83D));
+    assert!(!summary.units().contains(&0xFFFD));
+    for rendered in [&verbatim, &full, &summary] {
+        let json = serde_json::to_string(rendered).expect("json");
+        assert!(json.contains("\\ud83d"), "{json}");
+        assert!(!json.contains("\\ufffd"), "{json}");
+    }
+}
+
+#[test]
+fn index_excerpt_keeps_a_sliced_surrogate() {
+    let lead = "a".repeat(199);
+    let raw = format!("\"{lead}\\ud83d\"");
+    let index = WikiIndexResponse {
+        topics: vec![WikiIndexEntry {
+            slug: "example-topic".to_string(),
+            title: "Example Topic".to_string(),
+            tags: vec!["draft".to_string()],
+            entities: Vec::new(),
+            updated_at: "2026-07-01T00:00:00Z".to_string(),
+            excerpt: serde_json::from_str(&raw).expect("excerpt"),
+        }],
+        total: 1.into(),
+    };
+    let json = serde_json::to_string(&index).expect("index");
+    assert_eq!(
+        json,
+        format!(
+            "{{\"topics\":[{{\"slug\":\"example-topic\",\"title\":\"Example Topic\",\"tags\":[\"draft\"],\"entities\":[],\"updatedAt\":\"2026-07-01T00:00:00Z\",\"excerpt\":\"{lead}\\ud83d\"}}],\"total\":1}}"
+        )
+    );
+    let back: WikiIndexResponse = serde_json::from_str(&json).expect("back");
+    assert_eq!(back.topics[0].excerpt.units().len(), 200);
+    assert_eq!(back.topics[0].excerpt.units().last().copied(), Some(0xD83D));
+    assert!(!back.topics[0].excerpt.units().contains(&0xFFFD));
 }
 
 #[test]
@@ -1269,6 +1319,62 @@ fn strip_chomped_block_scalar_keeps_nonfinite_text() {
         .and_then(|list| list.as_array().and_then(|items| items.first().cloned()))
         .expect("item");
     assert!(first.as_f64().expect("nan").is_nan());
+
+    let commented = [
+        (
+            "---\ntoken: |- # literal\n  .nan\ntitle: T\nslug: t\n---\n\n## Summary\n\nLead.\n",
+            ".nan",
+        ),
+        (
+            "---\ntoken: >- # folded\n  .inf\ntitle: T\nslug: t\n---\n\n## Summary\n\nLead.\n",
+            ".inf",
+        ),
+        (
+            "---\ntoken: |- #\n  -.inf\ntitle: T\nslug: t\n---\n\n## Summary\n\nLead.\n",
+            "-.inf",
+        ),
+        (
+            "---\ntoken: |2- # indent\n  .nan\ntitle: T\nslug: t\n---\n\n## Summary\n\nLead.\n",
+            ".nan",
+        ),
+    ];
+    for (markdown, text) in commented {
+        let parsed = parse_wiki_page(markdown).expect("commented header");
+        let token = parsed
+            .meta
+            .extra
+            .as_ref()
+            .and_then(|extra| extra.get("token"))
+            .expect("token");
+        assert_eq!(token.as_str(), Some(text), "{markdown}");
+        assert!(token.as_f64().is_none(), "{markdown}");
+    }
+
+    let quoted_key =
+        "---\n\"note #1\": |- # literal\n  .nan\ntitle: T\nslug: t\n---\n\n## Summary\n\nLead.\n";
+    let parsed = parse_wiki_page(quoted_key).expect("quoted key");
+    let token = parsed
+        .meta
+        .extra
+        .as_ref()
+        .and_then(|extra| extra.get("note #1"))
+        .expect("note");
+    assert_eq!(token.as_str(), Some(".nan"));
+    assert!(token.as_f64().is_none());
+
+    let plain_comment =
+        "---\ntoken: .nan # still a number\ntitle: T\nslug: t\n---\n\n## Summary\n\nLead.\n";
+    let parsed = parse_wiki_page(plain_comment).expect("plain comment");
+    assert!(
+        parsed
+            .meta
+            .extra
+            .as_ref()
+            .and_then(|extra| extra.get("token"))
+            .and_then(|token| token.as_f64())
+            .expect("nan")
+            .is_nan()
+    );
 }
 
 #[test]
