@@ -7,6 +7,7 @@ use tokio::sync::Mutex;
 
 use crate::error::WorkflowError;
 use crate::types::{AgentDef, LoadedWorkflow, StepUsage};
+use crate::wire::WireJson;
 
 pub type ReportUsageFn = Arc<dyn Fn(StepUsage) + Send + Sync>;
 
@@ -14,7 +15,7 @@ pub struct AgentExecuteOpts {
     pub label: String,
     pub step_id: String,
     pub agent: Option<String>,
-    pub prompt: Option<String>,
+    pub prompt: Option<WireJson>,
     pub out: Vec<String>,
     pub agent_def: Option<AgentDef>,
     pub case_dir: String,
@@ -29,7 +30,7 @@ pub struct RunExecuteOpts {
     pub step_id: String,
     pub script: Option<String>,
     pub skill: Option<String>,
-    pub input: Option<Map<String, Value>>,
+    pub input: Option<WireJson>,
     pub case_dir: String,
     pub workflow: LoadedWorkflow,
     pub timeout_ms: f64,

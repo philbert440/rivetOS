@@ -1,17 +1,18 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 
 use workflows::{
     AgentStepOpts, ContractReason, EngineConfig, ExecutorRegistry, HumanStepOpts, JournalEntry,
-    LoadedWorkflow, MockExecutorRegistry, ResumeRunOptions, RunFinishedStatus, RunPatch, RunScript,
-    RunStatus, RunStepOpts, ScaffoldOptions, StartRunOptions, StartedBy, StartedByType, StepKind,
-    StepOutput, StepUsage, WireJson, WorkflowEngine, WorkflowError, agent_handler, append_journal,
-    branch, check_run_script_determinism, is_max_concurrent_runs, journal_path, load_workflow_dir,
+    LoadedWorkflow, MockExecutorRegistry, NamespacedCallRegistry, ResumeRunOptions,
+    RunFinishedStatus, RunPatch, RunScript, RunStatus, RunStepOpts, ScaffoldOptions,
+    StartRunOptions, StartedBy, StartedByType, StepKind, StepOutput, StepUsage, WireJson,
+    WorkflowEngine, WorkflowError, agent_handler, append_journal, branch,
+    check_run_script_determinism, is_max_concurrent_runs, journal_path, load_workflow_dir,
     make_step_id, node_join, parse_call_ref, parse_manifest, path_text, read_case, read_journal,
     run_handler, run_script, scaffold_workflow, update_run, validate_start_input,
 };
@@ -614,16 +615,16 @@ async fn undeclared_agent_fields_are_not_merged() {
 #[tokio::test]
 async fn errors_on_unknown_namespace() {
     let registry = workflows::create_call_registry(Some(Arc::new(|_name, _input, _ctx| {
-        Box::pin(async { Ok(json!({})) })
+        Box::pin(async { WireJson::parse("{}") })
     })));
     registry.register(
         "ext",
-        Arc::new(|_name, _input, _ctx| Box::pin(async { Ok(json!({"ok": true})) })),
+        Arc::new(|_name, _input, _ctx| Box::pin(async { WireJson::parse(r#"{"ok":true}"#) })),
     );
     let err = registry
         .call(
             "other:foo",
-            Map::new(),
+            WireJson::parse("{}").unwrap(),
             workflows::CallContext {
                 parent_run_id: "r".to_string(),
                 parent_step_id: "s".to_string(),
@@ -952,14 +953,17 @@ async fn parallel_returns_results_in_branch_index_order() {
     let pending: Arc<tokio::sync::Mutex<HashMap<String, tokio::sync::oneshot::Sender<Value>>>> =
         Arc::new(tokio::sync::Mutex::new(HashMap::new()));
     let pending_h = pending.clone();
+    let (ready_tx, mut ready_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
     let engine = engine_for(
         &root.join("runs"),
         arc_exec(MockExecutorRegistry::with_run(run_handler(move |opts| {
             let pending = pending_h.clone();
+            let ready_tx = ready_tx.clone();
             async move {
                 let script = opts.script.clone().unwrap_or_default();
                 let (sender, receiver) = tokio::sync::oneshot::channel();
                 pending.lock().await.insert(script, sender);
+                let _ = ready_tx.send(());
                 receiver
                     .await
                     .map_err(|_| WorkflowError::message("resolver dropped"))
@@ -998,12 +1002,18 @@ async fn parallel_returns_results_in_branch_index_order() {
             )
             .await
     });
-    for _ in 0..50 {
-        if pending.lock().await.len() >= 2 {
-            break;
+    let ready = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if pending.lock().await.len() >= 2 {
+                break;
+            }
+            if ready_rx.recv().await.is_none() {
+                break;
+            }
         }
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    }
+    })
+    .await;
+    assert!(ready.is_ok(), "both parallel branches did not become ready");
     assert_eq!(pending.lock().await.len(), 2);
     let mut waiting = pending.lock().await;
     let send_b = waiting.remove("b").unwrap();
@@ -1076,6 +1086,422 @@ async fn parallel_returns_the_first_failure_without_waiting() {
             .unwrap_or_default()
             .contains("branch failed fast")
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn node_parallel_failure_returns_while_a_sibling_continues() {
+    let root = temp_root("par-node");
+    let (dir, _) = load_min(&root, "wf", None).await;
+    tokio::fs::write(
+        dir.join("run.js"),
+        "export default async function run(step) {\n  await step.parallel('fan', [\n    async (step) => {\n      await step.run('first', { script: 'first' })\n      await step.run('second', { script: 'second' })\n      return 'kept'\n    },\n    async () => { throw new Error('branch failed fast') },\n  ])\n}\n",
+    )
+    .await
+    .unwrap();
+    let workflow = load_workflow_dir(&dir).await.unwrap();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel::<Value>();
+    let release_rx = Arc::new(Mutex::new(Some(release_rx)));
+    let second = Arc::new(AtomicUsize::new(0));
+    let second_h = second.clone();
+    let engine = engine_for(
+        &root.join("runs"),
+        arc_exec(MockExecutorRegistry::with_run(run_handler(move |opts| {
+            let release_rx = release_rx.clone();
+            let second = second_h.clone();
+            async move {
+                match opts.script.as_deref() {
+                    Some("first") => {
+                        let rx = release_rx.lock().unwrap().take();
+                        match rx {
+                            Some(rx) => rx
+                                .await
+                                .map_err(|_| WorkflowError::message("resolver dropped")),
+                            None => Err(WorkflowError::message("first ran twice")),
+                        }
+                    }
+                    Some("second") => {
+                        second.fetch_add(1, Ordering::SeqCst);
+                        Ok(json!({"ok": true}))
+                    }
+                    _ => Ok(json!({"ok": true})),
+                }
+            }
+        }))),
+        vec![("test-wf", dir.as_path())],
+    );
+    let started = Instant::now();
+    let result = tokio::time::timeout(
+        Duration::from_secs(3),
+        engine.start_run(
+            "test-wf",
+            message_input("x"),
+            human(),
+            StartRunOptions {
+                workflow: Some(workflow),
+                ..StartRunOptions::default()
+            },
+        ),
+    )
+    .await;
+    let result = match result {
+        Ok(Ok(result)) => result,
+        Ok(Err(err)) => {
+            let text = err.to_string();
+            if node_skip(&text) {
+                let _ = release_tx.send(json!({"ok": true}));
+                eprintln!("skipping node parallel test: {text}");
+                return;
+            }
+            panic!("{text}");
+        }
+        Err(_) => {
+            let _ = release_tx.send(json!({"ok": true}));
+            panic!("parallel failure waited on the blocked sibling");
+        }
+    };
+    assert!(started.elapsed() < Duration::from_secs(3));
+    assert_eq!(
+        result.run.status,
+        RunStatus::Failed,
+        "{:?}",
+        result.run.error
+    );
+    let error = result.run.error.unwrap_or_default();
+    assert!(error.contains("branch failed fast"), "{error}");
+    release_tx.send(json!({"ok": true})).unwrap();
+    let continued = tokio::time::timeout(Duration::from_secs(5), async {
+        while second.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    assert!(
+        continued.is_ok(),
+        "sibling did not run its second step after the failure was reported"
+    );
+}
+
+fn node_skip(text: &str) -> bool {
+    text.contains("node was not found")
+        || text.contains("is not an executable")
+        || text.contains("cannot execute TypeScript")
+        || text.contains("node --version")
+}
+
+#[tokio::test]
+async fn wire_payloads_round_trip_through_done_call_and_prompts() {
+    let root = temp_root("wire-payload");
+    let (dir, workflow) = load_min(&root, "wf", None).await;
+    let seen_call = Arc::new(Mutex::new(String::new()));
+    let seen_prompt = Arc::new(Mutex::new(String::new()));
+    let seen_run = Arc::new(Mutex::new(String::new()));
+    let call_slot = seen_call.clone();
+    let registry = NamespacedCallRegistry::new();
+    registry.register(
+        "ext",
+        Arc::new(move |_name, input, _ctx| {
+            let call_slot = call_slot.clone();
+            Box::pin(async move {
+                *call_slot.lock().unwrap() = input.raw().to_string();
+                WireJson::parse(r#"{"kept":true}"#)
+            })
+        }),
+    );
+    let prompt_slot = seen_prompt.clone();
+    let run_slot = seen_run.clone();
+    let executors = MockExecutorRegistry::with_handlers(
+        agent_handler(move |opts| {
+            let prompt_slot = prompt_slot.clone();
+            async move {
+                *prompt_slot.lock().unwrap() = opts
+                    .prompt
+                    .as_ref()
+                    .map(|wire| wire.raw().to_string())
+                    .unwrap_or_default();
+                Ok(json!({"result": "ok"}))
+            }
+        }),
+        run_handler(move |opts| {
+            let run_slot = run_slot.clone();
+            async move {
+                *run_slot.lock().unwrap() = opts
+                    .input
+                    .as_ref()
+                    .map(|wire| wire.raw().to_string())
+                    .unwrap_or_default();
+                Ok(json!({"ok": true}))
+            }
+        }),
+    );
+    let mut config = EngineConfig::new(arc_exec(executors));
+    config.case_dir_root = Some(root.join("runs"));
+    config.workflow_dirs = vec![("test-wf".to_string(), dir)];
+    config.call_registry = Some(registry);
+    let engine = WorkflowEngine::new(config);
+    let result = engine
+        .start_run(
+            "test-wf",
+            message_input("x"),
+            human(),
+            start_opts(
+                run_script(|step, _ctx| async move {
+                    let call_input = WireJson::parse(r#"{"text":"\ud800"}"#).unwrap();
+                    let prompt = WireJson::parse(r#""\ud800""#).unwrap();
+                    let run_input = WireJson::parse(r#"{"note":"\ud800"}"#).unwrap();
+                    let output = WireJson::parse(r#"{"result":"\ud800","echo":"\ud800"}"#).unwrap();
+                    step.call_wire("keep", "ext:keep", call_input).await?;
+                    step.agent(
+                        "a",
+                        AgentStepOpts::out(vec!["result".to_string()]).with_prompt_wire(prompt),
+                    )
+                    .await?;
+                    step.run("r", RunStepOpts::script("s").with_input_wire(run_input))
+                        .await?;
+                    step.done_wire(output).await
+                }),
+                workflow,
+                None,
+            ),
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.run.status, RunStatus::Done, "{:?}", result.run.error);
+    assert_eq!(seen_call.lock().unwrap().as_str(), r#"{"text":"\ud800"}"#);
+    assert_eq!(seen_prompt.lock().unwrap().as_str(), r#""\ud800""#);
+    assert_eq!(seen_run.lock().unwrap().as_str(), r#"{"note":"\ud800"}"#);
+    let case_text = std::fs::read_to_string(Path::new(&result.case_dir).join("case.json")).unwrap();
+    let journal_text = std::fs::read_to_string(journal_path(Path::new(&result.case_dir))).unwrap();
+    assert!(case_text.contains(r#"\ud800"#), "{case_text}");
+    assert!(journal_text.contains(r#"\ud800"#), "{journal_text}");
+    assert!(!case_text.contains('\u{FFFD}'), "{case_text}");
+    assert!(!journal_text.contains('\u{FFFD}'), "{journal_text}");
+}
+
+#[tokio::test]
+async fn wire_human_prompt_is_journaled_raw() {
+    let root = temp_root("wire-human");
+    let (dir, workflow) = load_min(&root, "wf", None).await;
+    let engine = engine_for(
+        &root.join("runs"),
+        arc_exec(MockExecutorRegistry::new()),
+        vec![("test-wf", dir.as_path())],
+    );
+    let started = engine
+        .start_run(
+            "test-wf",
+            message_input("x"),
+            human(),
+            start_opts(
+                run_script(|step, _ctx| async move {
+                    step.human(
+                        "gate",
+                        HumanStepOpts::fields(vec!["ok".to_string()])
+                            .with_prompt_wire(WireJson::parse(r#""\ud800""#).unwrap()),
+                    )
+                    .await?;
+                    Ok(())
+                }),
+                workflow,
+                None,
+            ),
+        )
+        .await
+        .unwrap();
+    assert!(started.suspended);
+    let journal_text = std::fs::read_to_string(journal_path(Path::new(&started.case_dir))).unwrap();
+    assert!(journal_text.contains(r#"\ud800"#), "{journal_text}");
+    assert!(!journal_text.contains('\u{FFFD}'), "{journal_text}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn node_bridge_keeps_surrogates_through_call_prompt_and_done() {
+    let root = temp_root("wire-node");
+    let (parent_dir, _) = load_min(&root, "wf", None).await;
+    let child_yaml = "id: child\nversion: \"1.0.0\"\nname: Child\ninput:\n  - name: message\n    type: string\n    required: true\noutput:\n  - name: result\n    type: string\n    required: false\n";
+    let (child_dir, _) = load_min(&root, "child", Some(child_yaml)).await;
+    tokio::fs::write(
+        parent_dir.join("run.js"),
+        "export default async function run(step) {\n  const called = await step.call('child-call', 'child', { message: '\\ud800' })\n  await step.agent('a', { prompt: '\\ud800', out: ['result'] })\n  await step.done({ result: called.result, text: '\\ud800', via: called.via })\n}\n",
+    )
+    .await
+    .unwrap();
+    tokio::fs::write(
+        child_dir.join("run.js"),
+        "export default async function run(step, ctx) {\n  await step.done({ result: ctx.fields.message, via: ctx.input.message })\n}\n",
+    )
+    .await
+    .unwrap();
+    let parent = load_workflow_dir(&parent_dir).await.unwrap();
+    let seen_prompt = Arc::new(Mutex::new(String::new()));
+    let prompt_slot = seen_prompt.clone();
+    let engine = engine_for(
+        &root.join("runs"),
+        arc_exec(MockExecutorRegistry::with_agent(agent_handler(
+            move |opts| {
+                let prompt_slot = prompt_slot.clone();
+                async move {
+                    *prompt_slot.lock().unwrap() = opts
+                        .prompt
+                        .as_ref()
+                        .map(|wire| wire.raw().to_string())
+                        .unwrap_or_default();
+                    Ok(json!({"result": "ok"}))
+                }
+            },
+        ))),
+        vec![
+            ("test-wf", parent_dir.as_path()),
+            ("child", child_dir.as_path()),
+        ],
+    );
+    let result = engine
+        .start_run(
+            "test-wf",
+            message_input("x"),
+            human(),
+            StartRunOptions {
+                workflow: Some(parent),
+                ..StartRunOptions::default()
+            },
+        )
+        .await;
+    let result = match result {
+        Ok(result) => result,
+        Err(err) => {
+            let text = err.to_string();
+            if node_skip(&text) {
+                eprintln!("skipping node surrogate test: {text}");
+                return;
+            }
+            panic!("{text}");
+        }
+    };
+    assert_eq!(result.run.status, RunStatus::Done, "{:?}", result.run.error);
+    assert_eq!(seen_prompt.lock().unwrap().as_str(), r#""\ud800""#);
+    let case_text = std::fs::read_to_string(Path::new(&result.case_dir).join("case.json")).unwrap();
+    let journal_text = std::fs::read_to_string(journal_path(Path::new(&result.case_dir))).unwrap();
+    assert!(case_text.matches(r#"\ud800"#).count() >= 2, "{case_text}");
+    assert!(journal_text.contains(r#"\ud800"#), "{journal_text}");
+    assert!(!case_text.contains('\u{FFFD}'), "{case_text}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn node_human_prompt_is_journaled_raw() {
+    let root = temp_root("wire-node-human");
+    let (dir, _) = load_min(&root, "wf", None).await;
+    tokio::fs::write(
+        dir.join("run.js"),
+        "export default async function run(step) {\n  await step.human('gate', { prompt: '\\ud800', fields: ['ok'] })\n}\n",
+    )
+    .await
+    .unwrap();
+    let workflow = load_workflow_dir(&dir).await.unwrap();
+    let engine = engine_for(
+        &root.join("runs"),
+        arc_exec(MockExecutorRegistry::new()),
+        vec![("test-wf", dir.as_path())],
+    );
+    let started = engine
+        .start_run(
+            "test-wf",
+            message_input("x"),
+            human(),
+            StartRunOptions {
+                workflow: Some(workflow),
+                ..StartRunOptions::default()
+            },
+        )
+        .await;
+    let started = match started {
+        Ok(started) => started,
+        Err(err) => {
+            let text = err.to_string();
+            if node_skip(&text) {
+                eprintln!("skipping node human prompt test: {text}");
+                return;
+            }
+            panic!("{text}");
+        }
+    };
+    assert!(started.suspended, "{:?}", started.run.error);
+    let journal_text = std::fs::read_to_string(journal_path(Path::new(&started.case_dir))).unwrap();
+    assert!(journal_text.contains(r#"\ud800"#), "{journal_text}");
+    assert!(!journal_text.contains('\u{FFFD}'), "{journal_text}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn node_resume_reads_surrogate_fields_from_ctx() {
+    let root = temp_root("wire-resume");
+    let (dir, workflow) = load_min(&root, "wf", None).await;
+    let engine = engine_for(
+        &root.join("runs"),
+        arc_exec(MockExecutorRegistry::new()),
+        vec![("test-wf", dir.as_path())],
+    );
+    let started = engine
+        .start_run(
+            "test-wf",
+            message_input("x"),
+            human(),
+            start_opts(
+                run_script(|step, _ctx| async move {
+                    step.human("gate", HumanStepOpts::fields(vec!["ok".to_string()]))
+                        .await?;
+                    Ok(())
+                }),
+                workflow,
+                None,
+            ),
+        )
+        .await
+        .unwrap();
+    assert!(started.suspended);
+    let case_path = Path::new(&started.case_dir).join("case.json");
+    let document = WireJson::parse(&std::fs::read_to_string(&case_path).unwrap()).unwrap();
+    let fields = WireJson::parse(&document.get_raw("fields").unwrap().unwrap()).unwrap();
+    let mark = WireJson::parse(r#""\ud800""#).unwrap();
+    let fields = fields.set_key("mark", mark.raw()).unwrap();
+    let document = document.set_key("fields", fields.raw()).unwrap();
+    std::fs::write(&case_path, format!("{}\n", document.raw())).unwrap();
+    tokio::fs::write(
+        dir.join("run.js"),
+        "export default async function run(step, ctx) {\n  await step.done({ result: ctx.input.mark, again: ctx.fields.mark })\n}\n",
+    )
+    .await
+    .unwrap();
+    let reloaded = load_workflow_dir(&dir).await.unwrap();
+    let resumed = engine
+        .resume_run(
+            &started.run.id,
+            ResumeRunOptions {
+                gate_response: Some(bool_map("ok", true)),
+                run_script: None,
+                workflow: Some(reloaded),
+            },
+        )
+        .await;
+    let resumed = match resumed {
+        Ok(resumed) => resumed,
+        Err(err) => {
+            let text = err.to_string();
+            if node_skip(&text) {
+                eprintln!("skipping node resume surrogate test: {text}");
+                return;
+            }
+            panic!("{text}");
+        }
+    };
+    assert_eq!(
+        resumed.run.status,
+        RunStatus::Done,
+        "{:?}",
+        resumed.run.error
+    );
+    let case_text = std::fs::read_to_string(&case_path).unwrap();
+    let journal_text = std::fs::read_to_string(journal_path(Path::new(&started.case_dir))).unwrap();
+    assert!(case_text.matches(r#"\ud800"#).count() >= 2, "{case_text}");
+    assert!(journal_text.contains(r#"\ud800"#), "{journal_text}");
+    assert!(!case_text.contains('\u{FFFD}'), "{case_text}");
 }
 
 #[tokio::test]

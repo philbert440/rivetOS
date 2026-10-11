@@ -10,8 +10,8 @@ use serde_json::{Map, Value};
 use tokio::sync::Mutex;
 
 use crate::case::{
-    RunPatch, case_path, case_state, child_case_dir, is_terminal_status, read_case, update_run,
-    write_case,
+    RunPatch, case_path, case_state_from_wire, child_case_dir, is_terminal_status, read_case,
+    update_run, write_case,
 };
 use crate::config::{
     EngineConfig, resolve_case_dir_root, resolve_max_run_runtime_ms, resolve_step_timeout_ms,
@@ -41,6 +41,8 @@ pub struct RunScriptContext {
     pub case_dir: String,
     pub workflow: LoadedWorkflow,
     pub fields: Map<String, Value>,
+    pub input_raw: WireJson,
+    pub fields_raw: WireJson,
 }
 
 pub type RunScript = Arc<
@@ -123,6 +125,18 @@ impl WorkflowEngine {
         started_by: StartedBy,
         options: StartRunOptions,
     ) -> Result<StartRunResult, WorkflowError> {
+        let fields = object_wire(&input)?;
+        self.start_run_fields(workflow_ref, fields, started_by, options)
+            .await
+    }
+
+    async fn start_run_fields(
+        &self,
+        workflow_ref: &str,
+        input: WireJson,
+        started_by: StartedBy,
+        options: StartRunOptions,
+    ) -> Result<StartRunResult, WorkflowError> {
         let workflow = match options.workflow.clone() {
             Some(workflow) => workflow,
             None => {
@@ -135,7 +149,8 @@ impl WorkflowEngine {
                 load_workflow_dir(&dir).await?
             }
         };
-        validate_start_input(&workflow.manifest.input, &input)?;
+        let view = input.value().as_object().cloned().unwrap_or_default();
+        validate_start_input(&workflow.manifest.input, &view)?;
         let root = resolve_case_dir_root(self.inner.config.case_dir_root.as_deref());
         assert_under_concurrent_cap(
             &root,
@@ -173,14 +188,14 @@ impl WorkflowEngine {
             started_at: Some(now_iso()),
             finished_at: None,
         };
-        let state = case_state(run, input.clone())?;
+        let state = case_state_from_wire(run, &input)?;
         write_case(&case_dir, &state).await?;
         let started = JournalEntry::RunStarted {
             ts: now_iso(),
             run_id,
             workflow_id: workflow.manifest.id.clone(),
             version: workflow.manifest.version.clone(),
-            input: object_wire(&input)?,
+            input,
             started_by,
             parent: options.parent,
         };
@@ -424,7 +439,7 @@ impl WorkflowEngine {
                         ts: now_iso(),
                         run_id: state.run.id.clone(),
                         status: RunFinishedStatus::Done,
-                        output: Some(WireJson::from_value(&output)?),
+                        output: Some(output),
                         error: None,
                     },
                 )
@@ -517,7 +532,7 @@ impl WorkflowEngine {
         case_dir: &Path,
         workflow: &LoadedWorkflow,
         run_script: Option<RunScript>,
-    ) -> Result<Value, WorkflowError> {
+    ) -> Result<WireJson, WorkflowError> {
         let case_state = read_case(case_dir).await?;
         let run_id = case_state.run.id.clone();
         let journal = read_journal(case_dir).await?;
@@ -534,45 +549,61 @@ impl WorkflowEngine {
             budgets: workflow.manifest.budgets.clone(),
             warn: Arc::clone(&self.inner.config.warn),
         });
+        let fields_raw = match case_state.document.get_raw("fields")? {
+            Some(raw) => WireJson::parse(&raw)?,
+            None => WireJson::parse("{}")?,
+        };
         let ctx = RunScriptContext {
             run_id: run_id.clone(),
             input: case_state.fields.clone(),
             case_dir: path_text(case_dir),
             workflow: workflow.clone(),
             fields: case_state.fields,
+            input_raw: fields_raw.clone(),
+            fields_raw,
         };
         let script = run_script.unwrap_or_else(|| node_script(workflow.run_path.clone()));
         let max_runtime = resolve_max_run_runtime_ms(self.inner.config.max_run_runtime_ms);
         let mut background = BackgroundScript {
             future: Some(Box::pin(script(step.clone(), ctx))),
         };
-        let first = poll_script(&mut background).await;
-        if let Some(result) = first {
-            background.future.take();
-            if runtime_exceeded(max_runtime, origin) {
-                return Err(WorkflowError::run_timeout(&run_id, max_runtime));
+        match poll_script_once(&mut background).await {
+            ScriptPoll::Ready(result) => {
+                background.future.take();
+                if runtime_exceeded(max_runtime, origin) {
+                    return Err(WorkflowError::run_timeout(&run_id, max_runtime));
+                }
+                result?;
             }
-            result?;
-        } else if runtime_exceeded(max_runtime, origin) {
-            return Err(WorkflowError::run_timeout(&run_id, max_runtime));
-        } else {
-            let budget = runtime_budget(max_runtime);
-            let remaining = budget.saturating_sub(origin.elapsed());
-            match tokio::time::timeout(remaining, poll_script(&mut background)).await {
-                Ok(Some(result)) => {
-                    background.future.take();
-                    result?;
+            ScriptPoll::Empty => {
+                return Err(WorkflowError::message("run script already finished"));
+            }
+            ScriptPoll::Pending => {
+                if runtime_exceeded(max_runtime, origin) {
+                    return Err(WorkflowError::run_timeout(&run_id, max_runtime));
                 }
-                Ok(None) => {
-                    return Err(WorkflowError::message("run script already finished"));
+                let budget = runtime_budget(max_runtime);
+                let remaining = budget.saturating_sub(origin.elapsed());
+                match tokio::time::timeout(remaining, poll_script(&mut background)).await {
+                    Ok(Some(result)) => {
+                        background.future.take();
+                        result?;
+                    }
+                    Ok(None) => {
+                        return Err(WorkflowError::message("run script already finished"));
+                    }
+                    Err(_) => return Err(WorkflowError::run_timeout(&run_id, max_runtime)),
                 }
-                Err(_) => return Err(WorkflowError::run_timeout(&run_id, max_runtime)),
             }
         }
-        if let Some(output) = step.done_output() {
-            return Ok(Value::Object(output));
+        if let Some(output) = step.done_output_wire() {
+            return Ok(output);
         }
-        Ok(Value::Object(read_case(case_dir).await?.fields))
+        let state = read_case(case_dir).await?;
+        match state.document.get_raw("fields")? {
+            Some(raw) => WireJson::parse(&raw),
+            None => WireJson::parse("{}"),
+        }
     }
 
     async fn find_case_dir(&self, run_id: &str) -> Result<PathBuf, WorkflowError> {
@@ -594,9 +625,9 @@ impl WorkflowEngine {
     async fn native_call(
         &self,
         name: &str,
-        input: Map<String, Value>,
+        input: WireJson,
         ctx: crate::registry::CallContext,
-    ) -> Result<Value, WorkflowError> {
+    ) -> Result<WireJson, WorkflowError> {
         let id = uuid::Uuid::new_v4().hyphenated().to_string();
         let short = id.split('-').next().unwrap_or("00000000");
         let case_dir = child_case_dir(
@@ -604,7 +635,7 @@ impl WorkflowEngine {
             &format!("child-{name}-{short}"),
         );
         let result = self
-            .start_run(
+            .start_run_fields(
                 name,
                 input,
                 StartedBy::with_id(StartedByType::Workflow, ctx.parent_run_id.clone()),
@@ -633,19 +664,28 @@ impl WorkflowEngine {
                 result.run.error.as_deref().unwrap_or(""),
             ));
         }
-        if let Some(output) = result.run.output
-            && !output.is_null()
-        {
-            return Ok(output);
-        }
-        Ok(Value::Object(
-            read_case(Path::new(&result.case_dir)).await?.fields,
-        ))
+        child_output(&result.case_dir).await
     }
 }
 
 fn object_wire(map: &Map<String, Value>) -> Result<WireJson, WorkflowError> {
     WireJson::from_value(&Value::Object(map.clone()))
+}
+
+async fn child_output(case_dir: &str) -> Result<WireJson, WorkflowError> {
+    let state = read_case(Path::new(case_dir)).await?;
+    if let Some(run_raw) = state.document.get_raw("run")? {
+        let run_doc = WireJson::parse(&run_raw)?;
+        if let Some(output) = run_doc.get_raw("output")?
+            && output != "null"
+        {
+            return WireJson::parse(&output);
+        }
+    }
+    match state.document.get_raw("fields")? {
+        Some(raw) => WireJson::parse(&raw),
+        None => WireJson::parse("{}"),
+    }
 }
 
 fn runtime_budget(max_runtime_ms: f64) -> Duration {
@@ -682,6 +722,22 @@ impl Drop for BackgroundScript {
     }
 }
 
+enum ScriptPoll {
+    Ready(Result<(), WorkflowError>),
+    Pending,
+    Empty,
+}
+
+fn poll_script_once(background: &mut BackgroundScript) -> impl Future<Output = ScriptPoll> + '_ {
+    std::future::poll_fn(|cx| match background.future.as_mut() {
+        Some(future) => match future.as_mut().poll(cx) {
+            Poll::Ready(result) => Poll::Ready(ScriptPoll::Ready(result)),
+            Poll::Pending => Poll::Ready(ScriptPoll::Pending),
+        },
+        None => Poll::Ready(ScriptPoll::Empty),
+    })
+}
+
 async fn poll_script(background: &mut BackgroundScript) -> Option<Result<(), WorkflowError>> {
     std::future::poll_fn(|cx| match background.future.as_mut() {
         Some(future) => future.as_mut().poll(cx).map(Some),
@@ -708,10 +764,10 @@ fn node_script(run_path: String) -> RunScript {
                 step,
                 HostContext {
                     run_id: ctx.run_id,
-                    input: ctx.input,
+                    input: ctx.input_raw,
                     case_dir: ctx.case_dir,
                     workflow: ctx.workflow,
-                    fields: ctx.fields,
+                    fields: ctx.fields_raw,
                 },
             )
             .await

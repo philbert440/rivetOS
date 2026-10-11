@@ -208,7 +208,11 @@ fn journal_outline_entry(entry: &JournalEntry) -> String {
             fields,
             ..
         } => {
-            let prompt = prompt.as_deref().unwrap_or("").replace('\n', "\\n");
+            let prompt = prompt
+                .as_ref()
+                .and_then(|value| value.value().as_str())
+                .unwrap_or("")
+                .replace('\n', "\\n");
             format!(
                 "gate_opened {step_id} {label} {seq} {} {prompt}",
                 fields.join(",")

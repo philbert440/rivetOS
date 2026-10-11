@@ -118,15 +118,24 @@ pub async fn merge_fields(
     case_dir: &Path,
     fields: &Map<String, Value>,
 ) -> Result<CaseState, WorkflowError> {
-    let fields = fields.clone();
+    let mut raw_fields = Vec::with_capacity(fields.len());
+    for (key, value) in fields {
+        raw_fields.push((key.clone(), WireJson::from_value(value)?.raw().to_string()));
+    }
+    merge_fields_raw(case_dir, raw_fields).await
+}
+
+pub async fn merge_fields_raw(
+    case_dir: &Path,
+    fields: Vec<(String, String)>,
+) -> Result<CaseState, WorkflowError> {
     update_case(case_dir, move |document| {
         let existing = document.get_raw("fields")?;
         let mut entries = match existing {
             Some(raw) => WireJson::parse(&raw)?.entries()?,
             None => Vec::new(),
         };
-        for (key, value) in fields {
-            let raw = WireJson::from_value(&value)?.raw().to_string();
+        for (key, raw) in fields {
             if let Some(slot) = entries.iter_mut().find(|(name, _)| name == &key) {
                 slot.1 = raw;
             } else {
@@ -145,7 +154,7 @@ pub struct RunPatch {
     pub status: Option<RunStatus>,
     pub current: Option<String>,
     pub error: Option<String>,
-    pub output: Option<Value>,
+    pub output: Option<WireJson>,
     pub finished_at: Option<String>,
     pub workflow_dir: Option<String>,
     pub started_at: Option<String>,
@@ -165,7 +174,7 @@ pub async fn update_run(case_dir: &Path, patch: RunPatch) -> Result<CaseState, W
             upsert(&mut entries, "error", &json_string(&error));
         }
         if let Some(output) = patch.output {
-            upsert(&mut entries, "output", WireJson::from_value(&output)?.raw());
+            upsert(&mut entries, "output", output.raw());
         }
         if let Some(finished_at) = patch.finished_at {
             upsert(&mut entries, "finishedAt", &json_string(&finished_at));
@@ -206,5 +215,14 @@ pub fn initial_document(run: &Run, fields: &Map<String, Value>) -> Result<WireJs
 
 pub fn case_state(run: Run, fields: Map<String, Value>) -> Result<CaseState, WorkflowError> {
     let document = initial_document(&run, &fields)?;
+    case_from_document(document)
+}
+
+pub fn case_state_from_wire(run: Run, fields: &WireJson) -> Result<CaseState, WorkflowError> {
+    let run_raw = typed_raw(&run)?;
+    let document = WireJson::from_entries(vec![
+        ("run".to_string(), run_raw),
+        ("fields".to_string(), fields.raw().to_string()),
+    ])?;
     case_from_document(document)
 }

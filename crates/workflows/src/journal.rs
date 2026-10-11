@@ -52,6 +52,7 @@ pub async fn append_journal(case_dir: &Path, entry: &JournalEntry) -> Result<(),
         if !path.exists() {
             std::fs::write(&path, b"").map_err(|err| WorkflowError::io(&path, err))?;
         }
+        io_fs::repair_torn_tail(&path)?;
         io_fs::append_line_blocking(&path, line.as_bytes())
     });
     match task.await {
@@ -169,7 +170,7 @@ fn parse_entry(line: &str) -> Result<JournalEntry, WorkflowError> {
             step_id: req_str(object, "stepId")?,
             label: req_str(object, "label")?,
             seq: req_i64(object, "seq")?,
-            prompt: opt_str(object, "prompt"),
+            prompt: opt_wire(object, "prompt"),
             fields: req_strings(object, "fields")?,
         }),
         "gate_resolved" => Ok(JournalEntry::GateResolved {
@@ -361,7 +362,9 @@ pub fn find_open_gate(entries: &[JournalEntry]) -> Option<OpenGate> {
                 label: label.clone(),
                 seq: *seq,
                 fields: fields.clone(),
-                prompt: prompt.clone(),
+                prompt: prompt
+                    .as_ref()
+                    .and_then(|wire| wire.value().as_str().map(str::to_string)),
             }),
             JournalEntry::GateResolved { step_id, .. } => resolved.push(step_id.clone()),
             _ => {}

@@ -3,9 +3,9 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use indexmap::IndexMap;
-use serde_json::{Map, Value};
 
 use crate::error::WorkflowError;
+use crate::wire::WireJson;
 
 #[derive(Clone)]
 pub struct CallContext {
@@ -18,9 +18,9 @@ pub struct CallContext {
 pub type CallResolver = Arc<
     dyn Fn(
             String,
-            Map<String, Value>,
+            WireJson,
             CallContext,
-        ) -> Pin<Box<dyn Future<Output = Result<Value, WorkflowError>> + Send>>
+        ) -> Pin<Box<dyn Future<Output = Result<WireJson, WorkflowError>> + Send>>
         + Send
         + Sync,
 >;
@@ -58,9 +58,9 @@ impl NamespacedCallRegistry {
     pub async fn call(
         &self,
         reference: &str,
-        input: Map<String, Value>,
+        input: WireJson,
         ctx: CallContext,
-    ) -> Result<Value, WorkflowError> {
+    ) -> Result<WireJson, WorkflowError> {
         let (namespace, name) = parse_call_ref(reference);
         let resolver = {
             let map = self.resolvers.lock().unwrap_or_else(|err| err.into_inner());

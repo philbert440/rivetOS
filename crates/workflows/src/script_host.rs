@@ -46,10 +46,20 @@ function copyFields(target, source) {
   }
 }
 function write(obj) {
-  writeSync(3, JSON.stringify(obj) + '\n')
+  const data = Buffer.from(JSON.stringify(obj) + '\n')
+  let offset = 0
+  while (offset < data.length) {
+    const n = writeSync(3, data, offset, data.length - offset)
+    if (n <= 0) throw new Error('protocol write wrote no bytes')
+    offset += n
+  }
 }
 const pending = new Map()
 let seq = 0
+let settled = false
+function maybeExit() {
+  if (settled && pending.size === 0) process.exit(0)
+}
 function rpc(op, payload) {
   const id = ++seq
   return new Promise((resolve, reject) => {
@@ -102,6 +112,7 @@ const reader = (async () => {
       copyFields(error, msg)
       item.reject(error)
     }
+    queueMicrotask(maybeExit)
   }
 })()
 try {
@@ -121,7 +132,8 @@ try {
   copyFields(payload, err)
   write(payload)
 }
-process.exit(0)
+settled = true
+queueMicrotask(maybeExit)
 "#;
 
 const DEFAULT_INSTALL_ROOT: &str = "/opt/rivetos";
@@ -156,10 +168,10 @@ struct LaunchPlan {
 
 pub struct HostContext {
     pub run_id: String,
-    pub input: Map<String, Value>,
+    pub input: WireJson,
     pub case_dir: String,
     pub workflow: LoadedWorkflow,
-    pub fields: Map<String, Value>,
+    pub fields: WireJson,
 }
 
 const STDERR_CAP: usize = 64 * 1024;
@@ -168,9 +180,21 @@ const SILENCE: Duration = Duration::from_secs(60);
 struct Frame {
     op: String,
     id_raw: String,
-    value: Value,
+    object: JsObject,
     results_raw: Option<String>,
     raw: String,
+}
+
+struct SiblingDrain {
+    frame_rx: tokio::sync::mpsc::UnboundedReceiver<ProtocolEvent>,
+    step: Step,
+    inflight: Arc<AtomicUsize>,
+    write_tx: tokio::sync::mpsc::UnboundedSender<String>,
+    idle_tx: tokio::sync::mpsc::UnboundedSender<()>,
+    idle_rx: tokio::sync::mpsc::UnboundedReceiver<()>,
+    writer: tokio::task::JoinHandle<()>,
+    child: tokio::process::Child,
+    stderr_task: Option<tokio::task::JoinHandle<()>>,
 }
 
 enum ProtocolEvent {
@@ -261,6 +285,7 @@ pub async fn drive_node(run_path: &str, step: Step, ctx: HostContext) -> Result<
     let silence = tokio::time::sleep(SILENCE);
     tokio::pin!(silence);
     let mut outcome = Ok(());
+    let mut detach = false;
     loop {
         tokio::select! {
             biased;
@@ -283,6 +308,7 @@ pub async fn drive_node(run_path: &str, step: Step, ctx: HostContext) -> Result<
                         }
                         if frame.op == "script_error" {
                             outcome = Err(script_error_frame(&frame.raw));
+                            detach = true;
                             break;
                         }
                         spawn_rpc(
@@ -316,6 +342,20 @@ pub async fn drive_node(run_path: &str, step: Step, ctx: HostContext) -> Result<
             }
         }
     }
+    if detach {
+        tokio::spawn(drain_siblings(SiblingDrain {
+            frame_rx,
+            step,
+            inflight,
+            write_tx,
+            idle_tx,
+            idle_rx,
+            writer,
+            child,
+            stderr_task,
+        }));
+        return outcome;
+    }
     drop(write_tx);
     let _ = writer.await;
     let status = tokio::time::timeout(Duration::from_secs(5), child.wait()).await;
@@ -333,6 +373,52 @@ pub async fn drive_node(run_path: &str, step: Step, ctx: HostContext) -> Result<
         };
     }
     outcome
+}
+
+async fn drain_siblings(mut drain: SiblingDrain) {
+    let silence = tokio::time::sleep(SILENCE);
+    tokio::pin!(silence);
+    loop {
+        tokio::select! {
+            biased;
+            event = drain.frame_rx.recv() => {
+                silence.as_mut().reset(tokio::time::Instant::now() + SILENCE);
+                match event {
+                    Some(ProtocolEvent::Line(line)) => {
+                        if js_trim(&line).is_empty() {
+                            continue;
+                        }
+                        let Ok(frame) = parse_frame(&line) else {
+                            break;
+                        };
+                        if frame.op == "script_done" || frame.op == "script_error" {
+                            continue;
+                        }
+                        spawn_rpc(
+                            drain.step.clone(),
+                            frame,
+                            Arc::clone(&drain.inflight),
+                            drain.write_tx.clone(),
+                            drain.idle_tx.clone(),
+                        );
+                    }
+                    _ => break,
+                }
+            }
+            _ = drain.idle_rx.recv() => {
+                silence.as_mut().reset(tokio::time::Instant::now() + SILENCE);
+            }
+            _ = &mut silence, if drain.inflight.load(Ordering::SeqCst) == 0 => {
+                break;
+            }
+        }
+    }
+    drop(drain.write_tx);
+    let _ = tokio::time::timeout(Duration::from_secs(5), drain.writer).await;
+    let _ = tokio::time::timeout(Duration::from_secs(5), drain.child.wait()).await;
+    if let Some(task) = drain.stderr_task {
+        let _ = tokio::time::timeout(Duration::from_secs(2), task).await;
+    }
 }
 
 async fn drain_stdout(mut stdout: tokio::process::ChildStdout) {
@@ -417,15 +503,13 @@ fn spawn_rpc(
 }
 
 fn start_line(ctx: &HostContext) -> Result<String, WorkflowError> {
-    let input = WireJson::from_value(&Value::Object(ctx.input.clone()))?;
-    let fields = WireJson::from_value(&Value::Object(ctx.fields.clone()))?;
     let workflow = typed_raw(&ctx.workflow)?;
     let mut body = JsonLine::new();
     body.string("runId", &ctx.run_id);
-    body.raw("input", input.raw());
+    body.raw("input", ctx.input.raw());
     body.string("caseDir", &ctx.case_dir);
     body.raw("workflow", &workflow);
-    body.raw("fields", fields.raw());
+    body.raw("fields", ctx.fields.raw());
     let mut start = JsonLine::new();
     start.string("op", "start");
     start.raw("ctx", &body.finish());
@@ -455,7 +539,7 @@ fn parse_frame(line: &str) -> Result<Frame, WorkflowError> {
     Ok(Frame {
         op,
         id_raw,
-        value: js_to_value(&parsed),
+        object: object.clone(),
         results_raw,
         raw: line.to_string(),
     })
@@ -694,39 +778,41 @@ fn reason_from(text: &str) -> ContractReason {
 }
 
 async fn dispatch(step: &Step, frame: &Frame) -> Result<Option<String>, WorkflowError> {
-    let message = &frame.value;
+    let message = &frame.object;
     let op = frame.op.as_str();
     let scoped = step_for(step, message);
-    let label = message.get("label").and_then(Value::as_str).unwrap_or("");
+    let label = message.get("label").and_then(JsValue::as_str).unwrap_or("");
     match op {
         "agent" => output_raw(scoped.agent(label, agent_opts(message.get("opts"))).await?),
         "run" => output_raw(scoped.run(label, run_opts(message.get("opts"))).await?),
         "human" => output_raw(scoped.human(label, human_opts(message.get("opts"))).await?),
         "call" => {
-            let reference = message.get("ref").and_then(Value::as_str).unwrap_or("");
-            let input = message
-                .get("input")
-                .and_then(Value::as_object)
-                .cloned()
-                .unwrap_or_default();
-            output_raw(scoped.call(label, reference, input).await?)
+            let reference = message.get("ref").and_then(JsValue::as_str).unwrap_or("");
+            let input = match message.get("input") {
+                Some(value) => WireJson::from_js(value),
+                None => WireJson::parse("{}")?,
+            };
+            output_raw(scoped.call_wire(label, reference, input).await?)
         }
         "done" => {
-            let output = message
-                .get("output")
-                .and_then(Value::as_object)
-                .cloned()
-                .unwrap_or_default();
-            scoped.done(output).await?;
+            let output = match message.get("output") {
+                Some(value) => WireJson::from_js(value),
+                None => WireJson::parse("{}")?,
+            };
+            scoped.done_wire(output).await?;
             Ok(None)
         }
         "parallel_begin" => {
-            let count = message.get("count").and_then(Value::as_u64).unwrap_or(0) as usize;
+            let count = message
+                .get("count")
+                .and_then(JsValue::as_i64)
+                .and_then(|value| usize::try_from(value).ok())
+                .unwrap_or(0);
             let begin = scoped.parallel_begin(label, count).await?;
             Ok(Some(parallel_begin_raw(&begin)?))
         }
         "parallel_end" => {
-            let token = message.get("token").and_then(Value::as_str).unwrap_or("");
+            let token = message.get("token").and_then(JsValue::as_str).unwrap_or("");
             let raw = frame
                 .results_raw
                 .clone()
@@ -736,10 +822,10 @@ async fn dispatch(step: &Step, frame: &Frame) -> Result<Option<String>, Workflow
             Ok(None)
         }
         "parallel_fail" => {
-            let token = message.get("token").and_then(Value::as_str).unwrap_or("");
+            let token = message.get("token").and_then(JsValue::as_str).unwrap_or("");
             let text = message
                 .get("error")
-                .and_then(Value::as_str)
+                .and_then(JsValue::as_str)
                 .unwrap_or("parallel branch failed");
             scoped
                 .parallel_fail(token, &WorkflowError::message(text))
@@ -756,71 +842,63 @@ fn output_raw(output: StepOutput) -> Result<Option<String>, WorkflowError> {
     Ok(output.wire()?.map(|wire| wire.raw().to_string()))
 }
 
-fn step_for(step: &Step, message: &Value) -> Step {
-    match message.get("scope") {
-        Some(Value::Object(scope)) => step.with_scope(StepScope {
-            label_prefix: scope
-                .get("labelPrefix")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string(),
-            executor_case_dir: scope
-                .get("executorCaseDir")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string(),
-            allow_human: scope
-                .get("allowHuman")
-                .and_then(Value::as_bool)
-                .unwrap_or(true),
-            allow_parallel: scope
-                .get("allowParallel")
-                .and_then(Value::as_bool)
-                .unwrap_or(true),
-            allow_done: scope
-                .get("allowDone")
-                .and_then(Value::as_bool)
-                .unwrap_or(true),
-            merge_agent_fields: scope
-                .get("mergeAgentFields")
-                .and_then(Value::as_bool)
-                .unwrap_or(true),
-        }),
-        _ => step.clone(),
-    }
+fn step_for(step: &Step, message: &JsObject) -> Step {
+    let Some(scope) = message.get("scope").and_then(JsValue::as_object) else {
+        return step.clone();
+    };
+    step.with_scope(StepScope {
+        label_prefix: js_string(scope, "labelPrefix"),
+        executor_case_dir: js_string(scope, "executorCaseDir"),
+        allow_human: js_flag(scope, "allowHuman", true),
+        allow_parallel: js_flag(scope, "allowParallel", true),
+        allow_done: js_flag(scope, "allowDone", true),
+        merge_agent_fields: js_flag(scope, "mergeAgentFields", true),
+    })
 }
 
-fn agent_opts(value: Option<&Value>) -> AgentStepOpts {
-    let Some(object) = value.and_then(Value::as_object) else {
+fn js_flag(object: &JsObject, key: &str, default: bool) -> bool {
+    object
+        .get(key)
+        .and_then(JsValue::as_bool)
+        .unwrap_or(default)
+}
+
+fn extra_map(object: &JsObject, skip: &[&str]) -> Map<String, Value> {
+    let mut extra = Map::new();
+    for (key, value) in object.iter() {
+        let name = key.to_utf8();
+        if skip.contains(&name) {
+            continue;
+        }
+        extra.insert(name.to_string(), js_to_value(value));
+    }
+    extra
+}
+
+fn agent_opts(value: Option<&JsValue>) -> AgentStepOpts {
+    let Some(object) = value.and_then(JsValue::as_object) else {
         return AgentStepOpts::out(Vec::new());
     };
-    let out = match object.get("out") {
-        Some(Value::Array(items)) => items
+    let out = match object.get("out").and_then(JsValue::as_array) {
+        Some(items) => items
             .iter()
             .filter_map(|item| item.as_str().map(str::to_string))
             .collect(),
-        _ => Vec::new(),
+        None => Vec::new(),
     };
-    let mut extra = object.clone();
-    extra.shift_remove("agent");
-    extra.shift_remove("prompt");
-    extra.shift_remove("out");
     AgentStepOpts {
         agent: object
             .get("agent")
-            .and_then(Value::as_str)
+            .and_then(JsValue::as_str)
             .map(str::to_string),
-        prompt: object
-            .get("prompt")
-            .and_then(Value::as_str)
-            .map(str::to_string),
+        prompt: object.get("prompt").map(WireJson::from_js),
         out,
-        extra,
+        extra: extra_map(object, &["agent", "prompt", "out"]),
     }
 }
 
-fn run_opts(value: Option<&Value>) -> RunStepOpts {
-    let Some(object) = value.and_then(Value::as_object) else {
+fn run_opts(value: Option<&JsValue>) -> RunStepOpts {
+    let Some(object) = value.and_then(JsValue::as_object) else {
         return RunStepOpts {
             script: None,
             skill: None,
@@ -828,46 +906,35 @@ fn run_opts(value: Option<&Value>) -> RunStepOpts {
             extra: Map::new(),
         };
     };
-    let input = object.get("in").and_then(Value::as_object).cloned();
-    let mut extra = object.clone();
-    extra.shift_remove("script");
-    extra.shift_remove("skill");
-    extra.shift_remove("in");
     RunStepOpts {
         script: object
             .get("script")
-            .and_then(Value::as_str)
+            .and_then(JsValue::as_str)
             .map(str::to_string),
         skill: object
             .get("skill")
-            .and_then(Value::as_str)
+            .and_then(JsValue::as_str)
             .map(str::to_string),
-        input,
-        extra,
+        input: object.get("in").map(WireJson::from_js),
+        extra: extra_map(object, &["script", "skill", "in"]),
     }
 }
 
-fn human_opts(value: Option<&Value>) -> HumanStepOpts {
-    let Some(object) = value.and_then(Value::as_object) else {
+fn human_opts(value: Option<&JsValue>) -> HumanStepOpts {
+    let Some(object) = value.and_then(JsValue::as_object) else {
         return HumanStepOpts::fields(Vec::new());
     };
-    let fields = match object.get("fields") {
-        Some(Value::Array(items)) => items
+    let fields = match object.get("fields").and_then(JsValue::as_array) {
+        Some(items) => items
             .iter()
             .filter_map(|item| item.as_str().map(str::to_string))
             .collect(),
-        _ => Vec::new(),
+        None => Vec::new(),
     };
-    let mut extra = object.clone();
-    extra.shift_remove("prompt");
-    extra.shift_remove("fields");
     HumanStepOpts {
-        prompt: object
-            .get("prompt")
-            .and_then(Value::as_str)
-            .map(str::to_string),
+        prompt: object.get("prompt").map(WireJson::from_js),
         fields,
-        extra,
+        extra: extra_map(object, &["prompt", "fields"]),
     }
 }
 

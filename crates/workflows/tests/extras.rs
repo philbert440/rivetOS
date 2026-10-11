@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value};
 use workflows::{
@@ -163,6 +163,7 @@ async fn non_positive_max_runtime_starts_the_script_then_fails() {
     config.workflow_dirs = vec![("test-wf".to_string(), dir)];
     config.max_run_runtime_ms = Some(0.0);
     let engine = WorkflowEngine::new(config);
+    let started = Instant::now();
     let result = engine
         .start_run(
             "test-wf",
@@ -177,6 +178,7 @@ async fn non_positive_max_runtime_starts_the_script_then_fails() {
                     let ran = ran_h.clone();
                     async move {
                         ran.store(true, Ordering::SeqCst);
+                        tokio::time::sleep(Duration::from_secs(3)).await;
                         Ok(())
                     }
                 })),
@@ -186,6 +188,11 @@ async fn non_positive_max_runtime_starts_the_script_then_fails() {
         )
         .await
         .unwrap();
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "non-positive budget waited {:?}",
+        started.elapsed()
+    );
     assert_eq!(result.run.status, RunStatus::Failed);
     assert!(ran.load(Ordering::SeqCst));
     assert!(
@@ -209,6 +216,7 @@ async fn positive_max_runtime_cancels_a_slow_script() {
     config.workflow_dirs = vec![("test-wf".to_string(), dir)];
     config.max_run_runtime_ms = Some(40.0);
     let engine = WorkflowEngine::new(config);
+    let started = Instant::now();
     let result = engine
         .start_run(
             "test-wf",
@@ -229,6 +237,11 @@ async fn positive_max_runtime_cancels_a_slow_script() {
         )
         .await
         .unwrap();
+    assert!(
+        started.elapsed() < Duration::from_millis(1000),
+        "40ms budget waited {:?}",
+        started.elapsed()
+    );
     assert_eq!(result.run.status, RunStatus::Failed);
     let error = result.run.error.unwrap_or_default();
     assert!(error.contains("exceeded max runtime"), "{error}");

@@ -8,7 +8,7 @@ use protocol::JsNumber;
 use serde::Serialize;
 use serde_json::{Map, Value};
 
-use crate::case::{RunPatch, merge_fields, update_run};
+use crate::case::{RunPatch, merge_fields, merge_fields_raw, update_run};
 use crate::error::WorkflowError;
 use crate::error::{ContractReason, ContractValidationIssue};
 use crate::executors::{AgentExecuteOpts, ReportUsageFn, RunExecuteOpts};
@@ -26,7 +26,7 @@ use crate::wire::WireJson;
 
 pub struct AgentStepOpts {
     pub agent: Option<String>,
-    pub prompt: Option<String>,
+    pub prompt: Option<WireJson>,
     pub out: Vec<String>,
     pub extra: Map<String, Value>,
 }
@@ -51,7 +51,14 @@ impl AgentStepOpts {
     }
 
     pub fn with_prompt(mut self, prompt: impl Into<String>) -> Self {
-        self.prompt = Some(prompt.into());
+        self.prompt = Some(WireJson::from_js(&protocol::js::JsValue::from_text(
+            &prompt.into(),
+        )));
+        self
+    }
+
+    pub fn with_prompt_wire(mut self, prompt: WireJson) -> Self {
+        self.prompt = Some(prompt);
         self
     }
 }
@@ -59,7 +66,7 @@ impl AgentStepOpts {
 pub struct RunStepOpts {
     pub script: Option<String>,
     pub skill: Option<String>,
-    pub input: Option<Map<String, Value>>,
+    pub input: Option<WireJson>,
     pub extra: Map<String, Value>,
 }
 
@@ -74,13 +81,18 @@ impl RunStepOpts {
     }
 
     pub fn with_input(mut self, input: Map<String, Value>) -> Self {
+        self.input = WireJson::from_value(&Value::Object(input)).ok();
+        self
+    }
+
+    pub fn with_input_wire(mut self, input: WireJson) -> Self {
         self.input = Some(input);
         self
     }
 }
 
 pub struct HumanStepOpts {
-    pub prompt: Option<String>,
+    pub prompt: Option<WireJson>,
     pub fields: Vec<String>,
     pub extra: Map<String, Value>,
 }
@@ -95,7 +107,14 @@ impl HumanStepOpts {
     }
 
     pub fn with_prompt(mut self, prompt: impl Into<String>) -> Self {
-        self.prompt = Some(prompt.into());
+        self.prompt = Some(WireJson::from_js(&protocol::js::JsValue::from_text(
+            &prompt.into(),
+        )));
+        self
+    }
+
+    pub fn with_prompt_wire(mut self, prompt: WireJson) -> Self {
+        self.prompt = Some(prompt);
         self
     }
 }
@@ -225,7 +244,7 @@ struct StepInner {
     budgets: Option<WorkflowBudgets>,
     warn: Arc<dyn Fn(&str) + Send + Sync>,
     label_counts: Mutex<HashMap<String, i64>>,
-    done_output: Mutex<Option<Map<String, Value>>>,
+    done_output: Mutex<Option<WireJson>>,
     spend: Mutex<Spend>,
     pending: Mutex<HashMap<String, PendingParallel>>,
 }
@@ -303,6 +322,11 @@ impl Step {
     }
 
     pub fn done_output(&self) -> Option<Map<String, Value>> {
+        self.done_output_wire()
+            .and_then(|wire| wire.value().as_object().cloned())
+    }
+
+    pub fn done_output_wire(&self) -> Option<WireJson> {
         self.inner
             .done_output
             .lock()
@@ -558,6 +582,16 @@ impl Step {
         reference: &str,
         input: Map<String, Value>,
     ) -> Result<StepOutput, WorkflowError> {
+        let wire = WireJson::from_value(&Value::Object(input))?;
+        self.call_wire(label, reference, wire).await
+    }
+
+    pub async fn call_wire(
+        &self,
+        label: &str,
+        reference: &str,
+        input: WireJson,
+    ) -> Result<StepOutput, WorkflowError> {
         let full = self.scoped_label(label);
         let phase = self.inner.begin_step(&full, StepKind::Call).await?;
         let (step_id, seq) = match phase {
@@ -580,7 +614,7 @@ impl Step {
             .await;
         match called {
             Ok(result) => {
-                let output = StepOutput::from_value(result)?;
+                let output = StepOutput::from_wire(Some(result));
                 self.inner
                     .finish_step(&full, seq, &step_id, StepKind::Call, output.wire()?, None)
                     .await?;
@@ -597,6 +631,15 @@ impl Step {
     }
 
     pub async fn done(&self, output: Map<String, Value>) -> Result<(), WorkflowError> {
+        let wire = WireJson::from_value(&Value::Object(output))?;
+        self.done_wire_store(wire).await
+    }
+
+    pub async fn done_wire(&self, output: WireJson) -> Result<(), WorkflowError> {
+        self.done_wire_store(output).await
+    }
+
+    async fn done_wire_store(&self, output: WireJson) -> Result<(), WorkflowError> {
         if !self.scope.allow_done {
             return Err(WorkflowError::message(
                 "step.done() is not allowed inside a step.parallel branch — return a value from the branch function instead",
@@ -604,14 +647,16 @@ impl Step {
         }
         self.inner.check_kill().await?;
         self.inner.check_budget()?;
+        let entries = output.entries()?;
         let missing: Vec<&Field> = self
             .inner
             .output_fields
             .iter()
             .filter(|field| {
                 field.is_required()
-                    && match output.get(&field.name) {
-                        None | Some(Value::Null) => true,
+                    && match entries.iter().find(|(key, _)| key == &field.name) {
+                        None => true,
+                        Some((_, raw)) if raw == "null" => true,
                         Some(_) => false,
                     }
             })
@@ -641,10 +686,9 @@ impl Step {
                 .unwrap_or_else(|err| err.into_inner());
             *slot = Some(output.clone());
         }
-        merge_fields(Path::new(&self.inner.case_dir), &output).await?;
-        let recorded = WireJson::from_value(&Value::Object(output))?;
+        merge_fields_raw(Path::new(&self.inner.case_dir), entries).await?;
         self.inner
-            .finish_step("done", seq, &step_id, StepKind::Done, Some(recorded), None)
+            .finish_step("done", seq, &step_id, StepKind::Done, Some(output), None)
             .await?;
         Ok(())
     }

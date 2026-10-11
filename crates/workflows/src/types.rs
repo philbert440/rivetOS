@@ -403,7 +403,7 @@ pub enum JournalEntry {
         label: String,
         seq: i64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        prompt: Option<String>,
+        prompt: Option<WireJson>,
         fields: Vec<String>,
     },
     #[serde(rename = "gate_resolved", rename_all = "camelCase")]
@@ -591,7 +591,7 @@ impl JournalEntry {
                 line.string("label", label);
                 line.i64("seq", *seq);
                 if let Some(prompt) = prompt {
-                    line.string("prompt", prompt);
+                    line.raw("prompt", prompt.raw());
                 }
                 line.raw("fields", &string_array(fields));
             }

@@ -231,6 +231,36 @@ fn torn_final_line_is_skipped_and_a_valid_line_without_newline_is_kept() {
     );
 }
 
+#[tokio::test]
+async fn torn_tail_is_truncated_before_the_next_append() {
+    let dir = temp_root("torn-repair");
+    let path = journal_path(&dir);
+    let good = r#"{"type":"step_finished","ts":"t","stepId":"a#1","label":"a","seq":1,"kind":"run","result":1}"#;
+    std::fs::write(&path, format!("{good}\n{{\"type\":\"step_fin")).unwrap();
+    assert_eq!(read_journal(&dir).await.unwrap().len(), 1);
+    append_journal(
+        &dir,
+        &JournalEntry::StepStarted {
+            ts: "t2".to_string(),
+            step_id: "b#1".to_string(),
+            label: "b".to_string(),
+            seq: 1,
+            kind: StepKind::Run,
+        },
+    )
+    .await
+    .unwrap();
+    let raw = std::fs::read_to_string(&path).unwrap();
+    assert!(raw.ends_with('\n'), "{raw}");
+    assert!(!raw.contains("step_fin{"), "{raw}");
+    let again = read_journal(&dir).await.unwrap();
+    assert_eq!(again.len(), 2);
+    assert_eq!(again[0].entry_type(), "step_finished");
+    assert_eq!(again[1].entry_type(), "step_started");
+    let glued = format!("{good}\n{{\"type\":\"step_fin{{\"type\":\"step_started\"}}\n");
+    assert!(parse_journal(&glued).is_err());
+}
+
 #[test]
 fn absent_result_is_not_null() {
     let absent =

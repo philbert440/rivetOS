@@ -44,6 +44,57 @@ pub async fn read_string(path: &Path) -> Result<String, WorkflowError> {
     .await
 }
 
+pub fn repair_torn_tail(path: &Path) -> Result<(), WorkflowError> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .map_err(|err| WorkflowError::io(path, err))?;
+    let len = file
+        .metadata()
+        .map_err(|err| WorkflowError::io(path, err))?
+        .len();
+    if len == 0 {
+        return Ok(());
+    }
+    file.seek(SeekFrom::End(-1))
+        .map_err(|err| WorkflowError::io(path, err))?;
+    let mut last = [0u8; 1];
+    file.read_exact(&mut last)
+        .map_err(|err| WorkflowError::io(path, err))?;
+    if last[0] == b'\n' {
+        return Ok(());
+    }
+    let mut end = len;
+    let mut buf = [0u8; 8192];
+    loop {
+        let start = end.saturating_sub(buf.len() as u64);
+        let want = usize::try_from(end - start).unwrap_or(0);
+        if want == 0 {
+            file.set_len(0)
+                .map_err(|err| WorkflowError::io(path, err))?;
+            return Ok(());
+        }
+        file.seek(SeekFrom::Start(start))
+            .map_err(|err| WorkflowError::io(path, err))?;
+        file.read_exact(&mut buf[..want])
+            .map_err(|err| WorkflowError::io(path, err))?;
+        if let Some(index) = buf[..want].iter().rposition(|byte| *byte == b'\n') {
+            let keep = start + index as u64 + 1;
+            file.set_len(keep)
+                .map_err(|err| WorkflowError::io(path, err))?;
+            return Ok(());
+        }
+        if start == 0 {
+            file.set_len(0)
+                .map_err(|err| WorkflowError::io(path, err))?;
+            return Ok(());
+        }
+        end = start;
+    }
+}
+
 pub fn append_line_blocking(path: &Path, line: &[u8]) -> Result<(), WorkflowError> {
     use std::io::Write;
     let mut file = std::fs::OpenOptions::new()
