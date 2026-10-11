@@ -685,6 +685,82 @@ async fn append_ingest_settings_and_forced_rollbacks() {
             assert_eq!(stored[0].try_get::<String, _>("content").map_err(|err| err.to_string())?, "day");
             assert_eq!(day, instant("2026-10-11T00:00:00Z")?);
             assert_eq!(spaced, instant("2026-10-11T12:00:00Z")?);
+
+            let mut empty_fields = Map::new();
+            empty_fields.insert(
+                "session_id".to_string(),
+                Value::String("append-empty-fields".to_string()),
+            );
+            empty_fields.insert("role".to_string(), Value::String("user".to_string()));
+            empty_fields.insert("content".to_string(), Value::String("hello".to_string()));
+            empty_fields.insert("tool_name".to_string(), Value::String(String::new()));
+            empty_fields.insert("tool_result".to_string(), Value::String(String::new()));
+            empty_fields.insert(
+                "agent".to_string(),
+                Value::String("append-agent".to_string()),
+            );
+            plain
+                .append_locked(&empty_fields, &env)
+                .await
+                .map_err(|err| err.to_string())?;
+            let stored_fields = sqlx::query(
+                "SELECT m.tool_name, m.tool_result FROM ros_messages m JOIN ros_conversations c ON c.id = m.conversation_id WHERE c.session_key = 'append-empty-fields'",
+            )
+            .fetch_one(&db.pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            let stored_tool_name: String = stored_fields
+                .try_get("tool_name")
+                .map_err(|err| err.to_string())?;
+            let stored_tool_result: Option<String> = stored_fields
+                .try_get("tool_result")
+                .map_err(|err| err.to_string())?;
+            assert_eq!(stored_tool_name, "");
+            assert!(stored_tool_result.is_none());
+
+            let created_payload = json!({
+                "session_id": "ingest-created-at",
+                "agent": "date-agent",
+                "messages": [
+                    {"role": "user", "content": "blank-created", "created_at": ""},
+                    {"role": "user", "content": "epoch-created", "created_at": 1_791_590_400_000_i64},
+                    {"role": "user", "content": "space-created", "created_at": " "}
+                ]
+            });
+            let created_raw = MemoryStore::call_tool(&plain, "memory_ingest_session", &created_payload)
+                .await
+                .map_err(|err| err.to_string())?;
+            let created_out: Value =
+                serde_json::from_str(&created_raw).map_err(|err| err.to_string())?;
+            assert_eq!(created_out.get("ingested").and_then(Value::as_u64), Some(2));
+            assert_eq!(created_out.get("skipped").and_then(Value::as_u64), Some(1));
+            let created_rows = sqlx::query(
+                "SELECT m.content, m.created_at FROM ros_messages m JOIN ros_conversations c ON c.id = m.conversation_id WHERE c.session_key = 'ingest-created-at' ORDER BY m.content",
+            )
+            .fetch_all(&db.pool)
+            .await
+            .map_err(|err| err.to_string())?;
+            assert_eq!(created_rows.len(), 2);
+            let blank_at: DateTime<Utc> = created_rows[0]
+                .try_get("created_at")
+                .map_err(|err| err.to_string())?;
+            let epoch_at: DateTime<Utc> = created_rows[1]
+                .try_get("created_at")
+                .map_err(|err| err.to_string())?;
+            assert_eq!(
+                created_rows[0]
+                    .try_get::<String, _>("content")
+                    .map_err(|err| err.to_string())?,
+                "blank-created"
+            );
+            assert!(blank_at > Utc::now() - chrono::Duration::minutes(5));
+            assert_eq!(
+                created_rows[1]
+                    .try_get::<String, _>("content")
+                    .map_err(|err| err.to_string())?,
+                "epoch-created"
+            );
+            assert_eq!(epoch_at, instant("2026-10-10T00:00:00Z")?);
             MemoryStore::append(&plain, &entry("append-after-rollback", "append-agent", "recovered"))
                 .await
                 .map_err(|err| err.to_string())?;

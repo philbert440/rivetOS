@@ -31,8 +31,7 @@ pub fn prepare_append(
     let tool_name = args
         .get("tool_name")
         .and_then(Value::as_str)
-        .map(str::to_string)
-        .filter(|name| !name.is_empty());
+        .map(str::to_string);
     let event_id_arg = args
         .get("event_id")
         .and_then(Value::as_str)
@@ -48,7 +47,7 @@ pub fn prepare_append(
     if !matches!(role.as_str(), "user" | "assistant" | "system" | "tool") {
         return Err("memory_append: role must be user|assistant|system|tool".to_string());
     }
-    if content.is_empty() && tool_name.is_none() && role != "tool" {
+    if content.is_empty() && tool_name.as_deref().is_none_or(str::is_empty) && role != "tool" {
         return Err(
             "memory_append: content is required (or provide tool_name for tool-call messages)"
                 .to_string(),
@@ -81,6 +80,7 @@ pub fn prepare_append(
     let tool_result = args
         .get("tool_result")
         .and_then(Value::as_str)
+        .filter(|text| !text.is_empty())
         .map(|text| truncate_content(text, &mut metadata, "tool_result"));
     Ok(PreparedAppend {
         session_id,
@@ -220,12 +220,28 @@ pub fn validate_ingest_messages(raw: &Value) -> Result<Vec<crate::store::IngestM
         out.push(crate::store::IngestMessage {
             role,
             content,
-            created_at: rec
-                .get("created_at")
-                .and_then(Value::as_str)
-                .map(str::to_string),
+            created_at: ingest_created_at(rec.get("created_at")),
             tool_calls,
         });
     }
     Ok(out)
+}
+
+fn ingest_created_at(value: Option<&Value>) -> Option<String> {
+    let value = value?;
+    if !protocol::js::js_boolean_json(value) {
+        return None;
+    }
+    match value {
+        Value::String(text) => Some(text.clone()),
+        Value::Number(number) => match number.as_f64() {
+            Some(ms) => match protocol::js::to_iso_string(ms) {
+                Ok(iso) => Some(iso),
+                Err(_) => Some(protocol::js::js_to_string_json(value)),
+            },
+            None => Some(protocol::js::js_to_string_json(value)),
+        },
+        Value::Bool(_) => protocol::js::to_iso_string(1.0).ok(),
+        other => Some(protocol::js::js_to_string_json(other)),
+    }
 }

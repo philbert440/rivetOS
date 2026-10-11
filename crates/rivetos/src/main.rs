@@ -6,7 +6,7 @@ use clap::{Parser, Subcommand};
 #[command(name = "rivetos", about = "RivetOS command line")]
 struct Cli {
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Subcommand)]
@@ -16,12 +16,15 @@ enum Command {
 }
 
 fn main() -> ExitCode {
-    let argv: Vec<String> = std::env::args().skip(1).collect();
-    if argv.iter().any(|arg| arg == "--help" || arg == "-h") {
-        let _ = Cli::parse_from(std::env::args());
-        return ExitCode::SUCCESS;
+    if let Err(message) = memory::cli::reject_bad_config(std::env::args()) {
+        eprintln!("{message}");
+        return ExitCode::from(1);
     }
-    let command = Command::Db(memory::cli::DbArgs::from_argv(argv));
+    if let Err(message) = memory::cli::migrate_url_error(std::env::args()) {
+        eprintln!("{message}");
+        return ExitCode::from(1);
+    }
+    let cli = Cli::parse();
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -32,7 +35,8 @@ fn main() -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    match command {
-        Command::Db(args) => runtime.block_on(memory::cli::run(args)),
+    match cli.command {
+        Some(Command::Db(args)) => runtime.block_on(memory::cli::run(args)),
+        None => runtime.block_on(memory::cli::run(memory::cli::DbArgs::usage_only())),
     }
 }

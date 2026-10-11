@@ -79,7 +79,7 @@ impl ProjectFs for NodeFs {
             if !meta.is_file() || meta.len() > FILE_CAP {
                 return None;
             }
-            std::fs::read_to_string(&owned).ok()
+            protocol::host::read_text(std::path::Path::new(&owned)).ok()
         })
     }
 }

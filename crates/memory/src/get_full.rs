@@ -1418,7 +1418,15 @@ pub fn missing_pointer_message() -> &'static str {
 }
 
 pub fn file_missing_message(file: &str, agent: Option<&str>) -> String {
-    let home = protocol::host::home_dir(&protocol::host::ProcessEnv).unwrap_or_default();
+    file_missing_message_with(file, agent, &protocol::host::ProcessEnv)
+}
+
+pub fn file_missing_message_with(
+    file: &str,
+    agent: Option<&str>,
+    env: &dyn protocol::host::Env,
+) -> String {
+    let home = env.var("HOME").unwrap_or_default();
     format_missing_jsonl_message(file, agent, &home)
 }
 

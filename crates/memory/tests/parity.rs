@@ -11,12 +11,13 @@ use memory::columns::decide_width_migration;
 use memory::cowork_hash::{CoworkHookRow, cowork_content_hash, pick_cowork_hook_rewrite};
 use memory::full::{
     extract_full_from_line, extract_opencode_from_part, extract_text, file_missing_message,
-    missing_pointer_message, truncation_hint,
+    file_missing_message_with, format_missing_jsonl_message, missing_pointer_message,
+    truncation_hint,
 };
 use memory::names::{normalize_tag_value, parse_tag_literal};
 use memory::prepare::{append_result_value, prepare_append, validate_ingest_messages};
 use memory::rules::{
-    MapFs, PROJECT_RULE_MAX_WALK, origin_url_from_config, plan_project_rule_tag,
+    MapFs, NodeFs, PROJECT_RULE_MAX_WALK, origin_url_from_config, plan_project_rule_tag,
     repo_name_from_remote, resolve_project_from_cwd, sanitize_remote,
 };
 use memory::spans::{apply_window_args, parse_js_date, resolve_window};
@@ -521,6 +522,22 @@ fn windows_slug_and_project_rule() {
     let walked = resolve_project_from_cwd(&leaf, &deep).expect("basename");
     assert_eq!(walked.rule, "cwd-basename");
     assert_eq!(PROJECT_RULE_MAX_WALK, 16);
+    let lossy_root = std::env::temp_dir().join(format!("rr2a-proj-{}", std::process::id()));
+    let checkout = lossy_root.join("checkout");
+    let git_dir = checkout.join(".git");
+    std::fs::create_dir_all(&git_dir).expect("git dir");
+    let mut config_bytes = b"# caf".to_vec();
+    config_bytes.push(0xE9);
+    config_bytes.extend_from_slice(
+        b"\n[remote \"origin\"]\n\turl = https://github.com/acme/ActualApp.git\n",
+    );
+    std::fs::write(git_dir.join("config"), &config_bytes).expect("config");
+    let cwd = checkout.to_string_lossy().to_string();
+    let lossy = resolve_project_from_cwd(&cwd, &NodeFs).expect("lossy origin");
+    assert_eq!(lossy.value, "actualapp");
+    assert_eq!(lossy.display, "ActualApp");
+    assert_eq!(lossy.rule, "git-remote");
+    drop(std::fs::remove_dir_all(&lossy_root));
     let mut settings = Map::new();
     settings.insert(
         "cwd".to_string(),
@@ -568,6 +585,15 @@ fn write_tool_validation_and_sql_shapes() {
     args.insert("tool_name".to_string(), Value::String(" ".to_string()));
     let blank_tool = prepare_append(&args, &env).expect("whitespace tool");
     assert_eq!(blank_tool.tool_name.as_deref(), Some(" "));
+    args.insert("content".to_string(), Value::String("hello".to_string()));
+    args.insert("tool_name".to_string(), Value::String(String::new()));
+    args.insert("tool_result".to_string(), Value::String(String::new()));
+    let empty_fields = prepare_append(&args, &env).expect("empty optional fields");
+    assert_eq!(empty_fields.tool_name.as_deref(), Some(""));
+    assert_eq!(empty_fields.tool_result, None);
+    args.insert("tool_result".to_string(), Value::String(" ".to_string()));
+    let spaced_result = prepare_append(&args, &env).expect("spaced tool result");
+    assert_eq!(spaced_result.tool_result.as_deref(), Some(" "));
     args.insert("content".to_string(), Value::String("hi".to_string()));
     args.insert("tool_name".to_string(), Value::String("read".to_string()));
     args.insert("role".to_string(), Value::String("user".to_string()));
@@ -596,6 +622,37 @@ fn write_tool_validation_and_sql_shapes() {
         validate_ingest_messages(&Value::Array(vec![])).expect_err("empty"),
         "memory_ingest_session: messages must be a non-empty array"
     );
+    let blank_created = validate_ingest_messages(&json!([{
+        "role": "user",
+        "content": "hello",
+        "created_at": ""
+    }]))
+    .expect("blank created_at");
+    assert!(blank_created[0].created_at.is_none());
+    let spaced_created = validate_ingest_messages(&json!([{
+        "role": "user",
+        "content": "hello",
+        "created_at": " "
+    }]))
+    .expect("spaced created_at");
+    assert_eq!(spaced_created[0].created_at.as_deref(), Some(" "));
+    let epoch_created = validate_ingest_messages(&json!([{
+        "role": "user",
+        "content": "hello",
+        "created_at": 1_791_590_400_000_i64
+    }]))
+    .expect("epoch created_at");
+    assert_eq!(
+        epoch_created[0].created_at.as_deref(),
+        Some("2026-10-10T00:00:00.000Z")
+    );
+    let zero_created = validate_ingest_messages(&json!([{
+        "role": "user",
+        "content": "hello",
+        "created_at": 0
+    }]))
+    .expect("zero created_at");
+    assert!(zero_created[0].created_at.is_none());
     let sql = capture_conversation_upsert_sql(true);
     assert!(sql.contains("$6::uuid"));
     assert!(sql.contains("ON CONFLICT (session_key, agent) DO UPDATE"));
@@ -966,6 +1023,32 @@ fn report_formatters_and_get_full_strings() {
     assert!(
         file_missing_message("/tmp/missing.jsonl", Some("grok")).contains("/tmp/missing.jsonl")
     );
+    let unset = protocol::host::MapEnv::new();
+    let root_session = "/root/.codex/sessions/session.jsonl";
+    let unset_message = file_missing_message_with(root_session, None, &unset);
+    assert!(
+        unset_message.contains("Path looks like a per-host harness session store"),
+        "{unset_message}"
+    );
+    let mut rooted = protocol::host::MapEnv::new();
+    rooted.set("HOME", "/root");
+    let desk_message = file_missing_message_with(root_session, None, &rooted);
+    assert!(
+        desk_message.contains("Path is a desk/user home directory"),
+        "{desk_message}"
+    );
+    let passwd = protocol::host::home_dir(&protocol::host::MapEnv::new()).unwrap_or_default();
+    if !passwd.is_empty() {
+        let under_passwd = format!(
+            "{}/.codex/sessions/session.jsonl",
+            passwd.trim_end_matches('/')
+        );
+        assert_eq!(
+            file_missing_message_with(&under_passwd, None, &unset),
+            format_missing_jsonl_message(&under_passwd, None, ""),
+            "HOME unset must not fall back to the passwd directory {passwd}"
+        );
+    }
     let row = CoworkHookRow {
         id: "1".to_string(),
         role: "user".to_string(),

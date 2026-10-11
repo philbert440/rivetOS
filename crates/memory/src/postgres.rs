@@ -1339,7 +1339,8 @@ impl PostgresMemory {
                 skipped += 1;
                 continue;
             }
-            if let Some(raw) = item.created_at.as_deref()
+            let created_raw = item.created_at.as_deref().filter(|raw| !raw.is_empty());
+            if let Some(raw) = created_raw
                 && parse_timestamptz(raw).is_none()
             {
                 eprintln!(
@@ -1391,7 +1392,7 @@ impl PostgresMemory {
                     .cloned(),
                 tool_result: None,
                 metadata: Some(metadata),
-                created_at: item.created_at.clone(),
+                created_at: created_raw.map(str::to_string),
             };
             let id = self.append_in_tx(conn, &entry).await?;
             ids.push(id);
