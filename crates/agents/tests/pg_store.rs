@@ -65,9 +65,11 @@ impl Drop for SchemaGuard {
                     return;
                 };
                 for name in &names {
-                    let _ = sqlx::query(&format!("DROP SCHEMA IF EXISTS {name} CASCADE"))
-                        .execute(&pool)
-                        .await;
+                    let _ = sqlx::query(sqlx::AssertSqlSafe(format!(
+                        "DROP SCHEMA IF EXISTS {name} CASCADE"
+                    )))
+                    .execute(&pool)
+                    .await;
                 }
             });
         });
@@ -90,7 +92,7 @@ async fn schema_pool(url: &str, schema: &str) -> PgPool {
         .after_connect(move |conn, _meta| {
             let schema = schema.clone();
             Box::pin(async move {
-                sqlx::query(&format!("SET search_path TO {schema}"))
+                sqlx::query(sqlx::AssertSqlSafe(format!("SET search_path TO {schema}")))
                     .execute(&mut *conn)
                     .await?;
                 Ok(())
@@ -102,7 +104,10 @@ async fn schema_pool(url: &str, schema: &str) -> PgPool {
 }
 
 async fn apply(pool: &PgPool, sql: &str) {
-    sqlx::raw_sql(sql).execute(pool).await.unwrap();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql))
+        .execute(pool)
+        .await
+        .unwrap();
 }
 
 struct PgHooks {
@@ -188,7 +193,7 @@ async fn postgres_store_matches_the_preset_contract() {
 
     let admin = admin_pool(&url).await;
     for name in [&schema, &empty_schema, &pre_schema] {
-        sqlx::query(&format!("CREATE SCHEMA {name}"))
+        sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {name}")))
             .execute(&admin)
             .await
             .unwrap();
@@ -255,21 +260,24 @@ async fn before_0018_lists_by_creation_and_names_the_migration(store: &PgAgentPr
         .await
         .unwrap()
         .into_iter()
-        .map(|preset| preset.name)
+        .map(|preset| preset.name.to_utf8().to_string())
         .collect();
     assert_eq!(names, ["Older", "Newer"]);
     let patch = AgentPresetPatch {
         sort_order: SortPatch::Set(0),
         ..AgentPresetPatch::default()
     };
-    let err = store.update(&older.id, patch.clone()).await.unwrap_err();
+    let err = store
+        .update(older.id.to_utf8(), patch.clone())
+        .await
+        .unwrap_err();
     assert!(err.is_migration_required());
     assert!(err.to_string().contains("0018_agent_preset_sort_order"));
-    let again = store.update(&older.id, patch).await.unwrap_err();
+    let again = store.update(older.id.to_utf8(), patch).await.unwrap_err();
     assert!(again.is_migration_required());
     assert!(
         store
-            .get(&older.id)
+            .get(older.id.to_utf8())
             .await
             .unwrap()
             .unwrap()
@@ -284,7 +292,7 @@ async fn accepts_a_pre_epoch_timestamp(store: &PgAgentPresetStore) {
     let created = store.create(body).await.unwrap();
     assert_eq!(created.created_at, -1_i64);
     assert_eq!(created.updated_at, NOW);
-    let got = store.get(&created.id).await.unwrap().unwrap();
+    let got = store.get(created.id.to_utf8()).await.unwrap().unwrap();
     assert_eq!(got.created_at, -1_i64);
     assert_eq!(got.updated_at, NOW);
 }
@@ -293,7 +301,7 @@ async fn oversized_sort_order_reports_the_database(store: &PgAgentPresetStore) {
     let created = store.create(input("Wide")).await.unwrap();
     let err = store
         .update(
-            &created.id,
+            created.id.to_utf8(),
             AgentPresetPatch {
                 sort_order: SortPatch::Set(i64::from(i32::MAX) + 1),
                 ..AgentPresetPatch::default()
@@ -313,23 +321,35 @@ async fn fills_defaults_and_round_trips_timestamps(store: &PgAgentPresetStore, p
     let mut body = input("  Reviewer  ");
     body.created_at = Some(1_600_000_000_000);
     let created = store.create(body).await.unwrap();
-    assert_eq!(created.name, "Reviewer");
-    assert_eq!(created.color, "");
-    assert_eq!(created.model, "");
-    assert_eq!(created.effort, "medium");
-    assert_eq!(created.system_prompt, "");
+    assert_eq!(created.name.to_utf8(), "Reviewer");
+    assert_eq!(created.color.to_utf8(), "");
+    assert_eq!(created.model.to_utf8(), "");
+    assert_eq!(created.effort.to_utf8(), "medium");
+    assert_eq!(created.system_prompt.to_utf8(), "");
     assert_eq!(created.shared_link, Some(true));
-    assert_eq!(created.node_base_url.as_deref(), Some(""));
-    assert_eq!(created.node.as_deref(), Some("node-f"));
-    assert_eq!(created.directory.as_deref(), Some("/tmp/agents/reviewer"));
+    assert_eq!(
+        created
+            .node_base_url
+            .as_ref()
+            .map(agents::JsString::to_utf8),
+        Some("")
+    );
+    assert_eq!(
+        created.node.as_ref().map(agents::JsString::to_utf8),
+        Some("node-f")
+    );
+    assert_eq!(
+        created.directory.as_ref().map(agents::JsString::to_utf8),
+        Some("/tmp/agents/reviewer")
+    );
     assert_eq!(created.created_at, 1_600_000_000_000_i64);
     assert_eq!(created.updated_at, NOW);
-    let got = store.get(&created.id).await.unwrap().unwrap();
+    let got = store.get(created.id.to_utf8()).await.unwrap().unwrap();
     assert_eq!(got.created_at, 1_600_000_000_000_i64);
     assert_eq!(got.updated_at, NOW);
     let raw: (DateTime<Utc>, DateTime<Utc>) =
         sqlx::query_as("SELECT created_at, updated_at FROM ros_agent_presets WHERE id = $1")
-            .bind(&created.id)
+            .bind(created.id.to_utf8())
             .fetch_one(pool)
             .await
             .unwrap();
@@ -339,13 +359,16 @@ async fn fills_defaults_and_round_trips_timestamps(store: &PgAgentPresetStore, p
 
 async fn persists_catalog_model(store: &PgAgentPresetStore, pool: &PgPool) {
     let mut body = input("Legacy");
-    body.model = Some("claude".to_string());
+    body.model = Some("claude".into());
     let created = store.create(body).await.unwrap();
-    assert_eq!(created.harness_id.as_deref(), Some("claude-code"));
-    assert_eq!(created.model, "");
+    assert_eq!(
+        created.harness_id.as_ref().map(agents::JsString::to_utf8),
+        Some("claude-code")
+    );
+    assert_eq!(created.model.to_utf8(), "");
     let raw: (String, Option<String>) =
         sqlx::query_as("SELECT model, harness_id FROM ros_agent_presets WHERE id = $1")
-            .bind(&created.id)
+            .bind(created.id.to_utf8())
             .fetch_one(pool)
             .await
             .unwrap();
@@ -355,31 +378,55 @@ async fn persists_catalog_model(store: &PgAgentPresetStore, pool: &PgPool) {
 
 async fn resolves_find_by_handle(store: &PgAgentPresetStore) {
     let mut beta = input("Alpha");
-    beta.id = Some("beta".to_string());
-    beta.directory = "/a".to_string();
+    beta.id = Some("beta".into());
+    beta.directory = "/a".into();
     store.create(beta).await.unwrap();
     let mut id_b = input("beta");
-    id_b.id = Some("id-b".to_string());
-    id_b.directory = "/b".to_string();
+    id_b.id = Some("id-b".into());
+    id_b.directory = "/b".into();
     store.create(id_b).await.unwrap();
     let mut id_c = input("Gamma");
-    id_c.id = Some("id-c".to_string());
-    id_c.directory = "/c".to_string();
+    id_c.id = Some("id-c".into());
+    id_c.directory = "/c".into();
     store.create(id_c).await.unwrap();
     assert_eq!(
-        store.find_by_handle("beta").await.unwrap().unwrap().id,
+        store
+            .find_by_handle("beta")
+            .await
+            .unwrap()
+            .unwrap()
+            .id
+            .to_utf8(),
         "beta"
     );
     assert_eq!(
-        store.find_by_handle("Alpha").await.unwrap().unwrap().id,
+        store
+            .find_by_handle("Alpha")
+            .await
+            .unwrap()
+            .unwrap()
+            .id
+            .to_utf8(),
         "beta"
     );
     assert_eq!(
-        store.find_by_handle("gamma").await.unwrap().unwrap().id,
+        store
+            .find_by_handle("gamma")
+            .await
+            .unwrap()
+            .unwrap()
+            .id
+            .to_utf8(),
         "id-c"
     );
     assert_eq!(
-        store.find_by_handle("  gamma  ").await.unwrap().unwrap().id,
+        store
+            .find_by_handle("  gamma  ")
+            .await
+            .unwrap()
+            .unwrap()
+            .id
+            .to_utf8(),
         "id-c"
     );
     assert!(store.find_by_handle("missing").await.unwrap().is_none());
@@ -391,21 +438,21 @@ async fn maps_unique_violations(store: &PgAgentPresetStore) {
     assert!(err.is_conflict());
     assert_eq!(err.code(), Some("preset_conflict"));
     let mut other = input("Other");
-    other.directory = "/tmp/agents/other".to_string();
+    other.directory = "/tmp/agents/other".into();
     let other = store.create(other).await.unwrap();
     let rename = AgentPresetPatch {
-        name: Some("REVIEWER".to_string()),
+        name: Some("REVIEWER".into()),
         ..AgentPresetPatch::default()
     };
-    let err = store.update(&other.id, rename).await.unwrap_err();
+    let err = store.update(other.id.to_utf8(), rename).await.unwrap_err();
     assert!(err.is_conflict());
     let mut one = input("One");
-    one.id = Some("same".to_string());
-    one.directory = "/one".to_string();
-    assert_eq!(store.create(one).await.unwrap().id, "same");
+    one.id = Some("same".into());
+    one.directory = "/one".into();
+    assert_eq!(store.create(one).await.unwrap().id.to_utf8(), "same");
     let mut two = input("Two");
-    two.id = Some("same".to_string());
-    two.directory = "/two".to_string();
+    two.id = Some("same".into());
+    two.directory = "/two".into();
     let err = store.create(two).await.unwrap_err();
     assert!(err.is_conflict());
     assert!(err.is_id_conflict());
@@ -413,69 +460,76 @@ async fn maps_unique_violations(store: &PgAgentPresetStore) {
 
 async fn unsets_harness_without_touching_identity(store: &PgAgentPresetStore) {
     let mut body = input("Reviewer");
-    body.harness_id = Some("codex".to_string());
-    body.model = Some("opus".to_string());
+    body.harness_id = Some("codex".into());
+    body.model = Some("opus".into());
     body.created_at = Some(1_500_000_000_000);
     let created = store.create(body).await.unwrap();
     let patch = AgentPresetPatch {
         harness: HarnessPatch::Clear,
         ..AgentPresetPatch::default()
     };
-    let updated = store.update(&created.id, patch).await.unwrap().unwrap();
+    let updated = store
+        .update(created.id.to_utf8(), patch)
+        .await
+        .unwrap()
+        .unwrap();
     assert!(updated.harness_id.is_none());
-    assert_eq!(updated.model, "opus");
+    assert_eq!(updated.model.to_utf8(), "opus");
     assert_eq!(updated.id, created.id);
-    assert_eq!(updated.node.as_deref(), Some("node-f"));
+    assert_eq!(
+        updated.node.as_ref().map(agents::JsString::to_utf8),
+        Some("node-f")
+    );
     assert_eq!(updated.created_at, 1_500_000_000_000_i64);
     assert_eq!(updated.updated_at, NOW);
 }
 
 async fn lands_concurrent_patches(store: &PgAgentPresetStore) {
     let mut body = input("Orig");
-    body.color = Some("#111111".to_string());
+    body.color = Some("#111111".into());
     let created = store.create(body).await.unwrap();
     let name = AgentPresetPatch {
-        name: Some("FromA".to_string()),
+        name: Some("FromA".into()),
         ..AgentPresetPatch::default()
     };
     let color = AgentPresetPatch {
-        color: Some("#abcdef".to_string()),
+        color: Some("#abcdef".into()),
         ..AgentPresetPatch::default()
     };
     let (left, right) = tokio::join!(
-        store.update(&created.id, name),
-        store.update(&created.id, color)
+        store.update(created.id.to_utf8(), name),
+        store.update(created.id.to_utf8(), color)
     );
     assert!(left.unwrap().is_some());
     assert!(right.unwrap().is_some());
-    let got = store.get(&created.id).await.unwrap().unwrap();
-    assert_eq!(got.name, "FromA");
-    assert_eq!(got.color, "#abcdef");
+    let got = store.get(created.id.to_utf8()).await.unwrap().unwrap();
+    assert_eq!(got.name.to_utf8(), "FromA");
+    assert_eq!(got.color.to_utf8(), "#abcdef");
 }
 
 async fn lists_filters_and_deletes(store: &PgAgentPresetStore) {
     let mut b = input("B");
-    b.id = Some("b".to_string());
+    b.id = Some("b".into());
     b.created_at = Some(2_000);
-    b.directory = "/b".to_string();
+    b.directory = "/b".into();
     store.create(b).await.unwrap();
     let mut c = input("C");
-    c.id = Some("c".to_string());
+    c.id = Some("c".into());
     c.created_at = Some(1_000);
-    c.directory = "/c".to_string();
-    c.node = "other".to_string();
+    c.directory = "/c".into();
+    c.node = "other".into();
     store.create(c).await.unwrap();
     let mut a = input("A");
-    a.id = Some("a".to_string());
+    a.id = Some("a".into());
     a.created_at = Some(1_000);
-    a.directory = "/a".to_string();
+    a.directory = "/a".into();
     store.create(a).await.unwrap();
     let ids: Vec<_> = store
         .list(None)
         .await
         .unwrap()
         .into_iter()
-        .map(|preset| preset.id)
+        .map(|preset| preset.id.to_utf8().to_string())
         .collect();
     assert_eq!(ids, ["a", "c", "b"]);
     let filtered: Vec<_> = store
@@ -483,14 +537,14 @@ async fn lists_filters_and_deletes(store: &PgAgentPresetStore) {
         .await
         .unwrap()
         .into_iter()
-        .map(|preset| preset.id)
+        .map(|preset| preset.id.to_utf8().to_string())
         .collect();
     assert_eq!(filtered, ["a", "b"]);
     assert!(!store.delete("missing").await.unwrap());
     assert!(store.delete("a").await.unwrap());
     assert!(store.get("a").await.unwrap().is_none());
     let missing = AgentPresetPatch {
-        name: Some("nope".to_string()),
+        name: Some("nope".into()),
         ..AgentPresetPatch::default()
     };
     assert!(store.update("missing", missing).await.unwrap().is_none());

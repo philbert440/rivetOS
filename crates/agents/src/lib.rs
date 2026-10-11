@@ -51,11 +51,12 @@ pub use import_legacy::{
 pub use pg_store::PgAgentPresetStore;
 pub use preset::{
     AgentPreset, AgentPresetInput, AgentPresetPatch, AgentRegistryBackend, HarnessPatch,
-    MigratedFields, SortPatch, catalog_agent_to_harness, catalog_pairs, epoch_ms, fresh_preset_map,
+    MigratedFields, SortPatch, catalog_agent_to_harness, catalog_pairs, fresh_preset_map,
     migrate_fields, migrate_map, name_key, number_to_i64, preset_from_map, require_agent_name,
     write_preset_fields,
 };
 pub use protocol::JsNumber;
+pub use protocol::js::{JsString, JsValue, posix_join, posix_normalize};
 pub use request::{
     ModelList, ModelListLookup, ValidateCtx, ValidatedCreate, ValidatedPatch, validate_create,
     validate_patch,
@@ -68,6 +69,5 @@ pub use validate::{
     DIRECTORY_INSIDE_SHARED, ParsedHarness, SLUG_MAX, canonical_path, default_directory_for,
     directory_warnings, expand_home, has_dot_dot, is_agent_preset, is_codex_default_model,
     is_color, is_effort, is_harness_id, is_record, json_is_integer, parse_color, parse_effort,
-    parse_harness_id, posix_join, posix_normalize, posix_resolve, slugify, utf16_len, utf16_slice,
-    validate_directory, validate_directory_str,
+    parse_harness_id, slugify, validate_directory, validate_directory_str,
 };

@@ -19,6 +19,8 @@ uuid = { workspace = true }
 
 [dev-dependencies]
 chrono = { workspace = true }
+parking_lot = { workspace = true }
+protocol = { path = "../protocol" }
 serde_json.workspace = true
 sqlx = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }

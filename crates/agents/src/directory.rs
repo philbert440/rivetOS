@@ -1,9 +1,11 @@
 use std::io;
-use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+use std::os::unix::fs::DirBuilderExt;
 use std::path::Path;
 
+use protocol::js::posix_join;
+
 use crate::error::{DIRECTORY_EMPTY, DIRECTORY_MUST_BE_ABSOLUTE, LINK_NAME, PresetError};
-use crate::validate::{posix_join, posix_resolve, validate_directory_str};
+use crate::validate::{resolve_fs, validate_directory_str};
 
 pub struct EnsureAgentDirectoryOptions<'a> {
     pub shared_dir: Option<&'a str>,
@@ -132,9 +134,9 @@ fn existing_symlink_reason(link: &str) -> Option<String> {
     let target = std::fs::read_link(link).ok()?;
     let parent = Path::new(link).parent().unwrap_or_else(|| Path::new("/"));
     let resolved = if target.is_absolute() {
-        posix_resolve(&target.to_string_lossy())
+        resolve_fs(&target.to_string_lossy())
     } else {
-        posix_resolve(&posix_join(&[
+        resolve_fs(&posix_join(&[
             &parent.to_string_lossy(),
             &target.to_string_lossy(),
         ]))
@@ -199,10 +201,4 @@ pub fn mkdir_p_700(path: &Path) -> io::Result<()> {
         },
         Err(err) => Err(err),
     }
-}
-
-pub fn set_mode(path: &Path, mode: u32) -> io::Result<()> {
-    let mut perms = std::fs::metadata(path)?.permissions();
-    perms.set_mode(mode);
-    std::fs::set_permissions(path, perms)
 }

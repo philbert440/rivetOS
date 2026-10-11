@@ -10,7 +10,7 @@ use sqlx::{PgPool, Row};
 use crate::error::{MIGRATION_0018, PresetError};
 use crate::preset::{
     AgentPreset, AgentPresetInput, AgentPresetPatch, AgentRegistryBackend, HarnessPatch,
-    PresetColumns, SortPatch, catalog_pairs, epoch_ms, migrate_fields, preset_from_columns,
+    PresetColumns, SortPatch, catalog_pairs, migrate_fields, preset_from_columns,
     require_agent_name,
 };
 use crate::store::{
@@ -110,7 +110,7 @@ fn push_set(sets: &mut Vec<String>, column: &str, placeholder: &str) {
 fn push_harness_sets(sets: &mut Vec<String>, binder: &mut Binder, patch: &AgentPresetPatch) {
     match (&patch.harness, &patch.model) {
         (HarnessPatch::Clear, Some(model)) => {
-            let migrated = migrate_fields(model, None);
+            let migrated = migrate_fields(model.to_utf8(), None);
             push_set(sets, "model", &binder.text(&migrated.model));
             match &migrated.harness_id {
                 Some(id) => push_set(sets, "harness_id", &binder.text(id)),
@@ -129,7 +129,7 @@ fn push_harness_sets(sets: &mut Vec<String>, binder: &mut Binder, patch: &AgentP
         (HarnessPatch::Set(id), model) => {
             push_set(sets, "harness_id", &binder.text(id));
             if let Some(model) = model {
-                push_set(sets, "model", &binder.text(model));
+                push_set(sets, "model", &binder.text(model.to_utf8()));
             } else {
                 let migrated = read_migrated(binder);
                 sets.push(format!("model = ({})", migrated.model));
@@ -137,7 +137,7 @@ fn push_harness_sets(sets: &mut Vec<String>, binder: &mut Binder, patch: &AgentP
         }
         (HarnessPatch::Unchanged, Some(model)) => {
             let migrated = read_migrated(binder);
-            let patch_model = binder.text(model);
+            let patch_model = binder.text(model.to_utf8());
             let mapped = harness_from_model_sql(&patch_model, binder);
             sets.push(format!(
                 "harness_id = COALESCE(({}), {mapped})",
@@ -161,19 +161,23 @@ fn update_statement(
     let mut binder = Binder::new();
     if let Some(name) = &patch.name {
         let name = require_agent_name(name)?;
-        push_set(&mut sets, "name", &binder.text(&name));
+        push_set(&mut sets, "name", &binder.text(name.to_utf8()));
     }
     if let Some(color) = &patch.color {
-        push_set(&mut sets, "color", &binder.text(color));
+        push_set(&mut sets, "color", &binder.text(color.to_utf8()));
     }
     if let Some(effort) = &patch.effort {
-        push_set(&mut sets, "effort", &binder.text(effort));
+        push_set(&mut sets, "effort", &binder.text(effort.to_utf8()));
     }
     if let Some(system_prompt) = &patch.system_prompt {
-        push_set(&mut sets, "system_prompt", &binder.text(system_prompt));
+        push_set(
+            &mut sets,
+            "system_prompt",
+            &binder.text(system_prompt.to_utf8()),
+        );
     }
     if let Some(directory) = &patch.directory {
-        push_set(&mut sets, "directory", &binder.text(directory));
+        push_set(&mut sets, "directory", &binder.text(directory.to_utf8()));
     }
     if let Some(shared_link) = patch.shared_link {
         push_set(&mut sets, "shared_link", &binder.boolean(shared_link));
@@ -186,7 +190,7 @@ fn update_statement(
         }
     }
     if let Some(url) = &patch.node_base_url {
-        push_set(&mut sets, "node_base_url", &binder.text(url));
+        push_set(&mut sets, "node_base_url", &binder.text(url.to_utf8()));
     }
     push_harness_sets(&mut sets, &mut binder, patch);
     let when = millis_to_time(now)?;
@@ -204,8 +208,8 @@ fn millis_to_time(ms: i64) -> Result<DateTime<Utc>, PresetError> {
         .ok_or_else(|| PresetError::message(format!("invalid preset timestamp: {ms}")))
 }
 
-fn epoch_from_time(time: DateTime<Utc>) -> Result<JsNumber, PresetError> {
-    epoch_ms(time.timestamp_millis())
+fn epoch_from_time(time: DateTime<Utc>) -> JsNumber {
+    JsNumber::from(time.timestamp_millis())
 }
 
 fn parse_constraint(message: &str) -> Option<String> {
@@ -267,8 +271,8 @@ fn row_to_preset(row: &sqlx::postgres::PgRow) -> Result<AgentPreset, PresetError
         directory: &directory,
         shared_link: row.try_get("shared_link").map_err(map_db)?,
         node_base_url: &node_base_url,
-        created_at: epoch_from_time(created)?,
-        updated_at: epoch_from_time(updated)?,
+        created_at: epoch_from_time(created),
+        updated_at: epoch_from_time(updated),
         sort_order,
         harness_id: harness.as_deref(),
     })
@@ -279,7 +283,7 @@ async fn fetch_all(
     sql: &str,
     args: &[SqlArg],
 ) -> Result<Vec<sqlx::postgres::PgRow>, PresetError> {
-    let mut query = sqlx::query(sql);
+    let mut query = sqlx::query(sqlx::AssertSqlSafe(sql));
     for arg in args {
         query = match arg {
             SqlArg::Text(value) => query.bind(value.clone()),
@@ -451,20 +455,27 @@ impl AgentPresetStore for PgAgentPresetStore {
                     .ok_or_else(|| PresetError::message("invalid preset timestamp"))?,
             )?;
             let args = vec![
-                SqlArg::Text(preset.id.clone()),
-                SqlArg::Text(preset.name.clone()),
-                SqlArg::Text(preset.color.clone()),
+                SqlArg::Text(preset.id.to_utf8().to_string()),
+                SqlArg::Text(preset.name.to_utf8().to_string()),
+                SqlArg::Text(preset.color.to_utf8().to_string()),
                 match &preset.harness_id {
-                    Some(id) => SqlArg::Text(id.clone()),
+                    Some(id) => SqlArg::Text(id.to_utf8().to_string()),
                     None => SqlArg::NullText,
                 },
-                SqlArg::Text(preset.model.clone()),
-                SqlArg::Text(preset.effort.clone()),
-                SqlArg::Text(preset.system_prompt.clone()),
-                SqlArg::Text(node),
-                SqlArg::Text(directory),
+                SqlArg::Text(preset.model.to_utf8().to_string()),
+                SqlArg::Text(preset.effort.to_utf8().to_string()),
+                SqlArg::Text(preset.system_prompt.to_utf8().to_string()),
+                SqlArg::Text(node.to_utf8().to_string()),
+                SqlArg::Text(directory.to_utf8().to_string()),
                 SqlArg::Bool(preset.shared_link.unwrap_or(true)),
-                SqlArg::Text(preset.node_base_url.clone().unwrap_or_default()),
+                SqlArg::Text(
+                    preset
+                        .node_base_url
+                        .as_ref()
+                        .map(protocol::js::JsString::to_utf8)
+                        .unwrap_or("")
+                        .to_string(),
+                ),
                 SqlArg::Time(created),
                 SqlArg::Time(updated),
             ];
@@ -580,7 +591,7 @@ mod tests {
     #[test]
     fn model_only_reuses_the_old_row_fragment() {
         let patch = AgentPresetPatch {
-            model: Some("opus".to_string()),
+            model: Some("opus".into()),
             ..AgentPresetPatch::default()
         };
         let (sql, args) = update_statement("id-1", &patch, 1_700_000_000_000).unwrap();

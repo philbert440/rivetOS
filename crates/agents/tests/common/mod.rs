@@ -36,17 +36,17 @@ impl Drop for TempDir {
 
 pub fn preset(id: &str, name: &str) -> AgentPreset {
     AgentPreset {
-        id: id.to_string(),
-        name: name.to_string(),
-        color: String::new(),
+        id: id.into(),
+        name: name.into(),
+        color: "".into(),
         harness_id: None,
-        model: String::new(),
-        effort: "medium".to_string(),
-        system_prompt: String::new(),
-        node: Some("n".to_string()),
-        directory: Some("/d".to_string()),
+        model: "".into(),
+        effort: "medium".into(),
+        system_prompt: "".into(),
+        node: Some("n".into()),
+        directory: Some("/d".into()),
         shared_link: Some(true),
-        node_base_url: Some(String::new()),
+        node_base_url: Some("".into()),
         sort_order: None,
         created_at: JsNumber::from(1),
         updated_at: JsNumber::from(1),
@@ -56,18 +56,19 @@ pub fn preset(id: &str, name: &str) -> AgentPreset {
 
 pub fn input(name: &str) -> AgentPresetInput {
     AgentPresetInput {
-        name: name.to_string(),
+        name: name.into(),
         color: None,
         harness_id: None,
         model: None,
         effort: None,
         system_prompt: None,
-        node: "node-f".to_string(),
-        directory: "/tmp/agents/reviewer".to_string(),
+        node: "node-f".into(),
+        directory: "/tmp/agents/reviewer".into(),
         shared_link: None,
         node_base_url: None,
         id: None,
         created_at: None,
+        source: None,
     }
 }
 

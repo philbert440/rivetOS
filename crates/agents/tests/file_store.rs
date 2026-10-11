@@ -56,7 +56,7 @@ fn seed_json(row: &RawSeed) -> Value {
         value
             .as_object_mut()
             .unwrap()
-            .insert("harnessId".to_string(), Value::String(harness.clone()));
+            .insert("harnessId".into(), Value::String(harness.clone()));
     }
     value
 }
@@ -69,8 +69,8 @@ fn read_row(file: &str, id: &str) -> Option<StoredView> {
         .iter()
         .find(|agent| agent.get("id").and_then(Value::as_str) == Some(id))?;
     Some(StoredView {
-        name: row.get("name")?.as_str()?.to_string(),
-        model: row.get("model")?.as_str()?.to_string(),
+        name: row.get("name")?.as_str()?.into(),
+        model: row.get("model")?.as_str()?.into(),
         harness_id: row
             .get("harnessId")
             .and_then(Value::as_str)
@@ -104,7 +104,7 @@ async fn quarantines_non_json_and_still_accepts_writes() {
     assert_eq!(saved, "{not json");
     let body = input("Recovered");
     let created = registry.create(body).await.unwrap();
-    assert_eq!(created.name, "Recovered");
+    assert_eq!(created.name.to_utf8(), "Recovered");
     assert!(std::path::Path::new(&file).exists());
     assert_eq!(
         std::fs::read_to_string(dir.join(&leftovers[0])).unwrap(),
@@ -123,7 +123,7 @@ async fn loads_a_file_whose_utf8_readfilesync_would_replace() {
     let registry = FileAgentPresetStore::new(&file);
     let loaded = registry.list(None).await.unwrap();
     assert_eq!(loaded.len(), 1);
-    assert_eq!(loaded[0].id, "a");
+    assert_eq!(loaded[0].id.to_utf8(), "a");
     assert!(loaded[0].document_json().contains("note"));
     assert!(std::path::Path::new(&file).exists());
 }
@@ -154,25 +154,25 @@ async fn serializes_concurrent_updates() {
     let dir = TempDir::new("agent-registry-file");
     let registry = store_at(&dir.path_str("agents.json"), 5_000);
     let mut body = input("Orig");
-    body.color = Some("#111111".to_string());
+    body.color = Some("#111111".into());
     let created = registry.create(body).await.unwrap();
     let name = agents::AgentPresetPatch {
-        name: Some("FromA".to_string()),
+        name: Some("FromA".into()),
         ..agents::AgentPresetPatch::default()
     };
     let color = agents::AgentPresetPatch {
-        color: Some("#abcdef".to_string()),
+        color: Some("#abcdef".into()),
         ..agents::AgentPresetPatch::default()
     };
     let (left, right) = tokio::join!(
-        registry.update(&created.id, name),
-        registry.update(&created.id, color)
+        registry.update(created.id.to_utf8(), name),
+        registry.update(created.id.to_utf8(), color)
     );
     assert_eq!(left.unwrap().unwrap().id, created.id);
     assert_eq!(right.unwrap().unwrap().id, created.id);
-    let got = registry.get(&created.id).await.unwrap().unwrap();
-    assert_eq!(got.name, "FromA");
-    assert_eq!(got.color, "#abcdef");
+    let got = registry.get(created.id.to_utf8()).await.unwrap().unwrap();
+    assert_eq!(got.name.to_utf8(), "FromA");
+    assert_eq!(got.color.to_utf8(), "#abcdef");
 }
 
 #[tokio::test]
@@ -180,22 +180,34 @@ async fn fills_create_defaults_and_trims_the_name() {
     let dir = TempDir::new("agent-registry-file");
     let registry = store_at(&dir.path_str("agents.json"), 5_000);
     let created = registry.create(input("  Reviewer  ")).await.unwrap();
-    assert_eq!(created.name, "Reviewer");
-    assert_eq!(created.color, "");
-    assert_eq!(created.model, "");
-    assert_eq!(created.effort, "medium");
-    assert_eq!(created.system_prompt, "");
+    assert_eq!(created.name.to_utf8(), "Reviewer");
+    assert_eq!(created.color.to_utf8(), "");
+    assert_eq!(created.model.to_utf8(), "");
+    assert_eq!(created.effort.to_utf8(), "medium");
+    assert_eq!(created.system_prompt.to_utf8(), "");
     assert_eq!(created.shared_link, Some(true));
-    assert_eq!(created.node_base_url.as_deref(), Some(""));
-    assert_eq!(created.node.as_deref(), Some("node-f"));
-    assert_eq!(created.directory.as_deref(), Some("/tmp/agents/reviewer"));
+    assert_eq!(
+        created
+            .node_base_url
+            .as_ref()
+            .map(agents::JsString::to_utf8),
+        Some("")
+    );
+    assert_eq!(
+        created.node.as_ref().map(agents::JsString::to_utf8),
+        Some("node-f")
+    );
+    assert_eq!(
+        created.directory.as_ref().map(agents::JsString::to_utf8),
+        Some("/tmp/agents/reviewer")
+    );
     assert_eq!(created.created_at, 5_000);
     assert_eq!(created.updated_at, 5_000);
-    assert!(looks_like_id(&created.id));
+    assert!(looks_like_id(created.id.to_utf8()));
     assert!(created.harness_id.is_none());
     let mut solo = input("Solo");
     solo.shared_link = Some(false);
-    solo.directory = "/tmp/agents/solo".to_string();
+    solo.directory = "/tmp/agents/solo".into();
     let unlinked = registry.create(solo).await.unwrap();
     assert_eq!(unlinked.shared_link, Some(false));
 }
@@ -205,27 +217,45 @@ async fn resolves_find_by_handle_in_priority_order() {
     let dir = TempDir::new("agent-registry-file");
     let registry = FileAgentPresetStore::new(dir.path_str("agents.json"));
     let mut beta = input("Alpha");
-    beta.id = Some("beta".to_string());
-    beta.directory = "/a".to_string();
+    beta.id = Some("beta".into());
+    beta.directory = "/a".into();
     registry.create(beta).await.unwrap();
     let mut named = input("beta");
-    named.id = Some("id-b".to_string());
-    named.directory = "/b".to_string();
+    named.id = Some("id-b".into());
+    named.directory = "/b".into();
     registry.create(named).await.unwrap();
     let mut gamma = input("Gamma");
-    gamma.id = Some("id-c".to_string());
-    gamma.directory = "/c".to_string();
+    gamma.id = Some("id-c".into());
+    gamma.directory = "/c".into();
     registry.create(gamma).await.unwrap();
     assert_eq!(
-        registry.find_by_handle("beta").await.unwrap().unwrap().id,
+        registry
+            .find_by_handle("beta")
+            .await
+            .unwrap()
+            .unwrap()
+            .id
+            .to_utf8(),
         "beta"
     );
     assert_eq!(
-        registry.find_by_handle("Alpha").await.unwrap().unwrap().id,
+        registry
+            .find_by_handle("Alpha")
+            .await
+            .unwrap()
+            .unwrap()
+            .id
+            .to_utf8(),
         "beta"
     );
     assert_eq!(
-        registry.find_by_handle("gamma").await.unwrap().unwrap().id,
+        registry
+            .find_by_handle("gamma")
+            .await
+            .unwrap()
+            .unwrap()
+            .id
+            .to_utf8(),
         "id-c"
     );
     assert_eq!(
@@ -234,7 +264,8 @@ async fn resolves_find_by_handle_in_priority_order() {
             .await
             .unwrap()
             .unwrap()
-            .id,
+            .id
+            .to_utf8(),
         "id-c"
     );
     assert!(registry.find_by_handle("missing").await.unwrap().is_none());
@@ -249,29 +280,35 @@ async fn rejects_duplicate_names_and_ids() {
     assert!(err.is_conflict());
     assert_eq!(err.code(), Some("preset_conflict"));
     let mut other = input("Other");
-    other.directory = "/tmp/agents/other".to_string();
+    other.directory = "/tmp/agents/other".into();
     let other = registry.create(other).await.unwrap();
     let rename = agents::AgentPresetPatch {
-        name: Some("REVIEWER".to_string()),
+        name: Some("REVIEWER".into()),
         ..agents::AgentPresetPatch::default()
     };
     assert!(
         registry
-            .update(&other.id, rename)
+            .update(other.id.to_utf8(), rename)
             .await
             .unwrap_err()
             .is_conflict()
     );
     assert_eq!(
-        registry.get(&other.id).await.unwrap().unwrap().name,
+        registry
+            .get(other.id.to_utf8())
+            .await
+            .unwrap()
+            .unwrap()
+            .name
+            .to_utf8(),
         "Other"
     );
     let mut same = input("One");
-    same.id = Some("same".to_string());
+    same.id = Some("same".into());
     registry.create(same).await.unwrap();
     let mut again = input("Two");
-    again.id = Some("same".to_string());
-    again.directory = "/tmp/agents/two".to_string();
+    again.id = Some("same".into());
+    again.directory = "/tmp/agents/two".into();
     assert!(registry.create(again).await.unwrap_err().is_conflict());
 }
 
@@ -285,19 +322,26 @@ async fn unsets_harness_without_changing_identity() {
         Arc::new(move || clock.load(std::sync::atomic::Ordering::SeqCst)),
     );
     let mut body = input("Reviewer");
-    body.harness_id = Some("codex".to_string());
-    body.model = Some("opus".to_string());
+    body.harness_id = Some("codex".into());
+    body.model = Some("opus".into());
     let created = registry.create(body).await.unwrap();
     now.store(2_000, std::sync::atomic::Ordering::SeqCst);
     let patch = agents::AgentPresetPatch {
         harness: agents::HarnessPatch::Clear,
         ..agents::AgentPresetPatch::default()
     };
-    let updated = registry.update(&created.id, patch).await.unwrap().unwrap();
+    let updated = registry
+        .update(created.id.to_utf8(), patch)
+        .await
+        .unwrap()
+        .unwrap();
     assert!(updated.harness_id.is_none());
-    assert_eq!(updated.model, "opus");
+    assert_eq!(updated.model.to_utf8(), "opus");
     assert_eq!(updated.id, created.id);
-    assert_eq!(updated.node.as_deref(), Some("node-f"));
+    assert_eq!(
+        updated.node.as_ref().map(agents::JsString::to_utf8),
+        Some("node-f")
+    );
     assert_eq!(updated.created_at, 1_000);
     assert_eq!(updated.updated_at, 2_000);
 }
@@ -331,14 +375,14 @@ async fn drops_a_non_integer_sort_order() {
     let registry = store_at(&file, 2);
     let loaded = registry.list(None).await.unwrap();
     assert_eq!(loaded.len(), 1);
-    assert_eq!(loaded[0].id, "keep-me");
+    assert_eq!(loaded[0].id.to_utf8(), "keep-me");
     assert!(loaded[0].sort_order.is_none());
     let patch = agents::AgentPresetPatch {
-        color: Some("#fff".to_string()),
+        color: Some("#fff".into()),
         ..agents::AgentPresetPatch::default()
     };
     let updated = registry.update("keep-me", patch).await.unwrap().unwrap();
-    assert_eq!(updated.name, "Alpha");
+    assert_eq!(updated.name.to_utf8(), "Alpha");
     assert!(updated.sort_order.is_none());
     let parsed: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
     let saved = parsed.get("agents").unwrap().as_array().unwrap();
@@ -375,11 +419,17 @@ async fn loads_a_legacy_row_and_migrates_a_catalog_model() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(row.harness_id.as_deref(), Some("claude-code"));
-    assert_eq!(row.model, "");
+    assert_eq!(
+        row.harness_id.as_ref().map(agents::JsString::to_utf8),
+        Some("claude-code")
+    );
+    assert_eq!(row.model.to_utf8(), "");
     assert!(row.node.is_none());
     assert!(row.directory.is_none());
-    assert_eq!(row.node_base_url.as_deref(), Some("http://127.0.0.1:9"));
+    assert_eq!(
+        row.node_base_url.as_ref().map(agents::JsString::to_utf8),
+        Some("http://127.0.0.1:9")
+    );
 }
 
 #[tokio::test]
@@ -387,27 +437,27 @@ async fn lists_by_created_at_then_id_and_deletes() {
     let dir = TempDir::new("agent-registry-file");
     let registry = FileAgentPresetStore::new(dir.path_str("agents.json"));
     let mut b = input("B");
-    b.id = Some("b".to_string());
+    b.id = Some("b".into());
     b.created_at = Some(2);
-    b.directory = "/b".to_string();
+    b.directory = "/b".into();
     registry.create(b).await.unwrap();
     let mut c = input("C");
-    c.id = Some("c".to_string());
+    c.id = Some("c".into());
     c.created_at = Some(1);
-    c.directory = "/c".to_string();
-    c.node = "other".to_string();
+    c.directory = "/c".into();
+    c.node = "other".into();
     registry.create(c).await.unwrap();
     let mut a = input("A");
-    a.id = Some("a".to_string());
+    a.id = Some("a".into());
     a.created_at = Some(1);
-    a.directory = "/a".to_string();
+    a.directory = "/a".into();
     registry.create(a).await.unwrap();
     let ids: Vec<_> = registry
         .list(None)
         .await
         .unwrap()
         .into_iter()
-        .map(|row| row.id)
+        .map(|row| row.id.to_utf8().to_string())
         .collect();
     assert_eq!(ids, ["a", "c", "b"]);
     let filtered: Vec<_> = registry
@@ -415,7 +465,7 @@ async fn lists_by_created_at_then_id_and_deletes() {
         .await
         .unwrap()
         .into_iter()
-        .map(|row| row.id)
+        .map(|row| row.id.to_utf8().to_string())
         .collect();
     assert_eq!(filtered, ["a", "b"]);
     assert!(registry.delete("a").await.unwrap());
@@ -429,7 +479,7 @@ async fn writes_create_order_and_preserves_surrogate_rows() {
     let file = dir.path_str("agents.json");
     let registry = store_at(&file, 5_000);
     let mut body = input("Reviewer");
-    body.id = Some("fixed".to_string());
+    body.id = Some("fixed".into());
     let created = registry.create(body).await.unwrap();
     assert_eq!(
         created.document_json(),
@@ -445,14 +495,23 @@ async fn writes_create_order_and_preserves_surrogate_rows() {
     std::fs::write(&file, legacy).unwrap();
     let loaded = registry.list(None).await.unwrap();
     assert_eq!(loaded.len(), 1);
-    assert_eq!(loaded[0].model, "");
-    assert_eq!(loaded[0].harness_id.as_deref(), Some("claude-code"));
+    assert_eq!(loaded[0].model.to_utf8(), "");
+    assert_eq!(
+        loaded[0].harness_id.as_ref().map(agents::JsString::to_utf8),
+        Some("claude-code")
+    );
     assert!(loaded[0].document_json().contains("displayMetadata"));
     assert!(loaded[0].document_json().contains(r"\ud83d"));
+    let encoded = serde_json::to_string(&loaded[0]).unwrap();
+    assert!(encoded.contains(r"\ud83d"));
+    assert!(encoded.contains("displayMetadata"));
+    let decoded: agents::AgentPreset = serde_json::from_str(&encoded).unwrap();
+    assert!(decoded.document_json().contains(r"\ud83d"));
+    assert!(decoded.document_json().contains("displayMetadata"));
     assert_eq!(std::fs::read_to_string(&file).unwrap(), legacy);
     let mut second = input("Second");
-    second.id = Some("second".to_string());
-    second.directory = "/tmp/agents/second".to_string();
+    second.id = Some("second".into());
+    second.directory = "/tmp/agents/second".into();
     registry.create(second).await.unwrap();
     let saved = std::fs::read_to_string(&file).unwrap();
     assert!(saved.contains(r"\ud83d"));
@@ -520,9 +579,9 @@ async fn two_stores_keep_both_rows() {
     let left = FileAgentPresetStore::new(file.clone());
     let right = FileAgentPresetStore::new(format!("{}/./agents.json", dir.path.display()));
     let mut one = input("Left");
-    one.directory = "/left".to_string();
+    one.directory = "/left".into();
     let mut two = input("Right");
-    two.directory = "/right".to_string();
+    two.directory = "/right".into();
     let (first, second) = tokio::join!(left.create(one), right.create(two));
     first.unwrap();
     second.unwrap();
@@ -531,7 +590,7 @@ async fn two_stores_keep_both_rows() {
         .await
         .unwrap()
         .into_iter()
-        .map(|row| row.name)
+        .map(|row| row.name.to_utf8().to_string())
         .collect();
     names.sort();
     assert_eq!(names, ["Left", "Right"]);

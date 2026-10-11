@@ -160,20 +160,18 @@ fn start_refresh(
     shared: &Arc<Shared>,
     generation: u64,
 ) -> watch::Receiver<Option<Vec<AgentPreset>>> {
-    {
-        let state = lock(&shared.state);
+    let (sender, receiver) = {
+        let mut state = lock(&shared.state);
         if state.inflight_generation == Some(generation)
             && let Some(receiver) = &state.inflight
         {
             return receiver.clone();
         }
-    }
-    let (sender, receiver) = watch::channel(None);
-    {
-        let mut state = lock(&shared.state);
+        let (sender, receiver) = watch::channel(None);
         state.inflight_generation = Some(generation);
         state.inflight = Some(receiver.clone());
-    }
+        (sender, receiver)
+    };
     let shared = Arc::clone(shared);
     tokio::spawn(async move {
         let rows = match shared.store.list(None).await {

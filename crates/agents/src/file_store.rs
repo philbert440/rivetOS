@@ -1,18 +1,17 @@
 use std::collections::HashMap;
-use std::io::Write;
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
 
 use parking_lot::Mutex;
-use protocol::js::{JsValue, parse};
+use protocol::host::read_text;
+use protocol::js::{JsString, JsValue, parse};
 use uuid::Uuid;
 
-use crate::directory::{mkdir_p_700, set_mode};
+use crate::directory::mkdir_p_700;
 use crate::error::PresetError;
 use crate::js_row::{
-    entries_of, file_identity, is_js_integer, js_f64, js_str, object_from_entries,
-    object_from_pairs, remove_key, stringify_pretty,
+    entries_of, file_identity, is_js_integer, js_f64, object_from_entries, object_from_pairs,
+    remove_key, stringify_pretty,
 };
 use crate::preset::{
     AgentPreset, AgentPresetInput, AgentPresetPatch, AgentRegistryBackend, fresh_stored_row,
@@ -66,10 +65,12 @@ impl AgentPresetStore for FileAgentPresetStore {
             let mut presets = Vec::new();
             for row in rows {
                 let preset = preset_from_js(&row)?;
-                if node
-                    .as_deref()
-                    .is_none_or(|filter| preset.node.as_deref() == Some(filter))
-                {
+                if node.as_deref().is_none_or(|filter| {
+                    preset
+                        .node
+                        .as_ref()
+                        .is_some_and(|value| value.to_utf8() == filter)
+                }) {
                     presets.push(preset);
                 }
             }
@@ -82,8 +83,9 @@ impl AgentPresetStore for FileAgentPresetStore {
         let id = id.to_string();
         Box::pin(async move {
             let rows = load_blocking(&file).await?;
+            let needle = JsString::from_text(&id);
             for row in rows {
-                if js_str(&row, "id") == Some(id.as_str()) {
+                if same_text(&row, "id", &needle) {
                     return Ok(Some(preset_from_js(&row)?));
                 }
             }
@@ -120,10 +122,7 @@ impl AgentPresetStore for FileAgentPresetStore {
                     &Uuid::new_v4().to_string(),
                     now(),
                 )?)?;
-                if rows
-                    .iter()
-                    .any(|row| js_str(row, "id") == Some(preset.id.as_str()))
-                {
+                if rows.iter().any(|row| same_text(row, "id", &preset.id)) {
                     return Err(PresetError::conflict(format!(
                         "agent id already exists: {}",
                         preset.id
@@ -154,15 +153,13 @@ impl AgentPresetStore for FileAgentPresetStore {
                 let lock = lock_for(&file);
                 let _guard = lock.lock();
                 let mut rows = load_for_write(&file)?;
-                let Some(index) = rows
-                    .iter()
-                    .position(|row| js_str(row, "id") == Some(id.as_str()))
-                else {
+                let needle = JsString::from_text(&id);
+                let Some(index) = rows.iter().position(|row| same_text(row, "id", &needle)) else {
                     return Ok(None);
                 };
                 let next_row = patch_stored_row(&rows[index], &patch, now())?;
                 let next = preset_from_js(&next_row)?;
-                assert_name_available(&rows, &next.name, Some(&id))?;
+                assert_name_available(&rows, &next.name, Some(&needle))?;
                 rows[index] = next_row;
                 save_registry(&file, &rows)?;
                 Ok(Some(next))
@@ -180,9 +177,10 @@ impl AgentPresetStore for FileAgentPresetStore {
                 let _guard = lock.lock();
                 let rows = load_for_write(&file)?;
                 let original_len = rows.len();
+                let needle = JsString::from_text(&id);
                 let next: Vec<JsValue> = rows
                     .into_iter()
-                    .filter(|row| js_str(row, "id") != Some(id.as_str()))
+                    .filter(|row| !same_text(row, "id", &needle))
                     .collect();
                 if next.len() == original_len {
                     return Ok(false);
@@ -195,23 +193,30 @@ impl AgentPresetStore for FileAgentPresetStore {
     }
 }
 
+fn same_text(row: &JsValue, key: &str, needle: &JsString) -> bool {
+    row.get(key)
+        .and_then(JsValue::as_js_string)
+        .is_some_and(|stored| stored == needle)
+}
+
 fn assert_name_available(
     rows: &[JsValue],
-    name: &str,
-    except_id: Option<&str>,
+    name: &JsString,
+    except_id: Option<&JsString>,
 ) -> Result<(), PresetError> {
-    let key = name_key(name);
+    let key = crate::preset::name_key_text(name);
     let clash = rows.iter().any(|row| {
-        let id = js_str(row, "id");
-        if except_id.is_some() && id == except_id {
+        if except_id.is_some_and(|id| same_text(row, "id", id)) {
             return false;
         }
-        js_str(row, "name").is_some_and(|stored| name_key(stored) == key)
+        row.get("name")
+            .and_then(JsValue::as_js_string)
+            .is_some_and(|stored| crate::preset::name_key_text(stored) == key)
     });
     if clash {
         return Err(PresetError::conflict(format!(
             "agent name already exists: {}",
-            protocol::js::js_trim(name)
+            name_key(name.to_utf8())
         )));
     }
     Ok(())
@@ -239,14 +244,13 @@ fn load_registry(file: &str) -> Result<Vec<JsValue>, PresetError> {
     if !Path::new(file).exists() {
         return Ok(Vec::new());
     }
-    let bytes = match std::fs::read(file) {
-        Ok(bytes) => bytes,
+    let text = match read_text(Path::new(file)) {
+        Ok(text) => text,
         Err(err) => {
-            quarantine(file, "parse failed", &err);
+            quarantine_message(file, "parse failed", &err.to_string());
             return Ok(Vec::new());
         }
     };
-    let text = String::from_utf8_lossy(&bytes).into_owned();
     let parsed = match parse(&text) {
         Ok(value) => value,
         Err(_) => {
@@ -325,25 +329,13 @@ fn is_agent_preset_value(value: &JsValue) -> bool {
 
 fn save_registry(file: &str, agents: &[JsValue]) -> Result<(), PresetError> {
     let root = object_from_pairs(vec![("agents", JsValue::Array(agents.to_vec()))])?;
-    write_atomic(file, &stringify_pretty(&root))
-}
-
-fn write_atomic(file: &str, body: &str) -> Result<(), PresetError> {
     let path = Path::new(file);
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
     {
         mkdir_p_700(parent)?;
     }
-    let tmp = format!("{file}.tmp-{}", Uuid::new_v4());
-    {
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true).mode(0o600);
-        let mut handle = options.open(&tmp)?;
-        handle.write_all(body.as_bytes())?;
-    }
-    set_mode(Path::new(&tmp), 0o600)?;
-    std::fs::rename(&tmp, path)?;
+    protocol::host::atomic_replace(path, stringify_pretty(&root).as_bytes())?;
     Ok(())
 }
 
@@ -358,10 +350,6 @@ fn lock_for(file: &str) -> Arc<Mutex<()>> {
     let created = Arc::new(Mutex::new(()));
     guard.insert(key, Arc::clone(&created));
     created
-}
-
-fn quarantine(file: &str, reason: &str, err: &std::io::Error) {
-    quarantine_message(file, reason, &err.to_string());
 }
 
 fn quarantine_message(file: &str, reason: &str, detail: &str) {

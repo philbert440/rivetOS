@@ -2,8 +2,10 @@ mod common;
 pub use common::contract::*;
 pub use common::*;
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+
+use parking_lot::Mutex;
 use std::time::Duration;
 
 use agents::{
@@ -55,7 +57,7 @@ impl Fake {
     }
 
     fn calls(&self) -> Vec<String> {
-        self.calls.lock().unwrap().clone()
+        self.calls.lock().clone()
     }
 }
 
@@ -71,12 +73,12 @@ impl AgentPresetStore for Fake {
         let ready = &self.ready;
         Box::pin(async move {
             let action = {
-                let mut slot = ready.lock().unwrap();
+                let mut slot = ready.lock();
                 match &mut *slot {
                     Ready::Bool(value) => Probe::Ready(*value),
                     Ready::Fail(message) => Probe::Fail(message.clone()),
                     Ready::Hang => Probe::Hang,
-                    Ready::Gate(gate) => Probe::Gate(gate.get_mut().unwrap().take()),
+                    Ready::Gate(gate) => Probe::Gate(gate.get_mut().take()),
                 }
             };
             match action {
@@ -91,18 +93,12 @@ impl AgentPresetStore for Fake {
         })
     }
     fn list(&self, _: Option<&str>) -> BoxFuture<'_, Result<Vec<AgentPreset>, PresetError>> {
-        self.calls
-            .lock()
-            .unwrap()
-            .push(format!("{}:list", self.marker));
+        self.calls.lock().push(format!("{}:list", self.marker));
         let marker = self.marker.clone();
         Box::pin(async move { Ok(vec![preset(&marker, &marker)]) })
     }
     fn get(&self, id: &str) -> BoxFuture<'_, Result<Option<AgentPreset>, PresetError>> {
-        self.calls
-            .lock()
-            .unwrap()
-            .push(format!("{}:get", self.marker));
+        self.calls.lock().push(format!("{}:get", self.marker));
         let marker = self.marker.clone();
         let id = id.to_string();
         Box::pin(async move {
@@ -114,20 +110,16 @@ impl AgentPresetStore for Fake {
         })
     }
     fn find_by_handle(&self, _: &str) -> BoxFuture<'_, Result<Option<AgentPreset>, PresetError>> {
-        self.calls
-            .lock()
-            .unwrap()
-            .push(format!("{}:find", self.marker));
+        self.calls.lock().push(format!("{}:find", self.marker));
         Box::pin(async { Ok(None) })
     }
     fn create(&self, input: AgentPresetInput) -> BoxFuture<'_, Result<AgentPreset, PresetError>> {
         self.calls
             .lock()
-            .unwrap()
             .push(format!("{}:create:{}", self.marker, input.name));
         let marker = self.marker.clone();
-        let entered = self.entered.lock().unwrap().take();
-        let release = self.release.lock().unwrap().take();
+        let entered = self.entered.lock().take();
+        let release = self.release.lock().take();
         let name = input.name.clone();
         let rows = &self.rows;
         Box::pin(async move {
@@ -137,8 +129,8 @@ impl AgentPresetStore for Fake {
             if let Some(receiver) = release {
                 let _ = receiver.await;
             }
-            let row = preset(&marker, &name);
-            rows.lock().unwrap().push(row.clone());
+            let row = preset(&marker, name.to_utf8());
+            rows.lock().push(row.clone());
             Ok(row)
         })
     }
@@ -147,17 +139,11 @@ impl AgentPresetStore for Fake {
         _: &str,
         _: AgentPresetPatch,
     ) -> BoxFuture<'_, Result<Option<AgentPreset>, PresetError>> {
-        self.calls
-            .lock()
-            .unwrap()
-            .push(format!("{}:update", self.marker));
+        self.calls.lock().push(format!("{}:update", self.marker));
         Box::pin(async { Ok(None) })
     }
     fn delete(&self, _: &str) -> BoxFuture<'_, Result<bool, PresetError>> {
-        self.calls
-            .lock()
-            .unwrap()
-            .push(format!("{}:delete", self.marker));
+        self.calls.lock().push(format!("{}:delete", self.marker));
         Box::pin(async { Ok(true) })
     }
 }
@@ -207,30 +193,33 @@ async fn serves_the_fallback_until_the_primary_answers_true() {
         None,
         Arc::new(move || clock_now.load(Ordering::SeqCst) as i64),
         Some(Arc::new(move |message| {
-            logged.lock().unwrap().push(message.to_string())
+            logged.lock().push(message.to_string())
         })),
     );
     let seen = Arc::new(Mutex::new(Vec::new()));
     let seen_cb = Arc::clone(&seen);
-    store.on_primary_ready(Box::new(move || seen_cb.lock().unwrap().push("ready")));
+    store.on_primary_ready(Box::new(move || seen_cb.lock().push("ready")));
     assert_eq!(store.backend(), AgentRegistryBackend::File);
     assert_eq!(store.file().as_deref(), Some("/var/agents.json"));
     assert!(store.is_ready().await.unwrap());
-    assert_eq!(store.list(None).await.unwrap()[0].id, "fallback");
+    assert_eq!(store.list(None).await.unwrap()[0].id.to_utf8(), "fallback");
     assert_eq!(primary.checks.load(Ordering::SeqCst), 1);
     assert_eq!(fallback.calls(), ["fallback:list"]);
     clock.fetch_add(499, Ordering::SeqCst);
-    assert_eq!(store.get("fallback").await.unwrap().unwrap().id, "fallback");
+    assert_eq!(
+        store.get("fallback").await.unwrap().unwrap().id.to_utf8(),
+        "fallback"
+    );
     assert_eq!(primary.checks.load(Ordering::SeqCst), 1);
     ready.store(true, Ordering::SeqCst);
     clock.fetch_add(1, Ordering::SeqCst);
     let mut body = common::input("Alpha");
-    body.node = "n".to_string();
-    body.directory = "/d".to_string();
-    assert_eq!(store.create(body).await.unwrap().id, "primary");
+    body.node = "n".into();
+    body.directory = "/d".into();
+    assert_eq!(store.create(body).await.unwrap().id.to_utf8(), "primary");
     assert_eq!(store.backend(), AgentRegistryBackend::Postgres);
     assert!(store.file().is_none());
-    assert_eq!(seen.lock().unwrap().as_slice(), ["ready"]);
+    assert_eq!(seen.lock().as_slice(), ["ready"]);
     assert_eq!(primary.checks.load(Ordering::SeqCst), 2);
     assert!(
         primary
@@ -246,7 +235,7 @@ async fn serves_the_fallback_until_the_primary_answers_true() {
     assert!(store.delete("x").await.unwrap());
     assert!(primary.calls().iter().any(|call| call == "primary:delete"));
     assert_eq!(primary.checks.load(Ordering::SeqCst), 2);
-    assert!(logs.lock().unwrap().is_empty());
+    assert!(logs.lock().is_empty());
 }
 
 struct ReadyStore {
@@ -314,18 +303,13 @@ async fn a_throwing_primary_check_is_not_ready_inside_the_window() {
         None,
         Arc::new(move || clock_now.load(Ordering::SeqCst) as i64),
         Some(Arc::new(move |message| {
-            logged.lock().unwrap().push(message.to_string())
+            logged.lock().push(message.to_string())
         })),
     );
     assert!(store.find_by_handle("x").await.unwrap().is_none());
     assert_eq!(fallback.calls(), ["fallback:find"]);
     assert_eq!(store.backend(), AgentRegistryBackend::File);
-    assert!(
-        logs.lock()
-            .unwrap()
-            .join("\n")
-            .contains("ros_agent_presets")
-    );
+    assert!(logs.lock().join("\n").contains("ros_agent_presets"));
     assert_eq!(primary.checks.load(Ordering::SeqCst), 1);
     clock.fetch_add(1_000, Ordering::SeqCst);
     store.list(None).await.unwrap();
@@ -362,7 +346,7 @@ async fn logs_a_throwing_callback_and_still_announces_the_next_one() {
         None,
         Arc::new(|| 0),
         Some(Arc::new(move |message| {
-            logged.lock().unwrap().push(message.to_string())
+            logged.lock().push(message.to_string())
         })),
     );
     store.on_primary_ready(Box::new(|| panic!("callback blew up")));
@@ -370,9 +354,9 @@ async fn logs_a_throwing_callback_and_still_announces_the_next_one() {
     let second_flag = Arc::clone(&second);
     store.on_primary_ready(Box::new(move || second_flag.store(true, Ordering::SeqCst)));
     ready.store(true, Ordering::SeqCst);
-    assert_eq!(store.list(None).await.unwrap()[0].id, "primary");
+    assert_eq!(store.list(None).await.unwrap()[0].id.to_utf8(), "primary");
     assert!(second.load(Ordering::SeqCst));
-    assert!(logs.lock().unwrap().join("\n").contains("callback blew up"));
+    assert!(logs.lock().join("\n").contains("callback blew up"));
     assert_eq!(store.backend(), AgentRegistryBackend::Postgres);
 }
 
@@ -399,18 +383,18 @@ async fn a_timed_out_primary_check_is_not_ready() {
         Some(30),
         Arc::new(move || clock_now.load(Ordering::SeqCst) as i64),
         Some(Arc::new(move |message| {
-            logged.lock().unwrap().push(message.to_string())
+            logged.lock().push(message.to_string())
         })),
     );
-    assert_eq!(store.list(None).await.unwrap()[0].id, "fallback");
+    assert_eq!(store.list(None).await.unwrap()[0].id.to_utf8(), "fallback");
     assert_eq!(primary.checks.load(Ordering::SeqCst), 1);
-    assert!(logs.lock().unwrap().join("\n").contains("timed out"));
+    assert!(logs.lock().join("\n").contains("timed out"));
     assert_eq!(store.backend(), AgentRegistryBackend::File);
     clock.fetch_add(499, Ordering::SeqCst);
     store.get("fallback").await.unwrap();
     assert_eq!(primary.checks.load(Ordering::SeqCst), 1);
     clock.fetch_add(1, Ordering::SeqCst);
-    assert_eq!(store.list(None).await.unwrap()[0].id, "fallback");
+    assert_eq!(store.list(None).await.unwrap()[0].id.to_utf8(), "fallback");
     assert_eq!(primary.checks.load(Ordering::SeqCst), 2);
 }
 
@@ -422,8 +406,8 @@ async fn logs_once_when_a_fallback_op_is_still_in_flight_after_30s() {
     let (release_tx, release_rx) = oneshot::channel();
     let mut fallback = Fake::new(AgentRegistryBackend::File, "fallback", Ready::Bool(true));
     fallback.file = Some("/var/agents.json".to_string());
-    *fallback.entered.lock().unwrap() = Some(entered_tx);
-    *fallback.release.lock().unwrap() = Some(release_rx);
+    *fallback.entered.lock() = Some(entered_tx);
+    *fallback.release.lock() = Some(release_rx);
     let fallback = Arc::new(fallback);
     let primary = Arc::new(Fake::new(
         AgentRegistryBackend::Postgres,
@@ -443,16 +427,16 @@ async fn logs_once_when_a_fallback_op_is_still_in_flight_after_30s() {
         None,
         Arc::new(move || clock_now.load(Ordering::SeqCst) as i64),
         Some(Arc::new(move |message| {
-            logged.lock().unwrap().push(message.to_string())
+            logged.lock().push(message.to_string())
         })),
     ));
-    assert_eq!(store.list(None).await.unwrap()[0].id, "fallback");
+    assert_eq!(store.list(None).await.unwrap()[0].id.to_utf8(), "fallback");
     clock.fetch_add(500, Ordering::SeqCst);
     let creating = store.clone();
     let hung = tokio::spawn(async move {
         let mut body = common::input("Late");
-        body.node = "n".to_string();
-        body.directory = "/d".to_string();
+        body.node = "n".into();
+        body.directory = "/d".into();
         creating.create(body).await
     });
     entered_rx.await.unwrap();
@@ -472,7 +456,7 @@ async fn logs_once_when_a_fallback_op_is_still_in_flight_after_30s() {
     for _ in 0..8 {
         tokio::task::yield_now().await;
     }
-    let text = logs.lock().unwrap().join("\n");
+    let text = logs.lock().join("\n");
     assert!(
         text.contains("still in flight after 30s"),
         "logs={text:?} announced={} checks={} backend={}",
@@ -484,7 +468,6 @@ async fn logs_once_when_a_fallback_op_is_still_in_flight_after_30s() {
     tokio::task::yield_now().await;
     let hung_logs = logs
         .lock()
-        .unwrap()
         .iter()
         .filter(|line| line.contains("still in flight after 30s"))
         .count();
@@ -537,7 +520,7 @@ async fn imports_a_fallback_create_that_was_in_flight_when_the_primary_flipped()
         announced_flag.store(true, Ordering::SeqCst);
         let file = import_file.clone();
         let primary = import_primary.clone();
-        *slot.lock().unwrap() = Some(tokio::spawn(async move {
+        *slot.lock() = Some(tokio::spawn(async move {
             import_legacy_agents_json(ImportLegacyAgentsArgs {
                 file: &file,
                 store: primary.as_ref(),
@@ -554,7 +537,7 @@ async fn imports_a_fallback_create_that_was_in_flight_when_the_primary_flipped()
     let creating = Arc::clone(&store);
     let hung = tokio::spawn(async move {
         let mut body = common::input("Late");
-        body.directory = "/tmp/late-agent".to_string();
+        body.directory = "/tmp/late-agent".into();
         creating.create(body).await
     });
     entered_rx.await.unwrap();
@@ -564,7 +547,7 @@ async fn imports_a_fallback_create_that_was_in_flight_when_the_primary_flipped()
     let (drain_tx, drain_rx) = oneshot::channel();
     let drain_slot = Arc::new(Mutex::new(Some(drain_tx)));
     store.on_fallback_drain(Arc::new(move || {
-        if let Some(sender) = drain_slot.lock().unwrap().take() {
+        if let Some(sender) = drain_slot.lock().take() {
             let _ = sender.send(());
         }
     }));
@@ -572,21 +555,85 @@ async fn imports_a_fallback_create_that_was_in_flight_when_the_primary_flipped()
     let flipping = tokio::spawn(async move { flipping_store.list(None).await });
     drain_rx.await.unwrap();
     assert!(!announced.load(Ordering::SeqCst));
-    assert!(imported.lock().unwrap().is_empty());
+    assert!(imported.lock().is_empty());
     release_tx.send(()).unwrap();
     hung.await.unwrap().unwrap();
     flipping.await.unwrap().unwrap();
-    let task = import_slot.lock().unwrap().take().unwrap();
+    let task = import_slot.lock().take().unwrap();
     task.await.unwrap().unwrap();
     assert!(announced.load(Ordering::SeqCst));
     let names: Vec<_> = imported
         .lock()
-        .unwrap()
         .iter()
-        .map(|row| row.name.clone())
+        .map(|row| row.name.to_utf8().to_string())
         .collect();
     assert_eq!(names, ["Late"]);
     store.drain_fallback().await;
+}
+
+#[tokio::test]
+async fn aborting_the_caller_does_not_release_the_fallback_drain_early() {
+    let dir = TempDir::new("agent-registry-drain-abort");
+    let file = dir.path_str("agents.json");
+    let file_store = FileAgentPresetStore::new(file.clone());
+    let (entered_tx, entered_rx) = oneshot::channel();
+    let (release_tx, release_rx) = oneshot::channel();
+    let slow = Arc::new(SlowFile {
+        inner: file_store,
+        file: file.clone(),
+        entered: Mutex::new(Some(entered_tx)),
+        release: Mutex::new(Some(release_rx)),
+    });
+    let ready = Arc::new(AtomicBool::new(false));
+    let clock = Arc::new(AtomicUsize::new(0));
+    let primary = Arc::new(MemoryPrimary {
+        ready: Arc::clone(&ready),
+        rows: Arc::new(Mutex::new(Vec::new())),
+    });
+    let clock_now = Arc::clone(&clock);
+    let store = Arc::new(wrap(
+        primary,
+        slow,
+        1_000,
+        None,
+        Arc::new(move || clock_now.load(Ordering::SeqCst) as i64),
+        None,
+    ));
+    let announced = Arc::new(AtomicBool::new(false));
+    let announced_flag = Arc::clone(&announced);
+    store.on_primary_ready(Box::new(move || {
+        announced_flag.store(true, Ordering::SeqCst);
+    }));
+    assert!(store.list(None).await.unwrap().is_empty());
+    let creating = Arc::clone(&store);
+    let hung = tokio::spawn(async move {
+        let mut body = common::input("Late");
+        body.directory = "/tmp/late-agent".into();
+        creating.create(body).await
+    });
+    entered_rx.await.unwrap();
+    hung.abort();
+    for _ in 0..8 {
+        tokio::task::yield_now().await;
+    }
+    assert!(!announced.load(Ordering::SeqCst));
+    ready.store(true, Ordering::SeqCst);
+    clock.store(1_000, Ordering::SeqCst);
+    let (drain_tx, drain_rx) = oneshot::channel();
+    let drain_slot = Arc::new(Mutex::new(Some(drain_tx)));
+    store.on_fallback_drain(Arc::new(move || {
+        if let Some(sender) = drain_slot.lock().take() {
+            let _ = sender.send(());
+        }
+    }));
+    let flipping_store = Arc::clone(&store);
+    let flipping = tokio::spawn(async move { flipping_store.list(None).await });
+    drain_rx.await.unwrap();
+    assert!(!announced.load(Ordering::SeqCst));
+    release_tx.send(()).unwrap();
+    flipping.await.unwrap().unwrap();
+    assert!(announced.load(Ordering::SeqCst));
+    let _ = hung.await;
 }
 
 struct SlowFile {
@@ -619,8 +666,8 @@ impl AgentPresetStore for SlowFile {
         self.inner.find_by_handle(handle)
     }
     fn create(&self, input: AgentPresetInput) -> BoxFuture<'_, Result<AgentPreset, PresetError>> {
-        let entered = self.entered.lock().unwrap().take();
-        let release = self.release.lock().unwrap().take();
+        let entered = self.entered.lock().take();
+        let release = self.release.lock().take();
         let inner_future = self.inner.create(input);
         Box::pin(async move {
             if let Some(sender) = entered {
@@ -661,13 +708,13 @@ impl AgentPresetStore for MemoryPrimary {
         Box::pin(async move { Ok(ready) })
     }
     fn list(&self, _: Option<&str>) -> BoxFuture<'_, Result<Vec<AgentPreset>, PresetError>> {
-        let rows = self.rows.lock().unwrap().clone();
+        let rows = self.rows.lock().clone();
         Box::pin(async move { Ok(rows) })
     }
     fn get(&self, id: &str) -> BoxFuture<'_, Result<Option<AgentPreset>, PresetError>> {
         let id = id.to_string();
-        let rows = self.rows.lock().unwrap().clone();
-        Box::pin(async move { Ok(rows.into_iter().find(|row| row.id == id)) })
+        let rows = self.rows.lock().clone();
+        Box::pin(async move { Ok(rows.into_iter().find(|row| row.id.to_utf8() == id)) })
     }
     fn find_by_handle(&self, _: &str) -> BoxFuture<'_, Result<Option<AgentPreset>, PresetError>> {
         Box::pin(async { Ok(None) })
@@ -675,10 +722,17 @@ impl AgentPresetStore for MemoryPrimary {
     fn create(&self, input: AgentPresetInput) -> BoxFuture<'_, Result<AgentPreset, PresetError>> {
         let rows = Arc::clone(&self.rows);
         Box::pin(async move {
-            let mut row = preset(input.id.as_deref().unwrap_or("generated"), &input.name);
+            let mut row = preset(
+                input
+                    .id
+                    .as_ref()
+                    .map(|value| value.to_utf8())
+                    .unwrap_or("generated"),
+                input.name.to_utf8(),
+            );
             row.node = Some(input.node);
             row.directory = Some(input.directory);
-            rows.lock().unwrap().push(row.clone());
+            rows.lock().push(row.clone());
             Ok(row)
         })
     }

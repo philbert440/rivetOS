@@ -1,9 +1,9 @@
 use std::collections::HashSet;
 
 use parking_lot::Mutex;
-use protocol::js::js_trim;
-use serde_json::{Map, Value};
+use protocol::js::{JsString, JsValue, js_trim, js_trim_units};
 
+use crate::js_row::{js_from, js_string, object_from_pairs};
 use crate::preset::{AgentPreset, name_key};
 use crate::store::find_preset_by_handle;
 
@@ -54,11 +54,7 @@ impl DelegationResolver {
         }
     }
 
-    pub fn preset_task_spec(
-        &self,
-        preset: &AgentPreset,
-        opts: &PresetTaskSpecOptions,
-    ) -> Map<String, Value> {
+    pub fn preset_task_spec(&self, preset: &AgentPreset, opts: &PresetTaskSpecOptions) -> JsValue {
         preset_task_spec_with(self, preset, opts)
     }
 }
@@ -195,20 +191,20 @@ fn preset_task_spec_with(
     resolver: &DelegationResolver,
     preset: &AgentPreset,
     opts: &PresetTaskSpecOptions,
-) -> Map<String, Value> {
+) -> JsValue {
     let delegation = opts.delegation.unwrap_or(true);
     let model_source = if opts.model_present {
-        opts.model.clone().unwrap_or_default()
+        JsString::from_text(opts.model.as_deref().unwrap_or(""))
     } else {
         preset.model.clone()
     };
-    let trimmed_model = js_trim(&model_source);
+    let trimmed_model = JsString::from_units(js_trim_units(model_source.units()).to_vec());
     let model = if trimmed_model.is_empty() {
         None
     } else {
-        Some(trimmed_model.to_string())
+        Some(trimmed_model)
     };
-    let effort = resolver.task_effort(&preset.effort);
+    let effort = resolver.task_effort(preset.effort.to_utf8());
     let system_prompt_append = if preset.system_prompt.is_empty() {
         None
     } else {
@@ -226,44 +222,47 @@ fn preset_task_spec_with(
         .map(js_trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string);
-    let mut spec = Map::new();
+    let mut pairs = Vec::new();
     if delegation {
-        spec.insert("delegation".to_string(), Value::Bool(true));
+        pairs.push(("delegation", JsValue::Bool(true)));
     }
-    spec.insert("presetId".to_string(), Value::String(preset.id.clone()));
-    spec.insert("presetName".to_string(), Value::String(preset.name.clone()));
+    pairs.push(("presetId", js_from(&preset.id)));
+    pairs.push(("presetName", js_from(&preset.name)));
     if let Some(parent) = parent {
-        spec.insert("parentSessionId".to_string(), Value::String(parent));
+        pairs.push(("parentSessionId", js_string(&parent)));
     }
     if let Some(owner) = owner {
-        spec.insert("owner".to_string(), Value::String(owner));
+        pairs.push(("owner", js_string(&owner)));
     }
     if delegation
         && let Some(mesh_from) = opts.mesh_from.as_deref().filter(|value| !value.is_empty())
     {
-        spec.insert("meshFrom".to_string(), Value::String(mesh_from.to_string()));
+        pairs.push(("meshFrom", js_string(mesh_from)));
     }
     if let Some(directory) = &preset.directory {
-        spec.insert("workingDir".to_string(), Value::String(directory.clone()));
+        pairs.push(("workingDir", js_from(directory)));
     }
-    spec.insert(
-        "sharedLink".to_string(),
-        Value::Bool(preset.shared_link.unwrap_or(true)),
-    );
-    spec.insert(
-        "excludeTools".to_string(),
-        Value::Array(vec![Value::String("delegate_task".to_string())]),
-    );
-    if let Some(model) = model {
-        spec.insert("model".to_string(), Value::String(model));
+    pairs.push((
+        "sharedLink",
+        JsValue::Bool(preset.shared_link.unwrap_or(true)),
+    ));
+    pairs.push((
+        "excludeTools",
+        JsValue::Array(vec![js_string("delegate_task")]),
+    ));
+    if let Some(model) = &model {
+        pairs.push(("model", js_from(model)));
     }
     if let Some(effort) = effort {
-        spec.insert("effort".to_string(), Value::String(effort.to_string()));
+        pairs.push(("effort", js_string(effort)));
     }
-    if let Some(prompt) = system_prompt_append {
-        spec.insert("systemPromptAppend".to_string(), Value::String(prompt));
+    if let Some(prompt) = &system_prompt_append {
+        pairs.push(("systemPromptAppend", js_from(prompt)));
     }
-    spec
+    match object_from_pairs(pairs) {
+        Ok(value) => value,
+        Err(_) => JsValue::Null,
+    }
 }
 
 pub fn preset_name_key(name: &str) -> String {

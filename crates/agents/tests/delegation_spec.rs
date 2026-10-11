@@ -7,8 +7,6 @@ use agents::{
     not_runnable_message, preset_chain_depth, preset_chain_too_deep, preset_chain_too_deep_message,
     resolve_delegation_target, unknown_agent_message,
 };
-use serde_json::Value;
-
 mod common;
 pub use common::contract::*;
 pub use common::*;
@@ -52,11 +50,11 @@ fn resolve_prefers_a_config_id_then_preset_handle_order() {
     ));
     assert!(matches!(
         resolve_delegation_target("beta", &config, &presets),
-        Some(DelegationTarget::Preset(row)) if row.id == "beta"
+        Some(DelegationTarget::Preset(row)) if row.id.to_utf8() == "beta"
     ));
     assert!(matches!(
         resolve_delegation_target("reviewer", &[], &presets),
-        Some(DelegationTarget::Preset(row)) if row.id == "reviewer"
+        Some(DelegationTarget::Preset(row)) if row.id.to_utf8() == "reviewer"
     ));
     assert!(resolve_delegation_target("missing", &config, &presets).is_none());
     assert_eq!(
@@ -111,13 +109,20 @@ fn refusal_strings_match_the_preset_engine() {
 fn preset_task_spec_trims_model_and_omits_blank_effort() {
     let resolver = DelegationResolver::new();
     let mut row = preset("p1", "reviewer");
-    row.model = " haiku ".to_string();
-    row.directory = Some("/srv/reviewer".to_string());
-    row.system_prompt = "keep me".to_string();
+    row.model = " haiku ".into();
+    row.directory = Some("/srv/reviewer".into());
+    row.system_prompt = "keep me".into();
     let spec = resolver.preset_task_spec(&row, &PresetTaskSpecOptions::default());
-    assert_eq!(spec.get("model").and_then(Value::as_str), Some("haiku"));
     assert_eq!(
-        spec.keys().cloned().collect::<Vec<_>>(),
+        spec.get("model").and_then(agents::JsValue::as_str),
+        Some("haiku")
+    );
+    assert_eq!(
+        spec.as_object()
+            .unwrap()
+            .keys()
+            .map(agents::JsString::to_utf8)
+            .collect::<Vec<_>>(),
         [
             "delegation",
             "presetId",
@@ -139,7 +144,7 @@ fn preset_task_spec_trims_model_and_omits_blank_effort() {
         resolver
             .preset_task_spec(&row, &override_opts)
             .get("model")
-            .and_then(Value::as_str),
+            .and_then(agents::JsValue::as_str),
         Some("opus")
     );
     override_opts.model = Some("   ".to_string());
@@ -149,28 +154,28 @@ fn preset_task_spec_trims_model_and_omits_blank_effort() {
             .get("model")
             .is_none()
     );
-    row.model.clear();
+    row.model = "".into();
     assert!(
         resolver
             .preset_task_spec(&row, &PresetTaskSpecOptions::default())
             .get("model")
             .is_none()
     );
-    row.effort = "xhigh".to_string();
-    row.system_prompt.clear();
+    row.effort = "xhigh".into();
+    row.system_prompt = "".into();
     let bare = resolver.preset_task_spec(&row, &PresetTaskSpecOptions::default());
     assert!(bare.get("effort").is_none());
     assert!(bare.get("systemPromptAppend").is_none());
-    row.system_prompt = " ".to_string();
+    row.system_prompt = " ".into();
     assert_eq!(
         resolver
             .preset_task_spec(&row, &PresetTaskSpecOptions::default())
             .get("systemPromptAppend")
-            .and_then(Value::as_str),
+            .and_then(agents::JsValue::as_str),
         Some(" ")
     );
-    row.effort = " low ".to_string();
-    assert_eq!(resolver.task_effort(&row.effort), Some("low"));
+    row.effort = " low ".into();
+    assert_eq!(resolver.task_effort(row.effort.to_utf8()), Some("low"));
     assert_eq!(resolver.task_effort(""), None);
     assert_eq!(resolver.task_effort("   "), None);
     let unique = format!("not-a-task-{}", std::process::id());
@@ -188,8 +193,8 @@ fn preset_task_spec_omits_delegation_fields_and_keeps_session_ids() {
     let mut row = preset("p1", "reviewer");
     row.directory = None;
     row.shared_link = None;
-    row.effort.clear();
-    row.system_prompt.clear();
+    row.effort = "".into();
+    row.system_prompt = "".into();
     let mut opts = PresetTaskSpecOptions {
         delegation: Some(false),
         mesh_from: Some("node-g".to_string()),
@@ -201,14 +206,24 @@ fn preset_task_spec_omits_delegation_fields_and_keeps_session_ids() {
     assert!(spec.get("delegation").is_none());
     assert!(spec.get("meshFrom").is_none());
     assert_eq!(
-        spec.get("parentSessionId").and_then(Value::as_str),
+        spec.get("parentSessionId")
+            .and_then(agents::JsValue::as_str),
         Some("claude-code:11111111-1111-4111-8111-111111111111")
     );
-    assert_eq!(spec.get("owner").and_then(Value::as_str), Some("coco"));
-    assert!(spec.get("workingDir").is_none());
-    assert_eq!(spec.get("sharedLink").and_then(Value::as_bool), Some(true));
     assert_eq!(
-        spec.get("excludeTools").and_then(Value::as_array).unwrap()[0].as_str(),
+        spec.get("owner").and_then(agents::JsValue::as_str),
+        Some("coco")
+    );
+    assert!(spec.get("workingDir").is_none());
+    assert_eq!(
+        spec.get("sharedLink").and_then(agents::JsValue::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        spec.get("excludeTools")
+            .and_then(agents::JsValue::as_array)
+            .unwrap()[0]
+            .as_str(),
         Some("delegate_task")
     );
     opts.delegation = Some(true);
@@ -216,6 +231,27 @@ fn preset_task_spec_omits_delegation_fields_and_keeps_session_ids() {
     opts.owner = None;
     opts.mesh_from = Some(" ".to_string());
     let with_mesh = resolver.preset_task_spec(&row, &opts);
-    assert_eq!(with_mesh.get("meshFrom").and_then(Value::as_str), Some(" "));
+    assert_eq!(
+        with_mesh.get("meshFrom").and_then(agents::JsValue::as_str),
+        Some(" ")
+    );
     assert!(with_mesh.get("parentSessionId").is_none());
+}
+
+#[test]
+fn preset_task_spec_keeps_a_surrogate_in_the_appended_prompt() {
+    let resolver = DelegationResolver::new();
+    let mut row = preset("p1", "reviewer");
+    row.system_prompt = agents::JsString::from_units(vec![0xD83D]);
+    row.effort = "".into();
+    let spec = resolver.preset_task_spec(&row, &PresetTaskSpecOptions::default());
+    let json = serde_json::to_string(&spec).unwrap();
+    assert!(json.contains(r"\ud83d"));
+    assert_eq!(
+        spec.get("systemPromptAppend")
+            .and_then(agents::JsValue::as_js_string)
+            .unwrap()
+            .units(),
+        &[0xD83D]
+    );
 }

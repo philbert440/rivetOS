@@ -8,8 +8,16 @@ pub(crate) fn js_string(text: &str) -> JsValue {
     JsValue::String(JsString::from_text(text))
 }
 
-pub(crate) fn js_str<'a>(value: &'a JsValue, key: &str) -> Option<&'a str> {
-    value.get(key).and_then(JsValue::as_str)
+pub(crate) fn js_from(text: &JsString) -> JsValue {
+    JsValue::String(text.clone())
+}
+
+pub(crate) fn js_text(value: &JsValue, key: &str) -> JsString {
+    js_text_opt(value, key).unwrap_or_else(|| JsString::from_text(""))
+}
+
+pub(crate) fn js_text_opt(value: &JsValue, key: &str) -> Option<JsString> {
+    value.get(key).and_then(JsValue::as_js_string).cloned()
 }
 
 pub(crate) fn js_f64(value: &JsValue) -> Option<f64> {

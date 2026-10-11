@@ -1,10 +1,12 @@
 use std::path::Path;
 
+use protocol::js::{JsString, js_slice_units, js_trim_units};
+
 use crate::error::PresetError;
 use crate::file_store::FileAgentPresetStore;
 use crate::preset::{AgentPreset, AgentPresetInput, AgentRegistryBackend};
 use crate::store::{AgentPresetStore, system_now_ms};
-use crate::validate::{default_directory_for, posix_resolve, utf16_slice, validate_directory_str};
+use crate::validate::{default_directory_for, resolve_fs, validate_directory_str};
 
 pub struct UnresolvedAgent {
     pub id: String,
@@ -38,7 +40,7 @@ pub async fn import_legacy_agents_json(
     }
     if args.store.backend() == AgentRegistryBackend::File
         && let Some(store_file) = args.store.file()
-        && posix_resolve(&store_file) == posix_resolve(&file)
+        && resolve_fs(&store_file) == resolve_fs(&file)
     {
         return Ok(ImportLegacyAgentsResult {
             imported: 0,
@@ -140,12 +142,12 @@ async fn import_one(
 ) -> Result<OneImport, PresetError> {
     let validated = row
         .directory
-        .as_deref()
-        .and_then(|directory| validate_directory_str(Some(directory)));
+        .as_ref()
+        .and_then(|directory| validate_directory_str(Some(directory.to_utf8())));
     let directory = match validated {
-        Some(directory) => directory,
+        Some(directory) => JsString::from_text(&directory),
         None => {
-            let directory = default_directory_for(args.directory_root, &row.name);
+            let directory = default_directory_for(args.directory_root, row.name.to_utf8());
             log(
                 args.log,
                 &format!(
@@ -153,16 +155,26 @@ async fn import_one(
                     row.id, row.name
                 ),
             );
-            directory
+            JsString::from_text(&directory)
         }
     };
-    let base = protocol::js::js_trim(&row.name).to_string();
-    let id_suffix = utf16_slice(&row.id, 8);
-    let mut candidates = vec![base.clone(), format!("{base} ({})", args.node)];
+    let base = JsString::from_units(js_trim_units(row.name.units()).to_vec());
+    let id_suffix = JsString::from_units(js_slice_units(row.id.units(), Some(0.0), Some(8.0)));
+    let mut candidates = vec![
+        base.clone(),
+        extend_units(base.units(), &format!(" ({})", args.node)),
+    ];
     for index in 2..=19 {
-        candidates.push(format!("{base} ({} {index})", args.node));
+        candidates.push(extend_units(
+            base.units(),
+            &format!(" ({} {index})", args.node),
+        ));
     }
-    candidates.push(format!("{base} ({} {id_suffix})", args.node));
+    let mut suffix_name = base.units().to_vec();
+    suffix_name.extend(format!(" ({} ", args.node).encode_utf16());
+    suffix_name.extend(id_suffix.units().iter().copied());
+    suffix_name.push(u16::from(b')'));
+    candidates.push(JsString::from_units(suffix_name));
     for (attempt, candidate) in candidates.iter().enumerate() {
         let input = AgentPresetInput {
             name: candidate.clone(),
@@ -171,12 +183,13 @@ async fn import_one(
             model: Some(row.model.clone()),
             effort: Some(row.effort.clone()),
             system_prompt: Some(row.system_prompt.clone()),
-            node: args.node.to_string(),
+            node: JsString::from_text(args.node),
             directory: directory.clone(),
             shared_link: row.shared_link,
             node_base_url: row.node_base_url.clone(),
             id: Some(row.id.clone()),
             created_at: row.created_at.as_i64(),
+            source: row.document.clone(),
         };
         match args.store.create(input).await {
             Ok(created) => {
@@ -218,9 +231,15 @@ async fn import_one(
         ),
     );
     Ok(OneImport::Unresolved {
-        id: row.id.clone(),
-        name: base,
+        id: row.id.to_utf8().to_string(),
+        name: base.to_utf8().to_string(),
     })
+}
+
+fn extend_units(base: &[u16], extra: &str) -> JsString {
+    let mut units = base.to_vec();
+    units.extend(extra.encode_utf16());
+    JsString::from_units(units)
 }
 
 fn empty_result() -> ImportLegacyAgentsResult {

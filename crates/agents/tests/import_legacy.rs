@@ -2,7 +2,9 @@ mod common;
 pub use common::contract::*;
 pub use common::*;
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
+use parking_lot::Mutex;
 
 use agents::{
     AgentPreset, AgentPresetInput, AgentPresetPatch, AgentPresetStore, AgentRegistryBackend,
@@ -69,13 +71,22 @@ async fn imports_rows_with_a_default_directory_and_renames_the_file() {
     assert!(!std::path::Path::new(&file).exists());
     assert!(std::path::Path::new(&renamed).exists());
     let row = target.get(LEGACY_ID).await.unwrap().unwrap();
-    assert_eq!(row.node.as_deref(), Some("node-f"));
-    assert_eq!(row.directory.as_deref(), Some("/home/agents/reviewer"));
+    assert_eq!(
+        row.node.as_ref().map(agents::JsString::to_utf8),
+        Some("node-f")
+    );
+    assert_eq!(
+        row.directory.as_ref().map(agents::JsString::to_utf8),
+        Some("/home/agents/reviewer")
+    );
     assert_eq!(row.created_at, 10);
-    assert_eq!(row.name, "Reviewer");
+    assert_eq!(row.name.to_utf8(), "Reviewer");
     assert_ne!(row.updated_at, 10);
     assert_eq!(
-        result.rows.unwrap()[0].directory.as_deref(),
+        result.rows.unwrap()[0]
+            .directory
+            .as_ref()
+            .map(agents::JsString::to_utf8),
         Some("/home/agents/reviewer")
     );
 }
@@ -85,9 +96,9 @@ async fn skips_a_conflicting_id_and_still_renames() {
     let dir = TempDir::new("agent-registry-import");
     let target = FileAgentPresetStore::new(dir.path_str("target.json"));
     let mut existing = common::input("Existing");
-    existing.id = Some("taken".to_string());
-    existing.node = "n".to_string();
-    existing.directory = "/x".to_string();
+    existing.id = Some("taken".into());
+    existing.node = "n".into();
+    existing.directory = "/x".into();
     existing.created_at = Some(1);
     target.create(existing).await.unwrap();
     let file = dir.path_str("agents.json");
@@ -108,20 +119,23 @@ async fn skips_a_conflicting_id_and_still_renames() {
         store: &target,
         node: "node-f",
         directory_root: "/home/agents",
-        log: Some(&|message| logs.lock().unwrap().push(message.to_string())),
+        log: Some(&|message| logs.lock().push(message.to_string())),
     })
     .await
     .unwrap();
     assert_eq!(result.imported, 1);
     assert_eq!(result.skipped, 1);
-    let logged = logs.lock().unwrap().join("\n");
+    let logged = logs.lock().join("\n");
     assert!(logged.contains("taken"));
     assert!(logged.contains("Other"));
     assert!(result.renamed_to.is_some());
     assert!(!std::path::Path::new(&file).exists());
     let archived = std::fs::read_to_string(result.renamed_to.unwrap()).unwrap();
     assert!(archived.contains("taken"));
-    assert_eq!(target.get("taken").await.unwrap().unwrap().name, "Existing");
+    assert_eq!(
+        target.get("taken").await.unwrap().unwrap().name.to_utf8(),
+        "Existing"
+    );
     assert_eq!(
         target
             .get("fresh")
@@ -129,7 +143,8 @@ async fn skips_a_conflicting_id_and_still_renames() {
             .unwrap()
             .unwrap()
             .directory
-            .as_deref(),
+            .as_ref()
+            .map(agents::JsString::to_utf8),
         Some("/home/agents/newcomer")
     );
 }
@@ -144,9 +159,9 @@ async fn renames_conflicting_names_with_node_suffixes() {
         ("keep3", "Other (node-f)", "/z"),
     ] {
         let mut body = common::input(name);
-        body.id = Some(id.to_string());
-        body.node = "n".to_string();
-        body.directory = directory.to_string();
+        body.id = Some(id.into());
+        body.node = "n".into();
+        body.directory = directory.into();
         body.created_at = Some(1);
         target.create(body).await.unwrap();
     }
@@ -168,14 +183,14 @@ async fn renames_conflicting_names_with_node_suffixes() {
         store: &target,
         node: "node-f",
         directory_root: "/home/agents",
-        log: Some(&|message| logs.lock().unwrap().push(message.to_string())),
+        log: Some(&|message| logs.lock().push(message.to_string())),
     })
     .await
     .unwrap();
     assert_eq!(result.imported, 2);
     assert_eq!(result.skipped, 0);
     assert_eq!(result.renamed, 2);
-    let logged = logs.lock().unwrap().join("\n");
+    let logged = logs.lock().join("\n");
     assert!(logged.contains("legacy agents import: imported=2 skipped=0 renamed=2"));
     assert!(logged.contains("other"));
     assert!(logged.contains("name conflict"));
@@ -186,7 +201,7 @@ async fn renames_conflicting_names_with_node_suffixes() {
         .await
         .unwrap()
         .into_iter()
-        .map(|row| row.name)
+        .map(|row| row.name.to_utf8().to_string())
         .collect();
     names.sort();
     assert_eq!(
@@ -200,11 +215,11 @@ async fn renames_conflicting_names_with_node_suffixes() {
         ]
     );
     assert_eq!(
-        target.get("other").await.unwrap().unwrap().name,
+        target.get("other").await.unwrap().unwrap().name.to_utf8(),
         "reviewer (node-f)"
     );
     assert_eq!(
-        target.get("second").await.unwrap().unwrap().name,
+        target.get("second").await.unwrap().unwrap().name.to_utf8(),
         "Other (node-f 2)"
     );
 }
@@ -224,13 +239,13 @@ impl AgentPresetStore for ConflictStore {
         Box::pin(async { Ok(true) })
     }
     fn list(&self, _: Option<&str>) -> BoxFuture<'_, Result<Vec<AgentPreset>, PresetError>> {
-        let rows = self.rows.lock().unwrap().clone();
+        let rows = self.rows.lock().clone();
         Box::pin(async move { Ok(rows) })
     }
     fn get(&self, id: &str) -> BoxFuture<'_, Result<Option<AgentPreset>, PresetError>> {
         let id = id.to_string();
-        let rows = self.rows.lock().unwrap().clone();
-        Box::pin(async move { Ok(rows.into_iter().find(|row| row.id == id)) })
+        let rows = self.rows.lock().clone();
+        Box::pin(async move { Ok(rows.into_iter().find(|row| row.id.to_utf8() == id)) })
     }
     fn find_by_handle(&self, _: &str) -> BoxFuture<'_, Result<Option<AgentPreset>, PresetError>> {
         Box::pin(async { Ok(None) })
@@ -240,19 +255,26 @@ impl AgentPresetStore for ConflictStore {
         let _ = rows;
         let store_rows = &self.rows;
         Box::pin(async move {
-            if input.id.as_deref() == Some("id-clash") {
+            if input.id.as_ref().map(|value| value.to_utf8()) == Some("id-clash") {
                 return Err(PresetError::conflict(
                     "agent preset conflicts with an existing id or name (ros_agent_presets_pkey)",
                 ));
             }
-            if input.name == "Same" {
+            if input.name.to_utf8() == "Same" {
                 return Err(PresetError::conflict(
                     "agent preset conflicts with an existing id or name (idx_ros_agent_presets_name)",
                 ));
             }
-            let mut row = preset(input.id.as_deref().unwrap_or("generated"), &input.name);
+            let mut row = preset(
+                input
+                    .id
+                    .as_ref()
+                    .map(|value| value.to_utf8())
+                    .unwrap_or("generated"),
+                input.name.to_utf8(),
+            );
             row.directory = Some(input.directory);
-            store_rows.lock().unwrap().push(row.clone());
+            store_rows.lock().push(row.clone());
             Ok(row)
         })
     }
@@ -292,7 +314,7 @@ async fn skips_only_an_id_conflict_when_postgres_names_the_constraint() {
         store: &store,
         node: "node-f",
         directory_root: "/home/agents",
-        log: Some(&|message| logs.lock().unwrap().push(message.to_string())),
+        log: Some(&|message| logs.lock().push(message.to_string())),
     })
     .await
     .unwrap();
@@ -302,13 +324,12 @@ async fn skips_only_an_id_conflict_when_postgres_names_the_constraint() {
     let names: Vec<_> = store
         .rows
         .lock()
-        .unwrap()
         .iter()
-        .map(|row| row.name.clone())
+        .map(|row| row.name.to_utf8().to_string())
         .collect();
     assert_eq!(names, ["Same (node-f)"]);
-    assert_eq!(store.rows.lock().unwrap()[0].id, "name-clash");
-    let logged = logs.lock().unwrap().join("\n");
+    assert_eq!(store.rows.lock()[0].id.to_utf8(), "name-clash");
+    let logged = logs.lock().join("\n");
     assert!(logged.contains("id-clash"));
     assert!(logged.contains("pkey"));
     assert!(logged.contains("idx_ros_agent_presets_name"));
@@ -338,7 +359,7 @@ async fn keeps_a_valid_directory_and_falls_back_when_one_is_invalid() {
         store: &target,
         node: "node-f",
         directory_root: "/home/agents",
-        log: Some(&|message| logs.lock().unwrap().push(message.to_string())),
+        log: Some(&|message| logs.lock().push(message.to_string())),
     })
     .await
     .unwrap();
@@ -351,7 +372,8 @@ async fn keeps_a_valid_directory_and_falls_back_when_one_is_invalid() {
             .unwrap()
             .unwrap()
             .directory
-            .as_deref(),
+            .as_ref()
+            .map(agents::JsString::to_utf8),
         Some("/srv/agents/abs")
     );
     assert_eq!(
@@ -361,7 +383,8 @@ async fn keeps_a_valid_directory_and_falls_back_when_one_is_invalid() {
             .unwrap()
             .unwrap()
             .directory
-            .as_deref(),
+            .as_ref()
+            .map(agents::JsString::to_utf8),
         Some("/home/agents/rel")
     );
     assert_eq!(
@@ -371,10 +394,11 @@ async fn keeps_a_valid_directory_and_falls_back_when_one_is_invalid() {
             .unwrap()
             .unwrap()
             .directory
-            .as_deref(),
+            .as_ref()
+            .map(agents::JsString::to_utf8),
         Some("/home/agents/bad")
     );
-    let logged = logs.lock().unwrap().join("\n");
+    let logged = logs.lock().join("\n");
     assert!(logged.to_lowercase().contains("rel"));
     assert!(logged.to_lowercase().contains("bad"));
     assert!(!logged.contains("Abs"));
@@ -525,7 +549,8 @@ async fn imports_through_a_wrapper_once_the_primary_file_is_different() {
             .unwrap()
             .unwrap()
             .node
-            .as_deref(),
+            .as_ref()
+            .map(agents::JsString::to_utf8),
         Some("node-f")
     );
 }
@@ -540,9 +565,9 @@ async fn uses_the_id_suffix_once_numbered_suffixes_are_exhausted() {
     }
     for (index, name) in taken.iter().enumerate() {
         let mut body = common::input(name);
-        body.id = Some(format!("keep-{index}"));
-        body.node = "n".to_string();
-        body.directory = "/x".to_string();
+        body.id = Some(format!("keep-{index}").into());
+        body.node = "n".into();
+        body.directory = "/x".into();
         body.created_at = Some(1);
         target.create(body).await.unwrap();
     }
@@ -558,7 +583,7 @@ async fn uses_the_id_suffix_once_numbered_suffixes_are_exhausted() {
         store: &target,
         node: "node-f",
         directory_root: "/home/agents",
-        log: Some(&|message| logs.lock().unwrap().push(message.to_string())),
+        log: Some(&|message| logs.lock().push(message.to_string())),
     })
     .await
     .unwrap();
@@ -567,12 +592,11 @@ async fn uses_the_id_suffix_once_numbered_suffixes_are_exhausted() {
     assert_eq!(result.renamed, 1);
     assert!(result.unresolved.is_none());
     assert_eq!(
-        target.get(LEGACY_ID).await.unwrap().unwrap().name,
+        target.get(LEGACY_ID).await.unwrap().unwrap().name.to_utf8(),
         "Reviewer (node-f 11111111)"
     );
     assert!(
         logs.lock()
-            .unwrap()
             .join("\n")
             .contains("legacy agents import: imported=1 skipped=0 renamed=1")
     );
@@ -594,9 +618,9 @@ async fn leaves_the_source_when_the_id_suffix_still_collides() {
     }
     for (index, name) in taken.iter().enumerate() {
         let mut body = common::input(name);
-        body.id = Some(format!("keep-{index}"));
-        body.node = "n".to_string();
-        body.directory = "/x".to_string();
+        body.id = Some(format!("keep-{index}").into());
+        body.node = "n".into();
+        body.directory = "/x".into();
         body.created_at = Some(1);
         target.create(body).await.unwrap();
     }
@@ -609,7 +633,7 @@ async fn leaves_the_source_when_the_id_suffix_still_collides() {
         store: &target,
         node: "node-f",
         directory_root: "/home/agents",
-        log: Some(&|message| logs.lock().unwrap().push(message.to_string())),
+        log: Some(&|message| logs.lock().push(message.to_string())),
     })
     .await
     .unwrap();
@@ -625,7 +649,7 @@ async fn leaves_the_source_when_the_id_suffix_still_collides() {
     assert_eq!(std::fs::read_to_string(&file).unwrap(), source);
     assert!(!dir_has_imported(&dir));
     assert!(target.get(LEGACY_ID).await.unwrap().is_none());
-    let logged = logs.lock().unwrap().join("\n");
+    let logged = logs.lock().join("\n");
     assert!(logged.contains("source file left in place"));
     assert!(logged.contains("legacy agents import: imported=0 skipped=0 renamed=0"));
 }
@@ -643,6 +667,25 @@ async fn returns_zeros_when_the_file_is_absent() {
     assert_eq!(result.renamed, 0);
     assert!(result.rows.is_none());
     assert!(target.list(None).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn file_import_keeps_display_metadata_and_a_surrogate() {
+    let dir = TempDir::new("agent-registry-import");
+    let file = dir.path_str("agents.json");
+    let legacy = r#"{"agents":[{"id":"legacy","name":"Old","color":"","model":"opus","effort":"medium","systemPrompt":"\ud83d","nodeBaseUrl":"","createdAt":1,"updatedAt":1,"displayMetadata":{"k":1}}]}"#;
+    std::fs::write(&file, legacy).unwrap();
+    let target = FileAgentPresetStore::new(dir.path_str("target.json"));
+    let result = import_legacy_agents_json(args(&file, &target, None))
+        .await
+        .unwrap();
+    assert_eq!(result.imported, 1);
+    let row = target.get("legacy").await.unwrap().unwrap();
+    assert!(row.document_json().contains(r"\ud83d"));
+    assert!(row.document_json().contains("displayMetadata"));
+    let encoded = serde_json::to_string(&row).unwrap();
+    assert!(encoded.contains(r"\ud83d"));
+    assert!(encoded.contains("displayMetadata"));
 }
 
 fn dir_has_imported(dir: &TempDir) -> bool {

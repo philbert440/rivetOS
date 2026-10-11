@@ -2,41 +2,34 @@ use std::sync::Arc;
 
 use protocol::HARNESS_IDS;
 use protocol::JsNumber;
-use protocol::js::{JsValue, js_trim};
-use serde::{Deserialize, Serialize};
+use protocol::js::{JsString, JsValue, js_trim, js_trim_units};
+use serde::de::Deserializer;
+use serde::{Deserialize, Serialize, Serializer};
 use serde_json::{Map, Number, Value};
 
 use crate::error::PresetError;
 use crate::js_row::{
-    entries_of, js_f64, js_i64, js_str, js_string, object_from_entries, object_from_pairs,
-    remove_key, serde_to_js, upsert,
+    entries_of, js_f64, js_from, js_i64, js_string, js_text, js_text_opt, object_from_entries,
+    object_from_pairs, remove_key, serde_to_js, upsert,
 };
 use crate::validate::is_harness_id;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentPreset {
-    pub id: String,
-    pub name: String,
-    pub color: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub harness_id: Option<String>,
-    pub model: String,
-    pub effort: String,
-    pub system_prompt: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub node: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub directory: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: JsString,
+    pub name: JsString,
+    pub color: JsString,
+    pub harness_id: Option<JsString>,
+    pub model: JsString,
+    pub effort: JsString,
+    pub system_prompt: JsString,
+    pub node: Option<JsString>,
+    pub directory: Option<JsString>,
     pub shared_link: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub node_base_url: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_base_url: Option<JsString>,
     pub sort_order: Option<i64>,
     pub created_at: JsNumber,
     pub updated_at: JsNumber,
-    #[serde(skip)]
     pub document: Option<Arc<JsValue>>,
 }
 
@@ -57,20 +50,43 @@ impl AgentPreset {
     }
 }
 
+impl Serialize for AgentPreset {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match &self.document {
+            Some(document) => document.as_ref().serialize(serializer),
+            None => synthesized_document(self).serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for AgentPreset {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = JsValue::deserialize(deserializer)?;
+        preset_from_js(&value).map_err(serde::de::Error::custom)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentPresetInput {
-    pub name: String,
-    pub color: Option<String>,
-    pub harness_id: Option<String>,
-    pub model: Option<String>,
-    pub effort: Option<String>,
-    pub system_prompt: Option<String>,
-    pub node: String,
-    pub directory: String,
+    pub name: JsString,
+    pub color: Option<JsString>,
+    pub harness_id: Option<JsString>,
+    pub model: Option<JsString>,
+    pub effort: Option<JsString>,
+    pub system_prompt: Option<JsString>,
+    pub node: JsString,
+    pub directory: JsString,
     pub shared_link: Option<bool>,
-    pub node_base_url: Option<String>,
-    pub id: Option<String>,
+    pub node_base_url: Option<JsString>,
+    pub id: Option<JsString>,
     pub created_at: Option<i64>,
+    pub source: Option<Arc<JsValue>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -83,16 +99,16 @@ pub enum HarnessPatch {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct AgentPresetPatch {
-    pub name: Option<String>,
-    pub color: Option<String>,
+    pub name: Option<JsString>,
+    pub color: Option<JsString>,
     pub harness: HarnessPatch,
-    pub model: Option<String>,
-    pub effort: Option<String>,
-    pub system_prompt: Option<String>,
-    pub directory: Option<String>,
+    pub model: Option<JsString>,
+    pub effort: Option<JsString>,
+    pub system_prompt: Option<JsString>,
+    pub directory: Option<JsString>,
     pub shared_link: Option<bool>,
     pub sort_order: SortPatch,
-    pub node_base_url: Option<String>,
+    pub node_base_url: Option<JsString>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -177,10 +193,6 @@ pub fn migrate_fields(model: &str, harness_id: Option<&str>) -> MigratedFields {
     }
 }
 
-pub fn epoch_ms(ms: i64) -> Result<JsNumber, PresetError> {
-    Ok(JsNumber::from(ms))
-}
-
 pub fn json_string(map: &Map<String, Value>, key: &str) -> Option<String> {
     map.get(key).and_then(Value::as_str).map(str::to_string)
 }
@@ -240,30 +252,17 @@ fn preset_from_migrated(migrated: &JsValue) -> Result<AgentPreset, PresetError> 
     let created = object.get("createdAt").and_then(js_f64).unwrap_or(0.0);
     let updated = object.get("updatedAt").and_then(js_f64).unwrap_or(0.0);
     Ok(AgentPreset {
-        id: js_str(migrated, "id").unwrap_or("").to_string(),
-        name: js_str(migrated, "name").unwrap_or("").to_string(),
-        color: js_str(migrated, "color").unwrap_or("").to_string(),
-        harness_id: object
-            .get("harnessId")
-            .and_then(JsValue::as_str)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string),
-        model: js_str(migrated, "model").unwrap_or("").to_string(),
-        effort: js_str(migrated, "effort").unwrap_or("").to_string(),
-        system_prompt: js_str(migrated, "systemPrompt").unwrap_or("").to_string(),
-        node: object
-            .get("node")
-            .and_then(JsValue::as_str)
-            .map(str::to_string),
-        directory: object
-            .get("directory")
-            .and_then(JsValue::as_str)
-            .map(str::to_string),
+        id: js_text(migrated, "id"),
+        name: js_text(migrated, "name"),
+        color: js_text(migrated, "color"),
+        harness_id: js_text_opt(migrated, "harnessId").filter(|value| !value.is_empty()),
+        model: js_text(migrated, "model"),
+        effort: js_text(migrated, "effort"),
+        system_prompt: js_text(migrated, "systemPrompt"),
+        node: js_text_opt(migrated, "node"),
+        directory: js_text_opt(migrated, "directory"),
         shared_link: object.get("sharedLink").and_then(JsValue::as_bool),
-        node_base_url: object
-            .get("nodeBaseUrl")
-            .and_then(JsValue::as_str)
-            .map(str::to_string),
+        node_base_url: js_text_opt(migrated, "nodeBaseUrl"),
         sort_order,
         created_at: JsNumber::from(created),
         updated_at: JsNumber::from(updated),
@@ -324,22 +323,22 @@ pub fn patch_stored_row(
     let mut entries = entries_of(current)?;
     upsert(&mut entries, "updatedAt", JsValue::Number(now as f64));
     if let Some(value) = name {
-        upsert(&mut entries, "name", js_string(&value));
+        upsert(&mut entries, "name", js_from(&value));
     }
     if let Some(value) = &patch.color {
-        upsert(&mut entries, "color", js_string(value));
+        upsert(&mut entries, "color", js_from(value));
     }
     if let Some(value) = &patch.model {
-        upsert(&mut entries, "model", js_string(value));
+        upsert(&mut entries, "model", js_from(value));
     }
     if let Some(value) = &patch.effort {
-        upsert(&mut entries, "effort", js_string(value));
+        upsert(&mut entries, "effort", js_from(value));
     }
     if let Some(value) = &patch.system_prompt {
-        upsert(&mut entries, "systemPrompt", js_string(value));
+        upsert(&mut entries, "systemPrompt", js_from(value));
     }
     if let Some(value) = &patch.directory {
-        upsert(&mut entries, "directory", js_string(value));
+        upsert(&mut entries, "directory", js_from(value));
     }
     if let Some(value) = patch.shared_link {
         upsert(&mut entries, "sharedLink", JsValue::Bool(value));
@@ -350,7 +349,7 @@ pub fn patch_stored_row(
         SortPatch::Set(value) => upsert(&mut entries, "sortOrder", JsValue::Number(value as f64)),
     }
     if let Some(value) = &patch.node_base_url {
-        upsert(&mut entries, "nodeBaseUrl", js_string(value));
+        upsert(&mut entries, "nodeBaseUrl", js_from(value));
     }
     match &patch.harness {
         HarnessPatch::Unchanged => {}
@@ -366,26 +365,24 @@ pub fn fresh_stored_row(
     now: i64,
 ) -> Result<JsValue, PresetError> {
     let name = require_agent_name(&input.name)?;
+    if let Some(source) = &input.source {
+        return fresh_from_source(source, input, &name, id, now);
+    }
+    let stored_id = input.id.clone().unwrap_or_else(|| JsString::from_text(id));
     let mut pairs = vec![
-        (
-            "id",
-            js_string(&input.id.clone().unwrap_or_else(|| id.to_string())),
-        ),
-        ("name", js_string(&name)),
-        ("color", js_string(input.color.as_deref().unwrap_or(""))),
-        ("model", js_string(input.model.as_deref().unwrap_or(""))),
+        ("id", js_from(&stored_id)),
+        ("name", js_from(&name)),
+        ("color", optional_text(input.color.as_ref())),
+        ("model", optional_text(input.model.as_ref())),
         (
             "effort",
-            js_string(input.effort.as_deref().unwrap_or("medium")),
+            match &input.effort {
+                Some(value) => js_from(value),
+                None => js_string("medium"),
+            },
         ),
-        (
-            "systemPrompt",
-            js_string(input.system_prompt.as_deref().unwrap_or("")),
-        ),
-        (
-            "nodeBaseUrl",
-            js_string(input.node_base_url.as_deref().unwrap_or("")),
-        ),
+        ("systemPrompt", optional_text(input.system_prompt.as_ref())),
+        ("nodeBaseUrl", optional_text(input.node_base_url.as_ref())),
         (
             "createdAt",
             JsValue::Number(input.created_at.unwrap_or(now) as f64),
@@ -395,17 +392,61 @@ pub fn fresh_stored_row(
             "sharedLink",
             JsValue::Bool(input.shared_link.unwrap_or(true)),
         ),
-        ("node", js_string(&input.node)),
-        ("directory", js_string(&input.directory)),
+        ("node", js_from(&input.node)),
+        ("directory", js_from(&input.directory)),
     ];
-    if let Some(harness) = input
-        .harness_id
-        .as_deref()
-        .filter(|value| !value.is_empty())
-    {
-        pairs.push(("harnessId", js_string(harness)));
+    if let Some(harness) = input.harness_id.as_ref().filter(|value| !value.is_empty()) {
+        pairs.push(("harnessId", js_from(harness)));
     }
     migrate_row(&object_from_pairs(pairs)?)
+}
+
+fn optional_text(value: Option<&JsString>) -> JsValue {
+    match value {
+        Some(text) => js_from(text),
+        None => js_string(""),
+    }
+}
+
+fn fresh_from_source(
+    source: &JsValue,
+    input: &AgentPresetInput,
+    name: &JsString,
+    id: &str,
+    now: i64,
+) -> Result<JsValue, PresetError> {
+    let mut entries = entries_of(source)?;
+    let stored_id = input.id.clone().unwrap_or_else(|| JsString::from_text(id));
+    upsert(&mut entries, "id", js_from(&stored_id));
+    upsert(&mut entries, "name", js_from(name));
+    upsert(&mut entries, "node", js_from(&input.node));
+    upsert(&mut entries, "directory", js_from(&input.directory));
+    upsert(&mut entries, "updatedAt", JsValue::Number(now as f64));
+    if let Some(created) = input.created_at {
+        upsert(&mut entries, "createdAt", JsValue::Number(created as f64));
+    }
+    if let Some(value) = &input.color {
+        upsert(&mut entries, "color", js_from(value));
+    }
+    if let Some(value) = &input.model {
+        upsert(&mut entries, "model", js_from(value));
+    }
+    if let Some(value) = &input.effort {
+        upsert(&mut entries, "effort", js_from(value));
+    }
+    if let Some(value) = &input.system_prompt {
+        upsert(&mut entries, "systemPrompt", js_from(value));
+    }
+    if let Some(value) = &input.node_base_url {
+        upsert(&mut entries, "nodeBaseUrl", js_from(value));
+    }
+    if let Some(value) = input.shared_link {
+        upsert(&mut entries, "sharedLink", JsValue::Bool(value));
+    }
+    if let Some(harness) = input.harness_id.as_ref().filter(|value| !value.is_empty()) {
+        upsert(&mut entries, "harnessId", js_from(harness));
+    }
+    migrate_row(&object_from_entries(entries)?)
 }
 
 pub fn number_value(ms: i64) -> Value {
@@ -422,18 +463,19 @@ fn push_js_number(map: &mut Map<String, Value>, key: &str, number: JsNumber) {
     }
 }
 
+fn json_text(text: &JsString) -> Value {
+    Value::String(text.to_utf8().to_string())
+}
+
 pub fn write_preset_fields(map: &mut Map<String, Value>, preset: &AgentPreset) {
-    map.insert("id".to_string(), Value::String(preset.id.clone()));
-    map.insert("name".to_string(), Value::String(preset.name.clone()));
-    map.insert("color".to_string(), Value::String(preset.color.clone()));
-    map.insert("model".to_string(), Value::String(preset.model.clone()));
-    map.insert("effort".to_string(), Value::String(preset.effort.clone()));
-    map.insert(
-        "systemPrompt".to_string(),
-        Value::String(preset.system_prompt.clone()),
-    );
+    map.insert("id".to_string(), json_text(&preset.id));
+    map.insert("name".to_string(), json_text(&preset.name));
+    map.insert("color".to_string(), json_text(&preset.color));
+    map.insert("model".to_string(), json_text(&preset.model));
+    map.insert("effort".to_string(), json_text(&preset.effort));
+    map.insert("systemPrompt".to_string(), json_text(&preset.system_prompt));
     if let Some(url) = &preset.node_base_url {
-        map.insert("nodeBaseUrl".to_string(), Value::String(url.clone()));
+        map.insert("nodeBaseUrl".to_string(), json_text(url));
     }
     push_js_number(map, "createdAt", preset.created_at);
     push_js_number(map, "updatedAt", preset.updated_at);
@@ -447,7 +489,7 @@ pub fn write_preset_fields(map: &mut Map<String, Value>, preset: &AgentPreset) {
     }
     match &preset.node {
         Some(value) => {
-            map.insert("node".to_string(), Value::String(value.clone()));
+            map.insert("node".to_string(), json_text(value));
         }
         None => {
             map.remove("node");
@@ -455,7 +497,7 @@ pub fn write_preset_fields(map: &mut Map<String, Value>, preset: &AgentPreset) {
     }
     match &preset.directory {
         Some(value) => {
-            map.insert("directory".to_string(), Value::String(value.clone()));
+            map.insert("directory".to_string(), json_text(value));
         }
         None => {
             map.remove("directory");
@@ -463,7 +505,7 @@ pub fn write_preset_fields(map: &mut Map<String, Value>, preset: &AgentPreset) {
     }
     match &preset.harness_id {
         Some(value) => {
-            map.insert("harnessId".to_string(), Value::String(value.clone()));
+            map.insert("harnessId".to_string(), json_text(value));
         }
         None => {
             map.remove("harnessId");
@@ -498,17 +540,14 @@ pub fn migrate_map(map: &Map<String, Value>) -> Map<String, Value> {
 
 pub fn fresh_preset_map(preset: &AgentPreset) -> Map<String, Value> {
     let mut map = Map::new();
-    map.insert("id".to_string(), Value::String(preset.id.clone()));
-    map.insert("name".to_string(), Value::String(preset.name.clone()));
-    map.insert("color".to_string(), Value::String(preset.color.clone()));
-    map.insert("model".to_string(), Value::String(preset.model.clone()));
-    map.insert("effort".to_string(), Value::String(preset.effort.clone()));
-    map.insert(
-        "systemPrompt".to_string(),
-        Value::String(preset.system_prompt.clone()),
-    );
+    map.insert("id".to_string(), json_text(&preset.id));
+    map.insert("name".to_string(), json_text(&preset.name));
+    map.insert("color".to_string(), json_text(&preset.color));
+    map.insert("model".to_string(), json_text(&preset.model));
+    map.insert("effort".to_string(), json_text(&preset.effort));
+    map.insert("systemPrompt".to_string(), json_text(&preset.system_prompt));
     if let Some(url) = &preset.node_base_url {
-        map.insert("nodeBaseUrl".to_string(), Value::String(url.clone()));
+        map.insert("nodeBaseUrl".to_string(), json_text(url));
     }
     push_js_number(&mut map, "createdAt", preset.created_at);
     push_js_number(&mut map, "updatedAt", preset.updated_at);
@@ -516,13 +555,13 @@ pub fn fresh_preset_map(preset: &AgentPreset) -> Map<String, Value> {
         map.insert("sharedLink".to_string(), Value::Bool(value));
     }
     if let Some(value) = &preset.node {
-        map.insert("node".to_string(), Value::String(value.clone()));
+        map.insert("node".to_string(), json_text(value));
     }
     if let Some(value) = &preset.directory {
-        map.insert("directory".to_string(), Value::String(value.clone()));
+        map.insert("directory".to_string(), json_text(value));
     }
     if let Some(value) = &preset.harness_id {
-        map.insert("harnessId".to_string(), Value::String(value.clone()));
+        map.insert("harnessId".to_string(), json_text(value));
     }
     if let Some(value) = preset.sort_order {
         map.insert("sortOrder".to_string(), number_value(value));
@@ -532,15 +571,15 @@ pub fn fresh_preset_map(preset: &AgentPreset) -> Map<String, Value> {
 
 fn synthesized_document(preset: &AgentPreset) -> JsValue {
     let mut pairs = vec![
-        ("id", js_string(&preset.id)),
-        ("name", js_string(&preset.name)),
-        ("color", js_string(&preset.color)),
-        ("model", js_string(&preset.model)),
-        ("effort", js_string(&preset.effort)),
-        ("systemPrompt", js_string(&preset.system_prompt)),
+        ("id", js_from(&preset.id)),
+        ("name", js_from(&preset.name)),
+        ("color", js_from(&preset.color)),
+        ("model", js_from(&preset.model)),
+        ("effort", js_from(&preset.effort)),
+        ("systemPrompt", js_from(&preset.system_prompt)),
     ];
     if let Some(value) = &preset.node_base_url {
-        pairs.push(("nodeBaseUrl", js_string(value)));
+        pairs.push(("nodeBaseUrl", js_from(value)));
     }
     pairs.push(("createdAt", JsValue::Number(preset.created_at.as_f64())));
     pairs.push(("updatedAt", JsValue::Number(preset.updated_at.as_f64())));
@@ -548,28 +587,38 @@ fn synthesized_document(preset: &AgentPreset) -> JsValue {
         pairs.push(("sharedLink", JsValue::Bool(value)));
     }
     if let Some(value) = &preset.node {
-        pairs.push(("node", js_string(value)));
+        pairs.push(("node", js_from(value)));
     }
     if let Some(value) = &preset.directory {
-        pairs.push(("directory", js_string(value)));
+        pairs.push(("directory", js_from(value)));
     }
     if let Some(value) = &preset.harness_id {
-        pairs.push(("harnessId", js_string(value)));
+        pairs.push(("harnessId", js_from(value)));
     }
     if let Some(value) = preset.sort_order {
         pairs.push(("sortOrder", JsValue::Number(value as f64)));
     }
-    object_from_pairs(pairs).unwrap_or(JsValue::Null)
+    match object_from_pairs(pairs) {
+        Ok(value) => value,
+        Err(_) => JsValue::Null,
+    }
 }
 
 pub fn name_key(name: &str) -> String {
     js_trim(name).to_lowercase()
 }
 
-pub fn require_agent_name(name: &str) -> Result<String, PresetError> {
-    let trimmed = js_trim(name);
+pub fn name_key_text(name: &JsString) -> String {
+    let trimmed = js_trim_units(name.units());
+    JsString::from_units(trimmed.to_vec())
+        .to_utf8()
+        .to_lowercase()
+}
+
+pub fn require_agent_name(name: &JsString) -> Result<JsString, PresetError> {
+    let trimmed = js_trim_units(name.units());
     if trimmed.is_empty() {
         return Err(PresetError::message(crate::error::AGENT_NAME_REQUIRED));
     }
-    Ok(trimmed.to_string())
+    Ok(JsString::from_units(trimmed.to_vec()))
 }

@@ -1,4 +1,4 @@
-use protocol::js::js_trim;
+use protocol::js::{JsString, js_trim};
 use serde_json::Value;
 
 use crate::error::{
@@ -9,9 +9,8 @@ use crate::error::{
 };
 use crate::preset::{AgentPreset, AgentPresetInput, AgentPresetPatch, HarnessPatch, SortPatch};
 use crate::validate::{
-    ParsedHarness, default_directory_for, directory_warnings, expand_home, has_dot_dot,
-    is_codex_default_model, parse_color, parse_effort, parse_harness_id, utf16_slice_owned,
-    validate_directory_str,
+    ParsedHarness, cap_text, default_directory_for, directory_warnings, expand_home, has_dot_dot,
+    is_codex_default_model, parse_color, parse_effort, parse_harness_id, validate_directory_str,
 };
 
 pub type ModelListLookup<'a> = Option<&'a dyn Fn(&str) -> Option<ModelList>>;
@@ -33,14 +32,14 @@ pub struct ValidateCtx<'a> {
 
 #[derive(Debug)]
 pub struct ValidatedCreate {
-    pub name: String,
+    pub name: JsString,
     pub input: AgentPresetInput,
     pub warnings: Vec<String>,
 }
 
 #[derive(Debug)]
 pub struct ValidatedPatch {
-    pub name: String,
+    pub name: JsString,
     pub patch: AgentPresetPatch,
     pub warnings: Vec<String>,
     pub materialize: bool,
@@ -68,24 +67,31 @@ pub fn validate_create(
         Some(Value::Bool(value)) => *value,
         _ => true,
     };
-    let directory = resolve_directory(raw.get("directory"), &name, ctx)?;
+    let directory = resolve_directory(raw.get("directory"), name.to_utf8(), ctx)?;
     let mut warnings = directory_warnings(&directory, ctx.shared_dir);
-    vet_model(harness_id.as_deref(), &model, &name, ctx, &mut warnings)?;
+    vet_model(
+        harness_id.as_deref(),
+        model.to_utf8(),
+        name.to_utf8(),
+        ctx,
+        &mut warnings,
+    )?;
     Ok(ValidatedCreate {
-        name,
+        name: name.clone(),
         input: AgentPresetInput {
-            name: create_name(raw.get("name")),
-            color: Some(color),
-            harness_id,
+            name,
+            color: Some(color.into()),
+            harness_id: harness_id.map(JsString::from),
             model: Some(model),
-            effort: Some(effort),
+            effort: Some(effort.into()),
             system_prompt: Some(system_prompt),
-            node: ctx.node_name.to_string(),
-            directory,
+            node: JsString::from_text(ctx.node_name),
+            directory: JsString::from_text(&directory),
             shared_link: Some(shared_link),
             node_base_url: Some(node_base_url),
             id: None,
             created_at: None,
+            source: None,
         },
         warnings,
     })
@@ -97,12 +103,12 @@ pub fn validate_patch(
     ctx: &ValidateCtx<'_>,
 ) -> Result<ValidatedPatch, AgentRequestError> {
     let raw = object(raw)?;
-    let stored_node = existing
+    let stored_owned = existing
         .node
-        .as_deref()
-        .map(js_trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or(ctx.node_name);
+        .as_ref()
+        .map(|node| js_trim(node.to_utf8()).to_string())
+        .filter(|value| !value.is_empty());
+    let stored_node = stored_owned.as_deref().unwrap_or(ctx.node_name);
     if let Some(node) = raw.get("node") {
         let next = node.as_str().map(js_trim);
         if next != Some(stored_node) {
@@ -114,18 +120,18 @@ pub fn validate_patch(
     if let Some(Value::String(raw_name)) = raw.get("name") {
         let trimmed = js_trim(raw_name);
         if !trimmed.is_empty() {
-            name = utf16_slice_owned(trimmed, NAME_MAX);
+            name = cap_text(trimmed, NAME_MAX);
             patch.name = Some(name.clone());
         }
     }
     if raw.contains_key("color") {
-        patch.color = Some(require_color(raw.get("color"))?);
+        patch.color = Some(require_color(raw.get("color"))?.into());
     }
     if let Some(Value::String(_)) = raw.get("model") {
         patch.model = Some(trimmed_text(raw.get("model"), MODEL_MAX));
     }
     if raw.contains_key("effort") {
-        patch.effort = Some(require_effort(raw.get("effort"))?);
+        patch.effort = Some(require_effort(raw.get("effort"))?.into());
     }
     if raw.contains_key("harnessId") {
         patch.harness = patch_harness(raw.get("harnessId"), ctx)?;
@@ -139,7 +145,11 @@ pub fn validate_patch(
     if raw.contains_key("sortOrder") {
         patch.sort_order = parse_sort(raw.get("sortOrder"))?;
     }
-    let stored_directory = existing.directory.clone().unwrap_or_default();
+    let stored_directory = existing
+        .directory
+        .as_ref()
+        .map(|value| value.to_utf8().to_string())
+        .unwrap_or_default();
     let stored_shared = existing.shared_link != Some(false);
     let directory_changed = match raw.get("directory") {
         None => false,
@@ -153,35 +163,47 @@ pub fn validate_patch(
     let placement = directory_changed || shared_changed;
     let hosted_on = existing
         .node
-        .as_deref()
-        .map(js_trim)
-        .unwrap_or("")
-        .to_string();
+        .as_ref()
+        .map(|node| js_trim(node.to_utf8()).to_string())
+        .unwrap_or_default();
     if placement && !hosted_on.is_empty() && hosted_on != ctx.node_name {
         return Err(AgentRequestError::conflict(hosted_elsewhere_message(
-            &existing.name,
+            existing.name.to_utf8(),
             &hosted_on,
         )));
     }
     let mut warnings = Vec::new();
     let mut materialize = false;
     if placement {
-        apply_placement(raw, existing, &name, &mut patch, ctx, &mut warnings)?;
+        apply_placement(
+            raw,
+            existing,
+            name.to_utf8(),
+            &mut patch,
+            ctx,
+            &mut warnings,
+        )?;
         materialize = true;
     }
     let next_harness = match &patch.harness {
         HarnessPatch::Clear => None,
         HarnessPatch::Set(id) => Some(id.as_str()),
-        HarnessPatch::Unchanged => existing.harness_id.as_deref(),
+        HarnessPatch::Unchanged => existing.harness_id.as_ref().map(JsString::to_utf8),
     };
     let next_model = patch
         .model
         .clone()
         .unwrap_or_else(|| existing.model.clone());
-    let pair_changed =
-        next_harness != existing.harness_id.as_deref() || next_model != existing.model;
+    let pair_changed = next_harness != existing.harness_id.as_ref().map(JsString::to_utf8)
+        || next_model != existing.model;
     if pair_changed {
-        vet_model(next_harness, &next_model, &name, ctx, &mut warnings)?;
+        vet_model(
+            next_harness,
+            next_model.to_utf8(),
+            name.to_utf8(),
+            ctx,
+            &mut warnings,
+        )?;
     }
     Ok(ValidatedPatch {
         name,
@@ -203,22 +225,23 @@ fn apply_placement(
     let next_shared = existing.shared_link != Some(false);
     if raw.contains_key("directory") {
         let directory = resolve_directory(raw.get("directory"), name, ctx)?;
-        if Some(directory.as_str()) != existing.directory.as_deref() {
-            patch.directory = Some(directory.clone());
+        let directory_js = JsString::from_text(&directory);
+        if existing.directory.as_ref() != Some(&directory_js) {
+            patch.directory = Some(directory_js.clone());
         }
-        next_directory = Some(directory);
+        next_directory = Some(directory_js);
     }
     if let Some(Value::Bool(value)) = raw.get("sharedLink")
         && *value != next_shared
     {
         patch.shared_link = Some(*value);
     }
-    if next_directory.as_deref().unwrap_or("").is_empty() {
+    if next_directory.as_ref().is_none_or(JsString::is_empty) {
         let fallback = resolve_directory(None, name, ctx)?;
-        patch.directory = Some(fallback);
+        patch.directory = Some(JsString::from_text(&fallback));
     }
-    if let Some(directory) = patch.directory.as_deref().or(next_directory.as_deref()) {
-        warnings.extend(directory_warnings(directory, ctx.shared_dir));
+    if let Some(directory) = patch.directory.as_ref().or(next_directory.as_ref()) {
+        warnings.extend(directory_warnings(directory.to_utf8(), ctx.shared_dir));
     }
     Ok(())
 }
@@ -228,24 +251,24 @@ fn object(raw: &Value) -> Result<&serde_json::Map<String, Value>, AgentRequestEr
         .ok_or_else(|| AgentRequestError::bad(INVALID_JSON))
 }
 
-fn create_name(value: Option<&Value>) -> String {
+fn create_name(value: Option<&Value>) -> JsString {
     match value {
         Some(Value::String(text)) => {
             let trimmed = js_trim(text);
             if trimmed.is_empty() {
-                UNNAMED_AGENT.to_string()
+                JsString::from_text(UNNAMED_AGENT)
             } else {
-                utf16_slice_owned(trimmed, NAME_MAX)
+                cap_text(trimmed, NAME_MAX)
             }
         }
-        _ => UNNAMED_AGENT.to_string(),
+        _ => JsString::from_text(UNNAMED_AGENT),
     }
 }
 
-fn trimmed_text(value: Option<&Value>, max_units: usize) -> String {
+fn trimmed_text(value: Option<&Value>, max_units: usize) -> JsString {
     match value {
-        Some(Value::String(text)) => utf16_slice_owned(js_trim(text), max_units),
-        _ => String::new(),
+        Some(Value::String(text)) => cap_text(js_trim(text), max_units),
+        _ => JsString::from_text(""),
     }
 }
 

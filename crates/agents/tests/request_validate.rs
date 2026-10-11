@@ -21,17 +21,17 @@ fn context<'a>(
 
 fn existing() -> AgentPreset {
     AgentPreset {
-        id: "a".to_string(),
-        name: "Legacy".to_string(),
-        color: String::new(),
+        id: "a".into(),
+        name: "Legacy".into(),
+        color: "".into(),
         harness_id: None,
-        model: "gpt-4o".to_string(),
-        effort: "medium".to_string(),
-        system_prompt: String::new(),
-        node: Some("node-f".to_string()),
-        directory: Some("/home/agents/legacy".to_string()),
+        model: "gpt-4o".into(),
+        effort: "medium".into(),
+        system_prompt: "".into(),
+        node: Some("node-f".into()),
+        directory: Some("/home/agents/legacy".into()),
         shared_link: Some(true),
-        node_base_url: Some(String::new()),
+        node_base_url: Some("".into()),
         sort_order: None,
         created_at: JsNumber::from(1),
         updated_at: JsNumber::from(1),
@@ -65,10 +65,20 @@ fn codex_list(strict: bool) -> impl Fn(&str) -> Option<ModelList> {
 fn create_stamps_this_node_and_rejects_a_foreign_one() {
     let ctx = context(None, None);
     let created = validate_create(&json!({"name": "Bare"}), &ctx).unwrap();
-    assert_eq!(created.input.node, "node-f");
-    assert_eq!(created.input.node_base_url.as_deref(), Some(""));
-    assert_eq!(created.input.directory, "/home/agents/bare");
-    assert_eq!(created.input.effort.as_deref(), Some("medium"));
+    assert_eq!(created.input.node.to_utf8(), "node-f");
+    assert_eq!(
+        created
+            .input
+            .node_base_url
+            .as_ref()
+            .map(|value| value.to_utf8()),
+        Some("")
+    );
+    assert_eq!(created.input.directory.to_utf8(), "/home/agents/bare");
+    assert_eq!(
+        created.input.effort.as_ref().map(|value| value.to_utf8()),
+        Some("medium")
+    );
     let err = validate_create(&json!({"name": "x", "node": "node-e"}), &ctx).unwrap_err();
     assert_eq!(err.status, 400);
     assert_eq!(
@@ -130,8 +140,8 @@ fn patch_vets_only_a_changed_pair_and_ignores_node_base_url() {
     let strict = codex_list(true);
     let ctx = context(Some(&strict), None);
     let mut row = existing();
-    row.harness_id = Some("codex".to_string());
-    row.model = "gpt-5.5".to_string();
+    row.harness_id = Some("codex".into());
+    row.model = "gpt-5.5".into();
     let err = validate_patch(&json!({"model": "gpt-4o"}), &row, &ctx).unwrap_err();
     assert_eq!(err.status, 400);
     assert!(validate_patch(&json!({"model": "gpt-6-astra"}), &row, &ctx).is_ok());
@@ -143,8 +153,8 @@ fn patch_vets_only_a_changed_pair_and_ignores_node_base_url() {
         )
         .is_ok()
     );
-    row.harness_id = Some("cursor".to_string());
-    row.model = "whatever".to_string();
+    row.harness_id = Some("cursor".into());
+    row.model = "whatever".into();
     let err = validate_patch(&json!({"harnessId": "codex"}), &row, &ctx).unwrap_err();
     assert_eq!(err.status, 400);
     assert!(validate_patch(&json!({"name": "Renamed"}), &row, &ctx).is_ok());
@@ -165,8 +175,8 @@ fn patch_vets_only_a_changed_pair_and_ignores_node_base_url() {
     )
     .unwrap_err();
     assert_eq!(err.status, 400);
-    legacy.harness_id = Some("codex".to_string());
-    legacy.model = "gpt-5.5".to_string();
+    legacy.harness_id = Some("codex".into());
+    legacy.model = "gpt-5.5".into();
     let round = validate_patch(
         &json!({"name": "Legacy 3", "harnessId": "codex", "model": "gpt-5.5"}),
         &legacy,
@@ -210,20 +220,26 @@ fn patch_node_sort_order_directory_and_foreign_placement() {
     let err = validate_patch(&json!({"directory": "../etc"}), &row, &ctx).unwrap_err();
     assert_eq!(err.status, 400);
     let home = validate_patch(&json!({"directory": "~/x"}), &row, &ctx).unwrap();
-    assert_eq!(home.patch.directory.as_deref(), Some("/home/user/x"));
+    assert_eq!(
+        home.patch.directory.as_ref().map(|value| value.to_utf8()),
+        Some("/home/user/x")
+    );
     assert!(home.materialize);
     let err = validate_patch(&json!({"directory": "/tmp/../etc"}), &row, &ctx).unwrap_err();
     assert_eq!(err.status, 400);
     let err = validate_patch(&json!({"directory": "~/../x"}), &row, &ctx).unwrap_err();
     assert_eq!(err.status, 400);
     let mut foreign = existing();
-    foreign.node = Some("node-e".to_string());
+    foreign.node = Some("node-e".into());
     let err = validate_patch(&json!({"directory": "/srv/other"}), &foreign, &ctx).unwrap_err();
     assert_eq!(err.status, 409);
     assert_eq!(err.error, "agent \"Legacy\" is hosted on node-e");
     let kept = validate_patch(&json!({"name": "Renamed"}), &foreign, &ctx).unwrap();
     assert!(!kept.materialize);
-    assert_eq!(kept.patch.name.as_deref(), Some("Renamed"));
+    assert_eq!(
+        kept.patch.name.as_ref().map(|value| value.to_utf8()),
+        Some("Renamed")
+    );
     let same = validate_patch(
         &json!({"directory": "/home/agents/legacy", "sharedLink": true}),
         &foreign,

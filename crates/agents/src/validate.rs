@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use protocol::HARNESS_IDS;
-use protocol::js::js_trim;
+use protocol::js::{js_slice, js_trim, posix_join, posix_normalize, utf16_len};
 use serde_json::{Number, Value};
 
 pub const SLUG_MAX: usize = 48;
@@ -124,24 +124,8 @@ pub fn is_agent_preset(value: &Value) -> bool {
         && map.get("updatedAt").and_then(Value::as_f64).is_some()
 }
 
-pub fn utf16_len(text: &str) -> usize {
-    text.chars().map(char::len_utf16).sum()
-}
-
-pub fn utf16_slice(text: &str, max_units: usize) -> &str {
-    let mut units = 0;
-    for (index, ch) in text.char_indices() {
-        let width = ch.len_utf16();
-        if units + width > max_units {
-            return &text[..index];
-        }
-        units += width;
-    }
-    text
-}
-
-pub fn utf16_slice_owned(text: &str, max_units: usize) -> String {
-    utf16_slice(text, max_units).to_string()
+pub fn cap_text(text: &str, max_units: usize) -> protocol::js::JsString {
+    js_slice(text, Some(0.0), Some(max_units as f64))
 }
 
 pub fn slugify(name: &str) -> String {
@@ -161,56 +145,13 @@ pub fn slugify(name: &str) -> String {
             pending_dash = true;
         }
     }
-    let sliced = utf16_slice(&slug, SLUG_MAX);
-    let trimmed = sliced.trim_matches('-');
+    let sliced = js_slice(&slug, Some(0.0), Some(SLUG_MAX as f64));
+    let trimmed = sliced.to_utf8().trim_matches('-');
     if trimmed.is_empty() {
         "agent".to_string()
     } else {
         trimmed.to_string()
     }
-}
-
-pub fn posix_normalize(path: &str) -> String {
-    if path.is_empty() {
-        return ".".to_string();
-    }
-    let absolute = path.starts_with('/');
-    let trailing = path.ends_with('/');
-    let double = path.starts_with("//") && !path.starts_with("///");
-    let mut parts: Vec<&str> = Vec::new();
-    for segment in path.split('/') {
-        match segment {
-            "" | "." => {}
-            ".." => {
-                if parts.last().is_some_and(|part| *part != "..") {
-                    parts.pop();
-                } else if !absolute {
-                    parts.push("..");
-                }
-            }
-            other => parts.push(other),
-        }
-    }
-    if !absolute && parts.is_empty() {
-        return ".".to_string();
-    }
-    let mut out = String::new();
-    if absolute {
-        out.push('/');
-        if double {
-            out.push('/');
-        }
-    }
-    for (index, part) in parts.iter().enumerate() {
-        if index > 0 {
-            out.push('/');
-        }
-        out.push_str(part);
-    }
-    if trailing && !parts.is_empty() && !out.ends_with('/') {
-        out.push('/');
-    }
-    if out.is_empty() { ".".to_string() } else { out }
 }
 
 pub fn without_trailing_sep(path: &str) -> String {
@@ -221,40 +162,12 @@ pub fn without_trailing_sep(path: &str) -> String {
     }
 }
 
-pub fn posix_join(parts: &[&str]) -> String {
-    let mut joined = String::new();
-    let mut any = false;
-    for part in parts {
-        if part.is_empty() {
-            continue;
-        }
-        if any {
-            joined.push('/');
-        }
-        joined.push_str(part);
-        any = true;
-    }
-    if !any {
-        ".".to_string()
-    } else {
-        posix_normalize(&joined)
-    }
-}
-
-pub fn posix_resolve(path: &str) -> String {
-    if path.starts_with('/') {
-        let normalized = posix_normalize(path);
-        if normalized.is_empty() {
-            "/".to_string()
-        } else {
-            normalized
-        }
-    } else {
-        let cwd = std::env::current_dir()
-            .map(|dir| dir.to_string_lossy().into_owned())
-            .unwrap_or_else(|_| "/".to_string());
-        posix_normalize(&format!("{cwd}/{path}"))
-    }
+pub(crate) fn resolve_fs(path: &str) -> String {
+    let cwd = match std::env::current_dir() {
+        Ok(dir) => dir.to_string_lossy().into_owned(),
+        Err(_) => "/".to_string(),
+    };
+    protocol::js::posix_resolve(&cwd, &[path])
 }
 
 pub fn default_directory_for(root: &str, name: &str) -> String {
@@ -338,4 +251,22 @@ pub fn expand_home(raw: &str, home: &str) -> String {
 
 pub fn is_codex_default_model(harness_id: &str, model: &str) -> bool {
     harness_id == "codex" && model == "default"
+}
+
+#[cfg(test)]
+mod cap_tests {
+    use protocol::js::{JsValue, stringify};
+
+    use super::cap_text;
+
+    #[test]
+    fn cap_keeps_a_surrogate_that_crosses_the_boundary() {
+        let mut text = "a".repeat(127);
+        text.push('\u{1F600}');
+        let capped = cap_text(&text, 128);
+        assert_eq!(capped.len(), 128);
+        assert_eq!(capped.units()[127], 0xD83D);
+        let encoded = stringify(&JsValue::String(capped));
+        assert!(encoded.contains("\\ud83d"));
+    }
 }

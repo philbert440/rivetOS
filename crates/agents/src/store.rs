@@ -8,7 +8,7 @@ use protocol::JsNumber;
 use crate::error::PresetError;
 use crate::preset::{
     AgentPreset, AgentPresetInput, AgentPresetPatch, AgentRegistryBackend, HarnessPatch, SortPatch,
-    migrate_fields, name_key, require_agent_name,
+    migrate_fields, name_key_text, require_agent_name,
 };
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -51,7 +51,7 @@ fn compare_presets(left: &AgentPreset, right: &AgentPreset) -> Ordering {
         Some(Ordering::Equal) | None => {}
         Some(order) => return order,
     }
-    left.id.cmp(&right.id)
+    left.id.to_utf8().cmp(right.id.to_utf8())
 }
 
 pub fn find_preset_by_handle<'a>(
@@ -61,11 +61,17 @@ pub fn find_preset_by_handle<'a>(
     let trimmed = protocol::js::js_trim(handle);
     presets
         .iter()
-        .find(|preset| preset.id == trimmed)
-        .or_else(|| presets.iter().find(|preset| preset.name == trimmed))
+        .find(|preset| preset.id.to_utf8() == trimmed)
         .or_else(|| {
-            let key = name_key(trimmed);
-            presets.iter().find(|preset| name_key(&preset.name) == key)
+            presets
+                .iter()
+                .find(|preset| preset.name.to_utf8() == trimmed)
+        })
+        .or_else(|| {
+            let key = crate::preset::name_key(trimmed);
+            presets
+                .iter()
+                .find(|preset| name_key_text(&preset.name) == key)
         })
 }
 
@@ -121,11 +127,18 @@ pub fn preset_from_patch(
     match &patch.harness {
         HarnessPatch::Unchanged => {}
         HarnessPatch::Clear => next.harness_id = None,
-        HarnessPatch::Set(id) => next.harness_id = Some(id.clone()),
+        HarnessPatch::Set(id) => next.harness_id = Some(protocol::js::JsString::from_text(id)),
     }
-    let migrated = migrate_fields(&next.model, next.harness_id.as_deref());
-    next.model = migrated.model;
-    next.harness_id = migrated.harness_id;
+    let migrated = migrate_fields(
+        next.model.to_utf8(),
+        next.harness_id
+            .as_ref()
+            .map(protocol::js::JsString::to_utf8),
+    );
+    next.model = protocol::js::JsString::from_text(&migrated.model);
+    next.harness_id = migrated
+        .harness_id
+        .map(|value| protocol::js::JsString::from_text(&value));
     Ok(next)
 }
 

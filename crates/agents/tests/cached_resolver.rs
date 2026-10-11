@@ -5,8 +5,10 @@ pub use common::*;
 use std::collections::VecDeque;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+
+use parking_lot::Mutex;
 use std::time::Duration;
 
 use agents::{
@@ -50,7 +52,7 @@ impl AgentPresetStore for SeqStore {
     }
     fn list(&self, _: Option<&str>) -> BoxFuture<'_, Result<Vec<AgentPreset>, PresetError>> {
         self.calls.fetch_add(1, Ordering::SeqCst);
-        let step = self.steps.lock().unwrap().pop_front();
+        let step = self.steps.lock().pop_front();
         Box::pin(async move {
             match step {
                 Some(Step::Rows(rows)) => Ok(rows),
@@ -130,7 +132,7 @@ async fn awaits_the_store_on_the_first_call() {
     assert_eq!(store.calls.load(Ordering::SeqCst), 1);
     sender.send(vec![preset("a", "A")]).unwrap();
     let rows = pending.await;
-    assert_eq!(rows[0].id, "a");
+    assert_eq!(rows[0].id.to_utf8(), "a");
 }
 
 #[tokio::test]
@@ -142,18 +144,18 @@ async fn returns_the_last_known_list_when_stale_and_refreshes_once() {
     ]));
     let now = Arc::new(AtomicI64::new(0));
     let resolver = resolver(store.clone(), clock(&now), 1_000, None);
-    assert_eq!(resolver.list().await[0].name, "first");
+    assert_eq!(resolver.list().await[0].name.to_utf8(), "first");
     now.store(1_000, Ordering::SeqCst);
-    assert_eq!(resolver.list().await[0].name, "first");
+    assert_eq!(resolver.list().await[0].name.to_utf8(), "first");
     assert_eq!(store.calls.load(Ordering::SeqCst), 2);
-    assert_eq!(resolver.list().await[0].name, "first");
+    assert_eq!(resolver.list().await[0].name.to_utf8(), "first");
     assert_eq!(store.calls.load(Ordering::SeqCst), 2);
     sender.send(vec![preset("a", "second")]).unwrap();
     wait_until(|| {
         resolver
             .last_known()
             .first()
-            .is_some_and(|row| row.name == "second")
+            .is_some_and(|row| row.name.to_utf8() == "second")
     })
     .await;
 }
@@ -172,21 +174,15 @@ async fn keeps_the_last_known_list_when_a_refresh_throws() {
         clock(&now),
         1_000,
         Some(Arc::new(move |message| {
-            logged.lock().unwrap().push(message.to_string())
+            logged.lock().push(message.to_string())
         })),
     );
-    assert_eq!(resolver.list().await[0].name, "Ok");
+    assert_eq!(resolver.list().await[0].name.to_utf8(), "Ok");
     now.store(1_000, Ordering::SeqCst);
-    assert_eq!(resolver.list().await[0].name, "Ok");
-    wait_until(|| {
-        logs.lock()
-            .unwrap()
-            .iter()
-            .any(|line| line.contains("db down"))
-    })
-    .await;
-    assert_eq!(resolver.last_known()[0].name, "Ok");
-    assert_eq!(resolver.list().await[0].name, "Ok");
+    assert_eq!(resolver.list().await[0].name.to_utf8(), "Ok");
+    wait_until(|| logs.lock().iter().any(|line| line.contains("db down"))).await;
+    assert_eq!(resolver.last_known()[0].name.to_utf8(), "Ok");
+    assert_eq!(resolver.list().await[0].name.to_utf8(), "Ok");
     assert_eq!(store.calls.load(Ordering::SeqCst), 2);
 }
 
@@ -198,9 +194,9 @@ async fn finds_by_handle_on_the_cached_list() {
         preset("id-c", "Gamma"),
     ])]));
     let resolver = resolver(store.clone(), fixed_now(0), 30_000, None);
-    assert_eq!(resolver.find("beta").await.unwrap().id, "beta");
-    assert_eq!(resolver.find("Alpha").await.unwrap().id, "beta");
-    assert_eq!(resolver.find("gamma").await.unwrap().id, "id-c");
+    assert_eq!(resolver.find("beta").await.unwrap().id.to_utf8(), "beta");
+    assert_eq!(resolver.find("Alpha").await.unwrap().id.to_utf8(), "beta");
+    assert_eq!(resolver.find("gamma").await.unwrap().id.to_utf8(), "id-c");
     assert!(resolver.find("missing").await.is_none());
     assert_eq!(store.calls.load(Ordering::SeqCst), 1);
     assert_eq!(store.find_calls.load(Ordering::SeqCst), 0);
@@ -213,13 +209,13 @@ async fn invalidate_makes_the_next_list_await_a_fresh_read() {
         Step::Rows(vec![preset("a", "n2")]),
     ]));
     let resolver = resolver(store.clone(), fixed_now(0), 30_000, None);
-    assert_eq!(resolver.list().await[0].name, "n1");
-    assert_eq!(resolver.list().await[0].name, "n1");
+    assert_eq!(resolver.list().await[0].name.to_utf8(), "n1");
+    assert_eq!(resolver.list().await[0].name.to_utf8(), "n1");
     assert_eq!(store.calls.load(Ordering::SeqCst), 1);
     resolver.invalidate();
-    assert_eq!(resolver.list().await[0].name, "n2");
+    assert_eq!(resolver.list().await[0].name.to_utf8(), "n2");
     assert_eq!(store.calls.load(Ordering::SeqCst), 2);
-    assert_eq!(resolver.last_known()[0].name, "n2");
+    assert_eq!(resolver.last_known()[0].name.to_utf8(), "n2");
 }
 
 #[tokio::test]
@@ -233,9 +229,9 @@ async fn an_older_refresh_does_not_satisfy_the_next_list() {
     ]));
     let now = Arc::new(AtomicI64::new(0));
     let resolver = resolver(store.clone(), clock(&now), 1_000, None);
-    assert_eq!(resolver.list().await[0].id, "old1");
+    assert_eq!(resolver.list().await[0].id.to_utf8(), "old1");
     now.store(1_000, Ordering::SeqCst);
-    assert_eq!(resolver.list().await[0].id, "old1");
+    assert_eq!(resolver.list().await[0].id.to_utf8(), "old1");
     assert_eq!(store.calls.load(Ordering::SeqCst), 2);
     resolver.invalidate();
     let pending = resolver.list();
@@ -245,12 +241,12 @@ async fn an_older_refresh_does_not_satisfy_the_next_list() {
     old_tx.send(vec![preset("old2", "old2")]).unwrap();
     tokio::task::yield_now().await;
     tokio::task::yield_now().await;
-    assert_eq!(resolver.last_known()[0].id, "old1");
+    assert_eq!(resolver.last_known()[0].id.to_utf8(), "old1");
     new_tx.send(vec![preset("new", "new")]).unwrap();
     let rows = pending.await;
-    assert_eq!(rows[0].id, "new");
+    assert_eq!(rows[0].id.to_utf8(), "new");
     assert_eq!(store.calls.load(Ordering::SeqCst), 3);
-    assert_eq!(resolver.last_known()[0].id, "new");
+    assert_eq!(resolver.last_known()[0].id.to_utf8(), "new");
 }
 
 #[tokio::test]
@@ -266,15 +262,15 @@ async fn a_failed_cold_load_does_not_mark_the_cache_fresh() {
         fixed_now(0),
         30_000,
         Some(Arc::new(move |message| {
-            logged.lock().unwrap().push(message.to_string())
+            logged.lock().push(message.to_string())
         })),
     );
     assert!(resolver.list().await.is_empty());
-    assert!(logs.lock().unwrap().join("\n").contains("down"));
+    assert!(logs.lock().join("\n").contains("down"));
     assert!(resolver.last_known().is_empty());
     let rows = resolver.list().await;
-    assert_eq!(rows[0].id, "a");
-    assert_eq!(rows[0].name, "Later");
+    assert_eq!(rows[0].id.to_utf8(), "a");
+    assert_eq!(rows[0].name.to_utf8(), "Later");
     assert_eq!(store.calls.load(Ordering::SeqCst), 2);
 }
 
@@ -291,12 +287,12 @@ async fn a_throwing_logger_does_not_reject_the_refresh() {
         1_000,
         Some(Arc::new(|_| panic!("log broke"))),
     );
-    assert_eq!(resolver.list().await[0].name, "Ok");
+    assert_eq!(resolver.list().await[0].name.to_utf8(), "Ok");
     now.store(1_000, Ordering::SeqCst);
-    assert_eq!(resolver.list().await[0].name, "Ok");
+    assert_eq!(resolver.list().await[0].name.to_utf8(), "Ok");
     wait_until(|| store.calls.load(Ordering::SeqCst) == 2).await;
-    assert_eq!(resolver.last_known()[0].name, "Ok");
-    assert_eq!(resolver.list().await[0].name, "Ok");
+    assert_eq!(resolver.last_known()[0].name.to_utf8(), "Ok");
+    assert_eq!(resolver.list().await[0].name.to_utf8(), "Ok");
     assert_eq!(store.calls.load(Ordering::SeqCst), 2);
 }
 
@@ -309,12 +305,12 @@ async fn one_list_stops_after_at_most_two_reads_when_refreshes_are_invalidated()
     });
     let resolver = Arc::new(resolver(store.clone(), fixed_now(0), 30_000, None));
     let resolver_for_hook = Arc::clone(&resolver);
-    *invalidate_flag.lock().unwrap() = Some(Arc::new(move || resolver_for_hook.invalidate()));
+    *invalidate_flag.lock() = Some(Arc::new(move || resolver_for_hook.invalidate()));
     let rows = resolver.list().await;
     let calls = store.calls.load(Ordering::SeqCst);
     assert!(calls >= 1);
     assert!(calls <= 2);
-    assert_eq!(rows[0].id, "a");
+    assert_eq!(rows[0].id.to_utf8(), "a");
     assert!(resolver.last_known().is_empty());
     let status = resolver.status();
     assert!(!status.has_value);
@@ -341,7 +337,7 @@ impl AgentPresetStore for CountingInvalidate {
     }
     fn list(&self, _: Option<&str>) -> BoxFuture<'_, Result<Vec<AgentPreset>, PresetError>> {
         let calls = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
-        let hook = self.invalidate.lock().unwrap().clone();
+        let hook = self.invalidate.lock().clone();
         Box::pin(async move {
             if calls > 20 {
                 return Err(PresetError::message("refresh was not bounded"));
@@ -383,23 +379,23 @@ async fn serves_a_warm_cache_for_the_ttl_after_a_failed_refresh() {
     ]));
     let now = Arc::new(AtomicI64::new(0));
     let resolver = resolver(store.clone(), clock(&now), 30_000, None);
-    assert_eq!(resolver.list().await[0].name, "Ok");
+    assert_eq!(resolver.list().await[0].name.to_utf8(), "Ok");
     let status = resolver.status();
     assert!(status.has_value);
     assert_eq!(status.fetched_at, 0);
     assert!(status.last_error.is_none());
     resolver.invalidate();
-    assert_eq!(resolver.list().await[0].name, "Ok");
-    assert_eq!(resolver.list().await[0].name, "Ok");
-    assert_eq!(resolver.list().await[0].name, "Ok");
+    assert_eq!(resolver.list().await[0].name.to_utf8(), "Ok");
+    assert_eq!(resolver.list().await[0].name.to_utf8(), "Ok");
+    assert_eq!(resolver.list().await[0].name.to_utf8(), "Ok");
     assert_eq!(store.calls.load(Ordering::SeqCst), 2);
     let status = resolver.status();
     assert!(status.has_value);
     assert_eq!(status.last_error.as_deref(), Some("db down"));
     assert_eq!(status.fetched_at, 0);
-    assert_eq!(resolver.last_known()[0].name, "Ok");
+    assert_eq!(resolver.last_known()[0].name.to_utf8(), "Ok");
     now.store(29_999, Ordering::SeqCst);
-    assert_eq!(resolver.list().await[0].name, "Ok");
+    assert_eq!(resolver.list().await[0].name.to_utf8(), "Ok");
     assert_eq!(store.calls.load(Ordering::SeqCst), 2);
     now.store(30_000, Ordering::SeqCst);
     let pending = resolver.list();
@@ -407,12 +403,12 @@ async fn serves_a_warm_cache_for_the_ttl_after_a_failed_refresh() {
     assert!(futures_pending(&mut pending).await);
     assert_eq!(store.calls.load(Ordering::SeqCst), 3);
     sender.send(vec![preset("a", "Later")]).unwrap();
-    assert_eq!(pending.await[0].name, "Later");
+    assert_eq!(pending.await[0].name.to_utf8(), "Later");
     let status = resolver.status();
     assert!(status.has_value);
     assert_eq!(status.fetched_at, 30_000);
     assert!(status.last_error.is_none());
-    assert_eq!(resolver.last_known()[0].name, "Later");
+    assert_eq!(resolver.last_known()[0].name.to_utf8(), "Later");
 }
 
 #[tokio::test]
@@ -436,6 +432,25 @@ async fn status_distinguishes_a_down_store_from_an_empty_registry() {
     assert!(status.has_value);
     assert_eq!(status.fetched_at, 50);
     assert!(status.last_error.is_none());
+}
+
+#[tokio::test]
+async fn two_cold_lists_share_one_store_read() {
+    let (sender, receiver) = oneshot::channel();
+    let store = Arc::new(SeqStore::new(vec![Step::Wait(receiver)]));
+    let resolver = resolver(store.clone(), fixed_now(0), 30_000, None);
+    let left = resolver.list();
+    tokio::pin!(left);
+    assert!(futures_pending(&mut left).await);
+    let right = resolver.list();
+    tokio::pin!(right);
+    assert!(futures_pending(&mut right).await);
+    assert_eq!(store.calls.load(Ordering::SeqCst), 1);
+    sender.send(vec![preset("a", "A")]).unwrap();
+    let (left_rows, right_rows) = tokio::join!(left, right);
+    assert_eq!(left_rows[0].id.to_utf8(), "a");
+    assert_eq!(right_rows[0].id.to_utf8(), "a");
+    assert_eq!(store.calls.load(Ordering::SeqCst), 1);
 }
 
 async fn futures_pending<T>(future: &mut Pin<&mut impl Future<Output = T>>) -> bool {
