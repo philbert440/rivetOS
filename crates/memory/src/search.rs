@@ -18,7 +18,7 @@ use crate::embed_wire::{
 };
 use crate::error::{StoreError, now_ms};
 use crate::report::format_js_iso;
-use crate::rows::{Bind, Cell, DbFail, QueryResult, cell, exec_query, text_cell};
+use crate::rows::{Bind, Cell, DbFail, QueryResult, cell, collapse_ws, exec_query, text_cell};
 use crate::scoring::{
     CHUNK_ARM_PROBE_SQL, GATE_FRACTION, HYBRID_RRF_K, LooseNumber, SUMMARY_FUSION_BONUS,
     SUMMARY_IMPORTANCE, W_FTS, W_IMPORTANCE, W_SEMANTIC, W_TEMPORAL, chunk_pool_size,
@@ -291,8 +291,11 @@ pub struct PoolDb {
     pool: PgPool,
 }
 
+type HnswTx = sqlx::Transaction<'static, sqlx::Postgres>;
+
 pub struct PoolSession {
-    conn: Option<sqlx::pool::PoolConnection<sqlx::Postgres>>,
+    pool: PgPool,
+    tx: Option<HnswTx>,
 }
 
 impl PoolDb {
@@ -310,28 +313,46 @@ impl SearchDb for PoolDb {
     }
 
     async fn connect(&self) -> Result<PoolSession, DbFail> {
-        let conn = self.pool.acquire().await.map_err(DbFail::from_sqlx)?;
-        Ok(PoolSession { conn: Some(conn) })
+        Ok(PoolSession {
+            pool: self.pool.clone(),
+            tx: None,
+        })
     }
 }
 
 impl SearchSession for PoolSession {
     async fn query(&mut self, sql: &str, params: &[Bind]) -> Result<QueryResult, DbFail> {
-        let Some(conn) = self.conn.as_mut() else {
+        let upper = collapse_ws(sql).to_ascii_uppercase();
+        if upper == "BEGIN" {
+            if self.tx.is_some() {
+                return Err(DbFail::new("transaction already open"));
+            }
+            let tx = self.pool.begin().await.map_err(DbFail::from_sqlx)?;
+            self.tx = Some(tx);
+            return Ok(QueryResult::empty());
+        }
+        if upper == "COMMIT" {
+            let Some(tx) = self.tx.take() else {
+                return Err(DbFail::new("connection released"));
+            };
+            tx.commit().await.map_err(DbFail::from_sqlx)?;
+            return Ok(QueryResult::empty());
+        }
+        if upper == "ROLLBACK" {
+            let Some(tx) = self.tx.take() else {
+                return Err(DbFail::new("connection released"));
+            };
+            tx.rollback().await.map_err(DbFail::from_sqlx)?;
+            return Ok(QueryResult::empty());
+        }
+        let Some(tx) = self.tx.as_mut() else {
             return Err(DbFail::new("connection released"));
         };
-        exec_query(&mut *conn, sql, params).await
+        exec_query(tx, sql, params).await
     }
 
-    fn release(&mut self, err: Option<DbFail>) {
-        let Some(conn) = self.conn.take() else {
-            return;
-        };
-        if err.is_some() {
-            tokio::spawn(async move {
-                let _ = conn.close().await;
-            });
-        }
+    fn release(&mut self, _err: Option<DbFail>) {
+        self.tx.take();
     }
 }
 

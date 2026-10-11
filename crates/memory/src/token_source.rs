@@ -17,10 +17,28 @@ pub type CommandRunner = Arc<dyn Fn(Vec<String>, i64) -> CommandFut + Send + Syn
 
 pub type Clock = Arc<dyn Fn() -> i64 + Send + Sync>;
 type InflightRx = tokio::sync::watch::Receiver<Option<Result<String, String>>>;
+type InflightTx = tokio::sync::watch::Sender<Option<Result<String, String>>>;
 
 enum MintStart {
-    Wait(tokio::sync::watch::Receiver<Option<Result<String, String>>>),
-    Lead(tokio::sync::watch::Sender<Option<Result<String, String>>>),
+    Wait(InflightRx),
+    Lead(InflightTx, InflightRx),
+}
+
+struct InflightGuard<'a> {
+    inflight: &'a Mutex<Option<InflightRx>>,
+    rx: InflightRx,
+}
+
+impl Drop for InflightGuard<'_> {
+    fn drop(&mut self) {
+        let mut slot = self.inflight.lock();
+        if slot
+            .as_ref()
+            .is_some_and(|current| current.same_channel(&self.rx))
+        {
+            *slot = None;
+        }
+    }
 }
 
 struct CacheEntry {
@@ -96,44 +114,53 @@ impl TokenSource {
     }
 
     pub async fn get_token(&self) -> Result<String, String> {
-        let now = (self.inner.now)();
-        if let Some(token) = self.cached_at(now) {
-            return Ok(token);
-        }
-        let start = {
-            let mut slot = self.inner.inflight.lock();
-            if let Some(token) = self.cached_at((self.inner.now)()) {
+        loop {
+            let now = (self.inner.now)();
+            if let Some(token) = self.cached_at(now) {
                 return Ok(token);
             }
-            if let Some(rx) = slot.clone() {
-                MintStart::Wait(rx)
-            } else {
-                let (tx, rx) = tokio::sync::watch::channel(None);
-                *slot = Some(rx);
-                MintStart::Lead(tx)
-            }
-        };
-        match start {
-            MintStart::Lead(tx) => {
-                tokio::task::yield_now().await;
-                let minted = self.mint().await;
-                {
-                    let mut slot = self.inner.inflight.lock();
-                    *slot = None;
+            let start = {
+                let mut slot = self.inner.inflight.lock();
+                if let Some(token) = self.cached_at((self.inner.now)()) {
+                    return Ok(token);
                 }
-                let _ = tx.send(Some(minted.clone()));
-                minted
-            }
-            MintStart::Wait(mut rx) => {
-                loop {
+                if let Some(rx) = slot.clone() {
+                    MintStart::Wait(rx)
+                } else {
+                    let (tx, rx) = tokio::sync::watch::channel(None);
+                    let leader_rx = rx.clone();
+                    *slot = Some(rx);
+                    MintStart::Lead(tx, leader_rx)
+                }
+            };
+            match start {
+                MintStart::Lead(tx, leader_rx) => {
+                    let guard = InflightGuard {
+                        inflight: &self.inner.inflight,
+                        rx: leader_rx,
+                    };
+                    tokio::task::yield_now().await;
+                    let minted = self.mint().await;
+                    {
+                        let mut slot = self.inner.inflight.lock();
+                        if slot
+                            .as_ref()
+                            .is_some_and(|current| current.same_channel(&guard.rx))
+                        {
+                            *slot = None;
+                        }
+                    }
+                    let _ = tx.send(Some(minted.clone()));
+                    return minted;
+                }
+                MintStart::Wait(mut rx) => loop {
                     if let Some(result) = rx.borrow().clone() {
                         return result;
                     }
                     if rx.changed().await.is_err() {
                         break;
                     }
-                }
-                self.mint().await
+                },
             }
         }
     }
@@ -351,7 +378,14 @@ impl AuthorizedFetch {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::VecDeque;
     use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
+
+    type MintGate = (
+        tokio::sync::oneshot::Sender<()>,
+        tokio::sync::oneshot::Receiver<()>,
+    );
+    type MintGates = Arc<Mutex<VecDeque<MintGate>>>;
 
     fn runner_seq(prefix: &'static str) -> (CommandRunner, Arc<AtomicUsize>) {
         let n = Arc::new(AtomicUsize::new(0));
@@ -666,5 +700,82 @@ mod tests {
             .expect("runner returned")
             .expect_err("closed stdout");
         assert_eq!(err, "token_command timed out after 300 ms");
+    }
+
+    #[tokio::test]
+    async fn cancelled_leader_keeps_coalescing_across_expiry() {
+        let now = Arc::new(AtomicI64::new(1_000));
+        let clock_now = now.clone();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let gates: MintGates = Arc::new(Mutex::new(VecDeque::new()));
+        let run: CommandRunner = {
+            let calls = calls.clone();
+            let gates = gates.clone();
+            Arc::new(move |_argv, _timeout| {
+                let calls = calls.clone();
+                let gates = gates.clone();
+                Box::pin(async move {
+                    let n = calls.fetch_add(1, Ordering::SeqCst) + 1;
+                    let gate = gates.lock().pop_front();
+                    if let Some((started, release)) = gate {
+                        let _ = started.send(());
+                        let _ = release.await;
+                    }
+                    Ok(format!("tok-{n}\n"))
+                })
+            })
+        };
+        let src = TokenSource::new(
+            vec!["helper".into()],
+            Some(100),
+            None,
+            Some(run),
+            Some(Arc::new(move || clock_now.load(Ordering::SeqCst))),
+        )
+        .unwrap();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+        gates.lock().push_back((started_tx, release_rx));
+        let leader = src.clone();
+        let task = tokio::spawn(async move { leader.get_token().await });
+        started_rx.await.expect("leader started");
+        task.abort();
+        let joined = task.await;
+        assert!(joined.is_err(), "leader finished: {joined:?}");
+        drop(release_tx);
+        assert!(src.get_cached_token().is_none());
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+        gates.lock().push_back((started_tx, release_rx));
+        let left = src.clone();
+        let right = src.clone();
+        let first = tokio::spawn(async move { left.get_token().await });
+        let second = tokio::spawn(async move { right.get_token().await });
+        started_rx.await.expect("second mint started");
+        tokio::task::yield_now().await;
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        release_tx.send(()).expect("release second mint");
+        let (first, second) = tokio::join!(first, second);
+        assert_eq!(first.expect("first join").expect("first token"), "tok-2");
+        assert_eq!(second.expect("second join").expect("second token"), "tok-2");
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert_eq!(src.get_cached_token().as_deref(), Some("tok-2"));
+        now.store(1_100, Ordering::SeqCst);
+        assert!(src.get_cached_token().is_none());
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+        gates.lock().push_back((started_tx, release_rx));
+        let left = src.clone();
+        let right = src.clone();
+        let first = tokio::spawn(async move { left.get_token().await });
+        let second = tokio::spawn(async move { right.get_token().await });
+        started_rx.await.expect("third mint started");
+        tokio::task::yield_now().await;
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        release_tx.send(()).expect("release third mint");
+        let (first, second) = tokio::join!(first, second);
+        assert_eq!(first.expect("third join").expect("third token"), "tok-3");
+        assert_eq!(second.expect("fourth join").expect("fourth token"), "tok-3");
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
     }
 }

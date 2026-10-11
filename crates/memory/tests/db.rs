@@ -1824,3 +1824,172 @@ async fn cancelled_taxonomy_rolls_back() {
     )
     .await;
 }
+
+async fn cancelled_search_rolls_back_body(pool: PgPool) -> Result<(), String> {
+    let store = PostgresMemory::from_pool_with(
+        pool.clone(),
+        false,
+        &memory::MemoryEmbedConfig {
+            embed_endpoint: Some(String::new()),
+            ..memory::MemoryEmbedConfig::default()
+        },
+    )
+    .map_err(|err| err.to_string())?;
+    let embedding = {
+        let mut values = vec![0.0; 1024];
+        values[0] = 1.0;
+        values
+    };
+    store.configure_embed(
+        Some("http://127.0.0.1:9".to_string()),
+        "text-embedding-3-small",
+    );
+    store.set_embed_fetch(std::sync::Arc::new(move |_call: EmbedCall| {
+        let body = serde_json::json!({ "data": [{ "embedding": embedding.clone(), "index": 0 }] })
+            .to_string();
+        Box::pin(async move { Ok(EmbedResponse { status: 200, body }) })
+            as std::pin::Pin<
+                Box<
+                    dyn std::future::Future<Output = Result<EmbedResponse, memory::FetchFail>>
+                        + Send,
+                >,
+            >
+    }));
+    let mut holder = pool
+        .acquire()
+        .await
+        .map_err(|err| format!("acquire lock holder: {err}"))?;
+    let schema: String = sqlx::query_scalar("SELECT current_schema()::text")
+        .fetch_one(&mut *holder)
+        .await
+        .map_err(|err| format!("current schema: {err}"))?;
+    sqlx::query("BEGIN")
+        .execute(&mut *holder)
+        .await
+        .map_err(|err| format!("lock begin: {err}"))?;
+    if let Err(err) = sqlx::query("LOCK TABLE ros_messages IN ACCESS EXCLUSIVE MODE")
+        .execute(&mut *holder)
+        .await
+    {
+        let _ = sqlx::query("ROLLBACK").execute(&mut *holder).await;
+        return Err(format!("lock table: {err}"));
+    }
+    let task = tokio::spawn(async move {
+        store
+            .search_with(
+                "cancelneedle",
+                &EngineOptions {
+                    mode: Some("vector".to_string()),
+                    scope: Some("messages".to_string()),
+                    limit: Some(10),
+                    ..EngineOptions::default()
+                },
+            )
+            .await
+    });
+    let waiter = "SELECT a.pid
+         FROM pg_stat_activity a
+         JOIN pg_locks l ON l.pid = a.pid AND NOT l.granted
+         JOIN pg_class c ON c.oid = l.relation
+         JOIN pg_namespace n ON n.oid = c.relnamespace
+         WHERE a.pid <> pg_backend_pid()
+           AND n.nspname = $1
+           AND c.relname = 'ros_messages'
+           AND a.query LIKE '%halfvec%'
+         LIMIT 1";
+    let mut seen = false;
+    for _ in 0..80 {
+        let pid: Option<i32> = sqlx::query_scalar(waiter)
+            .bind(&schema)
+            .fetch_optional(&mut *holder)
+            .await
+            .map_err(|err| format!("wait for vector lock: {err}"))?;
+        if pid.is_some() {
+            seen = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    task.abort();
+    let joined = task.await;
+    let released = sqlx::query("ROLLBACK").execute(&mut *holder).await;
+    drop(holder);
+    if let Err(err) = released {
+        return Err(format!("release lock: {err}"));
+    }
+    if !seen {
+        return Err(format!(
+            "vector search did not wait on the messages lock: {joined:?}"
+        ));
+    }
+    if joined.is_ok() {
+        return Err(format!("search finished before cancellation: {joined:?}"));
+    }
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(8);
+    loop {
+        if pool.size() > 0 && pool.num_idle() == pool.size() as usize {
+            break;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(format!(
+                "cancelled search kept a connection checked out (size {}, idle {})",
+                pool.size(),
+                pool.num_idle()
+            ));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    let mut held = Vec::new();
+    while let Some(conn) = pool.try_acquire() {
+        held.push(conn);
+    }
+    if held.is_empty() {
+        return Err("pool withheld every connection after cancel".to_string());
+    }
+    for conn in &mut held {
+        let txid: Option<i64> = sqlx::query_scalar("SELECT txid_current_if_assigned()")
+            .fetch_one(&mut **conn)
+            .await
+            .map_err(|err| format!("txid: {err}"))?;
+        if txid.is_some() {
+            return Err("cancelled search returned an open transaction to the pool".to_string());
+        }
+    }
+    drop(held);
+    let store = PostgresMemory::from_pool_with(
+        pool.clone(),
+        false,
+        &memory::MemoryEmbedConfig {
+            embed_endpoint: Some(String::new()),
+            ..memory::MemoryEmbedConfig::default()
+        },
+    )
+    .map_err(|err| format!("reconnect: {err}"))?;
+    MemoryStore::capture(
+        &store,
+        &captured("cancel-keep", "user", "cancelkeeper persisted"),
+        &capture_options(),
+    )
+    .await
+    .map_err(|err| format!("follow-up capture: {err}"))?;
+    let saved: i64 = sqlx::query_scalar(
+        "SELECT count(*)::bigint FROM ros_messages WHERE content = 'cancelkeeper persisted'",
+    )
+    .fetch_one(&pool)
+    .await
+    .map_err(|err| format!("kept row: {err}"))?;
+    if saved != 1 {
+        return Err(format!("follow-up capture saved {saved}"));
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn cancelled_search_rolls_back() {
+    with_schema(
+        "cancelled_search_rolls_back",
+        "rr2b_cncl",
+        cancelled_search_rolls_back_body,
+    )
+    .await;
+}
