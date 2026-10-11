@@ -421,3 +421,87 @@ async fn file_edit_directory_is_eisdir_read() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[tokio::test]
+async fn file_write_open_and_write_stages() {
+    let dir = temp_dir("file-write-stage");
+    let ctx = ToolContext::default();
+    let tool = FileWriteTool::new();
+    let opened = run(
+        &tool,
+        json!({"path": dir.display().to_string(), "content": "x"}),
+        &ctx,
+    )
+    .await;
+    assert_eq!(
+        opened,
+        format!(
+            "Error: EISDIR: illegal operation on a directory, open '{}'",
+            dir.display()
+        )
+    );
+    let written = run(&tool, json!({"path": "/dev/full", "content": "x"}), &ctx).await;
+    assert_eq!(written, "Error: ENOSPC: no space left on device, write");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+async fn edit_after_retarget(destination: &Path) -> (String, String) {
+    let dir = temp_dir("file-edit-stage");
+    let pipe = dir.join("pipe");
+    let status = std::process::Command::new("mkfifo")
+        .arg(&pipe)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let target = dir.join("target");
+    std::os::unix::fs::symlink(&pipe, &target).unwrap();
+    let staged = dir.join("next");
+    std::os::unix::fs::symlink(destination, &staged).unwrap();
+    let shown = target.display().to_string();
+    let tool = FileEditTool::new();
+    let ctx = ToolContext::default();
+    let path = shown.clone();
+    let edit = tokio::spawn(async move {
+        run(
+            &tool,
+            json!({"path": path, "old_string": "hello", "new_string": "x"}),
+            &ctx,
+        )
+        .await
+    });
+    let pipe_write = pipe.clone();
+    let staged_move = staged.clone();
+    let target_move = target.clone();
+    tokio::task::spawn_blocking(move || {
+        let mut writer = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&pipe_write)
+            .unwrap();
+        std::fs::rename(&staged_move, &target_move).unwrap();
+        std::io::Write::write_all(&mut writer, b"hello").unwrap();
+    })
+    .await
+    .unwrap();
+    let result = tokio::time::timeout(std::time::Duration::from_secs(5), edit)
+        .await
+        .unwrap()
+        .unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    (result, shown)
+}
+
+#[tokio::test]
+async fn file_edit_open_and_write_stages() {
+    let dir = temp_dir("file-edit-open");
+    let folder = dir.join("folder");
+    std::fs::create_dir(&folder).unwrap();
+    let (opened, path) = edit_after_retarget(&folder).await;
+    assert_eq!(
+        opened,
+        format!("Error: EISDIR: illegal operation on a directory, open '{path}'")
+    );
+    let (written, path) = edit_after_retarget(Path::new("/dev/full")).await;
+    assert_eq!(written, "Error: ENOSPC: no space left on device, write");
+    assert!(!written.contains(&path));
+    let _ = std::fs::remove_dir_all(&dir);
+}

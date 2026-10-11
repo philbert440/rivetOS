@@ -4,7 +4,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::args::{self, string};
 use crate::context::{ToolContext, ToolSurface};
-use crate::fsutil::{write_copy_error, write_mkdir_error, write_open_error};
+use crate::fsutil::{write_copy_error, write_fs_error, write_mkdir_error, write_node_text};
 use crate::schema::{schema_of, set_property_description};
 use crate::{Tool, text};
 
@@ -104,8 +104,8 @@ impl Tool for FileWriteTool {
                 ));
             }
         }
-        if let Err(err) = tokio::fs::write(&resolved, content).await {
-            return text(write_open_error(&err, &resolved));
+        if let Err(message) = write_node_text(&resolved, content, write_fs_error).await {
+            return text(message);
         }
         let bytes = content.len();
         let action = if existed { "Updated" } else { "Created" };

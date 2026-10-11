@@ -6,7 +6,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::args::string;
 use crate::context::{ToolContext, ToolSurface};
-use crate::fsutil::edit_write_error;
+use crate::fsutil::{edit_fs_error, write_node_text};
 use crate::schema::{schema_of, set_property_description};
 use crate::textutil::js_replace_once;
 use crate::{Tool, text};
@@ -110,8 +110,8 @@ impl Tool for FileEditTool {
             ));
         }
         let updated = js_replace_once(&content, old_string, new_string);
-        if let Err(err) = tokio::fs::write(&resolved, &updated).await {
-            return text(edit_write_error(&err, &resolved));
+        if let Err(message) = write_node_text(&resolved, &updated, edit_fs_error).await {
+            return text(message);
         }
         let snippet = edit_snippet(&updated, new_string, CONTEXT_LINES);
         text(format!("Edited {}\n\n{snippet}", resolved.display()))
@@ -123,16 +123,8 @@ async fn read_edit_file(path: &Path) -> Result<String, String> {
     let reported = path.clone();
     match tokio::task::spawn_blocking(move || protocol::host::read_text(&path)).await {
         Ok(Ok(text)) => Ok(text),
-        Ok(Err(err)) => Err(map_edit_read(&err, &reported)),
+        Ok(Err(err)) => Err(edit_fs_error(&err, &reported)),
         Err(err) => Err(format!("Error: {err}")),
-    }
-}
-
-fn map_edit_read(err: &protocol::host::FsError, path: &Path) -> String {
-    match err.code {
-        "ENOENT" => format!("Error: File not found: {}", path.display()),
-        "EACCES" => format!("Error: Permission denied: {}", path.display()),
-        _ => err.node_string(),
     }
 }
 
