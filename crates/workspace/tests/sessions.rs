@@ -3,6 +3,7 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 
 use async_trait::async_trait;
+use protocol::js::JsString;
 use protocol::{
     CompactionPending, InboundMessage, JsNumber, Message, MessageContent, MessageRole, ToolCall,
 };
@@ -123,12 +124,12 @@ fn router() -> Router {
 fn inbound() -> InboundMessage {
     InboundMessage {
         id: "m1".to_string(),
-        user_id: "user-1".to_string(),
+        user_id: JsString::from("user-1"),
         username: None,
         display_name: None,
         channel_id: "ch-1".to_string(),
         chat_type: "dm".to_string(),
-        text: "hello".to_string(),
+        text: JsString::from("hello"),
         platform: "telegram".to_string(),
         agent: None,
         reply_to_message_id: None,

@@ -576,12 +576,12 @@ mod tests {
         });
         protocol::InboundMessage {
             id: "m1".to_string(),
-            user_id: "alice".to_string(),
+            user_id: protocol::js::JsString::from("alice"),
             username: None,
             display_name: None,
             channel_id: "ch".to_string(),
             chat_type: chat_type.to_string(),
-            text: "hello".to_string(),
+            text: protocol::js::JsString::from("hello"),
             platform: "test".to_string(),
             agent: None,
             reply_to_message_id: None,

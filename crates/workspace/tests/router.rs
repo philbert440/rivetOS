@@ -3,6 +3,7 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 
 use async_trait::async_trait;
+use protocol::js::JsString;
 use protocol::js::{parse, stringify};
 use protocol::{InboundMessage, JsNumber, ThinkingLevel};
 use workspace::{AgentConfig, LlmProvider, ProviderError, Router};
@@ -37,12 +38,12 @@ fn provider(id: &'static str, available: Result<bool, ProviderError>) -> Arc<Stu
 fn message(agent: Option<&str>) -> InboundMessage {
     InboundMessage {
         id: "1".to_string(),
-        user_id: "user-1".to_string(),
+        user_id: JsString::from("user-1"),
         username: None,
         display_name: None,
         channel_id: "chan-1".to_string(),
         chat_type: "private".to_string(),
-        text: "test".to_string(),
+        text: JsString::from("test"),
         platform: "test".to_string(),
         agent: agent.map(str::to_string),
         reply_to_message_id: None,

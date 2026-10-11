@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 
+use protocol::js::JsString;
 use protocol::{InboundMessage, JsNumber};
 use tokio::sync::Notify;
 use workspace::{Intake, MessageQueue, is_command, parse_command};
@@ -9,12 +10,12 @@ use workspace::{Intake, MessageQueue, is_command, parse_command};
 fn message(text: &str) -> InboundMessage {
     InboundMessage {
         id: "1".to_string(),
-        user_id: "user-1".to_string(),
+        user_id: JsString::from("user-1"),
         username: None,
         display_name: None,
         channel_id: "chan-1".to_string(),
         chat_type: "private".to_string(),
-        text: text.to_string(),
+        text: JsString::from(text),
         platform: "test".to_string(),
         agent: None,
         reply_to_message_id: None,
@@ -24,7 +25,7 @@ fn message(text: &str) -> InboundMessage {
     }
 }
 
-fn queue_with(processed: &Arc<Mutex<Vec<String>>>) -> MessageQueue {
+fn queue_with(processed: &Arc<Mutex<Vec<JsString>>>) -> MessageQueue {
     let queue = MessageQueue::new();
     let seen = Arc::clone(processed);
     queue.set_handler(move |message| {
@@ -181,7 +182,7 @@ fn parse_command_keeps_trailing_space_and_collapses_separators() {
     assert!(parse_command("/").is_none());
 }
 
-async fn wait_until_drained(queue: &MessageQueue, order: &Mutex<Vec<String>>, expected: &str) {
+async fn wait_until_drained(queue: &MessageQueue, order: &Mutex<Vec<JsString>>, expected: &str) {
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
     loop {
         let seen = order.lock().clone();
