@@ -25,7 +25,7 @@ fn parses_frontmatter_current_state_and_dated_history() {
     let page = page();
     assert_eq!(page.meta.slug, "release-checklist");
     assert_eq!(page.meta.aliases, vec!["task-engine"]);
-    assert_eq!(page.meta.sources[0].ids.len(), 1);
+    assert_eq!(page.meta.sources[0].ids().len(), 1);
     assert!(page.current_state.contains("only orchestration engine"));
     assert_eq!(page.history.len(), 2);
     assert_eq!(page.history[0].date, "2026-07-06");
@@ -255,8 +255,18 @@ fn serialize_of_bloated_provenance_writes_only_the_ceilings() {
         .collect();
     let round = parse_wiki_page(&serialize_wiki_page(&bloated)).expect("round");
     assert_eq!(round.meta.sources.len(), SOURCES_MAX);
-    assert!(round.meta.sources[0].ids[0].contains(&padded(40)));
-    assert!(round.meta.sources.last().expect("last").ids[0].contains(&padded(SOURCES_MAX + 39)));
+    assert!(round.meta.sources[0].ids()[0].contains(&padded(40)));
+    assert!(
+        round
+            .meta
+            .sources
+            .last()
+            .expect("last")
+            .ids()
+            .first()
+            .expect("id")
+            .contains(&padded(SOURCES_MAX + 39))
+    );
     assert_eq!(round.history.len(), HISTORY_MAX);
     assert_eq!(round.history[0].title, "entry-0");
     assert!(!round.history.iter().any(|entry| entry.title == "entry-60"));
@@ -995,7 +1005,7 @@ fn duplicate_article_headings_keep_the_first_position_and_last_body() {
 fn source_objects_keep_original_order_and_unknown_keys() {
     let markdown = "---\ntitle: Order\nslug: order\nsources:\n  - note: kept\n    ids:\n      - a\n      - 7\n    kind: summary\n---\n\n## Summary\n\nLead.\n";
     let parsed = parse_wiki_page(markdown).expect("order");
-    assert_eq!(parsed.meta.sources[0].ids, vec!["a".to_string()]);
+    assert_eq!(parsed.meta.sources[0].ids(), vec!["a".to_string()]);
     let again = serialize_wiki_page(&parsed);
     assert!(
         again.contains("note: kept\n    ids:\n      - a\n      - 7\n    kind: summary\n"),
@@ -1019,6 +1029,91 @@ fn encyclopedia_article_keeps_a_split_surrogate_as_fffd() {
     let out = format_wiki_read(&fat_page(3_000, &article, 0), "example-topic", None);
     assert!(out.contains('\u{FFFD}'));
     assert!(out.contains("…[5 more chars — wiki_read slug=example-topic section=article]"));
+}
+
+#[test]
+fn source_edits_reach_the_serialized_page() {
+    let mut source = WikiSource::summary(vec!["old-id".to_string()]);
+    source.set_ids(vec!["id1".to_string()]);
+    source.set_conversation_id("conversation");
+    let mut update = patch(PatchAction::Update, "order", "2026-07-01T00:00:00Z");
+    update.add_sources.push(source);
+    let page = apply_patch(None, &update);
+    let yaml = serialize_wiki_page(&page);
+    assert!(
+        yaml.contains("kind: summary\n    ids:\n      - id1\n    conversationId: conversation\n"),
+        "{yaml}"
+    );
+    assert!(!yaml.contains("old-id"), "{yaml}");
+    assert_eq!(page.meta.sources[0].conversation_id(), Some("conversation"));
+    assert_eq!(page.meta.sources[0].ids(), vec!["id1".to_string()]);
+}
+
+#[test]
+fn json_patch_sources_keep_original_properties() {
+    let patch_json = r#"{"action":"update","slug":"order","verifiedAt":"2026-10-10T00:00:00.000Z","addSources":[{"conversationId":"c1","kind":"summary","ids":["id1"],"note":"imported"}]}"#;
+    let update: WikiPatch = serde_json::from_str(patch_json).expect("patch");
+    assert_eq!(
+        serde_json::to_string(&update.add_sources[0]).expect("source"),
+        r#"{"conversationId":"c1","kind":"summary","ids":["id1"],"note":"imported"}"#
+    );
+    let page = apply_patch(None, &update);
+    let yaml = serialize_wiki_page(&page);
+    assert!(
+        yaml.contains(
+            "conversationId: c1\n    kind: summary\n    ids:\n      - id1\n    note: imported\n"
+        ),
+        "{yaml}"
+    );
+    let round = parse_wiki_page(&yaml).expect("round");
+    assert_eq!(
+        serde_json::to_string(&round.meta.sources[0]).expect("round source"),
+        r#"{"conversationId":"c1","kind":"summary","ids":["id1"],"note":"imported"}"#
+    );
+}
+
+#[test]
+fn nonfinite_frontmatter_survives_parse_and_serialize() {
+    let markdown = "---\nmetric: .inf\nnested:\n  gap: .nan\n  low: -.inf\nquoted: \".nan\"\nzero: -0.0\ntitle: T\nslug: t\n---\n\n## Summary\n\nLead.\n";
+    let parsed = parse_wiki_page(markdown).expect("page");
+    let extra = parsed.meta.extra.as_ref().expect("extra");
+    assert_eq!(
+        extra.get("metric").and_then(wiki::Passthrough::as_f64),
+        Some(f64::INFINITY)
+    );
+    assert!(
+        extra
+            .get("nested")
+            .and_then(|value| value.get("gap"))
+            .and_then(wiki::Passthrough::as_f64)
+            .expect("nan")
+            .is_nan()
+    );
+    assert_eq!(
+        extra
+            .get("nested")
+            .and_then(|value| value.get("low"))
+            .and_then(wiki::Passthrough::as_f64),
+        Some(f64::NEG_INFINITY)
+    );
+    assert_eq!(
+        extra.get("quoted").and_then(wiki::Passthrough::as_str),
+        Some(".nan")
+    );
+    let zero = extra
+        .get("zero")
+        .and_then(wiki::Passthrough::as_f64)
+        .expect("zero");
+    assert!(zero == 0.0 && zero.is_sign_negative());
+    let yaml = serialize_wiki_page(&parsed);
+    assert!(yaml.contains("metric: .inf\n"), "{yaml}");
+    assert!(yaml.contains("gap: .nan\n"), "{yaml}");
+    assert!(yaml.contains("low: -.inf\n"), "{yaml}");
+    assert!(yaml.contains("quoted: \".nan\"\n"), "{yaml}");
+    assert!(yaml.contains("zero: -0\n"), "{yaml}");
+    let round = parse_wiki_page(&yaml).expect("round");
+    assert_eq!(round.meta.extra, parsed.meta.extra);
+    assert_eq!(serialize_wiki_page(&round), yaml);
 }
 
 #[test]

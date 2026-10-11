@@ -1,29 +1,33 @@
 use std::collections::HashSet;
+use std::fmt;
 
-use serde_json::{Map, Value};
+use serde::Deserialize;
+use serde::de::{self, Deserializer, MapAccess, SeqAccess, Visitor};
 
 use crate::error::WikiParseError;
+use crate::model::Passthrough;
 
 const LINE_WIDTH: i32 = 80;
 const MIN_CONTENT_WIDTH: usize = 20;
 const DOUBLE_QUOTE_MIN_MULTI: usize = 40;
 
-pub(crate) fn parse_yaml_value(text: &str) -> Result<Value, WikiParseError> {
+pub(crate) fn parse_yaml_value(text: &str) -> Result<Passthrough, WikiParseError> {
     let options = serde_saphyr::Options {
         strict_booleans: true,
         ..serde_saphyr::Options::default()
     };
-    serde_saphyr::from_str_with_options(text, options).map_err(|err| {
+    let marked: Marked = serde_saphyr::from_str_with_options(text, options).map_err(|err| {
         let detail = err.to_string();
         if detail.is_empty() {
             WikiParseError::new("invalid YAML frontmatter")
         } else {
             WikiParseError::new(detail)
         }
-    })
+    })?;
+    Ok(lower(text, &marked))
 }
 
-pub(crate) fn emit_yaml(value: &Value) -> String {
+pub(crate) fn emit_yaml(value: &Passthrough) -> String {
     let body = emit_value(value, &EmitCtx::root());
     format!("{body}\n")
 }
@@ -56,15 +60,26 @@ impl EmitCtx {
     }
 }
 
-fn emit_value(value: &Value, ctx: &EmitCtx) -> String {
+fn emit_value(value: &Passthrough, ctx: &EmitCtx) -> String {
     match value {
-        Value::Null => "null".to_string(),
-        Value::Bool(true) => "true".to_string(),
-        Value::Bool(false) => "false".to_string(),
-        Value::Number(number) => format_yaml_number(number.as_f64().unwrap_or(0.0)),
-        Value::String(text) => emit_string(text, ctx),
-        Value::Array(items) => emit_seq(items, ctx),
-        Value::Object(map) => emit_map(map, ctx),
+        Passthrough::Value(protocol::js::JsValue::Null) => "null".to_string(),
+        Passthrough::Value(protocol::js::JsValue::Bool(true)) => "true".to_string(),
+        Passthrough::Value(protocol::js::JsValue::Bool(false)) => "false".to_string(),
+        Passthrough::Value(protocol::js::JsValue::Number(number)) => format_yaml_number(*number),
+        Passthrough::Value(protocol::js::JsValue::String(text)) => emit_string(text.to_utf8(), ctx),
+        Passthrough::Value(protocol::js::JsValue::Array(items)) => {
+            let docs: Vec<Passthrough> = items.iter().cloned().map(Passthrough::Value).collect();
+            emit_seq(&docs, ctx)
+        }
+        Passthrough::Value(protocol::js::JsValue::Object(object)) => {
+            let entries: Vec<(String, Passthrough)> = object
+                .iter()
+                .map(|(key, item)| (key.to_utf8().to_string(), Passthrough::Value(item.clone())))
+                .collect();
+            emit_map(&entries, ctx)
+        }
+        Passthrough::Array(items) => emit_seq(items, ctx),
+        Passthrough::Object(entries) => emit_map(entries, ctx),
     }
 }
 
@@ -944,7 +959,7 @@ fn consume_more_indented_lines(units: &[u16], mut i: isize, indent: usize) -> is
     end
 }
 
-fn emit_seq(items: &[Value], ctx: &EmitCtx) -> String {
+fn emit_seq(items: &[Passthrough], ctx: &EmitCtx) -> String {
     if items.is_empty() {
         return "[]".to_string();
     }
@@ -958,7 +973,7 @@ fn emit_seq(items: &[Value], ctx: &EmitCtx) -> String {
     join_block_lines(&lines, &ctx.indent)
 }
 
-fn emit_map(map: &Map<String, Value>, ctx: &EmitCtx) -> String {
+fn emit_map(map: &[(String, Passthrough)], ctx: &EmitCtx) -> String {
     if map.is_empty() {
         return "{}".to_string();
     }
@@ -981,7 +996,7 @@ fn join_block_lines(lines: &[String], indent: &str) -> String {
     out
 }
 
-fn emit_pair(key: &str, value: &Value, ctx: &EmitCtx) -> String {
+fn emit_pair(key: &str, value: &Passthrough, ctx: &EmitCtx) -> String {
     let key_ctx = EmitCtx {
         indent: format!("{}  ", ctx.indent),
         implicit_key: true,
@@ -992,7 +1007,7 @@ fn emit_pair(key: &str, value: &Value, ctx: &EmitCtx) -> String {
     let mut line = format!("{key_str}:");
     let mut value_ctx = key_ctx;
     value_ctx.implicit_key = false;
-    let scalar = !matches!(value, Value::Array(_) | Value::Object(_));
+    let scalar = !is_collection(value);
     if scalar {
         value_ctx.indent_at_start = Some(line.encode_utf16().count() + 1);
     }
@@ -1004,14 +1019,30 @@ fn emit_pair(key: &str, value: &Value, ctx: &EmitCtx) -> String {
     line
 }
 
-fn pair_separator(value: &Value, value_str: &str, indent: &str) -> String {
-    if matches!(value, Value::Array(_) | Value::Object(_)) {
-        let empty = match value {
-            Value::Array(items) => items.is_empty(),
-            Value::Object(map) => map.is_empty(),
-            _ => false,
-        };
-        if value_str.contains('\n') || !empty {
+fn is_collection(value: &Passthrough) -> bool {
+    matches!(
+        value,
+        Passthrough::Array(_)
+            | Passthrough::Object(_)
+            | Passthrough::Value(
+                protocol::js::JsValue::Array(_) | protocol::js::JsValue::Object(_)
+            )
+    )
+}
+
+fn is_empty_collection(value: &Passthrough) -> bool {
+    match value {
+        Passthrough::Array(items) => items.is_empty(),
+        Passthrough::Object(entries) => entries.is_empty(),
+        Passthrough::Value(protocol::js::JsValue::Array(items)) => items.is_empty(),
+        Passthrough::Value(protocol::js::JsValue::Object(object)) => object.iter().next().is_none(),
+        _ => false,
+    }
+}
+
+fn pair_separator(value: &Passthrough, value_str: &str, indent: &str) -> String {
+    if is_collection(value) {
+        if value_str.contains('\n') || !is_empty_collection(value) {
             format!("\n{indent}")
         } else {
             " ".to_string()
@@ -1023,45 +1054,240 @@ fn pair_separator(value: &Value, value_str: &str, indent: &str) -> String {
     }
 }
 
+struct Marked {
+    provisional: Provisional,
+    span: serde_saphyr::Span,
+}
+
+enum Provisional {
+    Null,
+    Bool(bool),
+    Number(f64),
+    String(String),
+    Array(Vec<Marked>),
+    Object(Vec<(String, Marked)>),
+}
+
+impl<'de> Deserialize<'de> for Marked {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let spanned = serde_saphyr::Spanned::<Provisional>::deserialize(deserializer)?;
+        Ok(Self {
+            provisional: spanned.value,
+            span: spanned.defined.span(),
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for Provisional {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_any(ProvisionalVisitor)
+    }
+}
+
+struct ProvisionalVisitor;
+
+impl<'de> Visitor<'de> for ProvisionalVisitor {
+    type Value = Provisional;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a YAML value")
+    }
+
+    fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+        Ok(Provisional::Null)
+    }
+
+    fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
+        Ok(Provisional::Null)
+    }
+
+    fn visit_bool<E: de::Error>(self, value: bool) -> Result<Self::Value, E> {
+        Ok(Provisional::Bool(value))
+    }
+
+    fn visit_i64<E: de::Error>(self, value: i64) -> Result<Self::Value, E> {
+        Ok(Provisional::Number(value as f64))
+    }
+
+    fn visit_u64<E: de::Error>(self, value: u64) -> Result<Self::Value, E> {
+        Ok(Provisional::Number(value as f64))
+    }
+
+    fn visit_f64<E: de::Error>(self, value: f64) -> Result<Self::Value, E> {
+        Ok(Provisional::Number(value))
+    }
+
+    fn visit_str<E: de::Error>(self, value: &str) -> Result<Self::Value, E> {
+        Ok(Provisional::String(value.to_string()))
+    }
+
+    fn visit_string<E: de::Error>(self, value: String) -> Result<Self::Value, E> {
+        Ok(Provisional::String(value))
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+        let mut items = Vec::new();
+        while let Some(item) = seq.next_element::<Marked>()? {
+            items.push(item);
+        }
+        Ok(Provisional::Array(items))
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+        let mut entries = Vec::new();
+        while let Some((key, value)) = map.next_entry::<String, Marked>()? {
+            entries.push((key, value));
+        }
+        Ok(Provisional::Object(entries))
+    }
+}
+
+fn lower(text: &str, node: &Marked) -> Passthrough {
+    match &node.provisional {
+        Provisional::Null => Passthrough::null(),
+        Provisional::Bool(value) => Passthrough::bool(*value),
+        Provisional::Number(value) => Passthrough::number(signed_zero(text, *value, node.span)),
+        Provisional::String(value) => match nonfinite_number(text, value, node.span) {
+            Some(number) => Passthrough::number(number),
+            None => Passthrough::string(value),
+        },
+        Provisional::Array(items) => {
+            Passthrough::Array(items.iter().map(|item| lower(text, item)).collect())
+        }
+        Provisional::Object(entries) => Passthrough::Object(
+            entries
+                .iter()
+                .map(|(key, value)| (key.clone(), lower(text, value)))
+                .collect(),
+        ),
+    }
+}
+
+fn signed_zero(text: &str, value: f64, span: serde_saphyr::Span) -> f64 {
+    if value != 0.0 || value.is_sign_negative() {
+        return value;
+    }
+    let Some(slice) = source_slice(text, span) else {
+        return value;
+    };
+    if slice.trim().starts_with('-') {
+        -0.0
+    } else {
+        value
+    }
+}
+
+fn nonfinite_number(text: &str, literal: &str, span: serde_saphyr::Span) -> Option<f64> {
+    let number = match literal {
+        ".nan" => f64::NAN,
+        ".inf" => f64::INFINITY,
+        "-.inf" => f64::NEG_INFINITY,
+        _ => return None,
+    };
+    if quoted_or_block(text, span) {
+        None
+    } else {
+        Some(number)
+    }
+}
+
+fn quoted_or_block(text: &str, span: serde_saphyr::Span) -> bool {
+    let Some(slice) = source_slice(text, span) else {
+        return false;
+    };
+    let trimmed = slice.trim();
+    if trimmed.starts_with(['"', '\'', '|', '>']) || slice.contains('\n') {
+        return true;
+    }
+    matches!(
+        previous_non_ws(text, span.offset()),
+        Some('"' | '\'' | '|' | '>')
+    )
+}
+
+fn source_slice(text: &str, span: serde_saphyr::Span) -> Option<&str> {
+    let offset = span.offset();
+    let end_index = offset.saturating_add(span.len());
+    let mut start_byte = None;
+    let mut end_byte = None;
+    for (index, (byte, _)) in text.char_indices().enumerate() {
+        if index == offset {
+            start_byte = Some(byte);
+        }
+        if index == end_index {
+            end_byte = Some(byte);
+            break;
+        }
+    }
+    let start = start_byte?;
+    let end = end_byte.unwrap_or(text.len());
+    if end < start || end > text.len() {
+        return None;
+    }
+    Some(&text[start..end])
+}
+
+fn previous_non_ws(text: &str, offset: usize) -> Option<char> {
+    text.chars()
+        .take(offset)
+        .filter(|ch| !matches!(ch, ' ' | '\t' | '\n' | '\r'))
+        .last()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn npm_yaml_stringify_golden() {
-        let golden: Value =
+        let golden: serde_json::Value =
             serde_json::from_str(include_str!("../tests/golden/stringify.json")).expect("golden");
         let cases = golden.get("cases").expect("cases");
         for case in cases
             .get("strings")
-            .and_then(Value::as_array)
+            .and_then(serde_json::Value::as_array)
             .expect("strings")
         {
             let input = case.get("input").expect("input");
-            let output = case.get("output").and_then(Value::as_str).expect("output");
-            let mut map = Map::new();
-            map.insert("value".to_string(), input.clone());
-            assert_eq!(emit_yaml(&Value::Object(map)), output, "{input}");
+            let output = case
+                .get("output")
+                .and_then(serde_json::Value::as_str)
+                .expect("output");
+            let doc =
+                Passthrough::Object(vec![("value".to_string(), Passthrough::from_json(input))]);
+            assert_eq!(emit_yaml(&doc), output, "{input}");
         }
         for case in cases
             .get("arrays")
-            .and_then(Value::as_array)
+            .and_then(serde_json::Value::as_array)
             .expect("arrays")
         {
             let input = case.get("input").expect("input");
-            let output = case.get("output").and_then(Value::as_str).expect("output");
-            let mut map = Map::new();
-            map.insert("list".to_string(), input.clone());
-            assert_eq!(emit_yaml(&Value::Object(map)), output, "{input}");
+            let output = case
+                .get("output")
+                .and_then(serde_json::Value::as_str)
+                .expect("output");
+            let doc =
+                Passthrough::Object(vec![("list".to_string(), Passthrough::from_json(input))]);
+            assert_eq!(emit_yaml(&doc), output, "{input}");
         }
         for case in cases
             .get("nested")
-            .and_then(Value::as_array)
+            .and_then(serde_json::Value::as_array)
             .expect("nested")
         {
             let input = case.get("input").expect("input");
-            let output = case.get("output").and_then(Value::as_str).expect("output");
-            assert_eq!(emit_yaml(input), output);
+            let output = case
+                .get("output")
+                .and_then(serde_json::Value::as_str)
+                .expect("output");
+            assert_eq!(emit_yaml(&Passthrough::from_json(input)), output);
         }
         let numbers = [
             0.0,
@@ -1075,24 +1301,61 @@ mod tests {
         ];
         let recorded = cases
             .get("numbers")
-            .and_then(Value::as_array)
+            .and_then(serde_json::Value::as_array)
             .expect("numbers");
         for (index, value) in numbers.iter().enumerate() {
             let output = recorded[index]
                 .get("output")
-                .and_then(Value::as_str)
+                .and_then(serde_json::Value::as_str)
                 .expect("output");
             assert_eq!(
                 format!("n: {}\n", format_yaml_number(*value)),
                 output,
                 "{index}"
             );
-            if value.is_finite() && !(*value == 0.0 && value.is_sign_negative()) {
-                let number = serde_json::Number::from_f64(*value).expect("finite");
-                let mut map = Map::new();
-                map.insert("n".to_string(), Value::Number(number));
-                assert_eq!(emit_yaml(&Value::Object(map)), output, "emit {index}");
-            }
+            let doc = Passthrough::Object(vec![("n".to_string(), Passthrough::number(*value))]);
+            assert_eq!(emit_yaml(&doc), output, "emit {index}");
         }
+    }
+
+    #[test]
+    fn plain_nonfinite_is_a_number_and_quoted_nonfinite_is_a_string() {
+        let nan = parse_yaml_value("metric: .nan\n").expect("nan");
+        assert!(
+            nan.get("metric")
+                .and_then(Passthrough::as_f64)
+                .expect("number")
+                .is_nan()
+        );
+        assert_eq!(emit_yaml(&nan), "metric: .nan\n");
+        let quoted = parse_yaml_value("metric: \".nan\"\n").expect("quoted");
+        assert_eq!(
+            quoted.get("metric").and_then(Passthrough::as_str),
+            Some(".nan")
+        );
+        let inf = parse_yaml_value("metric: .inf\n").expect("inf");
+        assert_eq!(
+            inf.get("metric").and_then(Passthrough::as_f64),
+            Some(f64::INFINITY)
+        );
+        let neg = parse_yaml_value("metric: -.inf\n").expect("neg");
+        assert_eq!(
+            neg.get("metric").and_then(Passthrough::as_f64),
+            Some(f64::NEG_INFINITY)
+        );
+        let neg_zero = parse_yaml_value("n: -0.0\n").expect("neg zero");
+        let zero = neg_zero
+            .get("n")
+            .and_then(Passthrough::as_f64)
+            .expect("zero");
+        assert!(zero == 0.0 && zero.is_sign_negative());
+        assert_eq!(emit_yaml(&neg_zero), "n: -0\n");
+        let again = parse_yaml_value("n: -0\n").expect("signed zero");
+        let signed = again
+            .get("n")
+            .and_then(Passthrough::as_f64)
+            .expect("signed");
+        assert!(signed == 0.0 && signed.is_sign_negative());
+        assert_eq!(emit_yaml(&again), "n: -0\n");
     }
 }

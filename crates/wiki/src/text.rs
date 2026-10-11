@@ -191,14 +191,6 @@ pub(crate) fn js_last_index_of(hay: &str, needle: &str, from: usize) -> Option<u
     }
 }
 
-pub(crate) fn js_sort(ids: &mut [String]) {
-    ids.sort_by(|left, right| {
-        let left: Vec<u16> = left.encode_utf16().collect();
-        let right: Vec<u16> = right.encode_utf16().collect();
-        left.cmp(&right)
-    });
-}
-
 pub(crate) fn fmt_count(n: usize) -> String {
     let raw = n.to_string();
     let mut out = String::new();

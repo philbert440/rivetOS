@@ -1,13 +1,11 @@
-use serde_json::{Map, Value};
-
 use crate::error::WikiParseError;
 use crate::model::{
-    ArticlePatchMode, SourceSpan, SummaryCap, WikiArticlePatch, WikiArticleSection, WikiCitation,
+    ArticlePatchMode, Passthrough, SummaryCap, WikiArticlePatch, WikiArticleSection, WikiCitation,
     WikiFrontmatter, WikiHistoryEntry, WikiPage, WikiPatch, WikiSection, WikiSource,
 };
 use crate::slug::{extract_wiki_links, normalize_slug};
 use crate::text::{
-    is_js_whitespace, js_last_index_of, js_len, js_prefix, js_slice, js_sort, js_trim, js_trim_end,
+    is_js_whitespace, js_last_index_of, js_len, js_prefix, js_slice, js_trim, js_trim_end,
     split_utf16, utc_day,
 };
 use crate::yaml_doc::{emit_yaml, parse_yaml_value};
@@ -40,10 +38,10 @@ pub fn parse_wiki_page(input: &str) -> Result<WikiPage, WikiParseError> {
         return Err(WikiParseError::new("missing YAML frontmatter"));
     };
     let value = parse_yaml_value(yaml)?;
-    let Value::Object(raw) = value else {
+    if value.as_object().is_none() {
         return Err(WikiParseError::new("frontmatter not a map"));
-    };
-    let mut meta = normalize_meta(&raw)?;
+    }
+    let mut meta = normalize_meta(&value)?;
     let (preamble, sections) = split_sections(body);
     let summary = sections
         .iter()
@@ -111,10 +109,7 @@ pub fn serialize_wiki_page(page: &WikiPage) -> String {
             .collect::<Vec<_>>(),
         RELATED_MAX,
     );
-    let yaml = js_trim_end(&emit_yaml(&Value::Object(frontmatter_value(
-        page, &related,
-    ))))
-    .to_string();
+    let yaml = js_trim_end(&emit_yaml(&frontmatter_value(page, &related))).to_string();
     let mut parts = Vec::new();
     parts.push(format!("---\n{yaml}\n---"));
     if let Some(preamble) = &page.preamble
@@ -177,7 +172,7 @@ pub fn apply_patch(existing: Option<&WikiPage>, patch: &WikiPatch) -> WikiPage {
             .meta
             .sources
             .iter()
-            .any(|have| have.kind == source.kind && source_identity(have) == key);
+            .any(|have| have.kind() == source.kind() && source_identity(have) == key);
         if !dup {
             page.meta.sources.push(source.clone());
         }
@@ -338,7 +333,7 @@ pub fn merge_pages(canonical: &WikiPage, losers: &[WikiPage]) -> WikiPage {
                 .meta
                 .sources
                 .iter()
-                .any(|have| have.kind == source.kind && source_identity(have) == key);
+                .any(|have| have.kind() == source.kind() && source_identity(have) == key);
             if !dup {
                 out.meta.sources.push(source.clone());
             }
@@ -812,22 +807,16 @@ fn stamp_day(stamp: Option<&str>) -> String {
 }
 
 fn source_identity(source: &WikiSource) -> (Option<String>, String) {
-    if let Some(items) = source.raw.get("ids").and_then(|value| value.as_array()) {
-        let mut items = items.to_vec();
-        items.sort_by_key(js_sort_key);
-        return (
-            source.kind.clone(),
-            protocol::js::stringify(&protocol::js::JsValue::Array(items)),
-        );
-    }
-    let mut ids = source.ids.clone();
-    js_sort(&mut ids);
-    let value = protocol::js::JsValue::Array(
-        ids.into_iter()
-            .map(|id| protocol::js::JsValue::from_text(&id))
-            .collect(),
-    );
-    (source.kind.clone(), protocol::js::stringify(&value))
+    let kind = source.kind().map(str::to_string);
+    let Some(items) = source.raw().get("ids").and_then(Passthrough::as_array) else {
+        return (kind, "[]".to_string());
+    };
+    let mut owned: Vec<protocol::js::JsValue> = items.iter().map(Passthrough::to_js).collect();
+    owned.sort_by_key(js_sort_key);
+    (
+        kind,
+        protocol::js::stringify(&protocol::js::JsValue::Array(owned)),
+    )
 }
 
 fn js_sort_key(value: &protocol::js::JsValue) -> Vec<u16> {
@@ -864,17 +853,6 @@ fn js_number_string(number: f64) -> String {
     }
 }
 
-fn json_to_js(value: &Value) -> protocol::js::JsValue {
-    match serde_json::to_string(value) {
-        Ok(text) => protocol::js::parse(&text).unwrap_or(protocol::js::JsValue::Null),
-        Err(_) => protocol::js::JsValue::Null,
-    }
-}
-
-fn js_to_json(value: &protocol::js::JsValue) -> Option<Value> {
-    serde_json::from_str(&protocol::js::stringify(value)).ok()
-}
-
 fn split_frontmatter(markdown: &str) -> Option<(&str, &str)> {
     let rest = markdown.strip_prefix("---\n")?;
     let close = rest.find("\n---")?;
@@ -886,19 +864,22 @@ fn split_frontmatter(markdown: &str) -> Option<(&str, &str)> {
     Some((yaml, &rest[after..]))
 }
 
-fn normalize_meta(raw: &Map<String, Value>) -> Result<WikiFrontmatter, WikiParseError> {
-    let title = match raw.get("title") {
-        Some(Value::String(title)) if !js_trim(title).is_empty() => title.clone(),
+fn normalize_meta(raw: &Passthrough) -> Result<WikiFrontmatter, WikiParseError> {
+    let title = match raw.get("title").and_then(Passthrough::as_str) {
+        Some(title) if !js_trim(title).is_empty() => title.to_string(),
         _ => return Err(WikiParseError::new("title required")),
     };
-    let slug = match raw.get("slug") {
-        Some(Value::String(slug)) if !js_trim(slug).is_empty() => normalize_slug(slug),
+    let slug = match raw.get("slug").and_then(Passthrough::as_str) {
+        Some(slug) if !js_trim(slug).is_empty() => normalize_slug(slug),
         _ => return Err(WikiParseError::new("slug required")),
     };
-    let mut extra = Map::new();
-    for (key, value) in raw {
+    let mut extra = Vec::new();
+    let Some(entries) = raw.as_object() else {
+        return Err(WikiParseError::new("frontmatter not a map"));
+    };
+    for (key, value) in entries {
         if !KNOWN_META.contains(&key.as_str()) {
-            extra.insert(key.clone(), value.clone());
+            extra.push((key.clone(), value.clone()));
         }
     }
     Ok(WikiFrontmatter {
@@ -912,157 +893,77 @@ fn normalize_meta(raw: &Map<String, Value>) -> Result<WikiFrontmatter, WikiParse
             .map(|item| normalize_slug(&item))
             .filter(|item| !item.is_empty())
             .collect(),
-        last_verified: match raw.get("last_verified") {
-            Some(Value::String(stamp)) => Some(stamp.clone()),
-            _ => None,
-        },
+        last_verified: raw
+            .get("last_verified")
+            .and_then(Passthrough::as_str)
+            .map(str::to_string),
         sources: sources_of(raw.get("sources")),
-        extra: if extra.is_empty() { None } else { Some(extra) },
+        extra: if extra.is_empty() {
+            None
+        } else {
+            Some(Passthrough::Object(extra))
+        },
     })
 }
 
-fn str_list(value: Option<&Value>) -> Vec<String> {
-    let Some(Value::Array(items)) = value else {
+fn str_list(value: Option<&Passthrough>) -> Vec<String> {
+    let Some(items) = value.and_then(Passthrough::as_array) else {
         return Vec::new();
     };
     items
         .iter()
-        .filter_map(|item| item.as_str().map(str::to_string))
+        .filter_map(Passthrough::as_str)
+        .map(str::to_string)
         .collect()
 }
 
-fn sources_of(value: Option<&Value>) -> Vec<WikiSource> {
-    let Some(Value::Array(items)) = value else {
+fn sources_of(value: Option<&Passthrough>) -> Vec<WikiSource> {
+    let Some(items) = value.and_then(Passthrough::as_array) else {
         return Vec::new();
     };
     items
         .iter()
-        .filter_map(|item| {
-            let Value::Object(map) = item else {
-                return None;
-            };
-            source_from_map(map)
-        })
+        .filter_map(WikiSource::from_passthrough)
         .collect()
 }
 
-fn source_from_map(map: &Map<String, Value>) -> Option<WikiSource> {
-    let raw = json_to_js(&Value::Object(map.clone()));
-    let object = raw.as_object()?;
-    let ids_value = object.get("ids")?.as_array()?;
-    let ids = ids_value
-        .iter()
-        .filter_map(|item| item.as_str().map(str::to_string))
-        .collect();
-    let kind = object.get("kind").and_then(js_string);
-    let conversation_id = object.get("conversationId").and_then(js_string);
-    let span = object.get("span").and_then(span_from_js);
-    let mut extra = Map::new();
-    if let Some(Value::Object(parsed)) = js_to_json(&raw) {
-        for (key, value) in parsed {
-            let skip = key == "ids"
-                || (key == "kind" && kind.is_some())
-                || (key == "conversationId" && conversation_id.is_some())
-                || (key == "span" && span.is_some());
-            if !skip {
-                extra.insert(key, value);
-            }
-        }
+fn frontmatter_value(page: &WikiPage, related: &[String]) -> Passthrough {
+    let mut meta = Vec::new();
+    if let Some(extra) = &page.meta.extra
+        && let Some(entries) = extra.as_object()
+    {
+        meta.extend(entries.iter().cloned());
     }
-    Some(WikiSource {
-        kind,
-        ids,
-        conversation_id,
-        span,
-        extra,
-        raw,
-    })
-}
-
-fn js_string(value: &protocol::js::JsValue) -> Option<String> {
-    value.as_str().map(str::to_string)
-}
-
-fn span_from_js(value: &protocol::js::JsValue) -> Option<SourceSpan> {
-    let object = value.as_object()?;
-    if object.iter().count() != 2 {
-        return None;
-    }
-    let earliest = object.get("earliest").and_then(|item| item.as_str())?;
-    let latest = object.get("latest").and_then(|item| item.as_str())?;
-    Some(SourceSpan {
-        earliest: earliest.to_string(),
-        latest: latest.to_string(),
-    })
-}
-
-fn frontmatter_value(page: &WikiPage, related: &[String]) -> Map<String, Value> {
-    let mut meta = Map::new();
-    if let Some(extra) = &page.meta.extra {
-        for (key, value) in extra {
-            meta.insert(key.clone(), value.clone());
-        }
-    }
-    meta.insert("title".to_string(), Value::String(page.meta.title.clone()));
-    meta.insert("slug".to_string(), Value::String(page.meta.slug.clone()));
-    meta.insert(
+    meta.push(("title".to_string(), Passthrough::string(&page.meta.title)));
+    meta.push(("slug".to_string(), Passthrough::string(&page.meta.slug)));
+    meta.push((
         "aliases".to_string(),
         string_array(&cap_list(&page.meta.aliases, ALIASES_MAX)),
-    );
-    meta.insert(
+    ));
+    meta.push((
         "tags".to_string(),
         string_array(&cap_list(&page.meta.tags, TAGS_MAX)),
-    );
-    meta.insert(
+    ));
+    meta.push((
         "entities".to_string(),
         string_array(&cap_list(&page.meta.entities, ENTITIES_MAX)),
-    );
-    meta.insert("related".to_string(), string_array(related));
+    ));
+    meta.push(("related".to_string(), string_array(related)));
     if let Some(stamp) = &page.meta.last_verified
         && !stamp.is_empty()
     {
-        meta.insert("last_verified".to_string(), Value::String(stamp.clone()));
+        meta.push(("last_verified".to_string(), Passthrough::string(stamp)));
     }
     let sources = cap_tail(&page.meta.sources, SOURCES_MAX);
-    meta.insert(
+    meta.push((
         "sources".to_string(),
-        Value::Array(sources.iter().map(source_to_value).collect()),
-    );
-    meta
+        Passthrough::Array(sources.iter().map(|source| source.raw().clone()).collect()),
+    ));
+    Passthrough::Object(meta)
 }
 
-fn source_to_value(source: &WikiSource) -> Value {
-    if source
-        .raw
-        .get("ids")
-        .and_then(|value| value.as_array())
-        .is_some()
-        && let Some(value) = js_to_json(&source.raw)
-    {
-        return value;
-    }
-    let mut map = Map::new();
-    if let Some(kind) = &source.kind {
-        map.insert("kind".to_string(), Value::String(kind.clone()));
-    }
-    map.insert("ids".to_string(), string_array(&source.ids));
-    if let Some(id) = &source.conversation_id {
-        map.insert("conversationId".to_string(), Value::String(id.clone()));
-    }
-    if let Some(span) = &source.span {
-        let mut span_map = Map::new();
-        span_map.insert("earliest".to_string(), Value::String(span.earliest.clone()));
-        span_map.insert("latest".to_string(), Value::String(span.latest.clone()));
-        map.insert("span".to_string(), Value::Object(span_map));
-    }
-    for (key, value) in &source.extra {
-        map.insert(key.clone(), value.clone());
-    }
-    Value::Object(map)
-}
-
-fn string_array(items: &[String]) -> Value {
-    Value::Array(items.iter().cloned().map(Value::String).collect())
+fn string_array(items: &[String]) -> Passthrough {
+    Passthrough::Array(items.iter().map(Passthrough::string).collect())
 }
 
 fn article_block(article: &str) -> String {

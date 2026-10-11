@@ -14,8 +14,9 @@ pub use identity::{
     prefer_canonical_slug, slug_token_prefix,
 };
 pub use model::{
-    ArticlePatchMode, PatchAction, SourceSpan, SummaryCap, WikiArticlePatch, WikiArticleSection,
-    WikiCitation, WikiFrontmatter, WikiHistoryEntry, WikiPage, WikiPatch, WikiSection, WikiSource,
+    ArticlePatchMode, Passthrough, PatchAction, SourceSpan, SummaryCap, WikiArticlePatch,
+    WikiArticleSection, WikiCitation, WikiFrontmatter, WikiHistoryEntry, WikiPage, WikiPatch,
+    WikiSection, WikiSource,
 };
 pub use page::{
     ALIASES_MAX, CITATIONS_MAX, ENTITIES_MAX, HISTORY_MAX, RELATED_MAX,
