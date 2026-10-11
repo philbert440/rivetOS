@@ -18,6 +18,7 @@ thiserror.workspace = true
 rcgen = { workspace = true }
 rusqlite = { version = "0.37", features = ["bundled"] }
 rustls = { workspace = true }
+tokio = { workspace = true }
 
 [lints]
 workspace = true

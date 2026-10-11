@@ -423,6 +423,8 @@ pub struct Transcript {
     pub turns: Vec<Turn>,
     #[serde(skip)]
     pub messages: Vec<CaptureMessage>,
+    #[serde(skip)]
+    pub seen_stamps: Vec<(i64, i64)>,
     #[serde(skip_serializing_if = "skip_false")]
     pub truncated: bool,
 }
@@ -438,6 +440,7 @@ impl Transcript {
             command: String::new(),
             turns: Vec::new(),
             messages: Vec::new(),
+            seen_stamps: Vec::new(),
             truncated: false,
         }
     }

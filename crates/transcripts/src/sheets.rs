@@ -2588,6 +2588,28 @@ fn discovery_client() -> Result<reqwest::blocking::Client, String> {
         .map_err(|_| "listing failed".to_string())
 }
 
+fn read_bounded_body(mut response: reqwest::blocking::Response) -> Result<Vec<u8>, String> {
+    if response
+        .content_length()
+        .is_some_and(|len| len > HTTP_BODY_CAP as u64)
+    {
+        return Err("listing failed".into());
+    }
+    let mut body = Vec::new();
+    let mut buf = [0_u8; 8192];
+    loop {
+        let read = Read::read(&mut response, &mut buf).map_err(|_| "listing failed".to_string())?;
+        if read == 0 {
+            break;
+        }
+        if body.len().saturating_add(read) > HTTP_BODY_CAP {
+            return Err("listing failed".into());
+        }
+        body.extend_from_slice(&buf[..read]);
+    }
+    Ok(body)
+}
+
 fn fetch_openai_models(base: &str, api_key: Option<&str>) -> Result<Vec<String>, String> {
     if !http_base(base) {
         return Err("listing failed".into());
@@ -2616,10 +2638,7 @@ fn fetch_openai_models(base: &str, api_key: Option<&str>) -> Result<Vec<String>,
     if !status.is_success() {
         return Err(format!("HTTP {}", status.as_u16()));
     }
-    let bytes = response.bytes().map_err(|_| "listing failed".to_string())?;
-    if bytes.len() > HTTP_BODY_CAP {
-        return Err("listing failed".into());
-    }
+    let bytes = read_bounded_body(response)?;
     let text = String::from_utf8_lossy(&bytes);
     let raw = protocol::js::parse(&text).map_err(|err| err.to_string())?;
     let Some(rows) = raw.get("data").and_then(Value::as_array) else {
@@ -2757,5 +2776,77 @@ mod fetch_tests {
         });
         let ids = fetch_openai_models(&format!("http://127.0.0.1:{port}/v1"), None).expect("http");
         assert_eq!(ids, vec!["local-b".to_string()]);
+    }
+
+    #[test]
+    fn content_length_over_the_cap_fails_without_the_body() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        let cap = super::HTTP_BODY_CAP;
+        std::thread::spawn(move || {
+            let Ok((mut sock, _)) = listener.accept() else {
+                return;
+            };
+            let _ = sock.set_read_timeout(Some(std::time::Duration::from_secs(2)));
+            let _ = sock.set_write_timeout(Some(std::time::Duration::from_secs(2)));
+            let mut buf = [0_u8; 2048];
+            let _ = std::io::Read::read(&mut sock, &mut buf);
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                cap.saturating_add(1)
+            );
+            let _ = std::io::Write::write_all(&mut sock, header.as_bytes());
+            let _ = std::io::Write::write_all(&mut sock, b"x");
+        });
+        let started = std::time::Instant::now();
+        let err = fetch_openai_models(&format!("http://127.0.0.1:{port}/v1"), None);
+        assert!(err.is_err(), "{err:?}");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn chunked_body_stops_at_the_cap() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        let cap = super::HTTP_BODY_CAP;
+        std::thread::spawn(move || {
+            let Ok((mut sock, _)) = listener.accept() else {
+                return;
+            };
+            let _ = sock.set_read_timeout(Some(std::time::Duration::from_secs(2)));
+            let _ = sock.set_write_timeout(Some(std::time::Duration::from_secs(2)));
+            let mut buf = [0_u8; 2048];
+            let _ = std::io::Read::read(&mut sock, &mut buf);
+            let _ = std::io::Write::write_all(
+                &mut sock,
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
+            );
+            let chunk = vec![b'a'; 8192];
+            let header = format!("{:x}\r\n", chunk.len());
+            let loops = cap / chunk.len() + 4;
+            for _ in 0..loops {
+                if std::io::Write::write_all(&mut sock, header.as_bytes()).is_err() {
+                    break;
+                }
+                if std::io::Write::write_all(&mut sock, &chunk).is_err() {
+                    break;
+                }
+                if std::io::Write::write_all(&mut sock, b"\r\n").is_err() {
+                    break;
+                }
+            }
+        });
+        let started = std::time::Instant::now();
+        let err = fetch_openai_models(&format!("http://127.0.0.1:{port}/v1"), None);
+        assert!(err.is_err(), "{err:?}");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
     }
 }

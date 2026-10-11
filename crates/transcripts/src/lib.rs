@@ -27,11 +27,14 @@ pub mod turn;
 pub mod value;
 
 pub use capture::{
-    CaptureCursor, StoreView, capture_snapshot, claude_capture_text, codex_capture_text,
-    cowork_capture_lines, cursor_capture_objects, grok_capture_updates, hermes_capture_rows,
-    kimi_capture_text, kimi_capture_text_for, opencode_capture_parts, pi_capture_text,
+    CaptureCursor, StoreView, capture_snapshot, claude_capture_text, claude_capture_text_for,
+    codex_capture_text, codex_capture_text_for, cowork_capture_lines, cowork_capture_lines_for,
+    cursor_capture_objects, cursor_capture_objects_for, grok_capture_updates,
+    grok_capture_updates_for, hermes_capture_rows, kimi_capture_text, kimi_capture_text_for,
+    opencode_capture_parts, opencode_seen_stamps, pi_capture_text, pi_capture_text_for,
     project_claude, project_codex, project_cowork, project_cursor, project_grok_chat,
     project_grok_updates, project_kimi, project_pi, project_qwen, qwen_capture_text,
+    qwen_capture_text_for,
 };
 pub use claude::{
     claude_turns_from_lines, claude_turns_from_lines_sourced, claude_turns_from_text,

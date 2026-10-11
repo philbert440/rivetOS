@@ -1849,48 +1849,45 @@ fn hermes_default_fetch_applies_http_models_on_the_next_read() {
     assert!(landed);
 }
 
-#[test]
-fn discovery_expired_job_releases_the_slot_and_ignores_a_late_result() {
-    let release = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+#[tokio::test(start_paused = true)]
+async fn discovery_expired_job_releases_the_slot_and_ignores_a_late_result() {
+    let (accepted_tx, accepted_rx) = std::sync::mpsc::channel::<()>();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let (late_tx, late_rx) = std::sync::mpsc::channel::<()>();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = listener.local_addr().expect("addr").port();
-    let flag = std::sync::Arc::clone(&release);
     std::thread::spawn(move || {
-        let mut first = true;
-        for _ in 0..2 {
-            let Ok((mut sock, _)) = listener.accept() else {
-                return;
-            };
-            let _ = sock.set_read_timeout(Some(std::time::Duration::from_secs(2)));
-            let mut buf = [0_u8; 2048];
-            let _ = std::io::Read::read(&mut sock, &mut buf);
-            if first {
-                first = false;
-                let started = std::time::Instant::now();
-                while !flag.load(std::sync::atomic::Ordering::SeqCst)
-                    && started.elapsed() < std::time::Duration::from_secs(8)
-                {
-                    std::thread::sleep(std::time::Duration::from_millis(20));
-                }
-                let body = br#"{"data":[{"id":"local-late"}]}"#;
-                let mut resp = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                    body.len()
-                )
-                .into_bytes();
-                resp.extend_from_slice(body);
-                let _ = std::io::Write::write_all(&mut sock, &resp);
-            } else {
-                let body = br#"{"data":[{"id":"local-b"}]}"#;
-                let mut resp = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                    body.len()
-                )
-                .into_bytes();
-                resp.extend_from_slice(body);
-                let _ = std::io::Write::write_all(&mut sock, &resp);
-            }
-        }
+        let Ok((mut sock, _)) = listener.accept() else {
+            return;
+        };
+        let _ = sock.set_read_timeout(Some(std::time::Duration::from_secs(2)));
+        let mut buf = [0_u8; 2048];
+        let _ = std::io::Read::read(&mut sock, &mut buf);
+        let _ = accepted_tx.send(());
+        let _ = release_rx.recv();
+        let body = br#"{"data":[{"id":"local-late"}]}"#;
+        let mut resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        )
+        .into_bytes();
+        resp.extend_from_slice(body);
+        let _ = std::io::Write::write_all(&mut sock, &resp);
+        let _ = late_tx.send(());
+        let Ok((mut sock, _)) = listener.accept() else {
+            return;
+        };
+        let _ = sock.set_read_timeout(Some(std::time::Duration::from_secs(2)));
+        let mut buf = [0_u8; 2048];
+        let _ = std::io::Read::read(&mut sock, &mut buf);
+        let body = br#"{"data":[{"id":"local-b"}]}"#;
+        let mut resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        )
+        .into_bytes();
+        resp.extend_from_slice(body);
+        let _ = std::io::Write::write_all(&mut sock, &resp);
     });
     let yaml = format!("model:\n  default: local-a\n  base_url: http://127.0.0.1:{port}/v1\n");
     let mut state = SheetState::new();
@@ -1902,7 +1899,10 @@ fn discovery_expired_job_releases_the_slot_and_ignores_a_late_result() {
     let mut log_slot: Option<&mut dyn FnMut(&str)> = Some(&mut log);
     let first = hermes_sheet(&mut state, &mut text, "/h", &mut fetch, 0, &mut log_slot);
     assert_eq!(ids(&first), ["local-a"]);
-    std::thread::sleep(std::time::Duration::from_millis(200));
+    accepted_rx
+        .recv_timeout(std::time::Duration::from_secs(20))
+        .expect("request accepted");
+    tokio::time::advance(std::time::Duration::from_secs(3)).await;
     let mid = hermes_sheet(
         &mut state,
         &mut text,
@@ -1919,8 +1919,10 @@ fn discovery_expired_job_releases_the_slot_and_ignores_a_late_result() {
         "{:?}",
         logs.borrow()
     );
-    release.store(true, std::sync::atomic::Ordering::SeqCst);
-    std::thread::sleep(std::time::Duration::from_millis(300));
+    release_tx.send(()).expect("release");
+    late_rx
+        .recv_timeout(std::time::Duration::from_secs(20))
+        .expect("late body");
     let ignored = hermes_sheet(
         &mut state,
         &mut text,
@@ -1930,8 +1932,9 @@ fn discovery_expired_job_releases_the_slot_and_ignores_a_late_result() {
         &mut log_slot,
     );
     assert_eq!(ids(&ignored), ["local-a"]);
+    let started = std::time::Instant::now();
     let mut landed = false;
-    for _ in 0..40 {
+    while started.elapsed() < std::time::Duration::from_secs(20) {
         let sheet = hermes_sheet(
             &mut state,
             &mut text,
@@ -1944,7 +1947,7 @@ fn discovery_expired_job_releases_the_slot_and_ignores_a_late_result() {
             landed = true;
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(40));
+        std::thread::sleep(std::time::Duration::from_millis(20));
     }
     assert!(landed, "{:?}", logs.borrow());
     assert!(

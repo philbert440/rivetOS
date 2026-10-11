@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use crate::capture::{capture_snapshot, project_lines};
+use crate::capture::{capture_parsed, capture_snapshot, project_turns};
 use crate::identity::{den_session_ref, path_unsafe};
 use crate::jsonl::read_jsonl;
 use crate::nest::DelegatedLink;
@@ -256,7 +256,7 @@ impl Store {
         let parsed = read_jsonl(path, self.roots.max_bytes);
         let native = den_session_ref(id).native;
         let hint = (!native.is_empty()).then_some(native.as_str());
-        let view = project_lines("grok", &parsed.lines, None, parsed.truncated, hint);
+        let turns = project_turns("grok", &parsed.lines, None, parsed.truncated, 0);
         let updates = path
             .parent()
             .map(|dir| dir.join("updates.jsonl"))
@@ -265,7 +265,7 @@ impl Store {
             .as_ref()
             .map(|path| capture_snapshot(path, "grok", hint))
             .unwrap_or_default();
-        transcript(id, "grok", view.turns, messages, parsed.truncated)
+        transcript(id, "grok", turns, messages, parsed.truncated)
     }
 
     pub fn read_hermes(&self, id: &str) -> Transcript {
@@ -305,8 +305,8 @@ impl Store {
         {
             return Transcript::empty(id);
         }
-        let (turns, messages) = opencode::load(&self.roots, id);
-        transcript(id, "opencode", turns, messages, false)
+        let (turns, messages, seen) = opencode::load(&self.roots, id);
+        transcript_seen(id, "opencode", turns, messages, false, seen)
     }
 
     pub fn read_pi(&self, id: &str) -> Transcript {
@@ -331,8 +331,8 @@ impl Store {
             return transcript(id, "hermes", turns, messages, false);
         }
         if store_ref.command == "opencode" {
-            let (turns, messages) = opencode::load(&self.roots, &den_session_ref(id).native);
-            return transcript(id, "opencode", turns, messages, false);
+            let (turns, messages, seen) = opencode::load(&self.roots, &den_session_ref(id).native);
+            return transcript_seen(id, "opencode", turns, messages, false, seen);
         }
         if store_ref.command == "grok" {
             return self.finish_grok(id, std::path::Path::new(&store_ref.path));
@@ -471,16 +471,19 @@ impl Store {
         path: &std::path::Path,
         source: Option<&str>,
     ) -> (Vec<crate::turn::Turn>, Vec<CaptureMessage>, bool) {
-        let parsed = read_jsonl(path, self.roots.max_bytes);
+        let Some(bytes) = crate::fsutil::read_bytes(path) else {
+            return (Vec::new(), Vec::new(), false);
+        };
+        let text = crate::fsutil::lossy(&bytes);
+        let lines = crate::jsonl::parse_lines(&text);
+        let (kept, truncated) = crate::jsonl::kept_window_offset(&bytes, self.roots.max_bytes);
         let native = den_session_ref(id).native;
         let hint = (!native.is_empty()).then_some(native.as_str());
-        let view = project_lines(command, &parsed.lines, source, parsed.truncated, hint);
-        let messages = if parsed.truncated {
-            capture_snapshot(path, command, hint)
-        } else {
-            view.messages
-        };
-        (view.turns, messages, parsed.truncated)
+        let turns = project_turns(command, &lines, source, truncated, kept);
+        let mtime = crate::fsutil::file_stamp(path).map(|stamp| stamp.mtime_ms);
+        let last_line = crate::jsonl::last_line_index(&text);
+        let messages = capture_parsed(command, &lines, hint, path, mtime, last_line);
+        (turns, messages, truncated)
     }
 }
 
@@ -504,6 +507,20 @@ fn transcript(
         command: command.to_string(),
         turns,
         messages,
+        seen_stamps: Vec::new(),
         truncated,
     }
+}
+
+fn transcript_seen(
+    id: &str,
+    command: &str,
+    turns: Vec<crate::turn::Turn>,
+    messages: Vec<CaptureMessage>,
+    truncated: bool,
+    seen_stamps: Vec<(i64, i64)>,
+) -> Transcript {
+    let mut read = transcript(id, command, turns, messages, truncated);
+    read.seen_stamps = seen_stamps;
+    read
 }

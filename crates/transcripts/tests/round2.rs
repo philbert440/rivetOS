@@ -309,9 +309,9 @@ fn opencode_messages_carry_model_metadata_and_two_cursors() {
         Some(140_000)
     );
     let mut tail = TranscriptTail::new();
-    let picked = tail.opencode_since(id, &read.messages);
+    let picked = tail.opencode_since(id, &read.messages, &read.seen_stamps);
     assert_eq!(picked, vec![0, 1]);
-    let again = tail.opencode_since(id, &read.messages);
+    let again = tail.opencode_since(id, &read.messages, &read.seen_stamps);
     assert_eq!(again, vec![1]);
 }
 

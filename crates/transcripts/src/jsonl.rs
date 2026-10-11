@@ -60,6 +60,29 @@ pub fn read_jsonl(path: &Path, max_bytes: u64) -> JsonlFile {
     }
 }
 
+pub fn kept_window_offset(bytes: &[u8], max_bytes: u64) -> (u64, bool) {
+    let size = bytes.len() as u64;
+    if size <= max_bytes {
+        return (0, false);
+    }
+    let start = (size - max_bytes) as usize;
+    let kept = bytes[start..]
+        .iter()
+        .position(|byte| *byte == b'\n')
+        .map(|index| start + index + 1)
+        .unwrap_or(start);
+    (fsutil::lossy(&bytes[..kept]).len() as u64, true)
+}
+
+pub fn last_line_index(text: &str) -> usize {
+    if text.is_empty() {
+        return 0;
+    }
+    let newlines = text.bytes().filter(|byte| *byte == b'\n').count();
+    let extra = usize::from(!text.ends_with('\n'));
+    newlines.saturating_add(extra).saturating_sub(1)
+}
+
 pub fn parse_lines(text: &str) -> Vec<ParsedLine> {
     parse_lines_at(text, 0, 0)
 }

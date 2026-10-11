@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use serde_json::{Map, Value};
 
-use crate::capture::opencode_capture_parts;
+use crate::capture::{opencode_capture_parts, opencode_seen_stamps};
 use crate::db::{self, query_maps};
 use crate::fsutil::node_resolve;
 use crate::opencode::opencode_turns_from_messages;
@@ -75,9 +75,9 @@ pub fn newest_after(roots: &Roots, cwd: &str, since_ms: i64) -> Option<String> {
     None
 }
 
-pub fn load(roots: &Roots, id: &str) -> (Vec<Turn>, Vec<CaptureMessage>) {
+pub fn load(roots: &Roots, id: &str) -> (Vec<Turn>, Vec<CaptureMessage>, Vec<(i64, i64)>) {
     let Some(conn) = db::open_readonly(&db_path(roots)) else {
-        return (Vec::new(), Vec::new());
+        return (Vec::new(), Vec::new(), Vec::new());
     };
     let messages = query_maps(
         &conn,
@@ -165,6 +165,7 @@ pub fn load(roots: &Roots, id: &str) -> (Vec<Turn>, Vec<CaptureMessage>) {
     (
         opencode_turns_from_messages(&msgs, &by_message),
         opencode_capture_parts(&capture_parts),
+        opencode_seen_stamps(&capture_parts),
     )
 }
 

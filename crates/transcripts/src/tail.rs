@@ -51,10 +51,7 @@ pub struct OpencodeCursor {
 
 #[derive(Clone, Debug)]
 struct JsonlState {
-    offset: u64,
-    dev: u64,
-    ino: u64,
-    prefix: Vec<u8>,
+    identity: fsutil::CursorIdentity,
 }
 
 pub struct TranscriptTail {
@@ -110,41 +107,24 @@ impl TranscriptTail {
         let len = stamp.as_ref().map(|item| item.size).unwrap_or(0);
         let dev = stamp.as_ref().map(|item| item.dev).unwrap_or(0);
         let ino = stamp.as_ref().map(|item| item.ino).unwrap_or(0);
-        let mut state = self.jsonl.get(&key).cloned().unwrap_or(JsonlState {
-            offset: 0,
-            dev,
-            ino,
-            prefix: Vec::new(),
+        let mut state = self.jsonl.get(&key).cloned().unwrap_or_else(|| JsonlState {
+            identity: fsutil::CursorIdentity::fresh(dev, ino),
         });
-        let prefix_mismatch = if state.prefix.is_empty() {
-            false
-        } else {
-            fsutil::read_range(path, 0, state.prefix.len() as u64)
-                .is_none_or(|got| got.as_slice() != state.prefix.as_slice())
-        };
-        if len < state.offset
-            || (state.offset > 0 && (dev != state.dev || ino != state.ino || prefix_mismatch))
-        {
-            state.offset = 0;
-            state.prefix.clear();
+        if fsutil::cursor_was_replaced(path, &state.identity, len, dev, ino) {
+            state.identity = fsutil::CursorIdentity::fresh(dev, ino);
         }
-        let bytes = fsutil::read_range(path, state.offset, len).unwrap_or_default();
+        let bytes = fsutil::read_range(path, state.identity.offset, len).unwrap_or_default();
         let end_rel = bytes
             .iter()
             .rposition(|byte| *byte == b'\n')
             .map(|index| index + 1)
             .unwrap_or(0);
         let text = String::from_utf8_lossy(&bytes[..end_rel]).into_owned();
-        let new_offset = state.offset.saturating_add(end_rel as u64);
-        if new_offset > 0 {
-            let head = new_offset.min(64);
-            if let Some(prefix) = fsutil::read_range(path, 0, head) {
-                state.prefix = prefix;
-            }
-        }
-        state.offset = new_offset;
-        state.dev = dev;
-        state.ino = ino;
+        let new_offset = state.identity.offset.saturating_add(end_rel as u64);
+        state.identity.mark = fsutil::rewrite_mark(path, new_offset);
+        state.identity.offset = new_offset;
+        state.identity.dev = dev;
+        state.identity.ino = ino;
         self.jsonl.insert(key, state);
         JsonlCursor {
             text,
@@ -172,7 +152,12 @@ impl TranscriptTail {
         out
     }
 
-    pub fn opencode_since(&mut self, key: &str, messages: &[CaptureMessage]) -> Vec<usize> {
+    pub fn opencode_since(
+        &mut self,
+        key: &str,
+        messages: &[CaptureMessage],
+        seen: &[(i64, i64)],
+    ) -> Vec<usize> {
         let state = self.opencode.get(key).cloned().unwrap_or(OpencodeCursor {
             part_time_updated: 0,
             message_time_updated: 0,
@@ -192,12 +177,10 @@ impl TranscriptTail {
             if part_stamp > part_floor || msg_stamp > msg_hw {
                 out.push(index);
             }
-            if part_stamp > next_part {
-                next_part = part_stamp;
-            }
-            if msg_stamp > next_msg {
-                next_msg = msg_stamp;
-            }
+            raise_opencode(&mut next_part, &mut next_msg, part_stamp, msg_stamp);
+        }
+        for (part_stamp, msg_stamp) in seen {
+            raise_opencode(&mut next_part, &mut next_msg, *part_stamp, *msg_stamp);
         }
         if next_part != 0 || next_msg != 0 {
             self.opencode.insert(
@@ -251,6 +234,15 @@ pub fn merge_transcript_window(prev: &[Turn], next: &[Turn], truncated: bool) ->
     let mut out = prev[..overlap].to_vec();
     out.extend(next.iter().cloned());
     out
+}
+
+fn raise_opencode(next_part: &mut i64, next_msg: &mut i64, part_stamp: i64, msg_stamp: i64) {
+    if part_stamp > *next_part {
+        *next_part = part_stamp;
+    }
+    if msg_stamp > *next_msg {
+        *next_msg = msg_stamp;
+    }
 }
 
 fn extra_i64(message: &CaptureMessage, key: &str) -> i64 {
