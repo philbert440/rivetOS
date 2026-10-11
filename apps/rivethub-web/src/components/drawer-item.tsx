@@ -144,7 +144,7 @@ export function DrawerItem(props: {
           e.preventDefault()
           commit()
         }}
-        className="mb-1 flex items-center rounded bg-panel-2 px-3 py-1.5"
+        className="mb-0.5 flex items-center rounded-xl bg-panel-2 px-3 py-2 classic:mb-1 classic:py-1.5"
       >
         <input
           autoFocus
@@ -158,7 +158,7 @@ export function DrawerItem(props: {
           }}
           onBlur={commit}
           placeholder={props.item.title}
-          className="min-w-0 flex-1 bg-transparent text-xs text-ink outline-none"
+          className="min-w-0 flex-1 bg-transparent text-[13px] text-ink outline-none classic:text-xs"
         />
       </form>
     )
@@ -172,8 +172,8 @@ export function DrawerItem(props: {
   const visibleLabel = showTypePill ? typeLabel : (customName ?? props.item.title)
   return (
     <div
-      className={`group mb-1 flex items-center rounded ${
-        props.active ? 'bg-panel-2' : 'hover:bg-panel-2'
+      className={`group mb-0.5 flex items-center rounded-xl transition-colors classic:mb-1 ${
+        props.active ? 'bg-em-container' : 'hover:bg-ink/6 classic:hover:bg-panel-2'
       }`}
     >
       {props.onToggleNest && kids > 0 && (
@@ -185,7 +185,7 @@ export function DrawerItem(props: {
             props.expanded ? 'collapse nested conversations' : 'expand nested conversations'
           }
           title={props.expanded ? 'collapse nested conversations' : 'expand nested conversations'}
-          className="px-1 py-2 font-mono text-[11px] text-ink-dim hover:text-ink"
+          className="px-1 py-2 text-xs text-ink-dim hover:text-ink classic:text-[11px]"
         >
           {props.expanded ? '▾' : '▸'}
         </button>
@@ -199,17 +199,22 @@ export function DrawerItem(props: {
             : (props.item.sessionId ??
               (props.item.command ? `${props.item.command} · ${props.item.key}` : props.item.key))
         }
-        className={`flex min-w-0 flex-1 items-center gap-2 px-3 py-2 text-left text-xs ${
-          props.active ? 'text-em' : 'text-ink-dim group-hover:text-ink'
+        className={`flex min-w-0 flex-1 items-center gap-2.5 px-3 py-2.5 text-left text-[13px] classic:gap-2 classic:py-2 classic:text-xs ${
+          props.active
+            ? 'font-medium text-on-em-container classic:font-normal classic:text-em'
+            : 'text-ink-dim group-hover:text-ink'
         }`}
       >
         {props.nested && (
-          <span className="w-3 shrink-0 text-center font-mono text-[11px] text-ink-dim" aria-hidden>
+          <span
+            className="w-3 shrink-0 text-center text-xs text-ink-dim classic:text-[11px]"
+            aria-hidden
+          >
             └
           </span>
         )}
         {showTypePill && (
-          <span className="shrink-0 rounded bg-panel-2 px-1.5 font-mono text-[10px] text-ink">
+          <span className="shrink-0 rounded-md bg-panel-2 px-1.5 text-[11px] text-ink classic:text-[10px]">
             {typeLabel}
           </span>
         )}
@@ -226,7 +231,7 @@ export function DrawerItem(props: {
           />
         ) : (
           <span
-            className="size-1.5 shrink-0 rounded-full"
+            className="size-2 shrink-0 rounded-full classic:size-1.5"
             style={{
               background: accentFor({
                 presetColor: props.item.accent,
@@ -240,7 +245,7 @@ export function DrawerItem(props: {
         {!showTypePill && <span className="min-w-0 truncate">{visibleLabel}</span>}
         {kids > 0 && !props.expanded && (
           <span
-            className="shrink-0 font-mono text-[10px] text-ink-dim"
+            className="shrink-0 text-[11px] text-ink-dim classic:text-[10px]"
             title="nested conversations"
           >
             {kids}
@@ -269,7 +274,7 @@ export function DrawerItem(props: {
           return pill ? (
             <span
               title={tip}
-              className="shrink-0 rounded bg-panel-2 px-1 font-mono text-[9px] text-ink-dim"
+              className="shrink-0 rounded bg-panel-2 px-1 text-[10px] text-ink-dim classic:text-[9px]"
             >
               {pill}
             </span>

@@ -9,7 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### RivetHub
 
+- Material style for an explicit Light or Dark theme: tonal surfaces from the emerald seed, rounded shapes, Roboto Flex for UI text (JetBrains Mono stays for code and the terminal), pill navigation, message bubbles and soft cards. System and Omarchy keep the classic square, monospace look unchanged. The style follows the preference through `html[data-style]`; see `apps/rivethub-web/AGENT.md` → Material style.
+- Spaces canvas follow-ups: the breadcrumb is the altitude control (no zoom ladder) and History plus the shortcuts dock sit top right; History opens from the right, resizes from its left edge, and shows the rail's agent filter as a clearable chip. Drag an agent from the rail (expanded or collapsed) onto an empty `+ New thread` slot to start a thread with it, or drop a History row there to pick the session up where it left off. Tiles lead with the session title and the model (as its roster agent), carry a ✕ that returns them to History, and no longer clip their text at Everything; an open thread runs to the right edge. In the Material style the canvas, Settings tabs and dialogs get rounded tonal surfaces.
+- Sidebar agents show the brand logo of their model (else their harness), from the bundled `@lobehub/icons-static-svg` set.
 - Spaces canvas (preview, still **off** by default): dark, light, and Omarchy all come from tokens; reduced motion snaps the camera and the canvas motion; tiles are a roving-tabindex grid with a spoken altitude; `?` opens a Keys panel built from the same shortcut table the handler uses; empty states for no conversations, no spaces, and an empty space. Moving the open thread to History no longer remounts it, and History's pick mode no longer takes Escape while a thread is open.
+
+### Grok Bot member kit
+
+- rivethub-grokbot mesh handoff uses the plugin MCP tools `list_agents` and `delegate_task` (den task API). The curl recipe is gone. Step 3 (den live stream) stays parked.
 
 ### Compaction worker
 

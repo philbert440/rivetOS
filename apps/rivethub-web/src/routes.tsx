@@ -133,9 +133,11 @@ function RootLayout(): JSX.Element {
     }
   }, [narrow, sessionOpen])
 
-  // Desktop is tiled (Omarchy / Hyprland): the rail and the page as separate
-  // bordered tiles with a gap, the page tile carrying the accent border as
-  // the focused window. The node and what needs you live in the rail. Narrow keeps the
+  // Desktop is tiled. Classic (Omarchy / Hyprland): the rail and the page as
+  // separate bordered tiles with a gap, the page tile carrying the accent
+  // border as the focused window. Material: the rail sits on the window
+  // ground and the page is one raised, rounded surface beside it, separated
+  // by tone and elevation rather than borders. The node and what needs you live in the rail. Narrow keeps the
   // full-bleed drawer layout. Fixed overlays position against these vars.
   const railWidth = narrow ? '0rem' : railCollapsed ? '3rem' : '14rem'
   const tiled = !narrow
@@ -157,15 +159,15 @@ function RootLayout(): JSX.Element {
             tabIndex={-1}
             aria-hidden={true}
             aria-label="Close sidebar"
-            className="fixed inset-0 z-30 bg-bg/70"
+            className="fixed inset-0 z-30 bg-black/40 classic:bg-bg/70"
             onClick={() => setDrawerOpen(false)}
           />
         )}
         <div
           className={
             tiled
-              ? 'flex min-h-0 min-w-0 flex-1 flex-col border-2 border-em bg-panel'
-              : 'flex min-h-0 min-w-0 flex-1 flex-col'
+              ? 'flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-3xl bg-surface shadow-tile classic:bg-panel classic:border-2 classic:border-em'
+              : 'flex min-h-0 min-w-0 flex-1 flex-col bg-surface classic:bg-transparent'
           }
           inert={narrow && drawerOpen ? true : undefined}
         >
@@ -293,6 +295,13 @@ const settingsRoute = createRoute({
   component: SettingsPage,
 })
 
+/** One settings tab — `/settings/appearance`, `/settings/node`, … */
+const settingsTabRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/settings/$tab',
+  component: SettingsPage,
+})
+
 export const routeTree = rootRoute.addChildren([
   chatRoute,
   indexHtmlRoute,
@@ -308,4 +317,5 @@ export const routeTree = rootRoute.addChildren([
   workflowsRoute,
   workflowTriggerRoute,
   settingsRoute,
+  settingsTabRoute,
 ])

@@ -1,5 +1,6 @@
 /**
- * RivetHub keyboard chords, handled in the web app rather than the shell:
+ * RivetHub keyboard chords, handled in the web app rather than the shell.
+ * Defaults below; every one can be rebound in Settings (stores/key-bindings).
  *
  *   Ctrl+Tab        open the NEXT agent in the sidebar roster
  *   Ctrl+Shift+Tab  open the PREVIOUS agent
@@ -16,6 +17,16 @@
  * keep Ctrl+T for a new tab, so like Ctrl+Tab it is a desktop-shell chord. `matchHubKey` is a pure matcher over the
  * fields it needs, so tests can pass plain objects instead of a DOM event.
  */
+
+import {
+  combo,
+  formatCombo,
+  hasCommandModifier,
+  matchCombo,
+  sameCombo,
+  type KeyCombo,
+} from './key-combo.js'
+import { useKeyBindings } from '../stores/key-bindings.js'
 
 export type HubKeyAction = 'agent-next' | 'agent-prev' | 'toggle-sidebar' | 'new-conversation'
 
@@ -45,17 +56,19 @@ type CanvasKeyEvent = Pick<
   'key' | 'code' | 'ctrlKey' | 'shiftKey' | 'altKey' | 'metaKey'
 > & { repeat?: boolean }
 
-/** One row the matchers, the Thread claim, and the Keys panel all read. */
+/** One row the matchers, the Thread claim, the Keys panel and Settings read.
+ *  The keys themselves are the current binding (`keysFor`), not the row. */
 export interface CanvasKeyEntry {
   id: string
-  keys: string
+  /** Short name for Settings. */
+  name: string
   summary: string
   /** Spelled out at Thread, including when the key is not claimed. */
   thread: string
   claimedAtThread: boolean
   handler: 'chord' | 'nav' | 'action'
-  matches: (e: CanvasKeyEvent) => boolean
-  /** Event the matcher must accept. The coverage test fires this. */
+  defaults: readonly KeyCombo[]
+  /** Event the default binding must accept. The coverage test fires this. */
   probe: CanvasKeyEvent
 }
 
@@ -63,27 +76,15 @@ function bare(key: string, code = ''): CanvasKeyEvent {
   return { key, code, ctrlKey: false, shiftKey: false, altKey: false, metaKey: false }
 }
 
-function noMod(e: CanvasKeyEvent): boolean {
-  return !e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey
-}
-
-function ctrlOnly(e: CanvasKeyEvent): boolean {
-  return e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey
-}
-
-function letter(e: CanvasKeyEvent, lower: string): boolean {
-  return noMod(e) && (e.key === lower || e.key === lower.toUpperCase())
-}
-
 function defineKey<H extends 'chord' | 'nav' | 'action'>(
   handler: H,
   row: {
     id: H extends 'chord' ? CanvasChord : H extends 'nav' ? CanvasNav : CanvasAction
-    keys: string
+    name: string
     summary: string
     thread: string
     claimedAtThread: boolean
-    matches: (e: CanvasKeyEvent) => boolean
+    defaults: readonly KeyCombo[]
     probe: CanvasKeyEvent
   },
 ): CanvasKeyEntry {
@@ -97,182 +98,255 @@ function defineKey<H extends 'chord' | 'nav' | 'action'>(
 export const CANVAS_KEYS: readonly CanvasKeyEntry[] = [
   defineKey('chord', {
     id: 'zoom-toggle',
-    keys: 'Ctrl+Space',
+    name: 'Zoom toggle',
     summary: 'Toggle Thread and Space. From Everything, open the selection.',
     thread: 'Zooms out to the space.',
     claimedAtThread: true,
-    matches: (e) => ctrlOnly(e) && e.code === 'Space',
+    defaults: [combo(' ', { code: 'Space', ctrl: true })],
     probe: { ...bare('', 'Space'), ctrlKey: true },
   }),
   defineKey('chord', {
     id: 'everything',
-    keys: 'Ctrl+0',
+    name: 'Frame everything',
     summary: 'Frame every space.',
     thread: 'Leaves the thread and frames every space.',
     claimedAtThread: true,
-    matches: (e) => ctrlOnly(e) && e.code === 'Digit0',
+    defaults: [combo('0', { code: 'Digit0', ctrl: true })],
     probe: { ...bare('', 'Digit0'), ctrlKey: true },
   }),
   defineKey('nav', {
     id: 'left',
-    keys: '←',
+    name: 'Select left',
     summary: 'Move the selection left. h is History, not left.',
     thread: 'Not claimed. The session keeps the arrow.',
     claimedAtThread: false,
-    matches: (e) => noMod(e) && e.key === 'ArrowLeft',
+    defaults: [combo('ArrowLeft')],
     probe: bare('ArrowLeft'),
   }),
   defineKey('nav', {
     id: 'right',
-    keys: '→ or l',
+    name: 'Select right',
     summary: 'Move the selection right.',
     thread: 'Not claimed.',
     claimedAtThread: false,
-    matches: (e) => noMod(e) && (e.key === 'ArrowRight' || e.key === 'l'),
+    defaults: [combo('ArrowRight'), combo('l')],
     probe: bare('l'),
   }),
   defineKey('nav', {
     id: 'up',
-    keys: '↑ or k',
+    name: 'Select up',
     summary: 'Move the selection up.',
     thread: 'Not claimed.',
     claimedAtThread: false,
-    matches: (e) => noMod(e) && (e.key === 'ArrowUp' || e.key === 'k'),
+    defaults: [combo('ArrowUp'), combo('k')],
     probe: bare('k'),
   }),
   defineKey('nav', {
     id: 'down',
-    keys: '↓ or j',
+    name: 'Select down',
     summary: 'Move the selection down.',
     thread: 'Not claimed.',
     claimedAtThread: false,
-    matches: (e) => noMod(e) && (e.key === 'ArrowDown' || e.key === 'j'),
+    defaults: [combo('ArrowDown'), combo('j')],
     probe: bare('j'),
   }),
   defineKey('nav', {
     id: 'open',
-    keys: 'Enter',
+    name: 'Open selection',
     summary: 'Open the selection at Thread.',
     thread: 'Not claimed. Enter stays in the composer.',
     claimedAtThread: false,
-    matches: (e) => noMod(e) && e.key === 'Enter',
+    defaults: [combo('Enter')],
     probe: bare('Enter'),
   }),
   defineKey('nav', {
     id: 'out',
-    keys: 'Esc',
+    name: 'Back out',
     summary: 'From Space, back to Everything. From Everything, nothing.',
     thread: 'Not claimed. Esc stays with the session.',
     claimedAtThread: false,
-    matches: (e) => noMod(e) && e.key === 'Escape',
+    defaults: [combo('Escape')],
     probe: bare('Escape'),
   }),
   defineKey('action', {
     id: 'new-space',
-    keys: 'N',
+    name: 'New space',
     summary: 'New space. Name only — defaults are edited after.',
     thread: 'Not claimed.',
     claimedAtThread: false,
-    matches: (e) => letter(e, 'n'),
+    defaults: [combo('n')],
     probe: bare('n'),
   }),
   defineKey('action', {
     id: 'rename-space',
-    keys: 'E',
+    name: 'Edit space',
     summary: 'Edit the space you are in (name and defaults).',
     thread: 'Not claimed. The region Edit button is hidden at Thread.',
     claimedAtThread: false,
-    matches: (e) => letter(e, 'e'),
+    defaults: [combo('e')],
     probe: bare('e'),
   }),
   defineKey('action', {
     id: 'new-thread',
-    keys: 'T',
+    name: 'New thread',
     summary: 'New thread in the space you are in.',
     thread: 'Not claimed. The dock + Thread button still opens the chooser.',
     claimedAtThread: false,
-    matches: (e) => letter(e, 't'),
+    defaults: [combo('t')],
     probe: bare('t'),
   }),
   defineKey('action', {
     id: 'move',
-    keys: 'M',
+    name: 'Move thread',
     summary:
       'Move the selected thread to another space, or back to History. Keyboard alternative to dragging.',
     thread: 'Not claimed. The dock Move button still opens Move to….',
     claimedAtThread: false,
-    matches: (e) => letter(e, 'm'),
+    defaults: [combo('m')],
     probe: bare('m'),
   }),
   defineKey('action', {
     id: 'history',
-    keys: 'H',
+    name: 'History',
     summary: 'Show or hide History.',
     thread: 'Not claimed. The dock History button still toggles it.',
     claimedAtThread: false,
-    matches: (e) => letter(e, 'h'),
+    defaults: [combo('h')],
     probe: bare('h'),
   }),
   defineKey('action', {
     id: 'find',
-    keys: '/',
+    name: 'Find',
     summary: 'Find an agent, thread, or space. Enter opens the top hit.',
     thread: 'Not claimed. Find closes when a thread opens.',
     claimedAtThread: false,
-    matches: (e) => noMod(e) && e.key === '/',
+    defaults: [combo('/')],
     probe: bare('/'),
   }),
   defineKey('action', {
     id: 'remove-thread',
-    keys: 'Delete',
+    name: 'Archive thread',
     summary: 'Archive the selected thread. An unpinned draft is discarded. Backspace does nothing.',
     thread: 'Not claimed.',
     claimedAtThread: false,
-    matches: (e) => noMod(e) && e.key === 'Delete',
+    defaults: [combo('Delete')],
     probe: bare('Delete'),
   }),
   defineKey('action', {
     id: 'remove-space',
-    keys: 'Shift+Delete',
+    name: 'Remove space',
     summary: 'Remove the space you are in. Its threads move to History; sessions are not deleted.',
     thread: 'Not claimed.',
     claimedAtThread: false,
-    matches: (e) => e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey && e.key === 'Delete',
+    defaults: [combo('Delete', { shift: true })],
     probe: { ...bare('Delete'), shiftKey: true },
   }),
   defineKey('action', {
     id: 'next-waiting',
-    keys: 'Ctrl+J',
+    name: 'Next waiting',
     summary: 'Open the next thread that is waiting on you.',
     thread: 'Not claimed. The Needs you dock button and the toast still jump.',
     claimedAtThread: false,
-    matches: (e) => ctrlOnly(e) && e.code === 'KeyJ',
+    defaults: [combo('j', { code: 'KeyJ', ctrl: true })],
     probe: { ...bare('j', 'KeyJ'), ctrlKey: true },
   }),
   defineKey('action', {
     id: 'mru',
-    keys: 'Ctrl+`',
+    name: 'Recent threads',
     summary: 'Step recent threads. Releasing Ctrl opens the preview.',
     thread: 'Not claimed. The dock Recent button opens the previous thread.',
     claimedAtThread: false,
-    matches: (e) => ctrlOnly(e) && e.code === 'Backquote',
+    defaults: [combo('`', { code: 'Backquote', ctrl: true })],
     probe: { ...bare('`', 'Backquote'), ctrlKey: true },
   }),
   defineKey('action', {
     id: 'keys',
-    keys: '?',
+    name: 'Keys list',
     summary: 'Show or hide this list.',
     thread: 'Not claimed. The dock ? button still opens it.',
     claimedAtThread: false,
-    matches: (e) => !e.ctrlKey && !e.altKey && !e.metaKey && e.key === '?',
+    defaults: [combo('?')],
     probe: { ...bare('?', 'Slash'), shiftKey: true },
   }),
 ]
 
+/** App-wide chords. Handled on every page, so each needs Ctrl, Alt or Super. */
+export interface HubKeyEntry {
+  id: HubKeyAction
+  name: string
+  summary: string
+  defaults: readonly KeyCombo[]
+}
+
+export const HUB_KEYS: readonly HubKeyEntry[] = [
+  {
+    id: 'agent-next',
+    name: 'Next agent',
+    summary: 'Open the next agent in the sidebar roster.',
+    defaults: [combo('Tab', { code: 'Tab', ctrl: true })],
+  },
+  {
+    id: 'agent-prev',
+    name: 'Previous agent',
+    summary: 'Open the previous agent in the sidebar roster.',
+    defaults: [combo('Tab', { code: 'Tab', ctrl: true, shift: true })],
+  },
+  {
+    id: 'toggle-sidebar',
+    name: 'Toggle side panes',
+    summary: 'Collapse or expand every side pane.',
+    defaults: [combo('e', { code: 'KeyE', ctrl: true, shift: true })],
+  },
+  {
+    id: 'new-conversation',
+    name: 'New conversation',
+    summary: 'Start a new conversation (with the selected agent).',
+    defaults: [combo('t', { code: 'KeyT', ctrl: true })],
+  },
+]
+
+/** Current binding for an action id: the user's override, else the default. */
+export function keysFor(id: string): readonly KeyCombo[] {
+  const { overrides } = useKeyBindings.getState()
+  if (Object.hasOwn(overrides, id)) return overrides[id]
+  return (
+    CANVAS_KEYS.find((entry) => entry.id === id)?.defaults ??
+    HUB_KEYS.find((entry) => entry.id === id)?.defaults ??
+    []
+  )
+}
+
+/** `H`, `→ or L`, `Ctrl+Space`; empty when unbound. */
+export function keyLabel(id: string): string {
+  return keysFor(id).map(formatCombo).join(' or ')
+}
+
+/** Where a combo may not go: a key active while typing must carry a command
+ *  modifier, and one key cannot drive two actions. */
+export function bindingProblem(id: string, next: KeyCombo): string | undefined {
+  const typingSafe =
+    HUB_KEYS.some((e) => e.id === id) || CANVAS_KEYS.some((e) => e.id === id && e.claimedAtThread)
+  if (typingSafe && !hasCommandModifier(next)) {
+    return 'Needs Ctrl, Alt or Super — this one works while you type.'
+  }
+  for (const entry of [...HUB_KEYS, ...CANVAS_KEYS]) {
+    if (entry.id === id) continue
+    if (keysFor(entry.id).some((c) => sameCombo(c, next))) {
+      return `${formatCombo(next)} is already ${entry.name}.`
+    }
+  }
+  return undefined
+}
+
+function matches(id: string, e: CanvasKeyEvent): boolean {
+  return keysFor(id).some((c) => matchCombo(c, e))
+}
+
 function matchFrom(handler: CanvasKeyEntry['handler'], e: CanvasKeyEvent): string | null {
+  if (useKeyBindings.getState().recording) return null
   for (const entry of CANVAS_KEYS) {
     if (entry.handler !== handler) continue
-    if (entry.matches(e)) return entry.id
+    if (matches(entry.id, e)) return entry.id
   }
   return null
 }
@@ -326,10 +400,11 @@ export function matchCanvasAction(e: CanvasKeySource): CanvasAction | null {
 export function matchHubKey(
   e: Pick<KeyboardEvent, 'key' | 'code' | 'ctrlKey' | 'shiftKey' | 'altKey' | 'metaKey'>,
 ): HubKeyAction | null {
-  if (!e.ctrlKey || e.altKey || e.metaKey) return null
-  if (e.key === 'Tab') return e.shiftKey ? 'agent-prev' : 'agent-next'
-  if (e.shiftKey && e.code === 'KeyE') return 'toggle-sidebar'
-  if (!e.shiftKey && e.code === 'KeyT') return 'new-conversation'
+  if (useKeyBindings.getState().recording) return null
+  const fields = readCanvasKey(e)
+  for (const entry of HUB_KEYS) {
+    if (matches(entry.id, fields)) return entry.id
+  }
   return null
 }
 

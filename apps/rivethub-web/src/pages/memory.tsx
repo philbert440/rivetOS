@@ -45,7 +45,9 @@ function Badge(props: { lastVerified?: string }): JSX.Element {
         ? 'border-warn/80 text-warn'
         : 'border-red text-red'
   return (
-    <span className={cn('rounded-full border bg-bg px-2 py-0.5 font-mono text-[10px]', color)}>
+    <span
+      className={cn('rounded-pill border bg-bg px-2 py-0.5 text-[11px] classic:text-[10px]', color)}
+    >
       {s.label}
     </span>
   )
@@ -61,8 +63,9 @@ function WikiNotConfigured(props: { needNode: boolean }): JSX.Element {
           : 'Point RivetHub at datahub (the mesh memory wiki host). The wiki is readable memory summaries, not the chat node.'}
       </p>
       <Link
-        to="/settings"
-        className="rounded bg-em-dim px-4 py-2 text-sm font-medium text-bg hover:bg-em"
+        to="/settings/$tab"
+        params={{ tab: 'node' }}
+        className="rounded-pill bg-em px-4 py-2 text-sm font-medium text-on-em hover:bg-em-dim classic:bg-em-dim classic:hover:bg-em classic:text-bg"
       >
         Open Settings
       </Link>
@@ -90,13 +93,9 @@ function WikiShell(props: {
         <header className="sticky top-0 z-10 shrink-0 border-b border-line bg-panel">
           <div className="flex h-12 flex-nowrap items-center gap-2 px-2">
             {props.onHubView ? (
-              <span className="shrink-0 font-mono text-xs text-ink-dim">Wiki</span>
+              <span className="shrink-0 text-xs text-ink-dim">Wiki</span>
             ) : (
-              <Link
-                to="/memory"
-                search={{ tab: 'wiki' }}
-                className="shrink-0 font-mono text-xs text-em"
-              >
+              <Link to="/memory" search={{ tab: 'wiki' }} className="shrink-0 text-xs text-em">
                 ← Memory
               </Link>
             )}
@@ -151,7 +150,7 @@ function WikiShell(props: {
             />
           </form>
           <nav className="mt-4 flex flex-col gap-0.5">
-            <div className="mb-1 font-mono text-[10px] uppercase tracking-wider text-ink-dim">
+            <div className="mb-1 text-[11px] uppercase tracking-wider text-ink-dim classic:text-[10px]">
               Navigate
             </div>
             {items.map((it) => (
@@ -170,7 +169,7 @@ function WikiShell(props: {
               </button>
             ))}
           </nav>
-          <div className="mt-auto border-t border-line pt-3 font-mono text-[10px] leading-relaxed text-ink-dim">
+          <div className="mt-auto border-t border-line pt-3 text-[11px] leading-relaxed text-ink-dim classic:text-[10px]">
             datahub · {props.endpointLabel}
             <br />
             distilled from conversation history
@@ -215,7 +214,7 @@ export function MemoryPage(): JSX.Element {
 
   if (needNode) return <NotConnected />
   if (pending) {
-    return <div className="p-8 font-mono text-sm text-ink-dim">resolving datahub…</div>
+    return <div className="p-8 text-sm text-ink-dim">resolving datahub…</div>
   }
   if (!endpoint) return <WikiNotConfigured needNode={false} />
 
@@ -237,9 +236,7 @@ export function MemoryPage(): JSX.Element {
       total={total}
     >
       <div className={cn('mx-auto max-w-4xl px-4 py-8 md:px-6 lg:px-10', stacked && 'px-3 py-4')}>
-        {index.isError && (
-          <div className="mb-4 font-mono text-sm text-red">{index.error.message}</div>
-        )}
+        {index.isError && <div className="mb-4 text-sm text-red">{index.error.message}</div>}
 
         {searching ? (
           <>
@@ -577,7 +574,7 @@ export function MemoryTopicPage(): JSX.Element {
 
   if (needNode) return <NotConnected />
   if (pending) {
-    return <div className="p-8 font-mono text-sm text-ink-dim">resolving datahub…</div>
+    return <div className="p-8 text-sm text-ink-dim">resolving datahub…</div>
   }
   if (!endpoint) return <WikiNotConfigured needNode={false} />
 
@@ -716,7 +713,7 @@ function ArticleBody(props: {
         <button
           type="button"
           onClick={props.onCopy}
-          className="ml-auto font-mono text-[11px] text-ink-dim hover:text-em"
+          className="ml-auto text-xs text-ink-dim hover:text-em classic:text-[11px]"
         >
           {props.copied ? 'copied' : 'copy md'}
         </button>
@@ -738,7 +735,7 @@ function ArticleBody(props: {
                 key={`${h.date}-${h.title}-${String(i)}`}
                 className="border-l-2 border-line pl-4"
               >
-                <h3 className="mb-2 font-mono text-sm text-em">
+                <h3 className="mb-2 text-sm text-em">
                   {h.date}
                   {h.title ? ` — ${h.title}` : ''}
                 </h3>
@@ -749,7 +746,7 @@ function ArticleBody(props: {
           {p.sources.length > 0 && (
             <section>
               <h2 className="mb-2 border-b border-line pb-1 text-lg font-semibold">Provenance</h2>
-              <ul className="space-y-1 font-mono text-xs text-ink-dim">
+              <ul className="space-y-1 text-xs text-ink-dim">
                 {p.sources.map((s, i) => (
                   <li key={String(i)}>
                     {s.kind}: {s.ids.join(', ')}
@@ -766,7 +763,7 @@ function ArticleBody(props: {
         <div className="mt-6">
           {contentsDisclosure && toc.length > 1 ? (
             <details className="mb-6 rounded-lg border border-line bg-panel/80 p-3 text-sm">
-              <summary className="cursor-pointer font-mono text-[10px] uppercase tracking-wide text-ink-dim">
+              <summary className="cursor-pointer text-[11px] uppercase tracking-wider font-medium text-ink-dim classic:font-normal classic:text-[10px] classic:tracking-wide">
                 Contents
               </summary>
               <div className="mt-2">
@@ -834,7 +831,7 @@ function ArticleBody(props: {
 
           {!contentsDisclosure && toc.length > 1 ? (
             <nav className="mb-6 max-w-sm rounded-lg border border-line bg-panel/80 p-3 text-sm">
-              <div className="mb-2 font-mono text-[10px] uppercase tracking-wide text-ink-dim">
+              <div className="mb-2 text-[11px] uppercase tracking-wider font-medium text-ink-dim classic:font-normal classic:text-[10px] classic:tracking-wide">
                 Contents
               </div>
               <TocEntries toc={toc} />
@@ -856,7 +853,7 @@ function ArticleBody(props: {
                 {p.history.slice(0, 4).map((h, i) => (
                   <details key={`${h.date}-${String(i)}`} open={i === 0}>
                     <summary className="cursor-pointer text-sm font-medium text-ink">
-                      <span className="font-mono text-em">{h.date}</span>
+                      <span className="text-em">{h.date}</span>
                       {h.title ? ` — ${h.title}` : ''}
                     </summary>
                     <div className="mt-2 border-l border-line pl-3">

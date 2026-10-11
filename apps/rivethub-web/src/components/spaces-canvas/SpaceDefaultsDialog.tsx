@@ -118,9 +118,11 @@ export function SpaceDefaultsDialog(props: {
       }}
     >
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-50 bg-bg/70" />
-        <Dialog.Content className="fixed top-1/2 left-1/2 z-50 w-[28rem] max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 border border-line bg-panel p-4 font-mono shadow-lg outline-none">
-          <Dialog.Title className="mb-3 text-sm text-ink">Edit space</Dialog.Title>
+        <Dialog.Overlay className="fixed inset-0 z-50 bg-black/40 classic:bg-bg/70" />
+        <Dialog.Content className="fixed top-1/2 left-1/2 z-50 w-[28rem] max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 border border-line bg-panel p-4 shadow-pop outline-none material:rounded-3xl material:border-transparent material:bg-surface material:p-6">
+          <Dialog.Title className="mb-5 text-sm leading-relaxed text-ink-dim classic:mb-3 classic:text-ink">
+            Edit space
+          </Dialog.Title>
           <Dialog.Description className="mb-3 text-xs text-ink-dim">
             New threads in this space start with these. Threads already running are not changed.
           </Dialog.Description>
@@ -140,7 +142,7 @@ export function SpaceDefaultsDialog(props: {
               value={name}
               onChange={(event) => setName(event.target.value)}
               placeholder="Space name"
-              className="mb-3 w-full border border-line bg-bg px-2 py-1.5 text-sm text-ink outline-none"
+              className="mb-3 w-full border border-line bg-bg px-2 py-1.5 text-sm text-ink outline-none material:rounded-lg"
             />
             <label className="mb-1 block text-xs text-ink-dim" htmlFor="space-agent">
               Agent
@@ -151,7 +153,7 @@ export function SpaceDefaultsDialog(props: {
                 <button
                   type="button"
                   aria-label="Clear missing preset"
-                  className="border border-line px-2 py-1 text-ink hover:text-em"
+                  className="border border-line px-2 py-1 text-ink hover:text-em material:rounded-pill material:hover:bg-ink/6"
                   onClick={() => setMissingId(undefined)}
                 >
                   Clear
@@ -208,7 +210,7 @@ export function SpaceDefaultsDialog(props: {
                   <button
                     type="button"
                     onClick={() => setEffort('medium')}
-                    className="border border-line px-2 py-1 text-xs text-ink-dim hover:text-ink"
+                    className="border border-line px-2 py-1 text-xs text-ink-dim hover:text-ink material:rounded-pill material:hover:bg-ink/6"
                   >
                     Choose
                   </button>
@@ -225,14 +227,14 @@ export function SpaceDefaultsDialog(props: {
               <button
                 type="button"
                 onClick={props.onClose}
-                className="border border-line px-3 py-1.5 text-xs text-ink-dim hover:text-ink"
+                className="border border-line px-3 py-1.5 text-xs text-ink-dim hover:text-ink material:rounded-pill material:hover:bg-ink/6"
               >
                 Cancel
               </button>
               <button
                 type="submit"
                 disabled={!name.trim() || !ready}
-                className="bg-em-dim px-3 py-1.5 text-xs font-medium text-bg hover:bg-em disabled:opacity-40"
+                className="bg-em px-3 py-1.5 text-xs font-medium text-on-em hover:bg-em-dim disabled:opacity-40 classic:bg-em-dim classic:hover:bg-em classic:text-bg"
               >
                 Save
               </button>

@@ -33,10 +33,10 @@ function evalBadge(task: TaskWire): JSX.Element | undefined {
     // Without this, a completed-awaiting-eval task reads as "skipped"
     // (#303 review).
     if (task.acceptanceCriteria.length > 0 && task.status === 'completed')
-      return <span className="font-mono text-[11px] text-ink-dim">eval:pending</span>
+      return <span className="text-xs text-ink-dim classic:text-[11px]">eval:pending</span>
     return undefined
   }
-  return <span className={`font-mono text-[11px] ${evalColor(verdict)}`}>eval:{verdict}</span>
+  return <span className={`text-xs ${evalColor(verdict)} classic:text-[11px]`}>eval:{verdict}</span>
 }
 
 /** Shared verdict → color so list and detail can't disagree (#303 review). */
@@ -70,7 +70,9 @@ export function TasksPage(): JSX.Element {
   return (
     <div className="mx-auto max-w-4xl px-4 py-8 md:px-6">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <h1 className="font-mono text-lg font-semibold text-em">Tasks</h1>
+        <h1 className="text-[22px] font-semibold text-ink classic:text-em classic:text-lg">
+          Tasks
+        </h1>
         <div className="flex items-center gap-2">
           <Select
             value={statusFilter}
@@ -85,7 +87,7 @@ export function TasksPage(): JSX.Element {
           <button
             type="button"
             onClick={() => setShowCreate((v) => !v)}
-            className="rounded bg-em-dim px-3 py-1.5 text-sm font-medium text-bg hover:bg-em"
+            className="rounded-pill bg-em px-3 py-1.5 text-sm font-medium text-on-em hover:bg-em-dim classic:bg-em-dim classic:hover:bg-em classic:text-bg"
           >
             {showCreate ? 'Close' : 'New task'}
           </button>
@@ -103,18 +105,18 @@ export function TasksPage(): JSX.Element {
         />
       )}
 
-      {tasks.isError && <div className="font-mono text-sm text-red">{tasks.error.message}</div>}
+      {tasks.isError && <div className="text-sm text-red">{tasks.error.message}</div>}
 
       <ul className="flex flex-col gap-2">
         {tasks.data?.tasks.map((t) => (
           <li key={t.id}>
             <button
               onClick={() => void navigate({ to: '/tasks/$taskId', params: { taskId: t.id } })}
-              className="flex w-full items-center justify-between gap-4 rounded border border-line bg-panel px-4 py-3 text-left hover:border-em"
+              className="flex w-full items-center justify-between gap-4 rounded-2xl border border-transparent bg-panel-2 px-4 py-3 text-left hover:bg-line/60 classic:bg-panel classic:border-line classic:hover:border-em"
             >
               <span className="min-w-0">
                 <span className="block truncate text-sm">{t.goal}</span>
-                <span className="mt-0.5 block font-mono text-[11px] text-ink-dim">
+                <span className="mt-0.5 block text-xs text-ink-dim classic:text-[11px]">
                   {t.agentId} · {t.executor}
                   {t.executorTarget ? `/${t.executorTarget}` : ''} ·{' '}
                   {new Date(t.createdAt).toLocaleString()}
@@ -122,7 +124,7 @@ export function TasksPage(): JSX.Element {
               </span>
               <span className="flex shrink-0 items-center gap-3">
                 {evalBadge(t)}
-                <span className={`font-mono text-xs ${STATUS_COLORS[t.status]}`}>{t.status}</span>
+                <span className={`text-xs ${STATUS_COLORS[t.status]}`}>{t.status}</span>
               </span>
             </button>
           </li>
@@ -203,7 +205,7 @@ function TaskCreateForm(props: {
 
   return (
     <div className="mb-6 rounded border border-line bg-panel p-4">
-      <div className="mb-3 font-mono text-xs font-semibold text-em">New task</div>
+      <div className="mb-3 text-xs font-semibold text-em">New task</div>
 
       <label className="mb-1 block text-xs text-ink-dim">Goal</label>
       <textarea
@@ -211,7 +213,7 @@ function TaskCreateForm(props: {
         onChange={(e) => setGoal(e.target.value)}
         rows={3}
         placeholder="What should the agent do?"
-        className="mb-3 w-full resize-y rounded border border-line bg-bg px-3 py-2 text-sm outline-none focus:border-em"
+        className="mb-3 w-full resize-y rounded-lg border border-line bg-bg px-3 py-2 text-sm outline-none focus:border-em"
         autoFocus
       />
 
@@ -222,7 +224,7 @@ function TaskCreateForm(props: {
           title="agent"
           label="Agent"
           disabled={agents.length === 0}
-          className="h-9 w-full min-w-0 font-mono text-sm"
+          className="h-9 w-full min-w-0 text-sm"
           onChange={setAgentId}
           options={
             agents.length === 0
@@ -240,7 +242,7 @@ function TaskCreateForm(props: {
         onChange={(e) => setCriteriaText(e.target.value)}
         rows={2}
         placeholder="e.g. tests pass&#10;docs updated"
-        className="mb-3 w-full resize-y rounded border border-line bg-bg px-3 py-2 font-mono text-xs outline-none focus:border-em"
+        className="mb-3 w-full resize-y rounded-lg border border-line bg-bg px-3 py-2 text-xs outline-none focus:border-em"
       />
 
       <div className="flex items-center gap-2">
@@ -248,7 +250,7 @@ function TaskCreateForm(props: {
           type="button"
           onClick={() => void submit()}
           disabled={submitting || !goal.trim()}
-          className="rounded bg-em-dim px-4 py-2 text-sm font-medium text-bg hover:bg-em disabled:opacity-40"
+          className="rounded-pill bg-em px-4 py-2 text-sm font-medium text-on-em hover:bg-em-dim disabled:opacity-40 classic:bg-em-dim classic:hover:bg-em classic:text-bg"
         >
           {submitting ? 'Creating…' : 'Create'}
         </button>
@@ -256,11 +258,11 @@ function TaskCreateForm(props: {
           type="button"
           onClick={props.onCancel}
           disabled={submitting}
-          className="rounded border border-line px-3 py-2 text-sm text-ink-dim hover:border-em hover:text-ink disabled:opacity-40"
+          className="rounded-pill border border-line px-3 py-2 text-sm text-ink-dim hover:bg-ink/6 hover:text-ink disabled:opacity-40 classic:hover:bg-transparent classic:hover:border-em"
         >
           Cancel
         </button>
-        {error && <span className="font-mono text-xs text-red">✗ {error}</span>}
+        {error && <span className="text-xs text-red">✗ {error}</span>}
       </div>
     </div>
   )
@@ -317,7 +319,7 @@ export function TaskDetailPage(): JSX.Element {
       task.error instanceof GatewayError && task.error.status === 404
         ? 'Task not found. Check the task link.'
         : task.error.message
-    return <div className="p-8 font-mono text-sm text-red">{message}</div>
+    return <div className="p-8 text-sm text-red">{message}</div>
   }
   if (!t) return <div className="p-8 text-sm text-ink-dim">loading…</div>
 
@@ -348,7 +350,7 @@ export function TaskDetailPage(): JSX.Element {
         />
       )}
 
-      <div className="mb-6 grid grid-cols-2 gap-x-8 gap-y-1 rounded border border-line bg-panel p-4 font-mono text-xs sm:grid-cols-3">
+      <div className="mb-6 grid grid-cols-2 gap-x-8 gap-y-1 rounded border border-line bg-panel p-4 text-xs sm:grid-cols-3">
         <Cell k="status" v={t.status} className={STATUS_COLORS[t.status]} />
         <Cell k="agent" v={t.agentId} />
         <Cell k="executor" v={`${t.executor}${t.executorTarget ? `/${t.executorTarget}` : ''}`} />
@@ -383,7 +385,7 @@ export function TaskDetailPage(): JSX.Element {
                   <span>
                     {c.description}
                     {report?.evidence && (
-                      <span className="block font-mono text-[11px] text-ink-dim">
+                      <span className="block text-xs text-ink-dim classic:text-[11px]">
                         {report.evidence}
                       </span>
                     )}
@@ -397,7 +399,7 @@ export function TaskDetailPage(): JSX.Element {
 
       {t.error && (
         <Section title="error">
-          <p className="whitespace-pre-wrap font-mono text-xs text-red">{t.error}</p>
+          <p className="whitespace-pre-wrap text-xs text-red">{t.error}</p>
         </Section>
       )}
 
@@ -408,7 +410,7 @@ export function TaskDetailPage(): JSX.Element {
               value={steerText}
               onChange={(e) => setSteerText(e.target.value)}
               placeholder="steer message…"
-              className="flex-1 rounded border border-line bg-panel px-3 py-2 text-sm outline-none focus:border-em"
+              className="flex-1 rounded-lg border border-line bg-panel px-3 py-2 text-sm outline-none focus:border-em"
             />
             <button
               onClick={() =>
@@ -419,7 +421,7 @@ export function TaskDetailPage(): JSX.Element {
                 )
               }
               disabled={!steerText.trim() || acting}
-              className="rounded border border-line px-3 py-2 text-sm hover:border-em disabled:opacity-40"
+              className="rounded-pill border border-line px-3 py-2 text-sm hover:bg-ink/6 disabled:opacity-40 classic:hover:bg-transparent classic:hover:border-em"
             >
               Steer
             </button>
@@ -431,12 +433,12 @@ export function TaskDetailPage(): JSX.Element {
                 })()
               }}
               disabled={acting}
-              className="rounded border border-red/40 px-3 py-2 text-sm text-red hover:border-red disabled:opacity-40"
+              className="rounded-pill border border-red/40 px-3 py-2 text-sm text-red hover:bg-red/10 disabled:opacity-40 classic:hover:bg-transparent classic:hover:border-red"
             >
               Kill
             </button>
           </div>
-          {actionError && <div className="mt-2 font-mono text-xs text-red">✗ {actionError}</div>}
+          {actionError && <div className="mt-2 text-xs text-red">✗ {actionError}</div>}
         </Section>
       )}
     </div>
@@ -455,7 +457,7 @@ function Cell(props: { k: string; v: string; className?: string }): JSX.Element 
 function Section(props: { title: string; children: React.ReactNode }): JSX.Element {
   return (
     <div className="mb-6">
-      <div className="mb-2 font-mono text-xs font-semibold text-em">{props.title}</div>
+      <div className="mb-2 text-xs font-semibold text-em">{props.title}</div>
       {props.children}
     </div>
   )

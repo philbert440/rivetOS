@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  bindingProblem,
   CANVAS_KEYS,
   createPressScheduler,
   cycleAgentId,
@@ -8,8 +9,11 @@ import {
   matchCanvasAction,
   matchCanvasChord,
   matchCanvasNav,
+  keyLabel,
   matchHubKey,
 } from './hub-keys.js'
+import { combo } from './key-combo.js'
+import { useKeyBindings } from '../stores/key-bindings.js'
 
 type KeyFields = Parameters<typeof matchHubKey>[0]
 
@@ -362,5 +366,44 @@ describe('createPressScheduler', () => {
     vi.advanceTimersByTime(200)
     expect(opened).toEqual([2])
     expect(isCurrentSeq(2, current)).toBe(true)
+  })
+})
+
+describe('rebinding', () => {
+  afterEach(() => {
+    useKeyBindings.setState({ overrides: {}, recording: false })
+  })
+
+  it('a rebound shortcut replaces its default everywhere it is matched', () => {
+    useKeyBindings.getState().setBinding('history', [combo('y')])
+    expect(matchCanvasAction(keyEvent({ key: 'y' }))).toBe('history')
+    expect(matchCanvasAction(keyEvent({ key: 'h' }))).toBeNull()
+    expect(keyLabel('history')).toBe('Y')
+    useKeyBindings
+      .getState()
+      .setBinding('new-conversation', [combo('n', { code: 'KeyN', alt: true })])
+    expect(matchHubKey(keyEvent({ key: 'n', code: 'KeyN', altKey: true }))).toBe('new-conversation')
+    expect(matchHubKey(keyEvent({ key: 't', code: 'KeyT', ctrlKey: true }))).toBeNull()
+  })
+
+  it('an emptied binding is unbound, and reset restores the default', () => {
+    useKeyBindings.getState().setBinding('find', [])
+    expect(matchCanvasAction(keyEvent({ key: '/' }))).toBeNull()
+    expect(keyLabel('find')).toBe('')
+    useKeyBindings.getState().resetBinding('find')
+    expect(matchCanvasAction(keyEvent({ key: '/' }))).toBe('find')
+  })
+
+  it('matches nothing while Settings is recording a key', () => {
+    useKeyBindings.getState().setRecording(true)
+    expect(matchHubKey(keyEvent({ key: 'Tab', code: 'Tab', ctrlKey: true }))).toBeNull()
+    expect(matchCanvasAction(keyEvent({ key: 'h' }))).toBeNull()
+  })
+
+  it('refuses a key already in use, or a bare key where typing happens', () => {
+    expect(bindingProblem('new-thread', combo('h'))).toBe('H is already History.')
+    expect(bindingProblem('new-conversation', combo('x'))).toMatch(/Needs Ctrl, Alt or Super/)
+    expect(bindingProblem('zoom-toggle', combo('z'))).toMatch(/Needs Ctrl, Alt or Super/)
+    expect(bindingProblem('new-thread', combo('y'))).toBeUndefined()
   })
 })
