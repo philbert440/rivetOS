@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
@@ -11,7 +12,6 @@ use crate::timefmt::now_millis;
 
 type HandlerFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
 type Handler = Arc<dyn Fn(InboundMessage) -> HandlerFuture + Send + Sync>;
-type ProcessFut = Pin<Box<dyn Future<Output = ()> + Send>>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedCommand {
@@ -50,11 +50,17 @@ pub fn parse_command(text: &str) -> Option<ParsedCommand> {
 }
 
 struct QueueInner {
-    queue: Vec<QueuedMessage>,
+    queue: VecDeque<QueuedMessage>,
     processing: bool,
     owner: u64,
     next_owner: u64,
     handler: Option<Handler>,
+}
+
+struct Job {
+    owner: u64,
+    handler: Handler,
+    message: Box<InboundMessage>,
 }
 
 pub struct MessageQueue {
@@ -64,28 +70,20 @@ pub struct MessageQueue {
 enum Enqueue {
     Dropped,
     Queued,
-    Run {
-        owner: u64,
-        handler: Handler,
-        message: Box<InboundMessage>,
-    },
+    Run(Job),
 }
 
-enum DrainStep {
-    Stop,
-    Dropped,
-    Run {
-        owner: u64,
-        handler: Handler,
-        message: Box<InboundMessage>,
-    },
+enum DropAction {
+    Ignore,
+    Idle,
+    Resume,
 }
 
 impl MessageQueue {
     pub fn new() -> Self {
         Self {
             inner: Arc::new(Mutex::new(QueueInner {
-                queue: Vec::new(),
+                queue: VecDeque::new(),
                 processing: false,
                 owner: 0,
                 next_owner: 1,
@@ -127,33 +125,9 @@ impl MessageQueue {
     }
 
     pub async fn enqueue(&self, message: InboundMessage) {
-        let decision = with_lock(&self.inner, |inner| {
-            if inner.processing {
-                inner.queue.push(QueuedMessage {
-                    message,
-                    received_at: JsNumber::from(now_millis()),
-                });
-                Enqueue::Queued
-            } else if let Some(handler) = inner.handler.clone() {
-                let owner = alloc_owner(inner);
-                inner.processing = true;
-                inner.owner = owner;
-                Enqueue::Run {
-                    owner,
-                    handler,
-                    message: Box::new(message),
-                }
-            } else {
-                Enqueue::Dropped
-            }
-        });
-        if let Enqueue::Run {
-            owner,
-            handler,
-            message,
-        } = decision
-        {
-            run_owned(Arc::clone(&self.inner), owner, handler, *message).await;
+        let decision = with_lock(&self.inner, |inner| decide_enqueue(inner, message));
+        if let Enqueue::Run(job) = decision {
+            drive(Arc::clone(&self.inner), Some(job)).await;
         }
     }
 
@@ -162,8 +136,14 @@ impl MessageQueue {
     }
 
     pub async fn end_turn(&self) {
-        with_lock(&self.inner, |inner| inner.processing = false);
-        drain_queue(Arc::clone(&self.inner)).await;
+        let job = with_lock(&self.inner, |state| {
+            if state.owner != 0 {
+                return None;
+            }
+            state.processing = false;
+            take_job(state)
+        });
+        drive(Arc::clone(&self.inner), job).await;
     }
 }
 
@@ -171,6 +151,38 @@ impl Default for MessageQueue {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn decide_enqueue(inner: &mut QueueInner, message: InboundMessage) -> Enqueue {
+    if inner.processing {
+        push_back(inner, message);
+        return Enqueue::Queued;
+    }
+    let Some(handler) = inner.handler.clone() else {
+        return Enqueue::Dropped;
+    };
+    if !inner.queue.is_empty() {
+        push_back(inner, message);
+        return match take_job(inner) {
+            Some(job) => Enqueue::Run(job),
+            None => Enqueue::Dropped,
+        };
+    }
+    let owner = alloc_owner(inner);
+    inner.processing = true;
+    inner.owner = owner;
+    Enqueue::Run(Job {
+        owner,
+        handler,
+        message: Box::new(message),
+    })
+}
+
+fn push_back(inner: &mut QueueInner, message: InboundMessage) {
+    inner.queue.push_back(QueuedMessage {
+        message,
+        received_at: JsNumber::from(now_millis()),
+    });
 }
 
 fn alloc_owner(inner: &mut QueueInner) -> u64 {
@@ -182,66 +194,46 @@ fn alloc_owner(inner: &mut QueueInner) -> u64 {
     owner
 }
 
-fn release_owner(inner: &Mutex<QueueInner>, owner: u64) {
-    with_lock(inner, |state| {
-        if state.owner == owner {
+fn take_job(state: &mut QueueInner) -> Option<Job> {
+    loop {
+        let Some(queued) = state.queue.pop_front() else {
             state.processing = false;
             state.owner = 0;
-        }
-    });
+            return None;
+        };
+        let Some(handler) = state.handler.clone() else {
+            continue;
+        };
+        let owner = alloc_owner(state);
+        state.processing = true;
+        state.owner = owner;
+        return Some(Job {
+            owner,
+            handler,
+            message: Box::new(queued.message),
+        });
+    }
 }
 
-fn run_owned(
-    inner: Arc<Mutex<QueueInner>>,
-    owner: u64,
-    handler: Handler,
-    message: InboundMessage,
-) -> ProcessFut {
-    Box::pin(async move {
+async fn drive(inner: Arc<Mutex<QueueInner>>, mut job: Option<Job>) {
+    while let Some(current) = job.take() {
         let mut guard = OwnerGuard {
             inner: Arc::clone(&inner),
-            owner,
+            owner: current.owner,
             armed: true,
         };
-        handler(message).await;
+        (current.handler)(*current.message).await;
         guard.armed = false;
-        release_owner(&inner, owner);
-        drain_queue(inner).await;
-    })
+        job = claim_next_owned(&inner, current.owner);
+    }
 }
 
-fn drain_queue(inner: Arc<Mutex<QueueInner>>) -> ProcessFut {
-    Box::pin(async move {
-        loop {
-            let step = with_lock(&inner, |state| {
-                if state.processing || state.queue.is_empty() {
-                    return DrainStep::Stop;
-                }
-                let message = state.queue.remove(0).message;
-                let Some(handler) = state.handler.clone() else {
-                    return DrainStep::Dropped;
-                };
-                let owner = alloc_owner(state);
-                state.processing = true;
-                state.owner = owner;
-                DrainStep::Run {
-                    owner,
-                    handler,
-                    message: Box::new(message),
-                }
-            });
-            match step {
-                DrainStep::Stop => break,
-                DrainStep::Dropped => {}
-                DrainStep::Run {
-                    owner,
-                    handler,
-                    message,
-                } => {
-                    run_owned(Arc::clone(&inner), owner, handler, *message).await;
-                }
-            }
+fn claim_next_owned(inner: &Mutex<QueueInner>, owner: u64) -> Option<Job> {
+    with_lock(inner, |state| {
+        if state.owner != owner {
+            return None;
         }
+        take_job(state)
     })
 }
 
@@ -259,22 +251,37 @@ impl Drop for OwnerGuard {
         self.armed = false;
         let inner = Arc::clone(&self.inner);
         let owner = self.owner;
-        let resume = with_lock(&inner, |state| {
+        let action = with_lock(&inner, |state| {
             if state.owner != owner {
-                return false;
+                return DropAction::Ignore;
             }
-            state.processing = false;
-            state.owner = 0;
-            !state.queue.is_empty()
+            if state.queue.is_empty() {
+                state.processing = false;
+                state.owner = 0;
+                return DropAction::Idle;
+            }
+            DropAction::Resume
         });
-        if !resume {
+        if !matches!(action, DropAction::Resume) {
             return;
         }
         let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            with_lock(&inner, |state| {
+                if state.owner == owner {
+                    state.processing = false;
+                    state.owner = 0;
+                }
+            });
             return;
         };
         std::mem::drop(runtime.spawn(async move {
-            drain_queue(inner).await;
+            let job = with_lock(&inner, |state| {
+                if state.owner != owner {
+                    return None;
+                }
+                take_job(state)
+            });
+            drive(inner, job).await;
         }));
     }
 }

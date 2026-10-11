@@ -81,24 +81,30 @@ mod tests {
 
     #[test]
     fn en_us_new_york_matches_the_recorded_node_goldens() {
-        let text = std::fs::read_to_string(
-            "/rivet-shared/plans/rust-rewrite/standardize/goldens/js-semantics.json",
-        )
-        .expect("golden");
+        let path =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/golden/dates.json");
+        let text = std::fs::read_to_string(&path).expect("golden");
         let value: serde_json::Value = serde_json::from_str(&text).expect("json");
+        assert_eq!(
+            value["source"].as_str(),
+            Some("Node v22.22.2 ICU 78.2 tzdata 2025c")
+        );
         let dates = value["dates"].as_array().expect("dates");
         assert_eq!(dates.len(), 8);
         let mut seen = 0usize;
         for zone in dates {
+            let tz = zone["tz"].as_str().expect("tz");
+            assert!(!tz.is_empty());
             let rows = zone["rows"].as_array().expect("rows");
-            assert_eq!(rows.len(), 14);
+            assert_eq!(rows.len(), 14, "{tz}");
             for row in rows {
                 let ms = row["ms"].as_i64().expect("ms");
                 let expected = row["locale_string_en_us_new_york"]
                     .as_str()
                     .expect("locale");
+                assert!(row["time_hhmm_h12false"].as_str().is_some(), "{tz} {ms}");
                 let instant = DateTime::from_timestamp_millis(ms).expect("instant");
-                assert_eq!(format_en_us_new_york(instant), expected, "{ms}");
+                assert_eq!(format_en_us_new_york(instant), expected, "{tz} {ms}");
                 assert!(
                     expected.ends_with(" AM") || expected.ends_with(" PM"),
                     "{expected}"
