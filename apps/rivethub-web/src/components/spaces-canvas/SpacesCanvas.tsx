@@ -36,6 +36,7 @@ import { bindFocusedSpace, bindSpaceThreadStarter } from '../../lib/new-conversa
 import { useKeyLabel } from '../../lib/use-key-label.js'
 import { storageKey } from '../../lib/session-rekey.js'
 import { useRosterAgents } from '../../lib/use-agent-roster.js'
+import { AGENT_DRAG_MIME, isAgentDrag } from '../../lib/agent-drag.js'
 import { modelNamesFrom } from './tile-label.js'
 import { useArchived } from '../../stores/archived.js'
 import { useChat } from '../../stores/chat.js'
@@ -83,7 +84,12 @@ import {
   type DropHit,
 } from './drop-target.js'
 import { HistoryPanel } from './HistoryPanel.js'
-import { applyChooser, startThreadInSpace, takeOffRosterNotice } from './new-thread.js'
+import {
+  applyChooser,
+  startThreadInSpace,
+  startThreadWithDefaults,
+  takeOffRosterNotice,
+} from './new-thread.js'
 import { NewThreadDialog } from './NewThreadDialog.js'
 import { SpaceDefaultsDialog } from './SpaceDefaultsDialog.js'
 import { defaultAgentChip, startablePreset, startsInDirectory } from './space-defaults.js'
@@ -158,6 +164,8 @@ function hitKey(hit: DropHit): string {
 interface DragState {
   source: 'tile' | 'history'
   memberKey: string
+  /** History drags: the row key, to open the thread after a slot drop. */
+  rowKey?: string
   originSpace: string | undefined
   title: string
   x: number
@@ -1022,6 +1030,12 @@ export function SpacesCanvas(props: {
   }, [])
 
   useEffect(() => {
+    // The empty "+ New thread" slot under the pointer, by its space id.
+    const slotAt = (clientX: number, clientY: number): string | undefined =>
+      document
+        .elementsFromPoint(clientX, clientY)
+        .find((el) => el.hasAttribute('data-add-thread'))
+        ?.getAttribute('data-add-thread') ?? undefined
     const hitAt = (clientX: number, clientY: number): DropHit => {
       const stage = stageRef.current
       if (!stage) return { kind: 'none' }
@@ -1094,6 +1108,19 @@ export function SpacesCanvas(props: {
       const action = resolveDrop({ source: drag.source, originSpace: drag.originSpace, hit })
       if (action === 'place' && hit.kind === 'region') {
         useSpaces.getState().place(drag.memberKey, hit.id)
+        // Dropped on the space's empty "+ New thread" slot: pick the
+        // session up there — open it, transcript and all.
+        if (
+          drag.source === 'history' &&
+          drag.rowKey &&
+          slotAt(event.clientX, event.clientY) === hit.id &&
+          useSpaces.getState().spaceOf(drag.memberKey) === hit.id
+        ) {
+          // You picked it up: History steps aside so it does not cover the
+          // open thread's right edge.
+          setHistoryWanted(false)
+          beginThreadRef.current(drag.rowKey)
+        }
       } else if (action === 'unplace') {
         useSpaces.getState().unplace(drag.memberKey)
       }
@@ -1423,6 +1450,34 @@ export function SpacesCanvas(props: {
                 }}
                 title={slotStartsIn}
                 onClick={() => setNewThread({ spaceId: region.id })}
+                // A roster agent dragged in from the sidebar starts a session
+                // with that agent here, on the agent's own model and effort.
+                onDragOver={(event) => {
+                  if (!isAgentDrag([...event.dataTransfer.types])) return
+                  event.preventDefault()
+                  event.dataTransfer.dropEffect = 'copy'
+                  event.currentTarget.setAttribute('data-drop-active', '')
+                }}
+                onDragLeave={(event) => {
+                  event.currentTarget.removeAttribute('data-drop-active')
+                }}
+                onDrop={(event) => {
+                  event.currentTarget.removeAttribute('data-drop-active')
+                  const agentId = event.dataTransfer.getData(AGENT_DRAG_MIME)
+                  if (!agentId) return
+                  event.preventDefault()
+                  const id = startThreadWithDefaults(
+                    region.id,
+                    { agentId },
+                    useConnection.getState().baseUrl,
+                    rosterRef.current,
+                  )
+                  setRosterNotice(takeOffRosterNotice())
+                  if (id) {
+                    setHistoryWanted(false)
+                    beginThread(id)
+                  }
+                }}
               >
                 + New thread
               </button>
@@ -1462,6 +1517,7 @@ export function SpacesCanvas(props: {
           if (pick || modalRef.current || event.button !== 0) return
           dragRef.current = {
             source: 'history',
+            rowKey: item.key,
             memberKey: rowMembershipKey(baseUrl, item, membership),
             originSpace: useSpaces.getState().spaceOf(rowMembershipKey(baseUrl, item, membership)),
             title: item.title,
@@ -1488,9 +1544,7 @@ export function SpacesCanvas(props: {
           data-hud=""
           aria-label="Location"
           className="pointer-events-auto absolute top-4 flex max-w-[60%] items-center gap-1 border border-line bg-panel px-1 py-1 text-sm text-ink-dim material:rounded-2xl material:border-line/40 material:shadow-pop"
-          // The breadcrumb is the altitude control, so it steps right of the
-          // History panel (w-60) instead of hiding under it.
-          style={{ left: historyOpen ? 'calc(15rem + 1rem)' : '1rem' }}
+          style={{ left: '1rem' }}
         >
           <button
             type="button"
@@ -1528,7 +1582,9 @@ export function SpacesCanvas(props: {
             separate zoom ladder. */}
         <div
           data-hud=""
-          className="pointer-events-auto absolute top-4 right-4 flex items-center gap-2"
+          className="pointer-events-auto absolute top-4 flex items-center gap-2"
+          // History opens on the right (w-60); the buttons step left of it.
+          style={{ right: historyOpen ? 'calc(15rem + 1rem)' : '1rem' }}
         >
           <button
             type="button"
@@ -1569,7 +1625,8 @@ export function SpacesCanvas(props: {
           <div
             data-hud=""
             data-dock-bar=""
-            className="pointer-events-auto absolute top-15 right-4 flex max-h-[calc(100%-5rem)] flex-col items-stretch gap-0.5 overflow-y-auto border border-line bg-panel p-1 [&>button]:flex [&>button]:items-baseline [&>button]:gap-2 [&>button]:text-left material:rounded-2xl material:border-line/40 material:shadow-pop"
+            style={{ right: historyOpen ? 'calc(15rem + 1rem)' : '1rem' }}
+            className="pointer-events-auto absolute top-15 flex max-h-[calc(100%-5rem)] flex-col items-stretch gap-0.5 overflow-y-auto border border-line bg-panel p-1 [&>button]:flex [&>button]:items-baseline [&>button]:gap-2 [&>button]:text-left material:rounded-2xl material:border-line/40 material:shadow-pop"
           >
             <button
               type="button"
