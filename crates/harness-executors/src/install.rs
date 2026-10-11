@@ -1,13 +1,17 @@
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use protocol::HARNESS_IDS;
 
-use crate::acp_exec::{codex_executor, cursor_executor, grok_build_executor, hermes_executor};
+use crate::acp_exec::{
+    CODEX_HARNESS_ID, CURSOR_HARNESS_ID, GROK_BUILD_HARNESS_ID, HERMES_HARNESS_ID, codex_executor,
+    cursor_executor, grok_build_executor, hermes_executor,
+};
 use crate::drive::HistorySource;
-use crate::kimi::KimiCodeExecutor;
-use crate::opencode::OpencodeExecutor;
-use crate::pi::PiExecutor;
-use crate::qwen::QwenCodeExecutor;
+use crate::kimi::{KIMI_HARNESS_ID, KimiCodeExecutor};
+use crate::opencode::{OPENCODE_HARNESS_ID, OpencodeExecutor};
+use crate::pi::{PI_HARNESS_ID, PiExecutor};
+use crate::qwen::{QWEN_CODE_HARNESS_ID, QwenCodeExecutor};
 use crate::registry::{
     ExecutorRegistry, claude_missing_binary, claude_package_load,
     create_not_implemented_harness_executor, harness_executor_gap, kimi_missing_binary,
@@ -69,26 +73,42 @@ pub fn cursor_missing_binary(binary: &str) -> String {
     )
 }
 
-#[derive(Clone, Default)]
-pub struct HeadlessConfig {
+#[derive(Clone, Debug, Default)]
+pub struct HarnessSettings {
     pub model: Option<String>,
     pub effort: Option<String>,
     pub cwd: Option<String>,
     pub home: Option<String>,
+}
+
+#[derive(Clone, Default)]
+pub struct HeadlessConfig {
+    pub workspace: Option<String>,
     pub history: Option<Arc<HistorySource>>,
+    pub harnesses: BTreeMap<String, HarnessSettings>,
 }
 
 impl std::fmt::Debug for HeadlessConfig {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("HeadlessConfig")
-            .field("model", &self.model)
-            .field("effort", &self.effort)
-            .field("cwd", &self.cwd)
-            .field("home", &self.home)
+            .field("workspace", &self.workspace)
             .field("history", &self.history.is_some())
+            .field("harnesses", &self.harnesses)
             .finish()
     }
+}
+
+fn harness_settings(config: &HeadlessConfig, harness_id: &str) -> HarnessSettings {
+    let mut settings = config
+        .harnesses
+        .get(harness_id)
+        .cloned()
+        .unwrap_or_default();
+    if settings.cwd.is_none() {
+        settings.cwd = config.workspace.clone();
+    }
+    settings
 }
 
 pub type ArgvHarnessConfig = HeadlessConfig;
@@ -103,22 +123,23 @@ pub async fn install_headless_executors(
     register_probed(
         registry,
         env.as_ref(),
-        "kimi-code",
+        KIMI_HARNESS_ID,
         &bins.kimi,
         &[],
         &kimi_missing_binary(&bins.kimi),
         {
             let env = Arc::clone(&env);
             let binary = bins.kimi.clone();
-            let config = config.clone();
+            let settings = harness_settings(config, KIMI_HARNESS_ID);
+            let history = config.history.clone();
             move || {
                 let mut executor = KimiCodeExecutor::new(binary);
                 executor.env = env;
-                executor.model_id = config.model.clone();
-                executor.effort = config.effort.clone();
-                executor.cwd = config.cwd.clone();
-                executor.kimi_home = config.home.clone();
-                executor.history = config.history.clone();
+                executor.model_id = settings.model;
+                executor.effort = settings.effort;
+                executor.cwd = settings.cwd;
+                executor.kimi_home = settings.home;
+                executor.history = history;
                 Arc::new(executor) as Arc<dyn crate::registry::HarnessExecutor>
             }
         },
@@ -127,22 +148,23 @@ pub async fn install_headless_executors(
     register_probed(
         registry,
         env.as_ref(),
-        "opencode",
+        OPENCODE_HARNESS_ID,
         &bins.opencode,
         &[],
         &opencode_missing_binary(&bins.opencode),
         {
             let env = Arc::clone(&env);
             let binary = bins.opencode.clone();
-            let config = config.clone();
+            let settings = harness_settings(config, OPENCODE_HARNESS_ID);
+            let history = config.history.clone();
             move || {
                 let mut executor = OpencodeExecutor::new(binary);
                 executor.env = env;
-                executor.model_id = config.model.clone();
-                executor.effort = config.effort.clone();
-                executor.cwd = config.cwd.clone();
-                executor.opencode_home = config.home.clone();
-                executor.history = config.history.clone();
+                executor.model_id = settings.model;
+                executor.effort = settings.effort;
+                executor.cwd = settings.cwd;
+                executor.opencode_home = settings.home;
+                executor.history = history;
                 Arc::new(executor) as Arc<dyn crate::registry::HarnessExecutor>
             }
         },
@@ -151,22 +173,23 @@ pub async fn install_headless_executors(
     register_probed(
         registry,
         env.as_ref(),
-        "pi",
+        PI_HARNESS_ID,
         &bins.pi,
         &[],
         &pi_missing_binary(&bins.pi),
         {
             let env = Arc::clone(&env);
             let binary = bins.pi.clone();
-            let config = config.clone();
+            let settings = harness_settings(config, PI_HARNESS_ID);
+            let history = config.history.clone();
             move || {
                 let mut executor = PiExecutor::new(binary);
                 executor.env = env;
-                executor.model_id = config.model.clone();
-                executor.effort = config.effort.clone();
-                executor.cwd = config.cwd.clone();
-                executor.pi_home = config.home.clone();
-                executor.history = config.history.clone();
+                executor.model_id = settings.model;
+                executor.effort = settings.effort;
+                executor.cwd = settings.cwd;
+                executor.pi_home = settings.home;
+                executor.history = history;
                 Arc::new(executor) as Arc<dyn crate::registry::HarnessExecutor>
             }
         },
@@ -175,21 +198,22 @@ pub async fn install_headless_executors(
     register_probed(
         registry,
         env.as_ref(),
-        "qwen-code",
+        QWEN_CODE_HARNESS_ID,
         &bins.qwen,
         &[],
         &qwen_missing_binary(),
         {
             let env = Arc::clone(&env);
             let binary = bins.qwen.clone();
-            let config = config.clone();
+            let settings = harness_settings(config, QWEN_CODE_HARNESS_ID);
+            let history = config.history.clone();
             move || {
                 let mut executor = QwenCodeExecutor::new(binary);
                 executor.env = env;
-                executor.model_id = config.model.clone();
-                executor.cwd = config.cwd.clone();
-                executor.qwen_home = config.home.clone();
-                executor.history = config.history.clone();
+                executor.model_id = settings.model;
+                executor.cwd = settings.cwd;
+                executor.qwen_home = settings.home;
+                executor.history = history;
                 Arc::new(executor) as Arc<dyn crate::registry::HarnessExecutor>
             }
         },
@@ -198,73 +222,65 @@ pub async fn install_headless_executors(
     register_probed(
         registry,
         env.as_ref(),
-        "grok-build",
+        GROK_BUILD_HARNESS_ID,
         &bins.grok,
         &[],
         &grok_missing_binary(&bins.grok),
-        {
-            let env = Arc::clone(&env);
-            let binary = bins.grok.clone();
-            move || {
-                let mut executor = grok_build_executor(binary);
-                executor.env = Arc::clone(&env);
-                Arc::new(executor) as Arc<dyn crate::registry::HarnessExecutor>
-            }
-        },
+        acp_builder(
+            Arc::clone(&env),
+            bins.grok.clone(),
+            config,
+            GROK_BUILD_HARNESS_ID,
+            grok_build_executor,
+        ),
     )
     .await;
     register_probed(
         registry,
         env.as_ref(),
-        "hermes",
+        HERMES_HARNESS_ID,
         &bins.hermes,
         &[],
         &hermes_missing_binary(&bins.hermes),
-        {
-            let env = Arc::clone(&env);
-            let binary = bins.hermes.clone();
-            move || {
-                let mut executor = hermes_executor(binary);
-                executor.env = Arc::clone(&env);
-                Arc::new(executor) as Arc<dyn crate::registry::HarnessExecutor>
-            }
-        },
+        acp_builder(
+            Arc::clone(&env),
+            bins.hermes.clone(),
+            config,
+            HERMES_HARNESS_ID,
+            hermes_executor,
+        ),
     )
     .await;
     register_probed(
         registry,
         env.as_ref(),
-        "codex",
+        CODEX_HARNESS_ID,
         &bins.codex_acp,
         &[],
         &codex_missing_binary(&bins.codex_acp),
-        {
-            let env = Arc::clone(&env);
-            let binary = bins.codex_acp.clone();
-            move || {
-                let mut executor = codex_executor(binary);
-                executor.env = Arc::clone(&env);
-                Arc::new(executor) as Arc<dyn crate::registry::HarnessExecutor>
-            }
-        },
+        acp_builder(
+            Arc::clone(&env),
+            bins.codex_acp.clone(),
+            config,
+            CODEX_HARNESS_ID,
+            codex_executor,
+        ),
     )
     .await;
     register_probed(
         registry,
         env.as_ref(),
-        "cursor",
+        CURSOR_HARNESS_ID,
         &bins.cursor,
         &[],
         &cursor_missing_binary(&bins.cursor),
-        {
-            let env = Arc::clone(&env);
-            let binary = bins.cursor.clone();
-            move || {
-                let mut executor = cursor_executor(binary);
-                executor.env = Arc::clone(&env);
-                Arc::new(executor) as Arc<dyn crate::registry::HarnessExecutor>
-            }
-        },
+        acp_builder(
+            Arc::clone(&env),
+            bins.cursor.clone(),
+            config,
+            CURSOR_HARNESS_ID,
+            cursor_executor,
+        ),
     )
     .await;
     registry.register(
@@ -284,6 +300,27 @@ pub async fn install_headless_executors(
                 Some(id),
             );
         }
+    }
+}
+
+fn acp_builder<F>(
+    env: Arc<dyn Env>,
+    binary: String,
+    config: &HeadlessConfig,
+    harness_id: &str,
+    build: F,
+) -> impl FnOnce() -> Arc<dyn crate::registry::HarnessExecutor> + Send
+where
+    F: FnOnce(String) -> crate::acp_exec::AcpHarnessExecutor + Send,
+{
+    let settings = harness_settings(config, harness_id);
+    let history = config.history.clone();
+    move || {
+        let mut executor = build(binary);
+        executor.env = env;
+        executor.cwd = settings.cwd;
+        executor.history = history;
+        Arc::new(executor)
     }
 }
 
@@ -312,7 +349,7 @@ async fn register_probed<F>(
     missing: &str,
     build: F,
 ) where
-    F: FnOnce() -> Arc<dyn crate::registry::HarnessExecutor>,
+    F: FnOnce() -> Arc<dyn crate::registry::HarnessExecutor> + Send,
 {
     let executor = if probe_binary(binary, env, scrub).await {
         build()

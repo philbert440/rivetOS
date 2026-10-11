@@ -175,6 +175,36 @@ async fn load_session_respects_advertise_and_failure() {
 }
 
 #[tokio::test]
+async fn prompt_error_keeps_text_and_usage_received_before_the_failure() {
+    let (transport, task) = spawn_fake(FakeScript {
+        fail_after_output: true,
+        ..FakeScript::default()
+    });
+    let client = AcpClient::connect(transport, Arc::new(AllowOncePolicy))
+        .await
+        .unwrap();
+    client.initialize().await.unwrap();
+    let id = client.new_session(PathBuf::from("/work")).await.unwrap();
+    let error = client.prompt(id, "hi".into()).await.unwrap_err();
+    assert!(!error.to_string().is_empty());
+    assert_eq!(error.text, "partial-text");
+    assert!(error.events.iter().any(|event| {
+        matches!(event, SessionEvent::AgentMessage { text } if text == "partial-text")
+    }));
+    assert!(error.events.iter().any(|event| {
+        matches!(
+            event,
+            SessionEvent::Usage {
+                cost_amount: Some(cost),
+                ..
+            } if *cost == 2.5
+        )
+    }));
+    drop(client);
+    let _ = task.await;
+}
+
+#[tokio::test]
 async fn exit_mid_turn_is_an_error() {
     let (transport, task) = spawn_fake(FakeScript {
         exit_mid_turn: true,

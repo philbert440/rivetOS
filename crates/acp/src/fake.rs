@@ -48,9 +48,12 @@ pub struct FakeScript {
     pub permission_reject_only: bool,
     pub wait_for_cancel: bool,
     pub exit_mid_turn: bool,
+    pub fail_after_output: bool,
+    pub fail_after_prompt: Option<usize>,
     pub fail_load: bool,
     pub auth_methods: Vec<String>,
     pub seen_auth: Arc<Mutex<Option<String>>>,
+    pub seen_cwd: Arc<Mutex<Option<String>>>,
 }
 
 impl Default for FakeScript {
@@ -78,9 +81,12 @@ impl Default for FakeScript {
             permission_reject_only: false,
             wait_for_cancel: false,
             exit_mid_turn: false,
+            fail_after_output: false,
+            fail_after_prompt: None,
             fail_load: false,
             auth_methods: Vec::new(),
             seen_auth: Arc::new(Mutex::new(None)),
+            seen_cwd: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -141,12 +147,16 @@ pub fn spawn_fake(script: FakeScript) -> (Channel, JoinHandle<Result<(), AcpErro
                 agent_client_protocol::on_receive_request!(),
             )
             .on_receive_request(
-                move |_request: NewSessionRequest,
+                move |request: NewSessionRequest,
                       responder: agent_client_protocol::Responder<NewSessionResponse>,
                       _cx| {
                     let state_new = Arc::clone(&state_new);
                     async move {
-                        let session_id = locked(&state_new).script.session_id.clone();
+                        let session_id = {
+                            let state = locked(&state_new);
+                            *state.script.seen_cwd.lock() = Some(request.cwd.display().to_string());
+                            state.script.session_id.clone()
+                        };
                         responder.respond(NewSessionResponse::new(session_id))
                     }
                 },
@@ -160,6 +170,7 @@ pub fn spawn_fake(script: FakeScript) -> (Channel, JoinHandle<Result<(), AcpErro
                     async move {
                         let (fail, load_usage, load_chunks) = {
                             let state = locked(&state_load);
+                            *state.script.seen_cwd.lock() = Some(request.cwd.display().to_string());
                             let fail = state.script.fail_load
                                 || request.session_id.to_string() != state.script.session_id;
                             (
@@ -198,6 +209,24 @@ pub fn spawn_fake(script: FakeScript) -> (Channel, JoinHandle<Result<(), AcpErro
                             (state.script.clone(), index)
                         };
                         let session_id = request.session_id.to_string();
+                        if script.fail_after_output
+                            && script
+                                .fail_after_prompt
+                                .is_none_or(|index| index == prompt_index)
+                        {
+                            let _ = send_message(&cx, &session_id, "partial-text");
+                            let _ = send_usage(
+                                &cx,
+                                &session_id,
+                                &FakeUsage {
+                                    used: 7,
+                                    size: 20,
+                                    amount: Some(2.5),
+                                    currency: Some("USD".into()),
+                                },
+                            );
+                            return responder.respond_with_internal_error("agent crashed");
+                        }
                         if script.exit_mid_turn {
                             let _ = send_message(&cx, &session_id, "partial");
                             if let Some(abort) = locked(&state_prompt).abort.clone() {

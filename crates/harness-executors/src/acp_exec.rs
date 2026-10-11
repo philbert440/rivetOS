@@ -108,7 +108,7 @@ struct Shared {
     child_exited: Mutex<Option<Arc<AtomicBool>>>,
     load_session: AtomicBool,
     initial_used: AtomicBool,
-    usage_usd: Mutex<Option<f64>>,
+    usage_usd: Mutex<CostBasis>,
 }
 
 impl Shared {
@@ -120,9 +120,16 @@ impl Shared {
             child_exited: Mutex::new(None),
             load_session: AtomicBool::new(false),
             initial_used: AtomicBool::new(false),
-            usage_usd: Mutex::new(None),
+            usage_usd: Mutex::new(CostBasis::Fresh),
         }
     }
+}
+
+#[derive(Clone, Copy)]
+enum CostBasis {
+    Fresh,
+    Known(f64),
+    ResumeUnknown,
 }
 
 #[derive(Default)]
@@ -172,11 +179,12 @@ impl HarnessExecutor for AcpHarnessExecutor {
         let parts_for_task = parts.clone();
         let harness = self.harness_id.clone();
         tokio::spawn(async move {
-            let cwd = spec
-                .working_dir
-                .clone()
-                .or_else(|| cfg.cwd.clone())
-                .unwrap_or_else(current_dir);
+            let cwd = absolute_dir(
+                spec.working_dir
+                    .clone()
+                    .or_else(|| cfg.cwd.clone())
+                    .unwrap_or_else(current_dir),
+            );
             let fake_task: AgentTask = Arc::new(Mutex::new(None));
             let result =
                 drive(
@@ -299,55 +307,42 @@ async fn run_acp_turn(
         prompt = format!("{}\n\n{prompt}", call.append_system_prompt);
     }
     let prompt = clamp_prompt(&prompt);
-    let output = prompt_until_done(&client, &session, prompt, &killed).await;
-    let output = match output {
-        Ok(output) => output,
-        Err(error) => {
-            if killed.load(Ordering::SeqCst) {
-                return stopped_turn(Some(session));
-            }
-            return SpawnOutcome::failure(format!("acp session ended: {error}"));
-        }
+    let output = prompt_until_done(&client, &session, prompt, &killed, &events).await;
+    let (output, failure) = match output {
+        Ok(output) => (output, None),
+        Err(error) => (
+            acp::PromptOutput {
+                stop_reason: "error".into(),
+                text: error.text,
+                events: error.events,
+            },
+            Some(error.message),
+        ),
     };
-    let mut tools = HashMap::<String, ToolLive>::new();
-    for event in &output.events {
-        match event {
-            SessionEvent::AgentMessage { text } if !text.is_empty() => {
-                events.push(den_message(text.clone()));
-            }
-            SessionEvent::AgentThought { text } if !text.is_empty() => {
-                events.push(den_thinking(text.clone()));
-            }
-            SessionEvent::ToolCall {
-                id,
-                name,
-                title,
-                status,
-            } => {
-                remember_tool(&mut tools, id, name, Some(title.as_str()));
-                if let Some(label) = tools.get(id).and_then(|slot| slot.label.clone()) {
-                    events.push(den_tool_start(label));
-                }
-                end_if_terminal(&mut tools, id, Some(*status), &events);
-            }
-            SessionEvent::ToolCallUpdate {
-                id,
-                name,
-                title,
-                status,
-            } => {
-                remember_tool(&mut tools, id, name, title.as_deref());
-                end_if_terminal(&mut tools, id, *status, &events);
-            }
-            SessionEvent::Plan { entries } if !entries.is_empty() => {
-                events.push(log_event("info", entries.join("\n")));
-            }
-            SessionEvent::Usage { .. } => {}
-            _ => {}
-        }
-    }
     let cost_usd = charge_usd(&mut shared.usage_usd.lock(), &output.events);
-    let error = if killed.load(Ordering::SeqCst) || output.stop_reason == "end_turn" {
+    if killed.load(Ordering::SeqCst) {
+        return SpawnOutcome {
+            text: output.text,
+            native_id: Some(session),
+            error: None,
+            resume_rejected: false,
+            input_tokens: 0.0,
+            output_tokens: 0.0,
+            cost_usd,
+        };
+    }
+    if let Some(message) = failure {
+        return SpawnOutcome {
+            text: output.text,
+            native_id: None,
+            error: Some(format!("acp session ended: {message}")),
+            resume_rejected: false,
+            input_tokens: 0.0,
+            output_tokens: 0.0,
+            cost_usd,
+        };
+    }
+    let error = if output.stop_reason == "end_turn" {
         None
     } else {
         Some(format!("acp stop: {}", output.stop_reason))
@@ -368,18 +363,71 @@ async fn prompt_until_done(
     session: &str,
     prompt: String,
     killed: &AtomicBool,
-) -> Result<acp::PromptOutput, AcpError> {
+    events: &crate::model::EventQueue,
+) -> Result<acp::PromptOutput, acp::PromptError> {
+    let mut incoming = client.begin_turn_events();
+    let queue = events.clone();
+    let forward = tokio::spawn(async move {
+        let mut tools = HashMap::<String, ToolLive>::new();
+        while let Some(event) = incoming.recv().await {
+            publish_session_event(&mut tools, &queue, &event);
+        }
+    });
     let pending = client.prompt(session.to_string(), prompt);
     tokio::pin!(pending);
-    loop {
+    let result = loop {
         tokio::select! {
-            result = &mut pending => return result,
+            result = &mut pending => break result,
             _ = tokio::time::sleep(Duration::from_millis(15)) => {
                 if killed.load(Ordering::SeqCst) {
                     let _ = client.cancel_session(session).await;
                 }
             }
         }
+    };
+    client.end_turn_events();
+    let _ = forward.await;
+    result
+}
+
+fn publish_session_event(
+    tools: &mut HashMap<String, ToolLive>,
+    events: &crate::model::EventQueue,
+    event: &SessionEvent,
+) {
+    match event {
+        SessionEvent::AgentMessage { text } if !text.is_empty() => {
+            events.push(den_message(text.clone()));
+        }
+        SessionEvent::AgentThought { text } if !text.is_empty() => {
+            events.push(den_thinking(text.clone()));
+        }
+        SessionEvent::ToolCall {
+            id,
+            name,
+            title,
+            status,
+        } => {
+            remember_tool(tools, id, name, Some(title.as_str()));
+            if let Some(label) = tools.get(id).and_then(|slot| slot.label.clone()) {
+                events.push(den_tool_start(label));
+            }
+            end_if_terminal(tools, id, Some(*status), events);
+        }
+        SessionEvent::ToolCallUpdate {
+            id,
+            name,
+            title,
+            status,
+        } => {
+            remember_tool(tools, id, name, title.as_deref());
+            end_if_terminal(tools, id, *status, events);
+        }
+        SessionEvent::Plan { entries } if !entries.is_empty() => {
+            events.push(log_event("info", entries.join("\n")));
+        }
+        SessionEvent::Usage { .. } => {}
+        _ => {}
     }
 }
 
@@ -613,21 +661,7 @@ fn end_if_terminal(
     events.push(den_tool_end(slot.label.clone()));
 }
 
-fn note_usd(baseline: &mut Option<f64>, events: &[SessionEvent]) {
-    for event in events {
-        if let SessionEvent::Usage {
-            cost_amount: Some(amount),
-            cost_currency,
-            ..
-        } = event
-            && cost_currency.as_deref() == Some("USD")
-        {
-            *baseline = Some(*amount);
-        }
-    }
-}
-
-fn charge_usd(baseline: &mut Option<f64>, events: &[SessionEvent]) -> Option<f64> {
+fn note_usd(basis: &mut CostBasis, events: &[SessionEvent]) {
     let mut latest = None;
     for event in events {
         if let SessionEvent::Usage {
@@ -640,18 +674,58 @@ fn charge_usd(baseline: &mut Option<f64>, events: &[SessionEvent]) -> Option<f64
             latest = Some(*amount);
         }
     }
-    let latest = latest?;
-    let start = baseline.unwrap_or(0.0);
-    *baseline = Some(latest);
-    if latest > start {
-        Some(latest - start)
-    } else {
-        None
+    *basis = match latest {
+        Some(amount) => CostBasis::Known(amount),
+        None => CostBasis::ResumeUnknown,
+    };
+}
+
+fn charge_usd(basis: &mut CostBasis, events: &[SessionEvent]) -> Option<f64> {
+    let latest = last_usd(events)?;
+    match *basis {
+        CostBasis::ResumeUnknown => {
+            *basis = CostBasis::Known(latest);
+            None
+        }
+        CostBasis::Fresh => {
+            *basis = CostBasis::Known(latest);
+            (latest > 0.0).then_some(latest)
+        }
+        CostBasis::Known(start) => {
+            *basis = CostBasis::Known(latest);
+            (latest > start).then_some(latest - start)
+        }
     }
+}
+
+fn last_usd(events: &[SessionEvent]) -> Option<f64> {
+    let mut latest = None;
+    for event in events {
+        if let SessionEvent::Usage {
+            cost_amount: Some(amount),
+            cost_currency,
+            ..
+        } = event
+            && cost_currency.as_deref() == Some("USD")
+        {
+            latest = Some(*amount);
+        }
+    }
+    latest
 }
 
 fn current_dir() -> String {
     std::env::current_dir()
         .map(|path| path.display().to_string())
         .unwrap_or_else(|_| ".".to_string())
+}
+
+fn absolute_dir(path: String) -> String {
+    let candidate = PathBuf::from(&path);
+    if candidate.is_absolute() {
+        return path;
+    }
+    std::env::current_dir()
+        .map(|base| base.join(candidate).display().to_string())
+        .unwrap_or(path)
 }

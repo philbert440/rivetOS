@@ -1,6 +1,7 @@
 #[path = "support.rs"]
 mod support;
 
+use std::path::Path;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
@@ -496,12 +497,136 @@ async fn grok_skips_auth_when_neither_method_is_advertised() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn relative_cwd_is_absolute_before_session_new() {
+    let seen = Arc::new(Mutex::new(None));
+    let mut executor = AcpHarnessExecutor::fake(
+        "hermes",
+        FakeScript {
+            seen_cwd: Arc::clone(&seen),
+            ..FakeScript::default()
+        },
+    );
+    executor.cwd = Some("rel-work".into());
+    let result = executor
+        .start(TaskSpec::conformance("Say hello"), AbortFlag::new())
+        .result()
+        .await;
+    assert_eq!(result.verdict, TaskVerdict::Completed);
+    let recorded = seen.lock().clone().unwrap();
+    let path = Path::new(&recorded);
+    assert!(path.is_absolute());
+    assert!(path.ends_with("rel-work"));
+
+    let seen = Arc::new(Mutex::new(None));
+    let mut executor = AcpHarnessExecutor::fake(
+        "hermes",
+        FakeScript {
+            seen_cwd: Arc::clone(&seen),
+            ..FakeScript::default()
+        },
+    );
+    executor.cwd = Some("rel-work".into());
+    let mut spec = TaskSpec::conformance("Say hello");
+    spec.working_dir = Some("/var/tmp/abs-rr4d".into());
+    let result = executor.start(spec, AbortFlag::new()).result().await;
+    assert_eq!(result.verdict, TaskVerdict::Completed);
+    assert_eq!(seen.lock().as_deref(), Some("/var/tmp/abs-rr4d"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn prompt_failure_keeps_partial_output_and_usage() {
+    let executor = AcpHarnessExecutor::fake(
+        "cursor",
+        FakeScript {
+            fail_after_output: true,
+            ..FakeScript::default()
+        },
+    );
+    let handle = executor.start(TaskSpec::conformance("Say hello"), AbortFlag::new());
+    let result = handle.result().await;
+    let events = handle.events.drain().await;
+    assert_eq!(result.verdict, TaskVerdict::Failed);
+    assert_eq!(result.output.as_deref(), Some("partial-text"));
+    assert!(result.error.unwrap().contains("acp session ended"));
+    assert_eq!(result.usage.cost_usd, Some(protocol::JsNumber::from(2.5)));
+    assert!(events.iter().any(|event| {
+        event.den_body().is_some_and(
+            |body| matches!(body, DenBody::MessageAgent { text } if text == "partial-text"),
+        )
+    }));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn later_turn_failure_replaces_previous_output() {
+    let executor = AcpHarnessExecutor::fake(
+        "cursor",
+        FakeScript {
+            message: "first-turn".into(),
+            fail_after_output: true,
+            fail_after_prompt: Some(1),
+            usage_by_prompt: vec![FakeUsage {
+                used: 3,
+                size: 10,
+                amount: Some(1.0),
+                currency: Some("USD".into()),
+            }],
+            ..FakeScript::default()
+        },
+    );
+    let handle = executor.start(TaskSpec::conformance("Say hello"), AbortFlag::new());
+    handle.push_steer_for_test("again");
+    let result = handle.result().await;
+    let events = handle.events.drain().await;
+    assert_eq!(result.verdict, TaskVerdict::Failed);
+    assert_eq!(result.output.as_deref(), Some("partial-text"));
+    assert_eq!(result.usage.turns, 2);
+    assert_eq!(result.usage.cost_usd, Some(protocol::JsNumber::from(2.5)));
+    assert!(events.iter().any(|event| {
+        event.den_body().is_some_and(
+            |body| matches!(body, DenBody::MessageAgent { text } if text == "partial-text"),
+        )
+    }));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn resume_without_load_usage_does_not_charge_historical_cost() {
+    let mut executor = AcpHarnessExecutor::fake(
+        "hermes",
+        FakeScript {
+            session_id: "sess-9".into(),
+            usage_by_prompt: vec![
+                FakeUsage {
+                    used: 10,
+                    size: 100,
+                    amount: Some(10.5),
+                    currency: Some("USD".into()),
+                },
+                FakeUsage {
+                    used: 12,
+                    size: 100,
+                    amount: Some(11.0),
+                    currency: Some("USD".into()),
+                },
+            ],
+            ..FakeScript::default()
+        },
+    );
+    executor.resume_session_id = Some("sess-9".into());
+    let handle = executor.start(TaskSpec::conformance("Say hello"), AbortFlag::new());
+    handle.push_steer_for_test("again");
+    let result = handle.result().await;
+    assert_eq!(result.verdict, TaskVerdict::Completed);
+    assert_eq!(result.usage.turns, 2);
+    assert_eq!(result.usage.cost_usd, Some(protocol::JsNumber::from(0.5)));
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn cancel_during_startup_kills_a_silent_child() {
     let tmp = Tmp::new();
     let binary = write_exe(
         &tmp.dir,
         "hang-acp",
-        "#!/usr/bin/env bash\ntrap '' TERM\nsleep 60\n",
+        "#!/usr/bin/env bash\ntrap 'exit 0' TERM\ndir=$(dirname \"$0\")\nprintf '%s\\n' \"$$\" > \"$dir/ready.pid\"\nwhile true; do\n  sleep 0.1\ndone\n",
     );
     assert_eq!(binary, tmp.path("hang-acp"));
     let mut executor =
@@ -509,11 +634,33 @@ async fn cancel_during_startup_kills_a_silent_child() {
     executor.kill_grace = Duration::from_millis(200);
     executor.env = Arc::new(map_env(&[]));
     let handle = executor.start(TaskSpec::conformance("Say hello"), AbortFlag::new());
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    let ready = tmp.path("ready.pid");
+    let pid = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Ok(text) = std::fs::read_to_string(&ready)
+                && let Ok(pid) = text.trim().parse::<u32>()
+                && pid > 0
+            {
+                return pid;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("child did not signal readiness");
     handle.kill("startup").await;
     let result = tokio::time::timeout(Duration::from_secs(5), handle.result())
         .await
         .expect("startup cancel");
     assert_eq!(result.verdict, TaskVerdict::Killed);
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if !Path::new(&format!("/proc/{pid}")).exists() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("child was not reaped");
 }

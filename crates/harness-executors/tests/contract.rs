@@ -1,6 +1,7 @@
 #[path = "support.rs"]
 mod support;
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -947,11 +948,17 @@ async fn install_applies_non_default_config_to_a_resolved_kimi() {
         Arc::new(map_env(&[])),
         &bins,
         &HeadlessConfig {
-            model: Some("kimi-k2".into()),
-            effort: Some("high".into()),
-            cwd: Some(cwd.display().to_string()),
-            home: Some(home.display().to_string()),
             history: Some(history),
+            harnesses: BTreeMap::from([(
+                "kimi-code".into(),
+                HarnessSettings {
+                    model: Some("kimi-k2".into()),
+                    effort: Some("high".into()),
+                    cwd: Some(cwd.display().to_string()),
+                    home: Some(home.display().to_string()),
+                },
+            )]),
+            ..HeadlessConfig::default()
         },
     )
     .await;
@@ -969,4 +976,184 @@ async fn install_applies_non_default_config_to_a_resolved_kimi() {
     assert!(recorded.contains("-m\nkimi-k2\n") || recorded.contains("-m"));
     assert!(recorded.contains("kimi-k2"));
     assert!(recorded.contains("earlier-turn-marker"));
+}
+
+#[tokio::test]
+async fn install_keeps_distinct_harness_defaults() {
+    let tmp = Tmp::new();
+    let record = "#!/usr/bin/env bash\nif [ \"$1\" = \"--version\" ]; then\n  exit 0\nfi\nout=\"$(dirname \"$0\")/recorded.txt\"\n{\n  printf 'pwd=%s\\n' \"$(pwd)\"\n  printf 'xdg=%s\\n' \"${XDG_DATA_HOME-}\"\n  printf 'kimi_home=%s\\n' \"${KIMI_CODE_HOME-}\"\n  printf 'effort=%s\\n' \"${KIMI_MODEL_THINKING_EFFORT-}\"\n  printf '%s\\n' \"$@\"\n} > \"$out\"\nprintf '%s\\n' '{\"role\":\"assistant\",\"content\":\"ok\"}'\nprintf '%s\\n' '{\"role\":\"meta\",\"type\":\"session.resume_hint\",\"session_id\":\"sess-installed\",\"command\":\"kimi -r sess-installed\"}'\nprintf '%s\\n' '{\"type\":\"text\",\"sessionID\":\"ses_oc\",\"text\":\"ok\"}'\nprintf '%s\\n' '{\"type\":\"session\",\"id\":\"pi-sess\"}'\nprintf '%s\\n' '{\"type\":\"agent_end\"}'\n";
+    let kimi = write_exe(&tmp.dir, "kimi", record);
+    let opencode = write_exe(&tmp.dir, "opencode", record);
+    let pi = write_exe(&tmp.dir, "pi", record);
+    let kimi_cwd = tmp.path("kimi-work");
+    let oc_cwd = tmp.path("oc-work");
+    let workspace = tmp.path("shared-work");
+    let kimi_home = tmp.path("kimi-home");
+    let oc_home = tmp.path("oc-home");
+    let pi_home = tmp.path("pi-home");
+    for path in [
+        &kimi_cwd, &oc_cwd, &workspace, &kimi_home, &oc_home, &pi_home,
+    ] {
+        std::fs::create_dir_all(path).unwrap();
+    }
+    let mut bins = HarnessBinaries::default();
+    let missing = "/nonexistent/rr4d-missing";
+    bins.claude = missing.to_string();
+    bins.kimi = kimi.display().to_string();
+    bins.opencode = opencode.display().to_string();
+    bins.pi = pi.display().to_string();
+    bins.qwen = missing.to_string();
+    bins.grok = missing.to_string();
+    bins.hermes = missing.to_string();
+    bins.codex_acp = missing.to_string();
+    bins.cursor = missing.to_string();
+    let history = Arc::new(HistorySource {
+        get_task_history: Some(Arc::new(|_task, _limit| {
+            Ok(vec![HistoryMessage {
+                role: "assistant".into(),
+                content: Some("shared-history-marker".into()),
+            }])
+        })),
+        get_session_history: None,
+    });
+    let registry = create_executor_registry(None);
+    install_headless_executors(
+        &registry,
+        Arc::new(map_env(&[])),
+        &bins,
+        &HeadlessConfig {
+            workspace: Some(workspace.display().to_string()),
+            history: Some(history),
+            harnesses: BTreeMap::from([
+                (
+                    "kimi-code".into(),
+                    HarnessSettings {
+                        model: Some("kimi-k2".into()),
+                        effort: Some("high".into()),
+                        cwd: Some(kimi_cwd.display().to_string()),
+                        home: Some(kimi_home.display().to_string()),
+                    },
+                ),
+                (
+                    "opencode".into(),
+                    HarnessSettings {
+                        model: Some("big-model".into()),
+                        effort: Some("low".into()),
+                        cwd: Some(oc_cwd.display().to_string()),
+                        home: Some(oc_home.display().to_string()),
+                    },
+                ),
+                (
+                    "pi".into(),
+                    HarnessSettings {
+                        model: Some("pi-model".into()),
+                        effort: Some("high".into()),
+                        home: Some(pi_home.display().to_string()),
+                        ..HarnessSettings::default()
+                    },
+                ),
+            ]),
+        },
+    )
+    .await;
+    let mut spec = TaskSpec::conformance("Say hello");
+    spec.resume_message = Some("continue please".into());
+    let kimi_exec = registry
+        .resolve("harness-session", Some("kimi-code"))
+        .unwrap();
+    let kimi_result = kimi_exec
+        .start(spec.clone(), AbortFlag::new())
+        .result()
+        .await;
+    assert_eq!(kimi_result.verdict, TaskVerdict::Completed);
+    let recorded = tmp.path("recorded.txt");
+    let kimi_recorded = std::fs::read_to_string(&recorded).unwrap();
+    assert!(kimi_recorded.contains(&kimi_cwd.display().to_string()));
+    assert!(!kimi_recorded.contains(&workspace.display().to_string()));
+    assert!(kimi_recorded.contains("effort=high"));
+    assert!(kimi_recorded.contains("kimi-k2"));
+    assert!(kimi_recorded.contains(&kimi_home.display().to_string()));
+    assert!(!kimi_recorded.contains("big-model"));
+    assert!(kimi_recorded.contains("shared-history-marker"));
+    let oc_exec = registry
+        .resolve("harness-session", Some("opencode"))
+        .unwrap();
+    let oc_result = oc_exec.start(spec.clone(), AbortFlag::new()).result().await;
+    assert_eq!(oc_result.verdict, TaskVerdict::Completed);
+    let oc_recorded = std::fs::read_to_string(&recorded).unwrap();
+    assert!(oc_recorded.contains(&oc_cwd.display().to_string()));
+    assert!(oc_recorded.contains(&oc_home.display().to_string()));
+    assert!(oc_recorded.contains("big-model"));
+    assert!(oc_recorded.contains("minimal"));
+    assert!(!oc_recorded.contains("kimi-k2"));
+    assert!(oc_recorded.contains("shared-history-marker"));
+    let pi_exec = registry.resolve("harness-session", Some("pi")).unwrap();
+    let pi_result = pi_exec.start(spec, AbortFlag::new()).result().await;
+    assert_eq!(pi_result.verdict, TaskVerdict::Completed);
+    let pi_recorded = std::fs::read_to_string(&recorded).unwrap();
+    assert!(pi_recorded.contains(&workspace.display().to_string()));
+    assert!(pi_recorded.contains(&pi_home.display().to_string()));
+    assert!(pi_recorded.contains("pi-model"));
+    assert!(pi_recorded.contains("shared-history-marker"));
+}
+
+#[tokio::test]
+async fn install_gives_acp_executors_cwd_and_history() {
+    let tmp = Tmp::new();
+    let cwd = tmp.path("grok-work");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let stub = "#!/usr/bin/env python3\nimport json, os, sys\nfrom pathlib import Path\nroot = Path(__file__).resolve().parent\nif len(sys.argv) > 1 and sys.argv[1] == \"--version\":\n    sys.exit(0)\n(root / \"pwd.txt\").write_text(os.getcwd() + \"\\n\")\nfor raw in sys.stdin:\n    line = raw.strip()\n    if not line:\n        continue\n    try:\n        msg = json.loads(line)\n    except json.JSONDecodeError:\n        continue\n    method = msg.get(\"method\")\n    ident = msg.get(\"id\")\n    if method == \"initialize\":\n        result = {\"protocolVersion\": 1, \"agentCapabilities\": {\"loadSession\": True}, \"agentInfo\": {\"name\": \"stub\", \"version\": \"0\"}}\n    elif method == \"session/new\":\n        (root / \"new.txt\").write_text(line + \"\\n\")\n        result = {\"sessionId\": \"sess-installed\"}\n    elif method == \"session/load\":\n        result = {}\n    elif method == \"session/prompt\":\n        (root / \"prompt.txt\").write_text(line + \"\\n\")\n        result = {\"stopReason\": \"end_turn\"}\n    else:\n        continue\n    sys.stdout.write(json.dumps({\"jsonrpc\": \"2.0\", \"id\": ident, \"result\": result}) + \"\\n\")\n    sys.stdout.flush()\n";
+    let grok = write_exe(&tmp.dir, "grok", stub);
+    let mut bins = HarnessBinaries::default();
+    let missing = "/nonexistent/rr4d-missing";
+    bins.claude = missing.to_string();
+    bins.kimi = missing.to_string();
+    bins.opencode = missing.to_string();
+    bins.pi = missing.to_string();
+    bins.qwen = missing.to_string();
+    bins.grok = grok.display().to_string();
+    bins.hermes = missing.to_string();
+    bins.codex_acp = missing.to_string();
+    bins.cursor = missing.to_string();
+    let history = Arc::new(HistorySource {
+        get_task_history: Some(Arc::new(|_task, _limit| {
+            Ok(vec![HistoryMessage {
+                role: "assistant".into(),
+                content: Some("acp-history-marker".into()),
+            }])
+        })),
+        get_session_history: None,
+    });
+    let registry = create_executor_registry(None);
+    install_headless_executors(
+        &registry,
+        Arc::new(map_env(&[])),
+        &bins,
+        &HeadlessConfig {
+            history: Some(history),
+            harnesses: BTreeMap::from([(
+                "grok-build".into(),
+                HarnessSettings {
+                    cwd: Some(cwd.display().to_string()),
+                    ..HarnessSettings::default()
+                },
+            )]),
+            ..HeadlessConfig::default()
+        },
+    )
+    .await;
+    let executor = registry
+        .resolve("harness-session", Some("grok-build"))
+        .unwrap();
+    assert!(!executor.is_not_implemented());
+    let mut spec = TaskSpec::conformance("Say hello");
+    spec.resume_message = Some("continue please".into());
+    let result = executor.start(spec, AbortFlag::new()).result().await;
+    assert_eq!(result.verdict, TaskVerdict::Completed, "{result:?}");
+    let pwd = std::fs::read_to_string(tmp.path("pwd.txt")).unwrap();
+    assert!(pwd.contains(&cwd.display().to_string()));
+    let created = std::fs::read_to_string(tmp.path("new.txt")).unwrap();
+    assert!(created.contains(&cwd.display().to_string()));
+    let prompt = std::fs::read_to_string(tmp.path("prompt.txt")).unwrap();
+    assert!(prompt.contains("acp-history-marker"));
 }
