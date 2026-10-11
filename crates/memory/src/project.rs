@@ -1,12 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
 use std::time::Duration;
 
-use regex::Regex;
+use parking_lot::Mutex;
 use serde_json::{Map, Value};
 
 use crate::slug::{TAG_KEY_PROJECT, TAG_VALUE_MAX, normalize_tag_value};
-use crate::text::utf16_prefix;
+use crate::text::capped_prefix;
 
 pub const PROJECT_RULE_FS_TIMEOUT_MS: u64 = 250;
 pub const PROJECT_RULE_BUDGET_MS: u64 = 1500;
@@ -173,11 +173,14 @@ const SYSTEM_ROOTS: &[&str] = &[
     "/Volumes",
 ];
 
-fn home_re() -> Option<&'static Regex> {
-    static RE: OnceLock<Option<Regex>> = OnceLock::new();
+fn home_re() -> Option<&'static regress::Regex> {
+    static RE: OnceLock<Option<regress::Regex>> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r"(?i)^([a-z]:)?/(home|users)/[^/]+(/(Downloads|Desktop|Documents|tmp|temp))?$")
-            .ok()
+        regress::Regex::with_flags(
+            r"^([a-z]:)?/(home|users)/[^/]+(/(Downloads|Desktop|Documents|tmp|temp))?$",
+            "i",
+        )
+        .ok()
     })
     .as_ref()
 }
@@ -190,7 +193,7 @@ pub fn is_root_like(path: &str) -> bool {
     if SYSTEM_ROOTS.contains(&s.as_str()) || s == "/var/root" {
         return true;
     }
-    home_re().is_some_and(|re| re.is_match(&s))
+    home_re().is_some_and(|re| re.find(&s).is_some())
 }
 
 fn drive_letter_only(s: &str) -> bool {
@@ -248,21 +251,23 @@ pub fn find_git_root(cwd: &str, fs: &dyn ProjectFs) -> Option<(String, String)> 
 }
 
 fn gitdir_from_pointer(pointer: &str) -> Option<String> {
-    static RE: OnceLock<Option<Regex>> = OnceLock::new();
+    static RE: OnceLock<Option<regress::Regex>> = OnceLock::new();
     let re = RE
-        .get_or_init(|| Regex::new(r"(?m)^\s*gitdir:\s*(.+?)\s*$").ok())
+        .get_or_init(|| regress::Regex::with_flags(r"^\s*gitdir:\s*(.+?)\s*$", "m").ok())
         .as_ref()?;
-    re.captures(pointer)
-        .and_then(|cap| cap.get(1).map(|m| m.as_str().to_string()))
+    let found = re.find(pointer)?;
+    let range = found.group(1)?;
+    Some(pointer[range].to_string())
 }
 
 fn worktree_main(git_dir: &str) -> Option<String> {
-    static RE: OnceLock<Option<Regex>> = OnceLock::new();
+    static RE: OnceLock<Option<regress::Regex>> = OnceLock::new();
     let re = RE
-        .get_or_init(|| Regex::new(r"^(.*)/\.git/worktrees/[^/]+$").ok())
+        .get_or_init(|| regress::Regex::new(r"^(.*)/\.git/worktrees/[^/]+$").ok())
         .as_ref()?;
-    re.captures(git_dir)
-        .and_then(|cap| cap.get(1).map(|m| m.as_str().to_string()))
+    let found = re.find(git_dir)?;
+    let range = found.group(1)?;
+    Some(git_dir[range].to_string())
 }
 
 pub fn repo_name_from_remote(url: &str) -> Option<String> {
@@ -314,13 +319,13 @@ pub fn sanitize_remote(url: &str) -> Option<String> {
         }
         s = format!("{host}{path}");
     } else {
-        static RE: OnceLock<Option<Regex>> = OnceLock::new();
+        static RE: OnceLock<Option<regress::Regex>> = OnceLock::new();
         let re = RE
-            .get_or_init(|| Regex::new(r"^(?:[^@/]*@)?([^:/@]+):(.+)$").ok())
+            .get_or_init(|| regress::Regex::new(r"^(?:[^@/]*@)?([^:/@]+):(.+)$").ok())
             .as_ref()?;
-        let caps = re.captures(&s)?;
-        let host = caps.get(1)?.as_str();
-        let path = caps.get(2)?.as_str();
+        let found = re.find(&s)?;
+        let host = &s[found.group(1)?];
+        let path = &s[found.group(2)?];
         s = format!("{host}/{path}");
     }
     s = s.trim_end_matches('/').to_string();
@@ -330,20 +335,20 @@ pub fn sanitize_remote(url: &str) -> Option<String> {
     while s.contains("//") {
         s = s.replace("//", "/");
     }
-    static OK: OnceLock<Option<Regex>> = OnceLock::new();
+    static OK: OnceLock<Option<regress::Regex>> = OnceLock::new();
     let ok = OK
-        .get_or_init(|| Regex::new(r"^[^/\s@]+/[^\s@]+$").ok())
+        .get_or_init(|| regress::Regex::new(r"^[^/\s@]+/[^\s@]+$").ok())
         .as_ref()?;
-    if ok.is_match(&s) { Some(s) } else { None }
+    if ok.find(&s).is_some() { Some(s) } else { None }
 }
 
 fn scheme_rest(s: &str) -> Option<String> {
-    static RE: OnceLock<Option<Regex>> = OnceLock::new();
+    static RE: OnceLock<Option<regress::Regex>> = OnceLock::new();
     let re = RE
-        .get_or_init(|| Regex::new(r"^([a-zA-Z][a-zA-Z0-9+.-]*)://").ok())
+        .get_or_init(|| regress::Regex::new(r"^([a-zA-Z][a-zA-Z0-9+.-]*)://").ok())
         .as_ref()?;
-    let m = re.find(s)?;
-    Some(s[m.end()..].to_string())
+    let found = re.find(s)?;
+    Some(s[found.range().end..].to_string())
 }
 
 fn strip_port(host: &str) -> String {
@@ -384,14 +389,16 @@ fn url_assignment(line: &str) -> Option<&str> {
 }
 
 fn origin_header(line: &str) -> bool {
-    static RE: OnceLock<Option<Regex>> = OnceLock::new();
+    static RE: OnceLock<Option<regress::Regex>> = OnceLock::new();
     let Some(re) = RE
-        .get_or_init(|| Regex::new(r#"(?i)^\[remote\s+"origin"\](?:[ \t]*[#;].*)?$"#).ok())
+        .get_or_init(|| {
+            regress::Regex::with_flags(r#"^\[remote\s+"origin"\](?:[ \t]*[#;].*)?$"#, "i").ok()
+        })
         .as_ref()
     else {
         return false;
     };
-    re.is_match(line) && line.contains("\"origin\"")
+    re.find(line).is_some() && line.contains("\"origin\"")
 }
 
 fn strip_inline_comment(value: &str) -> String {
@@ -453,7 +460,7 @@ fn make(display: &str, rule: &str, git_root: Option<&str>, why: &str) -> Option<
     }
     let cleaned = display_line(display);
     let shown: String = cleaned.chars().take(TAG_VALUE_MAX).collect();
-    let reason = utf16_prefix(&format!("{rule}: {why}"), 200);
+    let reason = capped_prefix(&format!("{rule}: {why}"), 200);
     Some(ProjectHit {
         key: TAG_KEY_PROJECT.to_string(),
         value,
@@ -494,9 +501,10 @@ fn collapse_ws(text: &str) -> String {
     out
 }
 
-fn local_re() -> Option<&'static Regex> {
-    static RE: OnceLock<Option<Regex>> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^local_.+").ok()).as_ref()
+fn local_re() -> Option<&'static regress::Regex> {
+    static RE: OnceLock<Option<regress::Regex>> = OnceLock::new();
+    RE.get_or_init(|| regress::Regex::new(r"^local_.+").ok())
+        .as_ref()
 }
 
 pub fn is_task_sandbox_cwd(cwd: &str) -> bool {
@@ -512,10 +520,10 @@ pub fn is_task_sandbox_cwd(cwd: &str) -> bool {
         ""
     };
     let local = local_re();
-    if local.is_some_and(|re| re.is_match(last)) {
+    if local.is_some_and(|re| re.find(last).is_some()) {
         return true;
     }
-    if last == "outputs" && local.is_some_and(|re| re.is_match(parent)) {
+    if last == "outputs" && local.is_some_and(|re| re.find(parent).is_some()) {
         return true;
     }
     last == "outputs" && parts.contains(&"local-agent-mode-sessions")
@@ -581,12 +589,12 @@ pub fn clear_project_rule_cache() {
     cache_lock().clear();
 }
 
-fn cache_lock() -> std::sync::MutexGuard<'static, VecDeque<(String, CacheEntry)>> {
-    cache().lock().unwrap_or_else(|err| err.into_inner())
+fn cache_lock() -> parking_lot::MutexGuard<'static, VecDeque<(String, CacheEntry)>> {
+    cache().lock()
 }
 
 fn cached_resolve(cwd: &str) -> Option<ProjectHit> {
-    let now = crate::error::now_ms();
+    let now = protocol::js::date_now() as i64;
     {
         let guard = cache_lock();
         if let Some((_, entry)) = guard.iter().find(|(key, _)| key == cwd) {

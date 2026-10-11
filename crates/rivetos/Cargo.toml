@@ -10,9 +10,9 @@ name = "rivetos"
 path = "src/main.rs"
 
 [dependencies]
-clap = { version = "4", features = ["derive"] }
+clap.workspace = true
 memory = { path = "../memory" }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "net", "io-util"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "net", "io-util"] }
 
 [lints]
 workspace = true

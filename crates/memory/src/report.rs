@@ -129,17 +129,7 @@ pub fn compaction_sql() -> String {
 }
 
 pub fn en_us(n: i64) -> String {
-    let neg = n < 0;
-    let digits = n.unsigned_abs().to_string();
-    let mut out = String::new();
-    for (i, ch) in digits.chars().rev().enumerate() {
-        if i > 0 && i % 3 == 0 {
-            out.push(',');
-        }
-        out.push(ch);
-    }
-    let body: String = out.chars().rev().collect();
-    if neg { format!("-{body}") } else { body }
+    protocol::js::number_to_locale_string(n as f64)
 }
 
 pub fn fmt_queue_age(minutes: f64) -> String {
@@ -156,8 +146,10 @@ pub fn fmt_queue_age(minutes: f64) -> String {
 }
 
 pub fn format_js_iso(dt: DateTime<Utc>) -> String {
-    let ms = dt.timestamp_subsec_millis();
-    format!("{}.{:03}Z", dt.format("%Y-%m-%dT%H:%M:%S"), ms)
+    match protocol::js::to_iso_string(dt.timestamp_millis() as f64) {
+        Ok(text) => text,
+        Err(_) => "Invalid Date".to_string(),
+    }
 }
 
 pub fn fmt_date(iso: Option<&str>) -> String {
@@ -433,14 +425,11 @@ pub struct BrowseToolRow {
 }
 
 pub fn fmt_local_ts(dt: DateTime<Utc>) -> String {
-    let local = dt.with_timezone(&Local);
-    let body = local.format("%Y-%m-%d %H:%M:%S").to_string();
-    let zone = local.format("%Z").to_string();
-    if zone.is_empty() {
-        body
-    } else {
-        format!("{body} {zone}")
-    }
+    fmt_local_ts_in(dt, &protocol::host::ProcessEnv)
+}
+
+pub fn fmt_local_ts_in(dt: DateTime<Utc>, env: &dyn protocol::host::Env) -> String {
+    protocol::js::fmt_local_ts(dt.timestamp_millis() as f64, env)
 }
 
 pub fn browse_tool_sql(

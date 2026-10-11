@@ -4,13 +4,12 @@ use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use regex::Regex;
 use serde_json::{Map, Value};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{PgConnection, PgPool, Row};
 
 use crate::cowork::{CoworkHookRow, pick_cowork_hook_rewrite};
-use crate::error::{StoreError, now_ms};
+use crate::error::StoreError;
 use crate::get_full::{
     extract_full_from_line, file_missing_message, is_capture_sqlite_path,
     is_capture_transcript_path, missing_pointer_message, path_exists_async, read_jsonl_line_async,
@@ -71,24 +70,48 @@ fn missing_schema(err: &sqlx::Error) -> bool {
 }
 
 fn missing_tag_tables(message: &str) -> bool {
-    static RE: OnceLock<Option<Regex>> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r#"(?i)relation "?ros_tag[a-z_]*"? does not exist"#).ok())
-        .as_ref()
-        .is_some_and(|re| re.is_match(message))
+    static RE: OnceLock<Option<regress::Regex>> = OnceLock::new();
+    RE.get_or_init(|| {
+        regress::Regex::with_flags(r#"relation "?ros_tag[a-z_]*"? does not exist"#, "i").ok()
+    })
+    .as_ref()
+    .is_some_and(|re| re.find(message).is_some())
 }
 
 fn permission_denied(message: &str) -> bool {
-    static RE: OnceLock<Option<Regex>> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"(?i)EACCES|EPERM|permission denied").ok())
+    static RE: OnceLock<Option<regress::Regex>> = OnceLock::new();
+    RE.get_or_init(|| regress::Regex::with_flags(r"EACCES|EPERM|permission denied", "i").ok())
         .as_ref()
-        .is_some_and(|re| re.is_match(message))
+        .is_some_and(|re| re.find(message).is_some())
+}
+
+pub fn conversation_tag_labels(rows: &[(String, String, String)]) -> Vec<String> {
+    let mut seen: Vec<(&str, &str)> = Vec::new();
+    let mut out = Vec::new();
+    for (key, value, display) in rows {
+        if seen
+            .iter()
+            .any(|(seen_key, seen_value)| seen_key == key && seen_value == value)
+        {
+            continue;
+        }
+        seen.push((key.as_str(), value.as_str()));
+        let shown_display = protocol::js::js_trim(display);
+        let shown = if !shown_display.is_empty() && normalize_tag_value(shown_display) == *value {
+            shown_display
+        } else {
+            value.as_str()
+        };
+        out.push(format!("{}:{shown}", normalize_tag_key(key)));
+    }
+    out
 }
 
 fn spool_name(name: &str) -> bool {
-    static RE: OnceLock<Option<Regex>> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^\d+-[^/]+\.json$").ok())
+    static RE: OnceLock<Option<regress::Regex>> = OnceLock::new();
+    RE.get_or_init(|| regress::Regex::new(r"^\d+-[^/]+\.json$").ok())
         .as_ref()
-        .is_some_and(|re| re.is_match(name))
+        .is_some_and(|re| re.find(name).is_some())
 }
 
 pub fn capture_conversation_upsert_sql(owner: bool) -> &'static str {
@@ -300,7 +323,7 @@ impl PostgresMemory {
     }
 
     pub async fn is_healthy(&self) -> bool {
-        let now = now_ms();
+        let now = protocol::js::date_now() as i64;
         if let Some(hit) = health_cached(
             now,
             self.last_probe_ms.load(Ordering::Relaxed),
@@ -344,7 +367,7 @@ impl PostgresMemory {
         }
         .await;
         if let Err(err) = outcome {
-            let now = now_ms();
+            let now = protocol::js::date_now() as i64;
             let last = self.last_bump_log_ms.load(Ordering::Relaxed);
             if now.saturating_sub(last) >= 60_000 {
                 eprintln!("[memory-search] access bump skipped: {err}");
@@ -357,7 +380,7 @@ impl PostgresMemory {
         let Some(id) = self
             .user_id
             .as_ref()
-            .map(|value| value.trim())
+            .map(|value| protocol::js::js_trim(value))
             .filter(|value| !value.is_empty())
         else {
             return Ok(None);
@@ -483,7 +506,7 @@ impl PostgresMemory {
         let wanted = options
             .owner_user_id
             .as_deref()
-            .map(str::trim)
+            .map(protocol::js::js_trim)
             .filter(|value| !value.is_empty())
             .map(str::to_string);
         let owner = if wanted.is_some() && self.owner_present(conn).await? {
@@ -2100,23 +2123,19 @@ impl PostgresMemory {
             }
             Err(err) => return Err(query_failed(err)),
         };
+        let mut grouped: HashMap<String, Vec<(String, String, String)>> = HashMap::new();
         for row in rows {
             let key: String = row.try_get("key").map_err(query_failed)?;
             let value: String = row.try_get("value").map_err(query_failed)?;
             let display: String = row.try_get("display").unwrap_or_default();
             let conversation_id: String = row.try_get("conversation_id").map_err(query_failed)?;
-            let shown_display = protocol::js::js_trim(&display);
-            let shown = if !shown_display.is_empty() && normalize_tag_value(shown_display) == value
-            {
-                shown_display.to_string()
-            } else {
-                value.clone()
-            };
-            let literal = format!("{}:{shown}", normalize_tag_key(&key));
-            let list = out.entry(conversation_id).or_default();
-            if !list.iter().any(|item| item == &literal) {
-                list.push(literal);
-            }
+            grouped
+                .entry(conversation_id)
+                .or_default()
+                .push((key, value, display));
+        }
+        for (conversation_id, tags) in grouped {
+            out.insert(conversation_id, conversation_tag_labels(&tags));
         }
         Ok(out)
     }
@@ -2393,7 +2412,7 @@ impl PostgresMemory {
         .await?;
         let newest_message: Option<DateTime<Utc>> = fresh.try_get("newest_message")?;
         let newest_summary: Option<DateTime<Utc>> = fresh.try_get("newest_summary")?;
-        let now = now_ms();
+        let now = protocol::js::date_now() as i64;
         let freshness = format!(
             "\n**Freshness:**\n  Newest message: {}\n  Newest summary: {}",
             newest_message

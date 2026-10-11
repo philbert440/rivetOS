@@ -1,0 +1,16 @@
+{
+  "trim": [
+    {
+      "text": "  owner  ",
+      "trim": "owner"
+    },
+    {
+      "text": "\u00a0owner\u00a0",
+      "trim": "owner"
+    },
+    {
+      "text": "\u00a0",
+      "trim": ""
+    }
+  ]
+}

@@ -1,7 +1,4 @@
-use std::sync::OnceLock;
-
 use protocol::js::js_trim;
-use regex::Regex;
 use unicode_normalization::UnicodeNormalization;
 
 pub const TAG_KEY_PROJECT: &str = "project";
@@ -9,16 +6,12 @@ pub const TAG_KEY_MAX: usize = 64;
 pub const TAG_VALUE_MAX: usize = 128;
 pub const PROJECT_RULE_NAME: &str = "cwd-git-root";
 
-fn cf_re() -> Option<&'static Regex> {
-    static RE: OnceLock<Option<Regex>> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"\p{Cf}").ok()).as_ref()
-}
-
 pub fn slug(raw: &str, max: usize) -> String {
     let nfkc: String = raw.nfkc().collect();
-    let stripped = match cf_re() {
-        Some(re) => re.replace_all(&nfkc, "").into_owned(),
-        None => nfkc,
+    let source = protocol::js::JsString::from_text(&nfkc);
+    let stripped = match protocol::js::js_replace(&source, r"\p{Cf}", "gu", "") {
+        Ok(value) => value.to_utf8().to_string(),
+        Err(_) => nfkc,
     };
     let mut spaced = String::new();
     for ch in stripped.chars() {

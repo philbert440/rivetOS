@@ -3,7 +3,8 @@ use std::path::Path;
 
 use serde_json::{Map, Value};
 
-use crate::text::{utf16_len, utf16_prefix};
+use crate::text::capped_prefix;
+use protocol::js::{js_trim, utf16_len};
 
 pub const PREVIEW_GUARD: usize = 512 * 1024;
 
@@ -484,7 +485,7 @@ pub fn format_browse_message_body(
     let capture_trunc = metadata.and_then(|m| m.get("truncated")) == Some(&Value::Bool(true));
     let mut parts = Vec::new();
     if utf16_len(content) > content_limit {
-        parts.push(format!("{}…", utf16_prefix(content, content_limit)));
+        parts.push(format!("{}…", capped_prefix(content, content_limit)));
         if !capture_trunc {
             parts.push(format!(
                 "…[display-truncated content {} chars → memory_get_full id={id}]",
@@ -503,7 +504,7 @@ pub fn format_browse_message_body(
             parts.push(format!(
                 "[{label} {} chars]\n{}…",
                 utf16_len(tool_result),
-                utf16_prefix(tool_result, tool_result_limit)
+                capped_prefix(tool_result, tool_result_limit)
             ));
             if !capture_trunc {
                 parts.push(format!(
@@ -519,10 +520,6 @@ pub fn format_browse_message_body(
         parts.push(hint.trim_start_matches('\n').to_string());
     }
     parts.join("\n")
-}
-
-fn js_trim(text: &str) -> String {
-    protocol::js::js_trim(text).to_string()
 }
 
 fn codex_content_text(content: &Value, want: &str) -> String {
@@ -546,7 +543,7 @@ fn codex_content_text(content: &Value, want: &str) -> String {
         .filter(|text| !text.is_empty())
         .collect::<Vec<_>>()
         .join("\n");
-    js_trim(&joined)
+    js_trim(&joined).to_string()
 }
 
 pub fn extract_codex_from_line(value: &Value) -> Option<ExtractedFull> {
@@ -685,7 +682,7 @@ pub fn extract_pi_from_line(value: &Value) -> Option<ExtractedFull> {
             .filter(|text| !js_trim(text).is_empty())
             .collect::<Vec<_>>()
             .join("\n");
-        js_trim(&joined)
+        js_trim(&joined).to_string()
     };
     let thinking_from = |list: &[&Map<String, Value>]| {
         list.iter()
@@ -864,7 +861,7 @@ pub fn extract_qwen_from_line(value: &Value) -> Option<ExtractedFull> {
         return Some(ExtractedFull::text(format!("[tool-result] {name}"), output));
     }
     let thinking = text_from(Some(true));
-    let text = js_trim(&text_from(Some(false)));
+    let text = js_trim(&text_from(Some(false))).to_string();
     let calls: Vec<&Map<String, Value>> = parts
         .iter()
         .filter_map(|p| p.get("functionCall").and_then(obj))
@@ -1057,7 +1054,7 @@ pub fn extract_opencode_from_part(data: &Value) -> ExtractedFull {
     };
     let kind = part.get("type").and_then(Value::as_str).unwrap_or("");
     if matches!(kind, "reasoning" | "thinking" | "think") {
-        let chunk = js_trim(&part_text(part));
+        let chunk = js_trim(&part_text(part)).to_string();
         let content = if chunk.is_empty() {
             String::new()
         } else {
@@ -1350,7 +1347,7 @@ pub fn render_extracted(
         .is_some()
         && !extracted.content.is_empty()
     {
-        let shown = utf16_prefix(&extracted.content, PREVIEW_GUARD);
+        let shown = capped_prefix(&extracted.content, PREVIEW_GUARD);
         sections.push(format!(
             "### content ({} chars)\n{shown}",
             utf16_len(&extracted.content)
@@ -1363,7 +1360,7 @@ pub fn render_extracted(
             .is_some()
         && !reasoning.is_empty()
     {
-        let shown = utf16_prefix(reasoning, PREVIEW_GUARD);
+        let shown = capped_prefix(reasoning, PREVIEW_GUARD);
         sections.push(format!(
             "### reasoning ({} chars)\n{shown}",
             utf16_len(reasoning)
@@ -1379,7 +1376,7 @@ pub fn render_extracted(
         let label = tool_name
             .map(|name| format!(" ({name})"))
             .unwrap_or_default();
-        let shown = utf16_prefix(args, PREVIEW_GUARD);
+        let shown = capped_prefix(args, PREVIEW_GUARD);
         sections.push(format!(
             "### tool_args{label} ({} chars)\n{shown}",
             utf16_len(args)
@@ -1395,7 +1392,7 @@ pub fn render_extracted(
         let label = tool_name
             .map(|name| format!(" ({name})"))
             .unwrap_or_default();
-        let shown = utf16_prefix(tool_result, PREVIEW_GUARD);
+        let shown = capped_prefix(tool_result, PREVIEW_GUARD);
         sections.push(format!(
             "### tool_result{label} ({} chars)\n{shown}",
             utf16_len(tool_result)
@@ -1420,12 +1417,9 @@ pub fn missing_pointer_message() -> &'static str {
     "Row is truncated but carries no disk pointer (pre-#196 capture, or a non-grok source) — the elided tail is unrecoverable."
 }
 
-pub fn home_dir() -> String {
-    std::env::var("HOME").unwrap_or_default()
-}
-
 pub fn file_missing_message(file: &str, agent: Option<&str>) -> String {
-    format_missing_jsonl_message(file, agent, &home_dir())
+    let home = protocol::host::home_dir(&protocol::host::ProcessEnv).unwrap_or_default();
+    format_missing_jsonl_message(file, agent, &home)
 }
 
 pub fn path_exists(file: &str) -> bool {

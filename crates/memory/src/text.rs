@@ -1,28 +1,22 @@
 use std::collections::BTreeMap;
 
-use protocol::js::js_trim;
+use protocol::digest::sha256_hex;
+use protocol::js::{js_slice, js_trim, utf16_len};
 use serde_json::{Map, Value};
-use sha2::{Digest, Sha256};
 
 pub const MAX_CONTENT: usize = 16000;
 pub const TRUNCATION_MARKER: &str = "\n…[truncated]";
 
-pub fn utf16_len(text: &str) -> usize {
-    text.encode_utf16().count()
-}
-
-pub fn utf16_prefix(text: &str, max_units: usize) -> String {
-    let mut out = String::new();
-    let mut used = 0;
-    for ch in text.chars() {
-        let units = ch.len_utf16();
-        if used + units > max_units {
-            break;
-        }
-        out.push(ch);
-        used += units;
+pub fn capped_prefix(text: &str, max_units: usize) -> String {
+    let sliced = js_slice(text, Some(0.0), Some(max_units as f64));
+    let mut units = sliced.units().to_vec();
+    if units
+        .last()
+        .is_some_and(|unit| (0xD800..=0xDBFF).contains(unit))
+    {
+        units.pop();
     }
-    out
+    String::from_utf16_lossy(&units)
 }
 
 pub fn capture_cap(text: &str, metadata: &mut Map<String, Value>, field: &str) -> String {
@@ -34,7 +28,7 @@ pub fn capture_cap(text: &str, metadata: &mut Map<String, Value>, field: &str) -
         Value::from(utf16_len(text) as u64),
     );
     metadata.insert("truncated".to_string(), Value::Bool(true));
-    utf16_prefix(text, MAX_CONTENT)
+    capped_prefix(text, MAX_CONTENT)
 }
 
 pub fn truncate_content(
@@ -55,13 +49,7 @@ pub fn truncate_content(
     };
     metadata.insert(key, Value::from(utf16_len(content) as u64));
     metadata.insert("truncated".to_string(), Value::Bool(true));
-    format!("{}{TRUNCATION_MARKER}", utf16_prefix(content, MAX_CONTENT))
-}
-
-fn sha256_hex(material: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(material.as_bytes());
-    hex::encode(hasher.finalize())
+    format!("{}{TRUNCATION_MARKER}", capped_prefix(content, MAX_CONTENT))
 }
 
 pub fn ingest_event_id(
@@ -72,10 +60,13 @@ pub fn ingest_event_id(
     ordinal: u64,
     tool_name: Option<&str>,
 ) -> String {
-    sha256_hex(&format!(
-        "{session_id}\0{agent}\0{role}\0{content}\0{ordinal}\0{}",
-        tool_name.unwrap_or("")
-    ))
+    sha256_hex(
+        format!(
+            "{session_id}\0{agent}\0{role}\0{content}\0{ordinal}\0{}",
+            tool_name.unwrap_or("")
+        )
+        .as_bytes(),
+    )
 }
 
 pub fn append_event_id(
@@ -85,10 +76,13 @@ pub fn append_event_id(
     content: &str,
     tool_name: Option<&str>,
 ) -> String {
-    sha256_hex(&format!(
-        "append\0{session_id}\0{agent}\0{role}\0{content}\0{}",
-        tool_name.unwrap_or("")
-    ))
+    sha256_hex(
+        format!(
+            "append\0{session_id}\0{agent}\0{role}\0{content}\0{}",
+            tool_name.unwrap_or("")
+        )
+        .as_bytes(),
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

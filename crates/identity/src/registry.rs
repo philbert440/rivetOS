@@ -9,7 +9,6 @@ use serde_json::Value;
 use crate::user_db::{UserDbEntry, is_usable_user_db};
 
 pub const DEFAULT_OWNER_USER_ID: &str = "owner";
-const DEFAULT_SHARED_DIR: &str = "/rivet-shared";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UserRecord {
@@ -216,30 +215,39 @@ fn default_read_file(path: &str) -> Option<String> {
     }
 }
 
+struct RegistryEnv<'a> {
+    map: &'a BTreeMap<String, String>,
+}
+
+impl protocol::host::Env for RegistryEnv<'_> {
+    fn var(&self, name: &str) -> Option<String> {
+        if name == "RIVETOS_SHARED_DIR" {
+            if let Some(value) = self.map.get(name) {
+                let trimmed = js_trim(value);
+                if !trimmed.is_empty() {
+                    return Some(trimmed.to_string());
+                }
+            }
+            return protocol::host::ProcessEnv.var(name);
+        }
+        self.map.get(name).cloned()
+    }
+}
+
+fn registry_env(env: &BTreeMap<String, String>) -> RegistryEnv<'_> {
+    RegistryEnv { map: env }
+}
+
+fn nonempty(env: &BTreeMap<String, String>, key: &str) -> Option<String> {
+    protocol::host::env_trimmed(&registry_env(env), key).filter(|value| !value.is_empty())
+}
+
 fn default_homedir() -> String {
-    std::env::var("HOME").unwrap_or_else(|_| "/".to_string())
-}
-
-pub fn shared_dir_from(env: &BTreeMap<String, String>) -> String {
-    env.get("RIVETOS_SHARED_DIR")
-        .map(|s| js_trim(s))
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| {
-            std::env::var("RIVETOS_SHARED_DIR")
-                .ok()
-                .map(|s| js_trim(&s).to_string())
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| DEFAULT_SHARED_DIR.to_string())
-        })
-}
-
-fn env_trim<'a>(env: &'a BTreeMap<String, String>, key: &str) -> Option<&'a str> {
-    env.get(key).map(|s| js_trim(s)).filter(|s| !s.is_empty())
+    protocol::host::home_dir(&protocol::host::ProcessEnv).unwrap_or_else(|| "/".to_string())
 }
 
 fn with_store_kind(mut registry: UsersRegistry, env: &BTreeMap<String, String>) -> UsersRegistry {
-    if env_trim(env, "RIVETOS_USER_STORES") == Some("local") {
+    if nonempty(env, "RIVETOS_USER_STORES").as_deref() == Some("local") {
         registry.local_stores = true;
     }
     registry
@@ -273,9 +281,8 @@ pub fn merge_user_dbs(
 }
 
 fn fail_closed_owner(env: &BTreeMap<String, String>) -> UsersRegistry {
-    let owner_user_id = env_trim(env, "RIVETOS_OWNER_USER_ID")
-        .unwrap_or(DEFAULT_OWNER_USER_ID)
-        .to_string();
+    let owner_user_id =
+        nonempty(env, "RIVETOS_OWNER_USER_ID").unwrap_or_else(|| DEFAULT_OWNER_USER_ID.to_string());
     let mut users = IndexMap::new();
     users.insert(
         owner_user_id.clone(),
@@ -295,7 +302,7 @@ fn fail_closed_owner(env: &BTreeMap<String, String>) -> UsersRegistry {
                 local_stores: false,
             },
             None,
-            env_trim(env, "RIVETOS_PG_URL"),
+            nonempty(env, "RIVETOS_PG_URL").as_deref(),
         ),
         env,
     )
@@ -312,10 +319,9 @@ pub fn load_users_registry(
         .map(js_trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string)
-        .or_else(|| env_trim(env, "RIVETOS_USERS_FILE").map(str::to_string));
-    let shared_root = env_trim(env, "RIVETOS_SHARED_DIR")
-        .map(str::to_string)
-        .unwrap_or_else(|| shared_dir_from(env));
+        .or_else(|| nonempty(env, "RIVETOS_USERS_FILE"));
+    let shared_root = config::paths::shared_dir(&registry_env(env));
+    let pg_url = nonempty(env, "RIVETOS_PG_URL");
     let try_parse = |path: &str| -> Option<UsersRegistry> {
         let raw = read(path)?;
         parse_users_registry(Some(&raw))
@@ -328,12 +334,8 @@ pub fn load_users_registry(
             );
             return Some(fail_closed_owner(env));
         }
-        return file_reg.map(|reg| {
-            with_store_kind(
-                merge_user_dbs(reg, None, env_trim(env, "RIVETOS_PG_URL")),
-                env,
-            )
-        });
+        return file_reg
+            .map(|reg| with_store_kind(merge_user_dbs(reg, None, pg_url.as_deref()), env));
     }
     let shared_file = Path::new(&shared_root).join("rivetos").join("users.json");
     let shared_display = shared_file.to_string_lossy().to_string();
@@ -345,12 +347,8 @@ pub fn load_users_registry(
             );
             return Some(fail_closed_owner(env));
         }
-        return file_reg.map(|reg| {
-            with_store_kind(
-                merge_user_dbs(reg, None, env_trim(env, "RIVETOS_PG_URL")),
-                env,
-            )
-        });
+        return file_reg
+            .map(|reg| with_store_kind(merge_user_dbs(reg, None, pg_url.as_deref()), env));
     }
     let home_dir = match home {
         Some(fun) => fun(),
@@ -363,7 +361,7 @@ pub fn load_users_registry(
         .to_string();
     let home_reg = try_parse(&home_file)?;
     Some(with_store_kind(
-        merge_user_dbs(home_reg, None, env_trim(env, "RIVETOS_PG_URL")),
+        merge_user_dbs(home_reg, None, pg_url.as_deref()),
         env,
     ))
 }

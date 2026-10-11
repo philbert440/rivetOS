@@ -1,7 +1,4 @@
-use std::sync::OnceLock;
-
-use chrono::{DateTime, Datelike, Duration, Local, NaiveDate, TimeZone, Utc};
-use regex::Regex;
+use chrono::{DateTime, Datelike, Duration, NaiveDate, TimeZone, Utc};
 
 pub const MS_PER_DAY: i64 = 86_400_000;
 pub const WINDOW_CHOICES: [&str; 7] = [
@@ -13,10 +10,6 @@ pub const WINDOW_CHOICES: [&str; 7] = [
     "last_7d",
     "last_14d",
 ];
-
-fn re<'a>(slot: &'a OnceLock<Option<Regex>>, pat: &str) -> Option<&'a Regex> {
-    slot.get_or_init(|| Regex::new(pat).ok()).as_ref()
-}
 
 pub fn is_window_choice(value: &str) -> bool {
     WINDOW_CHOICES.contains(&value)
@@ -30,44 +23,35 @@ pub fn format_window_choices() -> String {
         .join(", ")
 }
 
+fn replace_all(text: &str, pattern: &str, replacement: &str) -> String {
+    let source = protocol::js::JsString::from_text(text);
+    match protocol::js::js_replace(&source, pattern, "g", replacement) {
+        Ok(value) => value.to_utf8().to_string(),
+        Err(_) => text.to_string(),
+    }
+}
+
 pub fn normalize_window_input(raw: &str) -> Option<String> {
-    let mut s = raw.trim().to_lowercase();
+    let mut s = protocol::js::js_trim(raw).to_lowercase();
     if s.is_empty() {
         return None;
     }
     let steps: [(&str, &str); 12] = [
-        (r"(?i)\blast\s*24\s*(?:h(?:ours?)?)?\b", "last_24h"),
-        (r"(?i)\blast\s+day\b", "last_24h"),
-        (r"(?i)\blast\s*(?:7|seven)\s*d(?:ays?)?\b", "last_7d"),
-        (r"(?i)\blast\s*(?:14|fourteen)\s*d(?:ays?)?\b", "last_14d"),
-        (r"(?i)\bpast\s*(?:7|seven)\s*d(?:ays?)?\b", "last_7d"),
-        (r"(?i)\bpast\s*(?:14|fourteen)\s*d(?:ays?)?\b", "last_14d"),
-        (r"(?i)\blast\s+week\b", "last_7d"),
-        (r"(?i)\bpast\s+week\b", "last_7d"),
-        (r"(?i)\blast\s+two\s+weeks?\b", "last_14d"),
-        (r"(?i)\bpast\s+two\s+weeks?\b", "last_14d"),
-        (r"(?i)\bthis\s+morning\b", "this_morning"),
-        (r"(?i)\bthis\s+week\b", "this_week"),
+        (r"\blast\s*24\s*(?:h(?:ours?)?)?\b", "last_24h"),
+        (r"\blast\s+day\b", "last_24h"),
+        (r"\blast\s*(?:7|seven)\s*d(?:ays?)?\b", "last_7d"),
+        (r"\blast\s*(?:14|fourteen)\s*d(?:ays?)?\b", "last_14d"),
+        (r"\bpast\s*(?:7|seven)\s*d(?:ays?)?\b", "last_7d"),
+        (r"\bpast\s*(?:14|fourteen)\s*d(?:ays?)?\b", "last_14d"),
+        (r"\blast\s+week\b", "last_7d"),
+        (r"\bpast\s+week\b", "last_7d"),
+        (r"\blast\s+two\s+weeks?\b", "last_14d"),
+        (r"\bpast\s+two\s+weeks?\b", "last_14d"),
+        (r"\bthis\s+morning\b", "this_morning"),
+        (r"\bthis\s+week\b", "this_week"),
     ];
-    for (pat, repl) in steps {
-        static SLOTS: [OnceLock<Option<Regex>>; 12] = [
-            OnceLock::new(),
-            OnceLock::new(),
-            OnceLock::new(),
-            OnceLock::new(),
-            OnceLock::new(),
-            OnceLock::new(),
-            OnceLock::new(),
-            OnceLock::new(),
-            OnceLock::new(),
-            OnceLock::new(),
-            OnceLock::new(),
-            OnceLock::new(),
-        ];
-        let idx = steps.iter().position(|(p, _)| *p == pat).unwrap_or(0);
-        if let Some(compiled) = re(&SLOTS[idx], pat) {
-            s = compiled.replace_all(&s, repl).into_owned();
-        }
+    for (pattern, replacement) in steps {
+        s = replace_all(&s, pattern, replacement);
     }
     let mut out = String::new();
     let mut prev_us = false;
@@ -128,47 +112,13 @@ fn zoned_midnight<Tz: TimeZone>(date: NaiveDate, tz: &Tz) -> Option<DateTime<Tz>
     }
 }
 
-fn rfc3339(raw: &str) -> Option<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(raw)
-        .ok()
-        .map(|dt| dt.with_timezone(&Utc))
-}
-
-fn space_to_t(raw: &str) -> Option<String> {
-    let idx = raw.find(' ')?;
-    let mut owned = raw.to_string();
-    owned.replace_range(idx..idx + 1, "T");
-    Some(owned)
-}
-
-fn naive_local(raw: &str) -> Option<DateTime<Utc>> {
-    let naive = chrono::NaiveDateTime::parse_from_str(raw, "%Y-%m-%dT%H:%M:%S%.f")
-        .or_else(|_| chrono::NaiveDateTime::parse_from_str(raw, "%Y-%m-%dT%H:%M:%S"))
-        .ok()?;
-    match Local.from_local_datetime(&naive) {
-        chrono::LocalResult::Single(dt) => Some(dt.with_timezone(&Utc)),
-        chrono::LocalResult::Ambiguous(earliest, _) => Some(earliest.with_timezone(&Utc)),
-        chrono::LocalResult::None => None,
-    }
-}
-
 pub fn parse_js_date(raw: &str) -> Option<DateTime<Utc>> {
-    if let Some(dt) = rfc3339(raw) {
-        return Some(dt);
-    }
-    let spaced = space_to_t(raw);
-    if let Some(fixed) = spaced.as_deref()
-        && let Some(dt) = rfc3339(fixed)
-    {
-        return Some(dt);
-    }
-    if let Ok(date) = NaiveDate::parse_from_str(raw, "%Y-%m-%d") {
-        return date.and_hms_opt(0, 0, 0).map(|naive| naive.and_utc());
-    }
-    if let Some(dt) = naive_local(raw) {
-        return Some(dt);
-    }
-    spaced.as_deref().and_then(naive_local)
+    parse_js_date_with(raw, &protocol::host::ProcessEnv)
+}
+
+pub fn parse_js_date_with(raw: &str, env: &dyn protocol::host::Env) -> Option<DateTime<Utc>> {
+    let ms = protocol::js::date_parse(raw, env)?;
+    DateTime::from_timestamp_millis(ms as i64)
 }
 
 pub fn resolve_window<Tz: TimeZone>(

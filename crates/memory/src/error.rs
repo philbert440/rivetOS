@@ -1,5 +1,5 @@
+use protocol::js::JsObject;
 use protocol::{ErrorDetails, ErrorJson, MemoryErrorCode, memory_error_json};
-use serde_json::{Map, Value};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -59,15 +59,8 @@ impl StoreError {
                 timestamp: timestamp_ms,
                 cause: cause.clone(),
                 stack: None,
-                context: Map::<String, Value>::new(),
+                context: JsObject::new(),
             },
         ))
     }
-}
-
-pub fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
-        .unwrap_or(0)
 }

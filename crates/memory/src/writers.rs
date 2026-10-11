@@ -31,12 +31,13 @@ pub fn prepare_append(
     let tool_name = args
         .get("tool_name")
         .and_then(Value::as_str)
-        .map(str::to_string);
+        .map(str::to_string)
+        .filter(|name| !name.is_empty());
     let event_id_arg = args
         .get("event_id")
         .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
+        .map(protocol::js::js_trim)
+        .filter(|value| !value.is_empty())
         .map(str::to_string);
     if session_id.is_empty() {
         return Err("memory_append: session_id is required".to_string());

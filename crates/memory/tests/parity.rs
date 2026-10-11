@@ -34,12 +34,9 @@ use memory::{
     reset_session_guards, truncate_content, user_from_session_key, utf16_len,
 };
 use serde_json::{Map, Value, json};
-use sha2::{Digest, Sha256};
 
 fn sha(material: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(material.as_bytes());
-    hex::encode(hasher.finalize())
+    protocol::digest::sha256_hex(material.as_bytes())
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -532,6 +529,19 @@ fn windows_slug_and_project_rule() {
     let planned = plan_project_rule_tag(Some(&settings), false, false, None).expect("plan");
     assert_eq!(planned.value, "acmekit");
     assert_eq!(planned.display, "AcmeKit");
+    let labels = memory::conversation_tag_labels(&[
+        (
+            "project".to_string(),
+            "acme".to_string(),
+            "Acme".to_string(),
+        ),
+        (
+            "project".to_string(),
+            "acme".to_string(),
+            "acme".to_string(),
+        ),
+    ]);
+    assert_eq!(labels, vec!["project:Acme".to_string()]);
     assert!(plan_project_rule_tag(Some(&settings), true, true, None).is_none());
 }
 
@@ -548,7 +558,36 @@ fn write_tool_validation_and_sql_shapes() {
         prepare_append(&args, &env).expect_err("role"),
         "memory_append: role must be user|assistant|system|tool"
     );
+    args.insert("role".to_string(), Value::String("assistant".to_string()));
+    args.insert("content".to_string(), Value::String(String::new()));
+    args.insert("tool_name".to_string(), Value::String(String::new()));
+    assert_eq!(
+        prepare_append(&args, &env).expect_err("empty tool"),
+        "memory_append: content is required (or provide tool_name for tool-call messages)"
+    );
+    args.insert("tool_name".to_string(), Value::String(" ".to_string()));
+    let blank_tool = prepare_append(&args, &env).expect("whitespace tool");
+    assert_eq!(blank_tool.tool_name.as_deref(), Some(" "));
+    args.insert("content".to_string(), Value::String("hi".to_string()));
+    args.insert("tool_name".to_string(), Value::String("read".to_string()));
     args.insert("role".to_string(), Value::String("user".to_string()));
+    args.insert(
+        "event_id".to_string(),
+        Value::String("\u{00A0}id\u{00A0}".to_string()),
+    );
+    let nbsp = prepare_append(&args, &env).expect("nbsp event");
+    assert_eq!(nbsp.event_id, "id");
+    args.insert(
+        "event_id".to_string(),
+        Value::String(" \u{00A0} ".to_string()),
+    );
+    let generated = prepare_append(&args, &env).expect("blank event");
+    assert_eq!(
+        generated.event_id,
+        memory::append_event_id("s", "mcp", "user", "hi", Some("read"))
+    );
+    args.remove("event_id");
+    args.remove("tool_name");
     let prepared = prepare_append(&args, &env).expect("ok");
     let value = append_result_value(&prepared, "id-1", false);
     assert_eq!(value.get("id").and_then(Value::as_str), Some("id-1"));

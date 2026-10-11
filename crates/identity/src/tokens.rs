@@ -1,9 +1,8 @@
 use std::collections::HashMap;
-use std::sync::Mutex;
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use sha2::{Digest, Sha256};
+use parking_lot::Mutex;
 use thiserror::Error;
 
 pub const USER_TOKEN_HEADER: &str = "x-rivetos-user-token";
@@ -35,14 +34,12 @@ fn store() -> &'static Mutex<TokenStore> {
     })
 }
 
-fn lock() -> std::sync::MutexGuard<'static, TokenStore> {
-    store().lock().unwrap_or_else(|err| err.into_inner())
+fn lock() -> parking_lot::MutexGuard<'static, TokenStore> {
+    store().lock()
 }
 
 fn digest(token: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(token.as_bytes());
-    hex::encode(hasher.finalize())
+    protocol::digest::sha256_hex(token.as_bytes())
 }
 
 pub fn mint_user_token(user_id: &str) -> Result<String, TokenError> {

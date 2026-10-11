@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
 use memory::{
-    CaptureBatch, CaptureMessage, CaptureOptions, MemoryStore, PostgresMemory, utf16_len,
-    utf16_prefix,
+    CaptureBatch, CaptureMessage, CaptureOptions, MemoryStore, PostgresMemory, capped_prefix,
+    utf16_len,
 };
 use serde_json::{Map, Value, json};
 use sqlx::{PgPool, Row};
@@ -83,7 +83,7 @@ fn iso_millis(raw: &str) -> String {
 fn abbreviate(text: &str) -> String {
     let len = utf16_len(text);
     if len > 40 {
-        format!("{}…[{len}]", utf16_prefix(text, 40))
+        format!("{}…[{len}]", capped_prefix(text, 40))
     } else {
         text.to_string()
     }

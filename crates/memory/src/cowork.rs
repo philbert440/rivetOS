@@ -1,5 +1,3 @@
-use sha2::{Digest, Sha256};
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CoworkHookRow {
     pub id: String,
@@ -9,9 +7,7 @@ pub struct CoworkHookRow {
 }
 
 pub fn cowork_content_hash(role: &str, content: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(format!("{role}\0{content}\0\0").as_bytes());
-    hex::encode(hasher.finalize())
+    protocol::digest::sha256_hex(format!("{role}\0{content}\0\0").as_bytes())
 }
 
 pub fn pick_cowork_hook_rewrite(
