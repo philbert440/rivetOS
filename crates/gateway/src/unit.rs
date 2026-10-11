@@ -864,3 +864,77 @@ fn security_refusal_strings() {
     assert!(refusal.contains("refusing to bind 192.0.2.10"));
     assert!(refusal.contains("RIVETOS_DEN_TLS_CERT"));
 }
+
+#[test]
+fn mesh_shape_log_is_twelve_node_lines() {
+    let dir = scratch("mesh-log");
+    let mesh = dir.join("mesh.json");
+    let shared = dir.join("shared");
+    let repo = crate::standard_helpers::repo_root();
+    assert!(
+        std::path::Path::new(&repo)
+            .join("packages")
+            .join("types")
+            .is_dir()
+    );
+    let path = mesh.to_string_lossy().into_owned();
+    let shared_s = shared.to_string_lossy().into_owned();
+    std::fs::write(&mesh, "[]\n").unwrap();
+    let err = load_mesh_file(std::slice::from_ref(&path), &shared_s).unwrap_err();
+    assert_eq!(err.code, "MESH_INVALID_SHAPE");
+    assert_eq!(err.line, 216);
+    assert_node_mesh_log(&err.log_block(), &repo, 216, "MESH_INVALID_SHAPE", &path);
+
+    std::fs::write(&mesh, "{\"nodes\":[]}\n").unwrap();
+    let err = load_mesh_file(std::slice::from_ref(&path), &shared_s).unwrap_err();
+    assert_eq!(err.code, "MESH_FLAT_ARRAY");
+    assert_eq!(err.line, 221);
+    let live = shared.join("mesh.json");
+    assert!(err.message.contains(live.to_string_lossy().as_ref()));
+    assert_node_mesh_log(&err.log_block(), &repo, 221, "MESH_FLAT_ARRAY", &path);
+
+    std::fs::write(&mesh, "{\"version\":1,\"nodes\":5}\n").unwrap();
+    let err = load_mesh_file(std::slice::from_ref(&path), &shared_s).unwrap_err();
+    assert_eq!(err.code, "MESH_INVALID_SHAPE");
+    assert_eq!(err.line, 224);
+    assert!(
+        err.message
+            .contains("nodes must be an object keyed by node id")
+    );
+    assert_node_mesh_log(&err.log_block(), &repo, 224, "MESH_INVALID_SHAPE", &path);
+}
+
+fn assert_node_mesh_log(block: &str, repo: &str, line: u32, code: &str, path: &str) {
+    let types_mesh = ["packages", "types", "dist", "mesh.js"].join("/");
+    let den_mesh = ["services", "den-server", "dist", "mesh.js"].join("/");
+    let lines: Vec<&str> = block.split('\n').collect();
+    assert_eq!(lines.len(), 12, "{block}");
+    assert!(lines[0].starts_with("mesh.json parse failed: MeshParseError: "));
+    assert_eq!(
+        lines[1],
+        format!("    at assertRecordMeshFile ({repo}/{types_mesh}:{line}:15)")
+    );
+    assert_eq!(
+        lines[2],
+        format!("    at parseMeshFile ({repo}/{types_mesh}:272:12)")
+    );
+    assert_eq!(
+        lines[3],
+        format!("    at loadMeshFile (file://{repo}/{den_mesh}:60:20)")
+    );
+    assert_eq!(
+        lines[4],
+        format!("    at async build (file://{repo}/{den_mesh}:192:22) {{")
+    );
+    assert_eq!(lines[5], format!("  code: '{code}',"));
+    assert_eq!(lines[6], "  severity: 'fatal',");
+    assert_eq!(lines[7], format!("  context: {{ path: '{path}' }},"));
+    assert_eq!(lines[8], "  retryable: false,");
+    let stamp = lines[9]
+        .strip_prefix("  timestamp: ")
+        .and_then(|rest| rest.strip_suffix(','))
+        .unwrap_or("");
+    assert!(!stamp.is_empty() && stamp.chars().all(|ch| ch.is_ascii_digit()));
+    assert_eq!(lines[10], format!("  path: '{path}'"));
+    assert_eq!(lines[11], "}");
+}

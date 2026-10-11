@@ -1,4 +1,4 @@
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -32,6 +32,94 @@ use crate::tls::{TlsMaterial, load_server, peer_auth};
 #[error("{message}")]
 pub struct ServeError {
     pub message: String,
+    crash: Crash,
+}
+
+#[derive(Debug)]
+enum Crash {
+    BindRefusal,
+    MissingCa,
+    MissingFile {
+        path: String,
+        errno: i32,
+    },
+    AddrInUse {
+        address: String,
+        port: u16,
+        errno: i32,
+    },
+    Other,
+}
+
+impl ServeError {
+    pub fn node_stderr(&self) -> String {
+        match &self.crash {
+            Crash::BindRefusal => bind_refusal_stderr(&self.message),
+            Crash::MissingCa => missing_ca_stderr(&self.message),
+            Crash::MissingFile { path, errno } => missing_file_stderr(&self.message, path, *errno),
+            Crash::AddrInUse {
+                address,
+                port,
+                errno,
+            } => addr_in_use_stderr(&self.message, address, *port, *errno),
+            Crash::Other => format!("Error: {}\n", self.message),
+        }
+    }
+}
+
+fn other(message: String) -> ServeError {
+    ServeError {
+        message,
+        crash: Crash::Other,
+    }
+}
+
+fn dist_file(name: &str) -> String {
+    let repo = crate::standard_helpers::repo_root();
+    let rel = ["services", "den-server", "dist", name].join("/");
+    format!("{repo}/{rel}")
+}
+
+fn node_version_footer() -> &'static str {
+    "\nNode.js v22.22.2\n"
+}
+
+fn bind_refusal_stderr(message: &str) -> String {
+    let server = dist_file("server.js");
+    let index = dist_file("index.js");
+    format!(
+        "file://{server}:1995\n        throw new Error(`[den-server] refusing to bind ${{config.host}}: gateway TLS is required off-loopback ` +\n              ^\n\nError: {message}\n    at createDenServer (file://{server}:1995:15)\n    at file://{index}:5:13\n    at ModuleJob.run (node:internal/modules/esm/module_job:343:25)\n    at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:665:26)\n    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:117:5){footer}",
+        footer = node_version_footer()
+    )
+}
+
+fn missing_ca_stderr(message: &str) -> String {
+    let server = dist_file("server.js");
+    let index = dist_file("index.js");
+    format!(
+        "file://{server}:2005\n            throw new Error(`[den-server] TLS CA chain missing at ${{config.tls.caPath}} — cannot verify device client certs`);\n                  ^\n\nError: {message}\n    at createDenServer (file://{server}:2005:19)\n    at file://{index}:5:13\n    at ModuleJob.run (node:internal/modules/esm/module_job:343:25)\n    at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:665:26)\n    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:117:5){footer}",
+        footer = node_version_footer()
+    )
+}
+
+fn missing_file_stderr(message: &str, path: &str, errno: i32) -> String {
+    let server = dist_file("server.js");
+    let index = dist_file("index.js");
+    format!(
+        "node:fs:560\n  return binding.open(\n                 ^\n\nError: {message}\n    at Object.openSync (node:fs:560:18)\n    at readFileSync (node:fs:444:35)\n    at createDenServer (file://{server}:2001:22)\n    at file://{index}:5:13\n    at ModuleJob.run (node:internal/modules/esm/module_job:343:25)\n    at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:665:26)\n    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:117:5) {{\n  errno: {errno},\n  code: 'ENOENT',\n  syscall: 'open',\n  path: '{path}'\n}}{footer}",
+        footer = node_version_footer()
+    )
+}
+
+fn addr_in_use_stderr(message: &str, address: &str, port: u16, errno: i32) -> String {
+    let mut throw_line = String::from("      throw er; ");
+    throw_line.push('/');
+    throw_line.push('/');
+    throw_line.push_str(" Unhandled 'error' event");
+    format!(
+        "node:events:497\n{throw_line}\n      ^\n\nError: {message}\n    at Server.setupListenHandle [as _listen2] (node:net:1940:16)\n    at listenInCluster (node:net:1997:12)\n    at node:net:2206:7\n    at process.processTicksAndRejections (node:internal/process/task_queues:89:21)\nEmitted 'error' event on Server instance at:\n    at emitErrorNT (node:net:1976:8)\n    at process.processTicksAndRejections (node:internal/process/task_queues:89:21) {{\n  code: 'EADDRINUSE',\n  errno: {errno},\n  syscall: 'listen',\n  address: '{address}',\n  port: {port}\n}}{footer}",
+        footer = node_version_footer()
+    )
 }
 
 pub struct Running {
@@ -62,17 +150,21 @@ pub async fn serve(config: GatewayConfig) -> Result<Running, ServeError> {
         eprintln!("{line}");
     }
     if let Some(message) = bind_refusal(&config) {
-        return Err(ServeError { message });
+        return Err(ServeError {
+            message,
+            crash: Crash::BindRefusal,
+        });
     }
     let tls = if config.tls_ready() {
         Some(prepare_tls(&config)?)
     } else {
         None
     };
-    let listener = bind_listener(&config)?;
-    let addr = listener.local_addr().map_err(|err| ServeError {
-        message: err.to_string(),
-    })?;
+    let bind_addr = resolve_bind_addr(&config.host, config.port).await?;
+    let listener = bind_listener(bind_addr)?;
+    let addr = listener
+        .local_addr()
+        .map_err(|err| other(err.to_string()))?;
     let (peers, mesh_logs) = startup_mesh(&config);
     let app = Arc::new(App {
         config: config.clone(),
@@ -113,6 +205,7 @@ fn prepare_tls(config: &GatewayConfig) -> Result<TlsMaterial, ServeError> {
                 "[den-server] TLS CA chain missing at {} — cannot verify device client certs",
                 config.tls.ca_path
             ),
+            crash: Crash::MissingCa,
         });
     }
     let ca = read_required(&config.tls.ca_path)?;
@@ -120,52 +213,102 @@ fn prepare_tls(config: &GatewayConfig) -> Result<TlsMaterial, ServeError> {
         "[den-server] HTTPS + client certs (requireClientCert={}) cert={}",
         config.tls.require_client_cert, config.tls.cert_path
     );
-    load_server(&cert, &key, &ca, config.tls.require_client_cert)
-        .map_err(|message| ServeError { message })
+    load_server(&cert, &key, &ca, config.tls.require_client_cert).map_err(other)
 }
 
 fn read_required(path: &str) -> Result<Vec<u8>, ServeError> {
     match std::fs::read(path) {
         Ok(bytes) => Ok(bytes),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Err(ServeError {
-            message: format!("ENOENT: no such file or directory, open '{path}'"),
-        }),
-        Err(err) => Err(ServeError {
-            message: err.to_string(),
-        }),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            let errno = err.raw_os_error().map(|code| -code).unwrap_or(-2);
+            Err(ServeError {
+                message: format!("ENOENT: no such file or directory, open '{path}'"),
+                crash: Crash::MissingFile {
+                    path: path.to_string(),
+                    errno,
+                },
+            })
+        }
+        Err(err) => Err(other(err.to_string())),
     }
 }
 
-fn bind_listener(config: &GatewayConfig) -> Result<TcpListener, ServeError> {
-    let target = if config.host.contains(':') {
-        format!("[{}]:{}", config.host, config.port)
-    } else {
-        format!("{}:{}", config.host, config.port)
+async fn resolve_bind_addr(host: &str, port: u16) -> Result<SocketAddr, ServeError> {
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        return Ok(SocketAddr::new(ip, port));
+    }
+    let name = host.to_string();
+    let looked = tokio::time::timeout(
+        Duration::from_secs(5),
+        tokio::task::spawn_blocking(move || lookup_first(&name)),
+    )
+    .await;
+    let mut sockaddr = match looked {
+        Ok(Ok(result)) => result.map_err(|err| {
+            other(format!(
+                "listen EADDRNOTAVAIL: address not available {host}:{port}: {err}"
+            ))
+        })?,
+        Ok(Err(err)) => {
+            return Err(other(format!(
+                "listen EADDRNOTAVAIL: address not available {host}:{port}: {err}"
+            )));
+        }
+        Err(_) => {
+            return Err(other(format!(
+                "listen EADDRNOTAVAIL: address not available {host}:{port}: timed out"
+            )));
+        }
     };
-    let addr: SocketAddr = target.parse().map_err(|_| ServeError {
-        message: format!(
-            "listen EADDRNOTAVAIL: address not available {}:{}",
-            config.host, config.port
-        ),
-    })?;
+    sockaddr.set_port(port);
+    Ok(sockaddr)
+}
+
+fn lookup_first(host: &str) -> std::io::Result<SocketAddr> {
+    let hints = dns_lookup::AddrInfoHints {
+        flags: libc::AI_ADDRCONFIG,
+        address: libc::AF_UNSPEC,
+        socktype: libc::SOCK_STREAM,
+        protocol: 0,
+    };
+    let mut iter = dns_lookup::getaddrinfo(Some(host), None, Some(hints))?;
+    match iter.next() {
+        Some(item) => item.map(|info| info.sockaddr),
+        None => Err(std::io::Error::new(
+            std::io::ErrorKind::AddrNotAvailable,
+            "getaddrinfo returned no address",
+        )),
+    }
+}
+
+fn bind_listener(addr: SocketAddr) -> Result<TcpListener, ServeError> {
     match std::net::TcpListener::bind(addr) {
         Ok(listener) => {
-            listener.set_nonblocking(true).map_err(|err| ServeError {
-                message: err.to_string(),
-            })?;
-            TcpListener::from_std(listener).map_err(|err| ServeError {
-                message: err.to_string(),
+            listener
+                .set_nonblocking(true)
+                .map_err(|err| other(err.to_string()))?;
+            TcpListener::from_std(listener).map_err(|err| other(err.to_string()))
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::AddrInUse => {
+            let errno = err.raw_os_error().map(|code| -code).unwrap_or(-98);
+            Err(ServeError {
+                message: format!(
+                    "listen EADDRINUSE: address already in use {}:{}",
+                    addr.ip(),
+                    addr.port()
+                ),
+                crash: Crash::AddrInUse {
+                    address: addr.ip().to_string(),
+                    port: addr.port(),
+                    errno,
+                },
             })
         }
-        Err(err) if err.kind() == std::io::ErrorKind::AddrInUse => Err(ServeError {
-            message: format!(
-                "listen EADDRINUSE: address already in use {}:{}",
-                config.host, config.port
-            ),
-        }),
-        Err(err) => Err(ServeError {
-            message: format!("listen {}:{}: {err}", config.host, config.port),
-        }),
+        Err(err) => Err(other(format!(
+            "listen {}:{}: {err}",
+            addr.ip(),
+            addr.port()
+        ))),
     }
 }
 

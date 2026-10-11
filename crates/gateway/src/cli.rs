@@ -17,7 +17,7 @@ pub async fn run(_args: GatewayArgs) -> ExitCode {
     let running = match serve(config).await {
         Ok(running) => running,
         Err(err) => {
-            eprintln!("Error: {err}");
+            eprint!("{}", err.node_stderr());
             return ExitCode::from(1);
         }
     };

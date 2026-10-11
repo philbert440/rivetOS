@@ -22,8 +22,12 @@ pub fn scratch(label: &str) -> PathBuf {
         label,
         SCRATCH.fetch_add(1, Ordering::Relaxed)
     ));
-    std::fs::create_dir_all(dir.join("shared")).unwrap();
-    std::fs::create_dir_all(dir.join("state")).unwrap();
+    if std::fs::create_dir_all(dir.join("shared")).is_err() {
+        panic!("scratch shared directory");
+    }
+    if std::fs::create_dir_all(dir.join("state")).is_err() {
+        panic!("scratch state directory");
+    }
     dir
 }
 

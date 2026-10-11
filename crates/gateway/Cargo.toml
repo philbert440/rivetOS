@@ -10,6 +10,7 @@ axum.workspace = true
 base64.workspace = true
 bytes.workspace = true
 clap.workspace = true
+dns-lookup.workspace = true
 futures-util.workspace = true
 hostname.workspace = true
 http.workspace = true
@@ -17,6 +18,7 @@ http-body-util.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
 identity = { path = "../identity" }
+libc.workspace = true
 parking_lot.workspace = true
 protocol = { path = "../protocol" }
 regress.workspace = true

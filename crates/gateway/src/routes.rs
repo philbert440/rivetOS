@@ -139,12 +139,7 @@ pub async fn dispatch(app: &Arc<App>, incoming: &Incoming, info: &ConnInfo) -> O
                 return Outcome::Reply(raw_forbidden());
             }
             note_refuse(app, &reason);
-            return Outcome::Reply(json_reply(
-                403,
-                "{\"error\":\"forbidden origin\"}",
-                &[],
-                false,
-            ));
+            return Outcome::Reply(forbidden_origin());
         }
         OriginDecision::Allow { allow_origin } => allow_headers(allow_origin.as_deref()),
     };
@@ -271,7 +266,7 @@ async fn route(
         return Some(json_reply(200, &capabilities_body(app), preset, true));
     }
     if path == "/api/phone-pairing" || path.starts_with("/api/phone-pairing/") {
-        return Some(phone_reply(app, incoming, path, preset));
+        return Some(phone_reply(app, incoming, path, preset, user));
     }
     if path == "/api/voice/transcribe" || path == "/api/voice/speak" {
         let error = if path.ends_with("speak") {
@@ -523,7 +518,21 @@ fn files_gate(config: &GatewayConfig) -> Option<&'static str> {
     }
 }
 
-fn phone_reply(app: &App, incoming: &Incoming, path: &str, preset: &[(String, String)]) -> Reply {
+fn phone_reply(
+    app: &App,
+    incoming: &Incoming,
+    path: &str,
+    preset: &[(String, String)],
+    user: Option<&UserContext>,
+) -> Reply {
+    if user.is_some_and(|ctx| !ctx.is_owner) {
+        return json_reply(
+            403,
+            "{\"error\":\"only the owner can pair a phone\"}",
+            preset,
+            true,
+        );
+    }
     if path == "/api/phone-pairing" && incoming.method == "GET" {
         let reason = phone_unavailable(app);
         let body = json!({"available": false, "reason": reason}).to_string();
@@ -798,7 +807,7 @@ fn inside(root: &Path, candidate: &Path) -> bool {
 }
 
 fn hashed_asset(path: &str) -> bool {
-    let Ok(re) = regress::Regex::new("-[[:alnum:]_]{8}\\.[[:alnum:]_]+$") else {
+    let Ok(re) = regress::Regex::new(r"-\w{8}\.\w+$") else {
         return false;
     };
     re.find(path).is_some()
@@ -913,6 +922,18 @@ fn unauthorized(incoming: &Incoming, path: &str, preset: &[(String, String)]) ->
         };
     }
     json_reply(401, "{\"error\":\"unauthorized\"}", preset, false)
+}
+
+fn forbidden_origin() -> Reply {
+    Reply {
+        status: 403,
+        reason: crate::http_codec::reason_phrase(403),
+        headers: vec![("Content-Type".to_string(), "application/json".to_string())],
+        body: b"{\"error\":\"forbidden origin\"}".to_vec(),
+        auto: true,
+        close: false,
+        framing: Framing::Chunked,
+    }
 }
 
 fn json_reply(status: u16, body: &str, preset: &[(String, String)], cors_first: bool) -> Reply {

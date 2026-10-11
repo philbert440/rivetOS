@@ -1123,3 +1123,339 @@ async fn missing_tls_files_fail_verbatim() {
     };
     assert!(err.to_string().contains("TLS CA chain missing at"));
 }
+
+#[tokio::test]
+async fn rejected_origin_omits_cors_headers() {
+    let dir = scratch("origin-deny");
+    let running = boot(isolated(&dir)).await;
+    let addr = running.addr();
+    let host = format!("127.0.0.1:{}", addr.port());
+    let allowed = exchange(addr, &request("GET", "/healthz", &host, "", "")).await;
+    assert_eq!(allowed.status, 200);
+    assert!(allowed.head.contains("Access-Control-Allow-Methods"));
+
+    let origin = "Origin: https://evil.example\r\n";
+    let denied = exchange(addr, &request("GET", "/sessions", &host, origin, "")).await;
+    assert_eq!(denied.status, 403);
+    assert!(!denied.head.contains("Access-Control-Allow-Methods"));
+    assert!(!denied.head.contains("Access-Control-Allow-Headers"));
+    body_eq(&denied.body, "forbidden-origin");
+
+    let options = exchange(
+        addr,
+        &request("OPTIONS", "/api/events/sessions", &host, origin, ""),
+    )
+    .await;
+    assert_eq!(options.status, 403);
+    assert!(!options.head.contains("Access-Control-Allow-Methods"));
+    body_eq(&options.body, "forbidden-origin");
+
+    let evil_host = exchange(addr, &request("GET", "/sessions", "evil.example", "", "")).await;
+    assert_eq!(evil_host.status, 403);
+    assert!(!evil_host.head.contains("Access-Control-Allow-Methods"));
+    body_eq(&evil_host.body, "forbidden-origin");
+
+    let empty_host = exchange(addr, "GET /sessions HTTP/1.1\r\nHost: \r\n\r\n").await;
+    assert_eq!(empty_host.status, 403);
+    assert!(!empty_host.head.contains("Access-Control-Allow-Methods"));
+
+    let http10 = exchange(addr, "GET /healthz HTTP/1.0\r\n\r\n").await;
+    assert_eq!(http10.status, 403);
+    assert!(http10.head.starts_with("HTTP/1.1 403 "));
+    assert!(http10.head.contains("Content-Type: application/json"));
+    assert!(http10.head.contains("Connection: close"));
+    assert!(!http10.head.contains("Access-Control-Allow-Methods"));
+    assert!(!http10.head.contains("Keep-Alive"));
+    assert!(!http10.head.contains("Transfer-Encoding"));
+    running.shutdown().await;
+}
+
+#[tokio::test]
+async fn hashed_asset_cache_control() {
+    let dir = scratch("hashed");
+    let static_dir = dir.join("static");
+    std::fs::create_dir_all(static_dir.join("assets")).unwrap();
+    std::fs::write(
+        static_dir.join("assets").join("app-abcdef12.js"),
+        "console.log(\"hashed asset app-abcdef12\")\n",
+    )
+    .unwrap();
+    std::fs::write(
+        static_dir.join("assets").join("app-abcdef123.js"),
+        "console.log(\"nine\")\n",
+    )
+    .unwrap();
+    std::fs::write(
+        static_dir.join("assets").join("plain.js"),
+        "console.log(1)\n",
+    )
+    .unwrap();
+    let mut env = isolated(&dir);
+    env.insert(
+        "RIVETOS_DEN_STATIC_DIR".to_string(),
+        static_dir.to_string_lossy().into_owned(),
+    );
+    let running = boot(env).await;
+    let addr = running.addr();
+    let host = format!("127.0.0.1:{}", addr.port());
+    let hashed = exchange(
+        addr,
+        &request("GET", "/assets/app-abcdef12.js", &host, "", ""),
+    )
+    .await;
+    assert_eq!(hashed.status, 200);
+    assert!(
+        hashed
+            .head
+            .contains("Cache-Control: public, max-age=31536000, immutable")
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&hashed.body).as_ref(),
+        "console.log(\"hashed asset app-abcdef12\")\n"
+    );
+    let nine = exchange(
+        addr,
+        &request("GET", "/assets/app-abcdef123.js", &host, "", ""),
+    )
+    .await;
+    assert_eq!(nine.status, 200);
+    assert!(nine.head.contains("Cache-Control: no-cache"));
+    let plain = exchange(addr, &request("GET", "/assets/plain.js", &host, "", "")).await;
+    assert_eq!(plain.status, 200);
+    assert!(plain.head.contains("Cache-Control: no-cache"));
+    running.shutdown().await;
+}
+
+#[tokio::test]
+async fn mesh_shape_errors_are_500() {
+    let dir = scratch("mesh-http");
+    let mesh = dir.join("mesh.json");
+    std::fs::write(&mesh, "[]\n").unwrap();
+    let mut env = isolated(&dir);
+    env.insert(
+        "RIVETOS_DEN_MESH_FILE".to_string(),
+        mesh.to_string_lossy().into_owned(),
+    );
+    env.insert("RIVETOS_DEN_MESH_CACHE_MS".to_string(), "0".to_string());
+    let running = boot(env).await;
+    let addr = running.addr();
+    let host = format!("127.0.0.1:{}", addr.port());
+    let root = exchange(addr, &request("GET", "/mesh.json", &host, "", "")).await;
+    assert_eq!(root.status, 500);
+    assert_eq!(
+        String::from_utf8_lossy(&root.body).as_ref(),
+        "{\"error\":\"mesh.json parse failed\",\"code\":\"MESH_INVALID_SHAPE\"}"
+    );
+    std::fs::write(&mesh, "{\"nodes\":[]}\n").unwrap();
+    let flat = exchange(addr, &request("GET", "/mesh.json", &host, "", "")).await;
+    assert_eq!(flat.status, 500);
+    assert_eq!(
+        String::from_utf8_lossy(&flat.body).as_ref(),
+        "{\"error\":\"mesh.json parse failed\",\"code\":\"MESH_FLAT_ARRAY\"}"
+    );
+    std::fs::write(&mesh, "{\"nodes\":5}\n").unwrap();
+    let number = exchange(addr, &request("GET", "/mesh.json", &host, "", "")).await;
+    assert_eq!(number.status, 500);
+    assert_eq!(
+        String::from_utf8_lossy(&number.body).as_ref(),
+        "{\"error\":\"mesh.json parse failed\",\"code\":\"MESH_INVALID_SHAPE\"}"
+    );
+    running.shutdown().await;
+}
+
+#[tokio::test]
+async fn non_owner_phone_pairing_is_403() {
+    let _guard = token_lock().await;
+    identity::clear_user_tokens();
+    let dir = scratch("phone-owner");
+    let users = dir.join("users.json");
+    std::fs::write(
+        &users,
+        r#"{"ownerUserId":"alice","unmappedIsOwner":false,"users":{"alice":{"devices":[],"pgUrl":"postgres://alice@db/alice"},"coco":{"devices":["win-coco"],"pgUrl":"postgres://coco@db/coco"}}}"#,
+    )
+    .unwrap();
+    let mut env = isolated(&dir);
+    env.insert(
+        "RIVETOS_USERS_FILE".to_string(),
+        users.to_string_lossy().into_owned(),
+    );
+    let running = boot(env).await;
+    let addr = running.addr();
+    let host = format!("127.0.0.1:{}", addr.port());
+    let owner = exchange(addr, &request("GET", "/api/phone-pairing", &host, "", "")).await;
+    assert_eq!(owner.status, 200);
+    body_eq(&owner.body, "phone-missing");
+    let token = identity::mint_user_token("coco").unwrap();
+    let extra = format!("x-rivetos-user-token: {token}\r\n");
+    let denied = exchange(
+        addr,
+        &request("GET", "/api/phone-pairing", &host, &extra, ""),
+    )
+    .await;
+    assert_eq!(denied.status, 403);
+    assert_eq!(
+        String::from_utf8_lossy(&denied.body).as_ref(),
+        "{\"error\":\"only the owner can pair a phone\"}"
+    );
+    let methods = denied
+        .head
+        .to_ascii_lowercase()
+        .find("access-control-allow-methods")
+        .unwrap();
+    let content_type = denied
+        .head
+        .to_ascii_lowercase()
+        .find("content-type")
+        .unwrap();
+    assert!(methods < content_type);
+    let posted = exchange(
+        addr,
+        &request("POST", "/api/phone-pairing", &host, &extra, "{}"),
+    )
+    .await;
+    assert_eq!(posted.status, 403);
+    running.shutdown().await;
+}
+
+#[tokio::test]
+async fn startup_refusals_match_node_stderr() {
+    let dir = scratch("startup-dump");
+    let mut env = isolated(&dir);
+    env.insert("RIVETOS_DEN_HOST".to_string(), "0.0.0.0".to_string());
+    let Err(err) = serve(GatewayConfig::from_env(&env)).await else {
+        panic!("bind refusal");
+    };
+    let dump = err.node_stderr();
+    assert!(dump.starts_with("file://"), "{dump}");
+    assert!(!dump.starts_with("Error:"));
+    assert!(dump.ends_with('\n'));
+    assert!(dump.contains("services/den-server/dist/server.js:1995\n"));
+    assert!(dump.contains(
+        "        throw new Error(`[den-server] refusing to bind ${config.host}: gateway TLS is required off-loopback ` +\n"
+    ));
+    assert!(dump.contains("\n              ^\n"));
+    assert!(dump.contains(&format!("Error: {err}\n")));
+    assert!(dump.contains("    at createDenServer (file://"));
+    assert!(dump.contains(":1995:15)\n"));
+    assert!(dump.contains("\nNode.js v22.22.2\n"));
+
+    let mut env = isolated(&dir);
+    env.insert("RIVETOS_DEN_HOST".to_string(), String::new());
+    let Err(err) = serve(GatewayConfig::from_env(&env)).await else {
+        panic!("empty host");
+    };
+    assert!(err.to_string().contains("refusing to bind :"));
+    let dump = err.node_stderr();
+    assert!(dump.contains("server.js:1995"));
+    assert!(dump.contains("Error: [den-server] refusing to bind :"));
+
+    std::fs::write(dir.join("cert.pem"), b"cert").unwrap();
+    std::fs::write(dir.join("key.pem"), b"key").unwrap();
+    let mut env = isolated(&dir);
+    env.insert("RIVETOS_DEN_HOST".to_string(), "0.0.0.0".to_string());
+    env.insert(
+        "RIVETOS_DEN_TLS_CERT".to_string(),
+        dir.join("cert.pem").to_string_lossy().into_owned(),
+    );
+    env.insert(
+        "RIVETOS_DEN_TLS_KEY".to_string(),
+        dir.join("key.pem").to_string_lossy().into_owned(),
+    );
+    let Err(err) = serve(GatewayConfig::from_env(&env)).await else {
+        panic!("missing ca");
+    };
+    let dump = err.node_stderr();
+    assert!(dump.starts_with("file://"));
+    assert!(!dump.contains("SECURITY"));
+    assert!(dump.contains("server.js:2005\n"));
+    assert!(dump.contains(
+        "            throw new Error(`[den-server] TLS CA chain missing at ${config.tls.caPath} — cannot verify device client certs`);\n"
+    ));
+    assert!(dump.contains("\n                  ^\n"));
+    assert!(dump.contains(":2005:19)\n"));
+    assert!(dump.contains(&format!("Error: {err}\n")));
+
+    let mut env = isolated(&dir);
+    env.insert("RIVETOS_DEN_HOST".to_string(), "0.0.0.0".to_string());
+    let missing = dir.join("no-such-cert.pem");
+    env.insert(
+        "RIVETOS_DEN_TLS_CERT".to_string(),
+        missing.to_string_lossy().into_owned(),
+    );
+    env.insert(
+        "RIVETOS_DEN_TLS_KEY".to_string(),
+        dir.join("key.pem").to_string_lossy().into_owned(),
+    );
+    let Err(err) = serve(GatewayConfig::from_env(&env)).await else {
+        panic!("missing cert");
+    };
+    let dump = err.node_stderr();
+    assert!(dump.starts_with("node:fs:560\n  return binding.open(\n                 ^\n"));
+    assert!(dump.contains(&format!("Error: {err}\n")));
+    assert!(dump.contains("errno: -2,\n"));
+    assert!(dump.contains("code: 'ENOENT',\n"));
+    assert!(dump.contains(&format!("path: '{}'\n", missing.to_string_lossy())));
+    assert!(dump.contains("server.js:2001:22)\n"));
+    assert!(dump.contains("run_main:117:5) {\n"));
+
+    let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = held.local_addr().unwrap().port();
+    let mut env = isolated(&dir);
+    env.insert("RIVETOS_DEN_HOST".to_string(), "127.0.0.1".to_string());
+    env.insert("RIVETOS_DEN_PORT".to_string(), port.to_string());
+    let Err(err) = serve(GatewayConfig::from_env(&env)).await else {
+        panic!("port in use");
+    };
+    let dump = err.node_stderr();
+    let mut throw_line = String::from("node:events:497\n      throw er; ");
+    throw_line.push('/');
+    throw_line.push('/');
+    throw_line.push_str(" Unhandled 'error' event\n      ^\n");
+    assert!(dump.starts_with(&throw_line));
+    assert!(dump.contains(&format!(
+        "Error: listen EADDRINUSE: address already in use 127.0.0.1:{port}\n"
+    )));
+    assert!(dump.contains("errno: -98,\n"));
+    assert!(dump.contains("code: 'EADDRINUSE',\n"));
+    assert!(dump.contains("address: '127.0.0.1',\n"));
+    assert!(dump.contains(&format!("port: {port}\n")));
+    assert!(dump.ends_with("\nNode.js v22.22.2\n"));
+    drop(held);
+}
+
+#[tokio::test]
+async fn localhost_listen_uses_addrconfig() {
+    let dir = scratch("localhost");
+    let mut env = isolated(&dir);
+    env.insert("RIVETOS_DEN_HOST".to_string(), "localhost".to_string());
+    let running = boot(env).await;
+    assert!(
+        running
+            .listen_line
+            .starts_with("[den-server] listening on localhost:")
+    );
+    assert!(running.addr().ip().is_loopback());
+    running.shutdown().await;
+
+    let mut env = isolated(&dir);
+    env.insert("RIVETOS_DEN_HOST".to_string(), "127.0.0.1".to_string());
+    let running = boot(env).await;
+    assert_eq!(running.addr().ip().to_string(), "127.0.0.1");
+    assert!(
+        running
+            .listen_line
+            .starts_with("[den-server] listening on 127.0.0.1:")
+    );
+    running.shutdown().await;
+
+    let mut env = isolated(&dir);
+    env.insert("RIVETOS_DEN_HOST".to_string(), "::1".to_string());
+    let running = boot(env).await;
+    assert_eq!(running.addr().ip().to_string(), "::1");
+    assert!(
+        running
+            .listen_line
+            .starts_with("[den-server] listening on ::1:")
+    );
+    running.shutdown().await;
+}
