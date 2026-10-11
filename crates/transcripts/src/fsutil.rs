@@ -65,6 +65,7 @@ pub fn read_dir_names(path: &Path) -> Option<Vec<String>> {
         };
         names.push(entry.file_name().to_string_lossy().into_owned());
     }
+    names.sort();
     Some(names)
 }
 

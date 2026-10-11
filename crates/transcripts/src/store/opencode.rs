@@ -3,12 +3,13 @@ use std::path::PathBuf;
 
 use serde_json::{Map, Value};
 
+use crate::capture::opencode_capture_parts;
 use crate::db::{self, query_maps};
 use crate::fsutil::node_resolve;
 use crate::opencode::opencode_turns_from_messages;
 use crate::roots::Roots;
 use crate::timeutil::{opencode_epoch_number, parse_date_ms};
-use crate::turn::{SessionRow, Turn};
+use crate::turn::{CaptureMessage, SessionRow, Turn};
 use crate::value::{Obj, js_slice, jtrim, whitespace_collapse};
 
 pub fn list(roots: &Roots, limit: usize) -> Vec<SessionRow> {
@@ -74,50 +75,81 @@ pub fn newest_after(roots: &Roots, cwd: &str, since_ms: i64) -> Option<String> {
     None
 }
 
-pub fn turns(roots: &Roots, id: &str) -> Vec<Turn> {
+pub fn load(roots: &Roots, id: &str) -> (Vec<Turn>, Vec<CaptureMessage>) {
     let Some(conn) = db::open_readonly(&db_path(roots)) else {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     };
     let messages = query_maps(
         &conn,
-        "SELECT id, time_created, data FROM message WHERE session_id = ? ORDER BY time_created ASC",
+        "SELECT * FROM message WHERE session_id = ? ORDER BY time_created ASC",
         &[&id],
     )
     .unwrap_or_default();
     let parts = query_maps(
         &conn,
-        "SELECT id, message_id, time_created, data FROM part WHERE session_id = ? ORDER BY time_created ASC",
+        "SELECT * FROM part WHERE session_id = ? ORDER BY time_created ASC",
         &[&id],
     )
     .unwrap_or_default();
+    let mut roles: HashMap<String, String> = HashMap::new();
     let mut by_message: HashMap<String, Vec<Obj>> = HashMap::new();
-    for part in parts {
-        let Some(mid) = part.get("message_id").and_then(Value::as_str) else {
-            continue;
-        };
-        let mut rec = json_object(part.get("data"));
-        if let Some(id) = part.get("id").and_then(Value::as_str) {
-            rec.insert("id".into(), Value::String(id.to_string()));
-        }
-        if let Some(time) = part.get("time_created").cloned() {
-            rec.insert("time_created".into(), time);
-        }
-        by_message.entry(mid.to_string()).or_default().push(rec);
-    }
     let msgs: Vec<Obj> = messages
         .into_iter()
         .map(|message| {
             let mut rec = json_object(message.get("data"));
             if let Some(id) = message.get("id").and_then(Value::as_str) {
                 rec.insert("id".into(), Value::String(id.to_string()));
+                if let Some(role) = rec.get("role").and_then(Value::as_str) {
+                    roles.insert(id.to_string(), role.to_string());
+                }
             }
             if let Some(time) = message.get("time_created").cloned() {
                 rec.insert("time_created".into(), time);
             }
+            if let Some(time) = message.get("time_updated").cloned() {
+                rec.insert("time_updated".into(), time);
+            }
             rec
         })
         .collect();
-    opencode_turns_from_messages(&msgs, &by_message)
+    let mut capture_parts = Vec::new();
+    for part in parts {
+        let Some(mid) = part.get("message_id").and_then(Value::as_str) else {
+            continue;
+        };
+        let data = json_object(part.get("data"));
+        let mut rec = data.clone();
+        if let Some(id) = part.get("id").and_then(Value::as_str) {
+            rec.insert("id".into(), Value::String(id.to_string()));
+        }
+        if let Some(time) = part.get("time_created").cloned() {
+            rec.insert("time_created".into(), time);
+        }
+        if let Some(time) = part.get("time_updated").cloned() {
+            rec.insert("time_updated".into(), time);
+        }
+        by_message.entry(mid.to_string()).or_default().push(rec);
+        let mut wrapped = Obj::new();
+        if let Some(id) = part.get("id").and_then(Value::as_str) {
+            wrapped.insert("id".into(), Value::String(id.to_string()));
+        }
+        wrapped.insert("session_id".into(), Value::String(id.to_string()));
+        if let Some(role) = roles.get(mid) {
+            wrapped.insert("role".into(), Value::String(role.clone()));
+        }
+        if let Some(time) = part.get("time_created").cloned() {
+            wrapped.insert("time_created".into(), time);
+        }
+        if let Some(time) = part.get("time_updated").cloned() {
+            wrapped.insert("time_updated".into(), time);
+        }
+        wrapped.insert("data".into(), Value::Object(data));
+        capture_parts.push(wrapped);
+    }
+    (
+        opencode_turns_from_messages(&msgs, &by_message),
+        opencode_capture_parts(&capture_parts),
+    )
 }
 
 pub fn data_dir(roots: &Roots) -> PathBuf {
@@ -174,7 +206,7 @@ fn model_label(raw: Option<&Value>) -> Option<String> {
         if trimmed.is_empty() {
             return None;
         }
-        value = serde_json::from_str(trimmed).unwrap_or(Value::String(trimmed.to_string()));
+        value = protocol::js::parse(trimmed).unwrap_or(Value::String(trimmed.to_string()));
     }
     let Value::Object(obj) = value else {
         return None;
@@ -207,7 +239,7 @@ fn json_object(value: Option<&Value>) -> Obj {
         return obj.clone();
     }
     if let Some(text) = value.as_str()
-        && let Ok(Value::Object(obj)) = serde_json::from_str::<Value>(text)
+        && let Ok(Value::Object(obj)) = protocol::js::parse(text)
     {
         return obj;
     }

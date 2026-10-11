@@ -1,18 +1,12 @@
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use crate::claude::claude_turns_from_lines_sourced;
-use crate::codex::codex_turns_from_lines;
-use crate::cursor::cursor_turns_from_objects;
-use crate::grok::grok_turns_from_lines;
+use crate::capture::{grok_capture_lines, kimi_capture_for, project_lines};
 use crate::identity::{den_session_ref, path_unsafe};
 use crate::jsonl::read_jsonl;
-use crate::kimi::kimi_turns_from_lines;
 use crate::nest::DelegatedLink;
-use crate::pi::pi_turns_from_lines;
-use crate::qwen::qwen_turns_from_lines;
 use crate::roots::Roots;
-use crate::turn::{SessionRow, StoreRef, Transcript};
+use crate::turn::{CaptureMessage, SessionRow, StoreRef, Transcript};
 
 mod claude;
 mod codex;
@@ -154,74 +148,78 @@ impl Store {
             return Transcript::empty(id);
         }
         let wants = |store: &str| refer.command.is_none_or(|command| command == store);
-        if wants("claude")
-            && let Some(path) = claude::find_jsonl(&self.roots, &refer.native, None)
-        {
-            let parsed = read_jsonl(&path, self.roots.max_bytes);
-            let turns = claude_turns_from_lines_sourced(
-                &parsed.objects,
-                Some(&path.to_string_lossy()),
-                parsed.truncated,
-            );
-            if !turns.is_empty() || parsed.truncated {
-                return transcript(id, "claude", turns, parsed.truncated);
+        if wants("claude") && claude::find_jsonl(&self.roots, &refer.native, None).is_some() {
+            let read = self.read_claude(&refer.native, None);
+            if !read.turns.is_empty() || read.truncated {
+                return transcript(id, "claude", read.turns, read.messages, read.truncated);
             }
         }
         if wants("grok")
             && let Some(path) = grok::find_chat_history(&self.roots, &refer.native)
         {
-            let parsed = read_jsonl(&path, self.roots.max_bytes);
-            let turns = grok_turns_from_lines(&parsed.objects);
-            if !turns.is_empty() {
-                return transcript(id, "grok", turns, parsed.truncated);
+            let read = self.finish_grok(id, &path);
+            if !read.turns.is_empty() {
+                return read;
             }
         }
         if wants("codex") {
             let codex = self.read_codex(&refer.native);
             if !codex.turns.is_empty() {
-                return transcript(id, "codex", codex.turns, codex.truncated);
+                return transcript(id, "codex", codex.turns, codex.messages, codex.truncated);
             }
         }
         if wants("hermes") {
-            let turns = hermes::turns(&self.roots, &refer.native);
+            let (turns, messages) = hermes::load(&self.roots, &refer.native);
             if !turns.is_empty() {
-                return transcript(id, "hermes", turns, false);
+                return transcript(id, "hermes", turns, messages, false);
             }
         }
         if wants("kimi") && refer.native.starts_with("session_") {
             let kimi = self.read_kimi(&refer.native);
             if !kimi.turns.is_empty() {
-                return transcript(id, "kimi", kimi.turns, kimi.truncated);
+                return transcript(id, "kimi", kimi.turns, kimi.messages, kimi.truncated);
             }
         }
         if wants("opencode") && refer.native.starts_with("ses_") {
             let open = self.read_opencode(&refer.native);
             if !open.turns.is_empty() {
-                return transcript(id, "opencode", open.turns, false);
+                return transcript(id, "opencode", open.turns, open.messages, false);
             }
         }
         if wants("pi") {
             let pi = self.read_pi(&refer.native);
             if !pi.turns.is_empty() {
-                return transcript(id, "pi", pi.turns, pi.truncated);
+                return transcript(id, "pi", pi.turns, pi.messages, pi.truncated);
             }
         }
         if wants("qwen") {
             let qwen = self.read_qwen(&refer.native);
             if !qwen.turns.is_empty() {
-                return transcript(id, "qwen", qwen.turns, qwen.truncated);
+                return transcript(id, "qwen", qwen.turns, qwen.messages, qwen.truncated);
             }
         }
         if wants("cursor") {
             let cursor = self.read_cursor(&refer.native);
             if !cursor.turns.is_empty() {
-                return transcript(id, "cursor", cursor.turns, cursor.truncated);
+                return transcript(
+                    id,
+                    "cursor",
+                    cursor.turns,
+                    cursor.messages,
+                    cursor.truncated,
+                );
             }
         }
         if wants("cowork") {
-            let turns = cowork::turns(&self.roots, &refer.native);
-            if !turns.is_empty() {
-                return transcript(id, "cowork", turns, false);
+            let cowork = self.read_cowork(&refer.native);
+            if !cowork.turns.is_empty() {
+                return transcript(
+                    id,
+                    "cowork",
+                    cowork.turns,
+                    cowork.messages,
+                    cowork.truncated,
+                );
             }
         }
         Transcript::empty(id)
@@ -240,28 +238,44 @@ impl Store {
             return Transcript::empty(id);
         };
         let parsed = read_jsonl(&path, self.roots.max_bytes);
-        let turns = claude_turns_from_lines_sourced(
-            &parsed.objects,
+        let view = project_lines(
+            "claude",
+            &parsed.lines,
             Some(&path.to_string_lossy()),
             parsed.truncated,
         );
-        transcript(id, "claude", turns, parsed.truncated)
+        transcript(id, "claude", view.turns, view.messages, view.truncated)
     }
 
     pub fn read_grok(&self, id: &str) -> Transcript {
-        self.read_jsonl_id(
-            id,
-            "grok",
-            grok::find_chat_history(&self.roots, id),
-            grok_turns_from_lines,
-        )
+        if path_unsafe(id) {
+            return Transcript::empty(id);
+        }
+        let Some(path) = grok::find_chat_history(&self.roots, id) else {
+            return Transcript::empty(id);
+        };
+        self.finish_grok(id, &path)
+    }
+
+    fn finish_grok(&self, id: &str, path: &std::path::Path) -> Transcript {
+        let parsed = read_jsonl(path, self.roots.max_bytes);
+        let view = project_lines("grok", &parsed.lines, None, parsed.truncated);
+        let updates = path
+            .parent()
+            .map(|dir| dir.join("updates.jsonl"))
+            .filter(|path| crate::fsutil::is_file(path));
+        let messages = updates
+            .map(|path| grok_capture_lines(&read_jsonl(&path, self.roots.max_bytes).lines))
+            .unwrap_or_default();
+        transcript(id, "grok", view.turns, messages, parsed.truncated)
     }
 
     pub fn read_hermes(&self, id: &str) -> Transcript {
         if path_unsafe(id) {
             return Transcript::empty(id);
         }
-        transcript(id, "hermes", hermes::turns(&self.roots, id), false)
+        let (turns, messages) = hermes::load(&self.roots, id);
+        transcript(id, "hermes", turns, messages, false)
     }
 
     pub fn read_kimi(&self, id: &str) -> Transcript {
@@ -272,10 +286,12 @@ impl Store {
             return Transcript::empty(id);
         };
         let parsed = read_jsonl(&kimi::wire_path(&dir), self.roots.max_bytes);
+        let view = project_lines("kimi", &parsed.lines, None, parsed.truncated);
         transcript(
             id,
             "kimi",
-            kimi_turns_from_lines(&parsed.objects),
+            view.turns,
+            kimi_capture_for(&parsed.lines, Some(id)),
             parsed.truncated,
         )
     }
@@ -286,7 +302,7 @@ impl Store {
         }
         let path =
             codex::find_rollout(&self.roots, id).or_else(|| codex::find_room(&self.roots, id));
-        self.read_jsonl_id(id, "codex", path, codex_turns_from_lines)
+        self.read_jsonl_id(id, "codex", path)
     }
 
     pub fn read_opencode(&self, id: &str) -> Transcript {
@@ -297,57 +313,48 @@ impl Store {
         {
             return Transcript::empty(id);
         }
-        transcript(id, "opencode", opencode::turns(&self.roots, id), false)
+        let (turns, messages) = opencode::load(&self.roots, id);
+        transcript(id, "opencode", turns, messages, false)
     }
 
     pub fn read_pi(&self, id: &str) -> Transcript {
-        self.read_jsonl_id(
-            id,
-            "pi",
-            pi::transcript_path(&self.roots, id),
-            pi_turns_from_lines,
-        )
+        self.read_jsonl_id(id, "pi", pi::transcript_path(&self.roots, id))
     }
 
     pub fn read_qwen(&self, id: &str) -> Transcript {
-        self.read_jsonl_id(
-            id,
-            "qwen",
-            qwen::transcript_path(&self.roots, id),
-            qwen_turns_from_lines,
-        )
+        self.read_jsonl_id(id, "qwen", qwen::transcript_path(&self.roots, id))
     }
 
     pub fn read_cursor(&self, id: &str) -> Transcript {
-        self.read_jsonl_id(
-            id,
-            "cursor",
-            cursor::transcript_path(&self.roots, id),
-            cursor_turns_from_objects,
-        )
+        self.read_jsonl_id(id, "cursor", cursor::transcript_path(&self.roots, id))
+    }
+
+    pub fn read_cowork(&self, id: &str) -> Transcript {
+        self.read_jsonl_id(id, "cowork", cowork::find_transcript(&self.roots, id))
     }
 
     pub fn read_store_at(&self, store_ref: &StoreRef, id: &str) -> Transcript {
+        if store_ref.command == "hermes" {
+            let (turns, messages) = hermes::load(&self.roots, &den_session_ref(id).native);
+            return transcript(id, "hermes", turns, messages, false);
+        }
+        if store_ref.command == "opencode" {
+            let (turns, messages) = opencode::load(&self.roots, &den_session_ref(id).native);
+            return transcript(id, "opencode", turns, messages, false);
+        }
+        if store_ref.command == "grok" {
+            return self.finish_grok(id, std::path::Path::new(&store_ref.path));
+        }
         let parsed = read_jsonl(std::path::Path::new(&store_ref.path), self.roots.max_bytes);
-        let turns = match store_ref.command.as_str() {
-            "claude" | "cowork" => claude_turns_from_lines_sourced(
-                &parsed.objects,
-                Some(&store_ref.path),
-                parsed.truncated,
-            ),
-            "grok" => grok_turns_from_lines(&parsed.objects),
-            "codex" => codex_turns_from_lines(&parsed.objects),
-            "kimi" => kimi_turns_from_lines(&parsed.objects),
-            "pi" => pi_turns_from_lines(&parsed.objects),
-            "qwen" => qwen_turns_from_lines(&parsed.objects),
-            "cursor" => cursor_turns_from_objects(&parsed.objects),
-            "hermes" => hermes::turns(&self.roots, &den_session_ref(id).native),
-            "opencode" => opencode::turns(&self.roots, &den_session_ref(id).native),
-            _ => return Transcript::empty(id),
-        };
-        let truncated =
-            !matches!(store_ref.command.as_str(), "hermes" | "opencode") && parsed.truncated;
-        transcript(id, &store_ref.command, turns, truncated)
+        let source = (store_ref.command == "claude").then_some(store_ref.path.as_str());
+        let view = project_lines(&store_ref.command, &parsed.lines, source, parsed.truncated);
+        transcript(
+            id,
+            &store_ref.command,
+            view.turns,
+            view.messages,
+            parsed.truncated,
+        )
     }
 
     pub fn resolve(&self, id: &str) -> Option<StoreRef> {
@@ -455,13 +462,7 @@ impl Store {
         qwen::session_cwd(&self.roots, id)
     }
 
-    fn read_jsonl_id(
-        &self,
-        id: &str,
-        command: &str,
-        path: Option<PathBuf>,
-        parse: fn(&[crate::value::Obj]) -> Vec<crate::turn::Turn>,
-    ) -> Transcript {
+    fn read_jsonl_id(&self, id: &str, command: &str, path: Option<PathBuf>) -> Transcript {
         if path_unsafe(id) {
             return Transcript::empty(id);
         }
@@ -469,7 +470,9 @@ impl Store {
             return Transcript::empty(id);
         };
         let parsed = read_jsonl(&path, self.roots.max_bytes);
-        transcript(id, command, parse(&parsed.objects), parsed.truncated)
+        let source = (command == "claude").then(|| path.to_string_lossy().into_owned());
+        let view = project_lines(command, &parsed.lines, source.as_deref(), parsed.truncated);
+        transcript(id, command, view.turns, view.messages, parsed.truncated)
     }
 }
 
@@ -485,12 +488,14 @@ fn transcript(
     id: &str,
     command: &str,
     turns: Vec<crate::turn::Turn>,
+    messages: Vec<CaptureMessage>,
     truncated: bool,
 ) -> Transcript {
     Transcript {
         id: id.to_string(),
         command: command.to_string(),
         turns,
+        messages,
         truncated,
     }
 }

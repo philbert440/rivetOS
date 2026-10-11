@@ -129,7 +129,8 @@ impl Turn {
     }
 
     pub fn to_json(&self) -> Value {
-        serde_json::to_value(self).unwrap_or(Value::Null)
+        let value = serde_json::to_value(self).unwrap_or(Value::Null);
+        crate::value::js_norm(&value)
     }
 }
 
@@ -345,10 +346,83 @@ pub struct SessionRow {
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct CaptureMessage {
+    pub role: String,
+    pub content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_args: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_result: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub event_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub event_ts: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ordinal: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line_index: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_offset: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extra: Option<Value>,
+}
+
+impl CaptureMessage {
+    pub fn new(role: &str, content: impl Into<String>) -> Self {
+        Self {
+            role: role.into(),
+            content: content.into(),
+            tool_name: None,
+            tool_args: None,
+            tool_result: None,
+            event_id: None,
+            event_ts: None,
+            created_at: None,
+            ordinal: None,
+            line_index: None,
+            source_offset: None,
+            session_id: None,
+            extra: None,
+        }
+    }
+
+    pub fn tool(
+        content: impl Into<String>,
+        name: impl Into<String>,
+        result: Option<String>,
+    ) -> Self {
+        Self {
+            role: "tool".into(),
+            content: content.into(),
+            tool_name: Some(name.into()),
+            tool_args: None,
+            tool_result: result,
+            event_id: None,
+            event_ts: None,
+            created_at: None,
+            ordinal: None,
+            line_index: None,
+            source_offset: None,
+            session_id: None,
+            extra: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Transcript {
     pub id: String,
     pub command: String,
     pub turns: Vec<Turn>,
+    #[serde(skip)]
+    pub messages: Vec<CaptureMessage>,
     #[serde(skip_serializing_if = "skip_false")]
     pub truncated: bool,
 }
@@ -363,6 +437,7 @@ impl Transcript {
             id: id.into(),
             command: String::new(),
             turns: Vec::new(),
+            messages: Vec::new(),
             truncated: false,
         }
     }

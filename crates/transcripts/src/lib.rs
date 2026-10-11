@@ -27,9 +27,11 @@ pub mod turn;
 pub mod value;
 
 pub use capture::{
-    CaptureMessage, claude_capture_text, codex_capture_text, cowork_capture_lines,
+    StoreView, claude_capture_text, codex_capture_text, cowork_capture_lines,
     cursor_capture_objects, grok_capture_updates, hermes_capture_rows, kimi_capture_text,
-    opencode_capture_parts, pi_capture_text, qwen_capture_text,
+    opencode_capture_parts, pi_capture_text, project_claude, project_codex, project_cowork,
+    project_cursor, project_grok_chat, project_grok_updates, project_kimi, project_pi,
+    project_qwen, qwen_capture_text,
 };
 pub use claude::{
     claude_turns_from_lines, claude_turns_from_lines_sourced, claude_turns_from_text,
@@ -77,7 +79,7 @@ pub use text::{
 };
 pub use tracker::{TrackerEdges, TrackerStatus, TurnTracker, create_turn_tracker};
 pub use turn::{
-    Adapter, Capabilities, DEFAULT_TRANSCRIPT_MAX_BYTES, LastBlock, Role, SessionRow, StoreRef,
-    Tool, ToolStatus, Transcript, Turn, Usage, adapter_for_command, is_prompt_tool_name,
-    roster_to_harness, running_tools,
+    Adapter, Capabilities, CaptureMessage, DEFAULT_TRANSCRIPT_MAX_BYTES, LastBlock, Role,
+    SessionRow, StoreRef, Tool, ToolStatus, Transcript, Turn, Usage, adapter_for_command,
+    is_prompt_tool_name, roster_to_harness, running_tools,
 };

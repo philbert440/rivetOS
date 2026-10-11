@@ -1,4 +1,6 @@
 use std::collections::{HashMap, HashSet};
+use std::io::{Read, Write};
+use std::net::{TcpStream, ToSocketAddrs};
 use std::path::Path;
 use std::sync::OnceLock;
 
@@ -212,6 +214,7 @@ pub struct SheetState {
     claude_memo: HashMap<String, Memo>,
     file_memo: HashMap<String, Memo>,
     pending_logs: Vec<String>,
+    jobs: HashMap<String, std::sync::mpsc::Receiver<Result<Cached, String>>>,
 }
 
 impl SheetState {
@@ -224,6 +227,7 @@ impl SheetState {
         self.claude_memo.clear();
         self.file_memo.clear();
         self.pending_logs.clear();
+        self.jobs.clear();
     }
 
     pub fn take_logs(&mut self) -> Vec<String> {
@@ -748,33 +752,35 @@ pub fn codex_sheet(state: &mut SheetState, deps: &mut CodexDeps<'_>) -> ModelShe
     let base = codex_base();
     let key = format!("codex:debug-models:{root}");
     let env = discovery_env(deps.env, deps.home);
+    let use_default = deps.run_command.is_none();
     let listed = {
         let run_command = &mut *deps.run_command;
         let log = &mut *deps.log;
-        discover_models(
-            state,
-            &key,
-            deps.now,
-            5 * 60_000,
-            Some(6_000),
-            log,
-            || match call_run(run_command, &env, 5_000) {
+        let env = &env;
+        discover_models(state, &key, deps.now, 5 * 60_000, Some(6_000), log, || {
+            if use_default {
+                return DiscoveryRun::Hung;
+            }
+            match call_run(run_command, env, 5_000) {
                 DiscoveryRun::Hung => DiscoveryRun::Hung,
                 DiscoveryRun::Ready(Err(err)) => DiscoveryRun::Ready(Err(err)),
-                DiscoveryRun::Ready(Ok(out)) => {
-                    let raw = serde_json::from_str::<Value>(&out).unwrap_or(Value::Null);
-                    let rows = parse_codex_catalog(&raw);
-                    if rows.is_empty() {
-                        DiscoveryRun::Ready(Err(
-                            "codex debug models returned no listed models".into()
-                        ))
-                    } else {
-                        DiscoveryRun::Ready(Ok(rows))
-                    }
-                }
-            },
-        )
+                DiscoveryRun::Ready(Ok(out)) => codex_catalog_run(&out),
+            }
+        })
     };
+    if use_default && job_pending(state, &key) {
+        let env = env.clone();
+        start_job(state, &key, move || {
+            match default_run_command(&codex_argv(), &env, 5_000) {
+                Ok(out) => match codex_catalog_run(&out) {
+                    DiscoveryRun::Ready(Ok(rows)) => Ok(Cached::Models(rows)),
+                    DiscoveryRun::Ready(Err(err)) => Err(err),
+                    DiscoveryRun::Hung => Err("listing failed".into()),
+                },
+                Err(err) => Err(err),
+            }
+        });
+    }
     let mut models = Vec::new();
     if let Some(rows) = listed {
         push_unique(&mut models, rows);
@@ -1212,11 +1218,12 @@ pub fn default_run_command(
         .stdout
         .take()
         .ok_or_else(|| "listing failed".to_string())?;
-    let reader = std::thread::spawn(move || {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
         let mut out = Vec::new();
         let mut buf = [0_u8; 8192];
         loop {
-            match std::io::Read::read(&mut stdout, &mut buf) {
+            match stdout.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
                     let room = RUN_COMMAND_MAX_BUFFER.saturating_sub(out.len());
@@ -1233,14 +1240,15 @@ pub fn default_run_command(
                 Err(_) => break,
             }
         }
-        out
+        let _ = tx.send(out);
     });
     let limit = std::time::Duration::from_millis(u64::try_from(timeout_ms).unwrap_or(0));
     let started = std::time::Instant::now();
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
-                let bytes = reader.join().unwrap_or_default();
+                let remain = limit.saturating_sub(started.elapsed());
+                let bytes = rx.recv_timeout(remain).unwrap_or_default();
                 if status.success() {
                     return Ok(String::from_utf8_lossy(&bytes).into_owned());
                 }
@@ -1249,7 +1257,7 @@ pub fn default_run_command(
             Ok(None) if started.elapsed() >= limit => {
                 let _ = child.kill();
                 let _ = child.wait();
-                let _ = reader.join();
+                let _ = rx.recv_timeout(std::time::Duration::from_millis(50));
                 return Err(format!(
                     "{}: timed out after {timeout_ms} ms",
                     argv.join(" ")
@@ -1258,7 +1266,7 @@ pub fn default_run_command(
             Ok(None) => std::thread::sleep(std::time::Duration::from_millis(20)),
             Err(err) => {
                 let _ = child.kill();
-                let _ = reader.join();
+                let _ = rx.recv_timeout(std::time::Duration::from_millis(50));
                 return Err(err.to_string());
             }
         }
@@ -1310,23 +1318,30 @@ fn hermes_endpoint(
     log: &mut Option<&mut dyn FnMut(&str)>,
 ) -> Vec<String> {
     let key = format!("hermes:{base}");
-    discover_strings(
-        state,
-        &key,
-        now,
-        60_000,
-        Some(3_000),
-        log,
-        || match call_fetch(fetch_ids, base, api_key) {
+    let use_default = fetch_ids.is_none();
+    let listed = discover_strings(state, &key, now, 60_000, Some(3_000), log, || {
+        if use_default {
+            return DiscoveryRun::Hung;
+        }
+        match call_fetch(fetch_ids, base, api_key) {
             DiscoveryRun::Hung => DiscoveryRun::Hung,
             DiscoveryRun::Ready(Err(err)) => DiscoveryRun::Ready(Err(err)),
             DiscoveryRun::Ready(Ok(ids)) => DiscoveryRun::Ready(Ok(ids
                 .into_iter()
                 .filter(|id| model_token_ok(id))
                 .collect())),
-        },
-    )
-    .unwrap_or_default()
+        }
+    });
+    if use_default && job_pending(state, &key) {
+        let base_owned = base.to_string();
+        let api_key_owned = api_key.map(str::to_string);
+        start_job(state, &key, move || {
+            fetch_openai_models(&base_owned, api_key_owned.as_deref()).map(|ids| {
+                Cached::Strings(ids.into_iter().filter(|id| model_token_ok(id)).collect())
+            })
+        });
+    }
+    listed.unwrap_or_default()
 }
 
 fn discover_models(
@@ -1405,6 +1420,7 @@ fn discover<T>(
         .entry(req.key.to_string())
         .or_insert_with(Slot::fresh);
     settle_one(state, req.key, req.now);
+    apply_finished_job(state, req.key, req.now, &mut req.log);
     flush_pending(state, &mut req.log);
     let previous = state
         .discovery
@@ -1511,6 +1527,69 @@ fn note_failure(
         slot.failing = true;
     }
     slot.at = Some(now);
+}
+
+fn job_pending(state: &SheetState, key: &str) -> bool {
+    state
+        .discovery
+        .get(key)
+        .is_some_and(|slot| slot.hung.is_some())
+        && !state.jobs.contains_key(key)
+}
+
+fn start_job<F>(state: &mut SheetState, key: &str, work: F)
+where
+    F: FnOnce() -> Result<Cached, String> + Send + 'static,
+{
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(work());
+    });
+    state.jobs.insert(key.to_string(), rx);
+}
+
+fn apply_finished_job(
+    state: &mut SheetState,
+    key: &str,
+    now: i64,
+    log: &mut Option<&mut dyn FnMut(&str)>,
+) {
+    let message = match state.jobs.get(key).map(|rx| rx.try_recv()) {
+        None | Some(Err(std::sync::mpsc::TryRecvError::Empty)) => return,
+        Some(Ok(message)) => message,
+        Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => Err("listing failed".into()),
+    };
+    state.jobs.remove(key);
+    match message {
+        Ok(value) => {
+            if let Some(slot) = state.discovery.get_mut(key) {
+                slot.value = Some(value);
+                slot.failing = false;
+                slot.hung = None;
+                slot.at = Some(now);
+            }
+        }
+        Err(err) => {
+            note_failure(state, key, now, &err, log);
+            if let Some(slot) = state.discovery.get_mut(key) {
+                slot.hung = None;
+            }
+        }
+    }
+}
+
+fn codex_argv() -> Vec<String> {
+    vec!["codex".into(), "debug".into(), "models".into()]
+}
+
+fn codex_catalog_run(out: &str) -> DiscoveryRun<Vec<ModelOption>> {
+    let raw = protocol::js::parse(out).unwrap_or(Value::Null);
+    let rows = parse_codex_catalog(&raw);
+    if rows.is_empty() {
+        DiscoveryRun::Ready(Err("codex debug models returned no listed models".into()))
+    } else {
+        DiscoveryRun::Ready(Ok(rows))
+    }
 }
 
 fn file_rows(
@@ -2293,7 +2372,7 @@ fn call_fetch(
 
 fn read_json_file(path: &str) -> Result<Value, String> {
     let text = fsutil::read_lossy(Path::new(path)).ok_or_else(|| "unreadable".to_string())?;
-    serde_json::from_str(&text).map_err(|err| err.to_string())
+    protocol::js::parse(&text).map_err(|err| err.to_string())
 }
 
 fn discovery_env(env: Option<&HashMap<String, String>>, home: &str) -> HashMap<String, String> {
@@ -2316,14 +2395,7 @@ fn discovery_env(env: Option<&HashMap<String, String>>, home: &str) -> HashMap<S
 }
 
 fn process_env() -> HashMap<String, String> {
-    let mut map = HashMap::new();
-    if let Ok(path) = std::env::var("PATH") {
-        map.insert("PATH".into(), path);
-    }
-    if let Ok(home) = std::env::var("HOME") {
-        map.insert("HOME".into(), home);
-    }
-    map
+    std::env::vars().collect()
 }
 
 fn env_trimmed(env: Option<&HashMap<String, String>>, key: &str) -> Option<String> {
@@ -2490,4 +2562,213 @@ fn hermes_named_re() -> Option<&'static Regex> {
     static RE: OnceLock<Option<Regex>> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"^custom:([^:\s]+):(.+)$").ok())
         .as_ref()
+}
+
+const HTTP_BODY_CAP: usize = 8 * 1024 * 1024;
+
+fn fetch_openai_models(base: &str, api_key: Option<&str>) -> Result<Vec<String>, String> {
+    if !base.starts_with("http://") {
+        return Err("listing failed".into());
+    }
+    if api_key.is_some_and(|key| key.bytes().any(|byte| byte == b'\r' || byte == b'\n')) {
+        return Err("listing failed".into());
+    }
+    let (host, port, host_header, path) = http_target(base)?;
+    let target = if host.contains(':') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    };
+    let addr = target
+        .to_socket_addrs()
+        .map_err(|_| "listing failed".to_string())?
+        .next()
+        .ok_or_else(|| "listing failed".to_string())?;
+    let mut stream = TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(3_000))
+        .map_err(|_| "listing failed".to_string())?;
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_millis(3_000)))
+        .map_err(|_| "listing failed".to_string())?;
+    stream
+        .set_write_timeout(Some(std::time::Duration::from_millis(3_000)))
+        .map_err(|_| "listing failed".to_string())?;
+    let mut req = format!(
+        "GET {path} HTTP/1.1\r\nHost: {host_header}\r\nAccept: application/json\r\nConnection: close\r\n"
+    );
+    if let Some(key) = api_key {
+        req.push_str("Authorization: Bearer ");
+        req.push_str(key);
+        req.push_str("\r\n");
+    }
+    req.push_str("\r\n");
+    stream
+        .write_all(req.as_bytes())
+        .map_err(|_| "listing failed".to_string())?;
+    let (status, body) = read_http(&mut stream)?;
+    if !(200..300).contains(&status) {
+        return Err(format!("HTTP {status}"));
+    }
+    let text = String::from_utf8_lossy(&body);
+    let raw = protocol::js::parse(&text).map_err(|err| err.to_string())?;
+    let Some(rows) = raw.get("data").and_then(Value::as_array) else {
+        return Ok(Vec::new());
+    };
+    Ok(rows
+        .iter()
+        .filter_map(|row| row.get("id").and_then(Value::as_str).map(str::to_string))
+        .collect())
+}
+
+fn http_target(base: &str) -> Result<(String, u16, String, String), String> {
+    let trimmed = base.trim_end_matches('/');
+    let rest = trimmed
+        .strip_prefix("http://")
+        .ok_or_else(|| "listing failed".to_string())?;
+    if rest.is_empty()
+        || rest
+            .bytes()
+            .any(|byte| byte == b'\r' || byte == b'\n' || byte == b' ')
+    {
+        return Err("listing failed".into());
+    }
+    let (authority, prefix) = match rest.split_once('/') {
+        Some((authority, prefix)) => (authority, format!("/{prefix}")),
+        None => (rest, String::new()),
+    };
+    if authority.is_empty() {
+        return Err("listing failed".into());
+    }
+    let (host, port, header) = parse_authority(authority)?;
+    Ok((host, port, header, format!("{prefix}/models")))
+}
+
+fn parse_authority(authority: &str) -> Result<(String, u16, String), String> {
+    if let Some(rest) = authority.strip_prefix('[') {
+        let Some((host, after)) = rest.split_once(']') else {
+            return Err("listing failed".into());
+        };
+        let port = if let Some(port) = after.strip_prefix(':') {
+            port.parse::<u16>()
+                .map_err(|_| "listing failed".to_string())?
+        } else if after.is_empty() {
+            80
+        } else {
+            return Err("listing failed".into());
+        };
+        return Ok((host.to_string(), port, authority.to_string()));
+    }
+    if let Some((host, port_text)) = authority.rsplit_once(':') {
+        if host.is_empty() || !port_text.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err("listing failed".into());
+        }
+        let port = port_text
+            .parse::<u16>()
+            .map_err(|_| "listing failed".to_string())?;
+        return Ok((host.to_string(), port, authority.to_string()));
+    }
+    if authority.is_empty() {
+        return Err("listing failed".into());
+    }
+    Ok((authority.to_string(), 80, authority.to_string()))
+}
+
+fn read_http(stream: &mut TcpStream) -> Result<(u16, Vec<u8>), String> {
+    let mut buf = Vec::new();
+    let header_at = loop {
+        if buf.len() > 65_536 {
+            return Err("listing failed".into());
+        }
+        if let Some(pos) = find_slice(&buf, b"\r\n\r\n") {
+            break pos;
+        }
+        if !read_more(stream, &mut buf) {
+            return Err("listing failed".into());
+        }
+    };
+    let header = String::from_utf8_lossy(&buf[..header_at]).into_owned();
+    let mut lines = header.split("\r\n");
+    let status = lines
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|code| code.parse::<u16>().ok())
+        .ok_or_else(|| "listing failed".to_string())?;
+    let mut length = None;
+    let mut chunked = false;
+    for line in lines {
+        let lower = line.to_ascii_lowercase();
+        if let Some(rest) = lower.strip_prefix("content-length:") {
+            length = rest.trim().parse::<usize>().ok();
+        } else if lower.starts_with("transfer-encoding:") && lower.contains("chunked") {
+            chunked = true;
+        }
+    }
+    let mut body = buf.split_off(header_at + 4);
+    if chunked {
+        body = decode_chunked(stream, body)?;
+    } else if let Some(len) = length {
+        let len = len.min(HTTP_BODY_CAP);
+        while body.len() < len {
+            if !read_more(stream, &mut body) || body.len() > HTTP_BODY_CAP {
+                break;
+            }
+        }
+        body.truncate(len);
+    } else {
+        while body.len() < HTTP_BODY_CAP && read_more(stream, &mut body) {}
+        body.truncate(HTTP_BODY_CAP);
+    }
+    Ok((status, body))
+}
+
+fn decode_chunked(stream: &mut TcpStream, mut buf: Vec<u8>) -> Result<Vec<u8>, String> {
+    let mut out = Vec::new();
+    loop {
+        let line_end = loop {
+            if let Some(pos) = find_slice(&buf, b"\r\n") {
+                break pos;
+            }
+            if buf.len() > 64 || !read_more(stream, &mut buf) {
+                return Err("listing failed".into());
+            }
+        };
+        let line =
+            std::str::from_utf8(&buf[..line_end]).map_err(|_| "listing failed".to_string())?;
+        let size_text = line.split(';').next().unwrap_or("").trim();
+        let size =
+            usize::from_str_radix(size_text, 16).map_err(|_| "listing failed".to_string())?;
+        buf = buf.split_off(line_end + 2);
+        if size == 0 {
+            return Ok(out);
+        }
+        if size > HTTP_BODY_CAP || out.len().saturating_add(size) > HTTP_BODY_CAP {
+            return Err("listing failed".into());
+        }
+        while buf.len() < size + 2 {
+            if !read_more(stream, &mut buf) {
+                return Err("listing failed".into());
+            }
+        }
+        out.extend_from_slice(&buf[..size]);
+        buf = buf.split_off(size + 2);
+    }
+}
+
+fn read_more(stream: &mut TcpStream, buf: &mut Vec<u8>) -> bool {
+    let mut tmp = [0_u8; 8192];
+    loop {
+        match stream.read(&mut tmp) {
+            Ok(0) => return false,
+            Ok(n) => {
+                buf.extend_from_slice(&tmp[..n]);
+                return true;
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => return false,
+        }
+    }
+}
+
+fn find_slice(buf: &[u8], needle: &[u8]) -> Option<usize> {
+    buf.windows(needle.len())
+        .position(|window| window == needle)
 }

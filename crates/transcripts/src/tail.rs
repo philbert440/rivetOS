@@ -43,8 +43,16 @@ pub struct SqliteCursor {
     pub time_ms: i64,
 }
 
+#[derive(Clone, Debug)]
+struct JsonlState {
+    offset: u64,
+    dev: u64,
+    ino: u64,
+    prefix: Vec<u8>,
+}
+
 pub struct TranscriptTail {
-    jsonl: HashMap<String, u64>,
+    jsonl: HashMap<String, JsonlState>,
     sqlite: HashMap<String, SqliteCursor>,
     sigs: Vec<String>,
     turns: Vec<Turn>,
@@ -90,33 +98,49 @@ impl TranscriptTail {
 
     pub fn read_new_jsonl(&mut self, path: &Path) -> JsonlCursor {
         let key = path.to_string_lossy().into_owned();
-        let bytes = fsutil::read_bytes(path).unwrap_or_default();
-        let mut offset = self.jsonl.get(&key).copied().unwrap_or(0);
-        if bytes.len() as u64 <= offset && bytes.len() as u64 != offset {
-            offset = 0;
-        }
-        if (bytes.len() as u64) < offset {
-            offset = 0;
-        }
-        let start = offset as usize;
-        let end = if start > bytes.len() {
-            start
+        let stamp = fsutil::file_stamp(path);
+        let len = stamp.as_ref().map(|item| item.size).unwrap_or(0);
+        let dev = stamp.as_ref().map(|item| item.dev).unwrap_or(0);
+        let ino = stamp.as_ref().map(|item| item.ino).unwrap_or(0);
+        let mut state = self.jsonl.get(&key).cloned().unwrap_or(JsonlState {
+            offset: 0,
+            dev,
+            ino,
+            prefix: Vec::new(),
+        });
+        let prefix_mismatch = if state.prefix.is_empty() {
+            false
         } else {
-            bytes[start..]
-                .iter()
-                .rposition(|byte| *byte == b'\n')
-                .map(|index| start + index + 1)
-                .unwrap_or(start)
+            fsutil::read_range(path, 0, state.prefix.len() as u64)
+                .is_none_or(|got| got.as_slice() != state.prefix.as_slice())
         };
-        let text = if end > start {
-            String::from_utf8_lossy(&bytes[start..end]).into_owned()
-        } else {
-            String::new()
-        };
-        self.jsonl.insert(key, end as u64);
+        if len < state.offset
+            || (state.offset > 0 && (dev != state.dev || ino != state.ino || prefix_mismatch))
+        {
+            state.offset = 0;
+            state.prefix.clear();
+        }
+        let bytes = fsutil::read_range(path, state.offset, len).unwrap_or_default();
+        let end_rel = bytes
+            .iter()
+            .rposition(|byte| *byte == b'\n')
+            .map(|index| index + 1)
+            .unwrap_or(0);
+        let text = String::from_utf8_lossy(&bytes[..end_rel]).into_owned();
+        let new_offset = state.offset.saturating_add(end_rel as u64);
+        if new_offset > 0 {
+            let head = new_offset.min(64);
+            if let Some(prefix) = fsutil::read_range(path, 0, head) {
+                state.prefix = prefix;
+            }
+        }
+        state.offset = new_offset;
+        state.dev = dev;
+        state.ino = ino;
+        self.jsonl.insert(key, state);
         JsonlCursor {
             text,
-            offset: end as u64,
+            offset: new_offset,
         }
     }
 
@@ -192,7 +216,9 @@ struct Watched {
     turns: Vec<Turn>,
     sigs: Vec<String>,
     command: String,
+    store_command: String,
     path: Option<String>,
+    watch_paths: Vec<String>,
     last_size: u64,
     last_mtime: i64,
 }
@@ -222,22 +248,27 @@ impl TranscriptWatch {
             return vec![self.emit_empty(session)];
         };
         if let Some(slot) = self.watched.get_mut(session) {
-            slot.path = Some(refer.path.clone());
-            let stamp = fsutil::file_stamp(Path::new(&refer.path));
-            slot.last_size = stamp.as_ref().map(|item| item.size).unwrap_or(0);
-            slot.last_mtime = stamp.as_ref().map(|item| item.mtime_ms).unwrap_or(0);
+            remember(slot, &refer);
         }
         self.snapshot(store, session)
     }
 
     pub fn poll(&mut self, store: &Store, session: &str) -> Vec<WatchFrame> {
-        let Some(path) = self.watched.get(session).and_then(|slot| slot.path.clone()) else {
-            return self.try_resolve(store, session);
+        let Some(paths) = self
+            .watched
+            .get(session)
+            .map(|slot| slot.watch_paths.clone())
+        else {
+            return Vec::new();
         };
-        let stamp = fsutil::file_stamp(Path::new(&path));
-        let Some(stamp) = stamp else {
+        if paths.is_empty() {
+            return self.try_resolve(store, session);
+        }
+        let Some((size, mtime)) = aggregate_stamp(&paths) else {
             if let Some(slot) = self.watched.get_mut(session) {
                 slot.path = None;
+                slot.watch_paths.clear();
+                slot.store_command.clear();
                 slot.last_size = 0;
                 slot.last_mtime = 0;
             }
@@ -246,10 +277,10 @@ impl TranscriptWatch {
         let changed = self
             .watched
             .get(session)
-            .is_some_and(|slot| slot.last_size != stamp.size || slot.last_mtime != stamp.mtime_ms);
+            .is_some_and(|slot| slot.last_size != size || slot.last_mtime != mtime);
         if let Some(slot) = self.watched.get_mut(session) {
-            slot.last_size = stamp.size;
-            slot.last_mtime = stamp.mtime_ms;
+            slot.last_size = size;
+            slot.last_mtime = mtime;
         }
         if !changed {
             return Vec::new();
@@ -292,7 +323,7 @@ impl TranscriptWatch {
             return Vec::new();
         };
         if let Some(slot) = self.watched.get_mut(session) {
-            slot.path = Some(refer.path);
+            remember(slot, &refer);
         }
         self.snapshot(store, session)
     }
@@ -306,21 +337,16 @@ impl TranscriptWatch {
             return Vec::new();
         };
         let path = slot.path.clone();
+        let store_command = slot.store_command.clone();
         let transcript = if let Some(path) = path {
             let refer = crate::turn::StoreRef {
-                command: String::new(),
+                command: store_command,
                 path,
                 watch_paths: None,
             };
             let mut parsed = store.read_transcript(session);
             if parsed.turns.is_empty() {
-                parsed = store.read_store_at(
-                    &crate::turn::StoreRef {
-                        command: parsed.command.clone(),
-                        ..refer
-                    },
-                    session,
-                );
+                parsed = store.read_store_at(&refer, session);
             }
             if parsed.turns.is_empty() {
                 store.read_transcript(session)
@@ -415,10 +441,43 @@ fn fresh() -> Watched {
         turns: Vec::new(),
         sigs: Vec::new(),
         command: String::new(),
+        store_command: String::new(),
         path: None,
+        watch_paths: Vec::new(),
         last_size: u64::MAX,
         last_mtime: -1,
     }
+}
+
+fn remember(slot: &mut Watched, refer: &crate::turn::StoreRef) {
+    slot.store_command = refer.command.clone();
+    slot.path = Some(refer.path.clone());
+    slot.watch_paths = refer
+        .watch_paths
+        .clone()
+        .filter(|paths| !paths.is_empty())
+        .unwrap_or_else(|| vec![refer.path.clone()]);
+    if let Some((size, mtime)) = aggregate_stamp(&slot.watch_paths) {
+        slot.last_size = size;
+        slot.last_mtime = mtime;
+    }
+}
+
+fn aggregate_stamp(paths: &[String]) -> Option<(u64, i64)> {
+    let mut size = 0_u64;
+    let mut mtime = 0_i64;
+    let mut any = false;
+    for path in paths {
+        let Some(stamp) = fsutil::file_stamp(Path::new(path)) else {
+            continue;
+        };
+        any = true;
+        size = size.saturating_add(stamp.size);
+        if stamp.mtime_ms > mtime {
+            mtime = stamp.mtime_ms;
+        }
+    }
+    any.then_some((size, mtime))
 }
 
 pub fn capped_objects(path: &Path, max_bytes: u64) -> (Vec<crate::value::Obj>, bool) {

@@ -1308,6 +1308,31 @@ fn over_cap_file_is_truncated() {
 }
 
 #[test]
+fn jsonl_cursor_rereads_a_file_replaced_in_place() {
+    let tmp = Tmp::new("replace-jsonl");
+    let file = tmp.path().join("t.jsonl");
+    let first = format!(
+        "{}\n",
+        serde_json::json!({"type":"user","message":{"content":"one"}})
+    );
+    std::fs::write(&file, first.as_bytes()).unwrap();
+    let mut tail = TranscriptTail::new();
+    let read = tail.read_new_jsonl(&file);
+    assert!(read.text.contains("one"));
+    assert!(read.offset > 0);
+    let replacement = format!(
+        "{}\n{}\n",
+        serde_json::json!({"type":"user","message":{"content":"aaa"}}),
+        serde_json::json!({"type":"user","message":{"content":"bbb"}})
+    );
+    assert!(replacement.len() >= first.len());
+    std::fs::write(&file, replacement.as_bytes()).unwrap();
+    let again = tail.read_new_jsonl(&file);
+    assert!(again.text.contains("aaa"), "{}", again.text);
+    assert!(again.text.contains("bbb"), "{}", again.text);
+}
+
+#[test]
 fn non_utf8_byte_and_truncated_last_line_are_skipped() {
     let tmp = Tmp::new("bytes");
     let file = tmp.path().join("bad.jsonl");

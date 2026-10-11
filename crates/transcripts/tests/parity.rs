@@ -1,14 +1,14 @@
 #[path = "common/mod.rs"]
 mod common;
 
-use serde_json::{Value, json};
+use serde_json::json;
 use transcripts::turn::{LastBlock, Role, ToolStatus};
 use transcripts::{
     CaptureMessage, DEFAULT_TRANSCRIPT_MAX_BYTES, Store, claude_capture_text,
     claude_turns_from_lines, codex_capture_text, codex_turns_from_lines, cowork_capture_lines,
     cursor_capture_objects, cursor_turns_from_objects, grok_capture_updates, grok_turns_from_lines,
     hermes_capture_rows, kimi_capture_text, kimi_turns_from_lines, objects_from_text,
-    opencode_capture_parts, pi_capture_text, pi_turns_from_lines, qwen_capture_text,
+    pi_capture_text, pi_turns_from_lines, qwen_capture_text,
 };
 
 use common::{Tmp, sqlite, touch, write};
@@ -133,12 +133,16 @@ fn grok_session_dir_splits_chat_history_and_updates() {
     );
     let updates = std::fs::read_to_string(dir.join("updates.jsonl")).expect("updates");
     assert_eq!(
-        captured(&grok_capture_updates(&updates)),
+        captured(&read.messages),
         vec![
             ("user", "plan the migrate"),
             ("assistant", "[thinking] need a plan"),
             ("assistant", "ok, planning"),
         ]
+    );
+    assert_eq!(
+        captured(&grok_capture_updates(&updates)),
+        captured(&read.messages)
     );
     assert_eq!(
         pairs(&grok_turns_from_lines(&objects_from_text(GROK_CHAT))),
@@ -305,38 +309,8 @@ fn opencode_sql_display_and_joined_parts_capture() {
         )),
         Some((110, 25, 10))
     );
-    let conn = transcripts::db::open_readonly(&db).expect("db");
-    let rows = transcripts::db::query_maps(
-        &conn,
-        "SELECT part.id AS id, part.data AS data, message.data AS message_data
-         FROM part JOIN message ON message.id = part.message_id
-         WHERE part.session_id = ? ORDER BY part.time_created ASC",
-        &[&id],
-    )
-    .expect("parts");
-    let parts = rows
-        .iter()
-        .map(|row| {
-            let data_text = row.get("data").and_then(Value::as_str).expect("data");
-            let data: Value = serde_json::from_str(data_text).expect("part json");
-            let message_text = row
-                .get("message_data")
-                .and_then(Value::as_str)
-                .expect("message");
-            let message: Value = serde_json::from_str(message_text).expect("message json");
-            let role = message
-                .get("role")
-                .and_then(Value::as_str)
-                .unwrap_or("assistant");
-            json!({"role": role, "data": data})
-                .as_object()
-                .expect("part")
-                .clone()
-        })
-        .collect::<Vec<_>>();
-    let messages = opencode_capture_parts(&parts);
     assert_eq!(
-        captured(&messages),
+        captured(&read.messages),
         vec![
             ("user", "review the diff"),
             ("assistant", "[thinking] weighing it"),
@@ -344,8 +318,8 @@ fn opencode_sql_display_and_joined_parts_capture() {
             ("assistant", "looks good"),
         ]
     );
-    assert_eq!(messages[2].tool_name.as_deref(), Some("Bash"));
-    assert_eq!(messages[2].tool_result.as_deref(), Some(""));
+    assert_eq!(read.messages[2].tool_name.as_deref(), Some("Bash"));
+    assert_eq!(read.messages[2].tool_result.as_deref(), Some(""));
 }
 
 #[test]

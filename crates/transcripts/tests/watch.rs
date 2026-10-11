@@ -352,6 +352,60 @@ fn a_second_watch_shares_one_parse_until_both_unwatch() {
 }
 
 #[test]
+fn opencode_wal_growth_polls_without_the_main_db_changing() {
+    let tmp = Tmp::new("watch-wal");
+    let db = tmp.path().join(".local/share/opencode/opencode.db");
+    if let Some(parent) = db.parent() {
+        std::fs::create_dir_all(parent).expect("db dir");
+    }
+    let conn = rusqlite::Connection::open(&db).expect("db");
+    conn.pragma_update(None, "journal_mode", "WAL")
+        .expect("wal");
+    conn.pragma_update(None, "wal_autocheckpoint", 0_i64)
+        .expect("checkpoint");
+    let id = "ses_walwatch0000000000000001";
+    conn.execute_batch(&format!(
+        "CREATE TABLE session (id TEXT PRIMARY KEY, title TEXT, directory TEXT, model TEXT, time_created INTEGER, time_updated INTEGER);
+         CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT);
+         CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, time_created INTEGER, data TEXT);
+         INSERT INTO session VALUES ('{id}', 'wal', '/work', NULL, 1, 2);
+         INSERT INTO message VALUES ('m1', '{id}', 10, 10, '{{\"role\":\"user\"}}');
+         INSERT INTO part VALUES ('p1', 'm1', '{id}', 11, '{{\"type\":\"text\",\"text\":\"first line\"}}');"
+    ))
+    .expect("schema");
+    let store = Store::new(tmp.roots());
+    let mut watch = TranscriptWatch::new();
+    let session = format!("opencode:{id}");
+    let opened = watch.watch(&store, &session);
+    assert!(
+        opened
+            .iter()
+            .any(|frame| texts(frame).contains(&"first line")),
+        "{opened:?}"
+    );
+    let main_before = std::fs::metadata(&db).expect("main").len();
+    conn.execute_batch(
+        "INSERT INTO message VALUES ('m2', 'ses_walwatch0000000000000001', 20, 20, '{\"role\":\"assistant\"}');
+         INSERT INTO part VALUES ('p2', 'm2', 'ses_walwatch0000000000000001', 21, '{\"type\":\"text\",\"text\":\"second line\"}');",
+    )
+    .expect("append");
+    let wal = db.with_file_name("opencode.db-wal");
+    assert!(wal.is_file(), "wal missing");
+    assert!(std::fs::metadata(&wal).expect("wal meta").len() > 0);
+    assert_eq!(
+        std::fs::metadata(&db).expect("main after").len(),
+        main_before
+    );
+    let frames = watch.poll(&store, &session);
+    assert!(
+        frames
+            .iter()
+            .any(|frame| texts(frame).contains(&"second line")),
+        "{frames:?}"
+    );
+}
+
+#[test]
 fn helper_touch_and_sqlite_round_trip() {
     let tmp = Tmp::new("watch-helpers");
     let file = tmp.path().join("stamp.txt");

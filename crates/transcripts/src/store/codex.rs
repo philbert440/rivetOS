@@ -87,46 +87,57 @@ pub fn find_rollout(roots: &Roots, id: &str) -> Option<PathBuf> {
 }
 
 pub fn find_room(roots: &Roots, room: &str) -> Option<PathBuf> {
+    find_room_in(roots, room, Path::new("/proc"))
+}
+
+fn find_room_in(roots: &Roots, room: &str, proc_root: &Path) -> Option<PathBuf> {
     if room.is_empty() || room.contains('\0') {
         return None;
     }
     let sessions = sessions_dir(roots);
     let root = crate::fsutil::node_resolve(&roots.cwd, &sessions.to_string_lossy());
     let prefix = format!("{}/", root.to_string_lossy().trim_end_matches('/'));
-    let pids = fsutil::read_dir_names(std::path::Path::new("/proc"))?;
+    let pids = fsutil::read_dir_names(proc_root)?;
     let mut paths = Vec::new();
     for pid in pids {
         if !pid.bytes().all(|byte| byte.is_ascii_digit()) {
             continue;
         }
-        if let Some(path) = room_rollout(&pid, room, &prefix)
-            && !paths.iter().any(|item: &PathBuf| item == &path)
-        {
-            paths.push(path);
+        for path in room_rollouts(proc_root, &pid, room, &prefix) {
+            if !paths.iter().any(|item: &PathBuf| item == &path) {
+                paths.push(path);
+            }
         }
     }
     if paths.len() == 1 { paths.pop() } else { None }
 }
 
-fn room_rollout(pid: &str, room: &str, prefix: &str) -> Option<PathBuf> {
-    let dir = std::path::Path::new("/proc").join(pid);
-    let argv = fsutil::read_lossy(&dir.join("cmdline"))?;
+fn room_rollouts(proc_root: &Path, pid: &str, room: &str, prefix: &str) -> Vec<PathBuf> {
+    let dir = proc_root.join(pid);
+    let Some(argv) = fsutil::read_lossy(&dir.join("cmdline")) else {
+        return Vec::new();
+    };
     let exe = argv.split('\0').next().unwrap_or("");
     let base = std::path::Path::new(exe)
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("");
     if base != "codex" {
-        return None;
+        return Vec::new();
     }
-    let env = fsutil::read_lossy(&dir.join("environ"))?;
+    let Some(env) = fsutil::read_lossy(&dir.join("environ")) else {
+        return Vec::new();
+    };
     if !env
         .split('\0')
         .any(|item| item == format!("RIVET_DEN_SESSION={room}"))
     {
-        return None;
+        return Vec::new();
     }
-    let fds = fsutil::read_dir_names(&dir.join("fd"))?;
+    let Some(fds) = fsutil::read_dir_names(&dir.join("fd")) else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
     for fd in fds {
         let Ok(path) = std::fs::read_link(dir.join("fd").join(&fd)) else {
             continue;
@@ -149,10 +160,10 @@ fn room_rollout(pid: &str, room: &str, prefix: &str) -> Option<PathBuf> {
                 re.is_match(path.file_name().and_then(|n| n.to_str()).unwrap_or(""))
             })
         {
-            return Some(path);
+            found.push(path);
         }
     }
-    None
+    found
 }
 
 pub fn sessions_dir(roots: &Roots) -> PathBuf {
@@ -327,4 +338,47 @@ fn rollout_re() -> Option<&'static Regex> {
         Regex::new(r"(?i)^rollout-.+-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$").ok()
     })
     .as_ref()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::find_room_in;
+    use crate::roots::Roots;
+    use std::fs;
+    use std::os::unix::fs::symlink;
+    use std::path::PathBuf;
+
+    fn rollout(dir: &std::path::Path, id: &str) -> PathBuf {
+        let path = dir.join(format!("rollout-2026-01-01T00-00-00-{id}.jsonl"));
+        fs::write(&path, "{}\n").expect("rollout");
+        path
+    }
+
+    #[test]
+    fn two_writable_rollouts_in_one_pid_return_nothing() {
+        let root = std::env::temp_dir().join(format!("rr4a-codex-room-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let sessions = root.join("sessions");
+        let day = sessions.join("2026/01/01");
+        fs::create_dir_all(&day).expect("day");
+        let first = rollout(&day, "00000000-0000-4000-8000-0000000000a1");
+        let second = rollout(&day, "00000000-0000-4000-8000-0000000000a2");
+        let proc_root = root.join("proc");
+        let pid = proc_root.join("7");
+        fs::create_dir_all(pid.join("fd")).expect("fd");
+        fs::create_dir_all(pid.join("fdinfo")).expect("fdinfo");
+        fs::write(pid.join("cmdline"), "codex\0").expect("cmdline");
+        fs::write(pid.join("environ"), "RIVET_DEN_SESSION=room-a\0").expect("environ");
+        symlink(&first, pid.join("fd/3")).expect("link 3");
+        symlink(&second, pid.join("fd/4")).expect("link 4");
+        fs::write(pid.join("fdinfo/3"), "flags:\t02\n").expect("flags 3");
+        fs::write(pid.join("fdinfo/4"), "flags:\t02\n").expect("flags 4");
+        let mut roots = Roots::isolated(&root);
+        roots.set_env("CODEX_HOME", root.to_string_lossy());
+        assert!(find_room_in(&roots, "room-a", &proc_root).is_none());
+        fs::remove_file(pid.join("fd/4")).expect("drop second");
+        let found = find_room_in(&roots, "room-a", &proc_root).expect("one rollout");
+        assert_eq!(found, first);
+        let _ = fs::remove_dir_all(&root);
+    }
 }

@@ -57,15 +57,18 @@ pub fn exists_session(roots: &Roots, id: &str) -> bool {
         .is_some_and(|rows| !rows.is_empty())
 }
 
-pub fn turns(roots: &Roots, id: &str) -> Vec<Turn> {
+pub fn load(roots: &Roots, id: &str) -> (Vec<Turn>, Vec<crate::turn::CaptureMessage>) {
     let Some(conn) = db::open_readonly(&db_path(roots)) else {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     };
     let sql = "SELECT * FROM messages WHERE session_id = ? ORDER BY timestamp ASC, rowid ASC";
     let Some(rows) = query_maps(&conn, sql, &[&id]) else {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     };
-    hermes_turns_from_rows(&rows)
+    (
+        hermes_turns_from_rows(&rows),
+        crate::capture::hermes_capture_rows(&rows),
+    )
 }
 
 pub fn db_path(roots: &Roots) -> PathBuf {

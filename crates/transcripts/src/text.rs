@@ -25,13 +25,14 @@ pub fn object_from_line(line: &str) -> Option<Obj> {
     if !trimmed.starts_with('{') {
         return None;
     }
-    serde_json::from_str::<Value>(trimmed)
+    protocol::js::parse(trimmed)
         .ok()
         .and_then(|value| value.as_object().cloned())
 }
 
 pub fn summarize_turn_args(raw: &Value) -> Option<Obj> {
-    let obj = raw.as_object()?;
+    let normalized = crate::value::js_norm(raw);
+    let obj = normalized.as_object()?;
     let mut out = Obj::new();
     let mut keys = 0usize;
     for (key, value) in obj {

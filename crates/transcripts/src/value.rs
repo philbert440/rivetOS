@@ -103,6 +103,10 @@ pub fn jtrim(text: &str) -> &str {
     protocol::js::js_trim(text)
 }
 
+pub fn js_norm(value: &Value) -> Value {
+    protocol::js::parse(&protocol::js::stringify(value)).unwrap_or_else(|_| value.clone())
+}
+
 pub fn whitespace_collapse(text: &str) -> String {
     let mut out = String::new();
     let mut gap = false;

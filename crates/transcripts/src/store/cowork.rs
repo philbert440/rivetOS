@@ -4,16 +4,14 @@ use std::sync::OnceLock;
 use regex::Regex;
 use serde_json::Value;
 
-use crate::claude::claude_turns_from_lines;
 use crate::fsutil::{self, mtime_ms};
-use crate::jsonl::{parse_object, read_jsonl};
+use crate::jsonl::parse_object;
 use crate::roots::Roots;
 use crate::timeutil::parse_date_ms;
-use crate::turn::{SessionRow, Turn};
+use crate::turn::SessionRow;
 use crate::value::jtrim;
 
 const WALK_DEPTH: usize = 6;
-const TAIL_BYTES: u64 = 8_000_000;
 
 struct TaskMeta {
     cli_session_id: String,
@@ -41,17 +39,6 @@ pub fn list(roots: &Roots, limit: usize) -> Vec<SessionRow> {
             task_id: None,
         })
         .collect()
-}
-
-pub fn turns(roots: &Roots, id: &str) -> Vec<Turn> {
-    let Some(task) = find(roots, id) else {
-        return Vec::new();
-    };
-    let Some(path) = task.transcript_path else {
-        return Vec::new();
-    };
-    let parsed = read_jsonl(&path, TAIL_BYTES);
-    claude_turns_from_lines(&parsed.objects)
 }
 
 pub fn find_transcript(roots: &Roots, id: &str) -> Option<PathBuf> {

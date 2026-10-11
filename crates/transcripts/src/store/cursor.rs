@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -13,16 +12,17 @@ use crate::turn::{Role, SessionRow};
 use crate::value::{js_slice, jtrim, whitespace_collapse};
 
 pub fn list(roots: &Roots, limit: usize) -> Vec<SessionRow> {
-    let mut newest: HashMap<String, CursorFile> = HashMap::new();
+    let mut ordered: Vec<CursorFile> = Vec::new();
     for row in collect(roots) {
-        match newest.get(&row.id) {
-            Some(prev) if row.mtime < prev.mtime => {}
-            _ => {
-                newest.insert(row.id.clone(), row);
+        if let Some(pos) = ordered.iter().position(|prev| prev.id == row.id) {
+            if row.mtime >= ordered[pos].mtime {
+                ordered[pos] = row;
             }
+        } else {
+            ordered.push(row);
         }
     }
-    let mut ranked: Vec<CursorFile> = newest.into_values().collect();
+    let mut ranked = ordered;
     ranked.sort_by_key(|row| std::cmp::Reverse(row.mtime));
     ranked
         .into_iter()

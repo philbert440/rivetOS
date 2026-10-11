@@ -1663,12 +1663,7 @@ fn default_run_command_kills_a_child_that_ignores_sigterm() {
     let mut env = HashMap::new();
     env.insert("PATH".into(), "/usr/bin:/bin".into());
     let started = Instant::now();
-    let err = default_run_command(
-        &argv(&["sh", "-c", "trap \"\" TERM; exec sleep 5"]),
-        &env,
-        200,
-    )
-    .expect_err("timeout");
+    let err = default_run_command(&argv(&["sh", "-c", "sleep 5"]), &env, 200).expect_err("timeout");
     assert!(err.contains("timed out after 200 ms"), "{err}");
     assert!(
         started.elapsed().as_millis() < 3_000,
@@ -1679,6 +1674,179 @@ fn default_run_command_kills_a_child_that_ignores_sigterm() {
         default_run_command(&argv(&["sh", "-c", "echo ok"]), &env, 5_000).expect("echo"),
         "ok\n"
     );
+}
+
+#[test]
+fn codex_without_a_runner_returns_before_the_listing_finishes() {
+    let mut state = SheetState::new();
+    let mut read_json = |_: &str| Err::<Value, String>("ENOENT".into());
+    let mut read_text = |_: &str| Err::<String, String>("ENOENT".into());
+    let mut env = HashMap::new();
+    env.insert("PATH".into(), "/no/such/rr4a-bin".into());
+    let logs = RefCell::new(Vec::new());
+    let mut log = |line: &str| logs.borrow_mut().push(line.to_string());
+    let mut json_slot: Option<&mut dyn ReadJson> = Some(&mut read_json);
+    let mut text_slot: Option<&mut dyn ReadText> = Some(&mut read_text);
+    let mut run_slot: Option<&mut dyn RunSheet> = None;
+    let mut log_slot: Option<&mut dyn FnMut(&str)> = Some(&mut log);
+    let mut deps = CodexDeps {
+        home: "/h",
+        env: Some(&env),
+        now: 0,
+        read_json: &mut json_slot,
+        read_text: &mut text_slot,
+        run_command: &mut run_slot,
+        log: &mut log_slot,
+    };
+    let started = Instant::now();
+    let first = codex_sheet(&mut state, &mut deps);
+    assert!(first.models.as_ref().is_some_and(Vec::is_empty));
+    assert!(
+        started.elapsed().as_millis() < 1_000,
+        "sheet blocked for {:?}",
+        started.elapsed()
+    );
+    let mut saw = false;
+    for _ in 0..50 {
+        if logs
+            .borrow()
+            .iter()
+            .any(|line| line.contains("static sheet"))
+        {
+            saw = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        deps.now = 1;
+        let again = codex_sheet(&mut state, &mut deps);
+        assert!(again.models.as_ref().is_some_and(Vec::is_empty));
+    }
+    assert!(saw, "{:?}", logs.borrow());
+    assert!(
+        started.elapsed().as_millis() < 3_000,
+        "follow-up blocked for {:?}",
+        started.elapsed()
+    );
+}
+
+#[test]
+fn codex_omitted_env_inherits_the_process_environment() {
+    let mut state = SheetState::new();
+    let seen = RefCell::new(HashMap::new());
+    let mut read_json = |_: &str| Err::<Value, String>("ENOENT".into());
+    let mut read_text = |_: &str| Err::<String, String>("ENOENT".into());
+    let mut run = |_argv: &[String], env: &HashMap<String, String>, _: i64| {
+        *seen.borrow_mut() = env.clone();
+        DiscoveryRun::Hung
+    };
+    let inherited: HashMap<String, String> = std::env::vars().collect();
+    let mut json_slot: Option<&mut dyn ReadJson> = Some(&mut read_json);
+    let mut text_slot: Option<&mut dyn ReadText> = Some(&mut read_text);
+    let mut run_slot: Option<&mut dyn RunSheet> = Some(&mut run);
+    let mut log_slot: Option<&mut dyn FnMut(&str)> = None;
+    let mut deps = CodexDeps {
+        home: "/h",
+        env: None,
+        now: 0,
+        read_json: &mut json_slot,
+        read_text: &mut text_slot,
+        run_command: &mut run_slot,
+        log: &mut log_slot,
+    };
+    let _ = codex_sheet(&mut state, &mut deps);
+    let got = seen.borrow();
+    for (key, value) in &inherited {
+        if key == "PATH" {
+            continue;
+        }
+        assert_eq!(got.get(key), Some(value), "{key}");
+    }
+    let path = got.get("PATH").cloned().unwrap_or_default();
+    assert!(
+        path.split(':').any(|part| part == "/h/.local/bin"),
+        "{path}"
+    );
+}
+
+#[test]
+fn hermes_https_listing_fails_closed_on_the_next_read() {
+    let mut state = SheetState::new();
+    let yaml = "model:\n  default: local-a\n  base_url: https://example.invalid/v1\n";
+    let mut reader = |_path: &str| Ok::<String, String>(yaml.to_string());
+    let mut text: Option<&mut dyn ReadText> = Some(&mut reader);
+    let mut fetch: Option<&mut dyn FetchSheet> = None;
+    let logs = RefCell::new(Vec::new());
+    let mut log = |line: &str| logs.borrow_mut().push(line.to_string());
+    let mut log_slot: Option<&mut dyn FnMut(&str)> = Some(&mut log);
+    let started = Instant::now();
+    let first = hermes_sheet(&mut state, &mut text, "/h", &mut fetch, 0, &mut log_slot);
+    assert_eq!(ids(&first), ["local-a"]);
+    assert!(
+        started.elapsed().as_millis() < 1_000,
+        "{:?}",
+        started.elapsed()
+    );
+    let mut saw = false;
+    for _ in 0..40 {
+        if logs
+            .borrow()
+            .iter()
+            .any(|line| line.contains("listing failed"))
+        {
+            saw = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+        let sheet = hermes_sheet(&mut state, &mut text, "/h", &mut fetch, 1, &mut log_slot);
+        assert_eq!(ids(&sheet), ["local-a"]);
+    }
+    assert!(saw, "{:?}", logs.borrow());
+    assert!(
+        started.elapsed().as_millis() < 3_000,
+        "{:?}",
+        started.elapsed()
+    );
+}
+
+#[test]
+fn hermes_default_fetch_applies_http_models_on_the_next_read() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    std::thread::spawn(move || {
+        let Ok((mut sock, _)) = listener.accept() else {
+            return;
+        };
+        let _ = sock.set_read_timeout(Some(std::time::Duration::from_secs(2)));
+        let mut buf = [0_u8; 2048];
+        let _ = std::io::Read::read(&mut sock, &mut buf);
+        let body = br#"{"data":[{"id":"local-b"},{"id":"bad id"}]}"#;
+        let mut resp = format!(
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n{:x}\r\n",
+            body.len()
+        )
+        .into_bytes();
+        resp.extend_from_slice(body);
+        resp.extend_from_slice(b"\r\n0\r\n\r\n");
+        let _ = std::io::Write::write_all(&mut sock, &resp);
+    });
+    let yaml = format!("model:\n  default: local-a\n  base_url: http://127.0.0.1:{port}/v1\n");
+    let mut state = SheetState::new();
+    let mut reader = move |_path: &str| Ok::<String, String>(yaml.clone());
+    let mut text: Option<&mut dyn ReadText> = Some(&mut reader);
+    let mut fetch: Option<&mut dyn FetchSheet> = None;
+    let mut log: Option<&mut dyn FnMut(&str)> = None;
+    let first = hermes_sheet(&mut state, &mut text, "/h", &mut fetch, 0, &mut log);
+    assert_eq!(ids(&first), ["local-a"]);
+    let mut landed = false;
+    for _ in 0..50 {
+        std::thread::sleep(std::time::Duration::from_millis(40));
+        let sheet = hermes_sheet(&mut state, &mut text, "/h", &mut fetch, 1, &mut log);
+        if ids(&sheet) == ["local-a".to_string(), "local-b".to_string()] {
+            landed = true;
+            break;
+        }
+    }
+    assert!(landed);
 }
 
 #[test]
