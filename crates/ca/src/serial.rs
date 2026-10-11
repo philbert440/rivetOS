@@ -1,6 +1,5 @@
 use std::path::Path;
 
-use rand::RngCore;
 use x509_cert::serial_number::SerialNumber;
 
 use crate::error::{Error, wrap};
@@ -8,7 +7,7 @@ use crate::fsutil;
 
 pub fn random_serial() -> Result<SerialNumber, Error> {
     let mut bytes = [0u8; 20];
-    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    getrandom::getrandom(&mut bytes).map_err(wrap)?;
     bytes[0] &= 0x7f;
     if bytes[0] == 0 {
         bytes[0] = 1;
@@ -46,7 +45,7 @@ pub fn read_counter(path: &Path) -> Result<u128, Error> {
 }
 
 pub fn write_counter(path: &Path, value: u128, keep_old: bool) -> Result<(), Error> {
-    fsutil::atomic_write(
+    fsutil::replace_bytes(
         path,
         format!("{}\n", hex_u128(value)).as_bytes(),
         0o644,
@@ -85,7 +84,16 @@ pub fn hex_from_raw(raw: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{hex_from_raw, hex_u128};
+    use super::{hex_from_raw, hex_u128, random_serial};
+
+    #[test]
+    fn random_serial_is_positive() {
+        let serial = random_serial().unwrap();
+        let raw = serial.as_bytes();
+        assert!(!raw.is_empty());
+        assert_ne!(raw[0], 0);
+        assert_eq!(raw[0] & 0x80, 0);
+    }
 
     #[test]
     fn openssl_even_width() {

@@ -1,14 +1,11 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use fd_lock::RwLock;
 
 use crate::error::Error;
-
-static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 pub fn reject_symlink(path: &Path) -> Result<(), Error> {
     match fs::symlink_metadata(path) {
@@ -59,25 +56,17 @@ pub fn old_path(path: &Path) -> PathBuf {
     PathBuf::from(name)
 }
 
-pub fn atomic_write(path: &Path, bytes: &[u8], mode: u32, keep_old: bool) -> Result<(), Error> {
+pub fn replace_bytes(path: &Path, bytes: &[u8], mode: u32, keep_old: bool) -> Result<(), Error> {
     reject_symlink(path)?;
-    let tmp = temp_path(path)?;
-    if let Err(err) = write_new(&tmp, bytes, mode) {
-        let _ = fs::remove_file(&tmp);
-        return Err(err);
+    if keep_old && path.is_file() {
+        backup_to_old(path)?;
     }
-    if keep_old
-        && path.is_file()
-        && let Err(err) = backup_to_old(path)
-    {
-        let _ = fs::remove_file(&tmp);
-        return Err(err);
+    protocol::host::atomic_replace(path, bytes)?;
+    if mode != 0o600 {
+        fs::set_permissions(path, fs::Permissions::from_mode(mode))?;
+        let file = File::open(path)?;
+        file.sync_all()?;
     }
-    if let Err(err) = replace_file(&tmp, path) {
-        let _ = fs::remove_file(&tmp);
-        return Err(err);
-    }
-    fsync_dir(parent_dir(path)?)?;
     Ok(())
 }
 
@@ -142,7 +131,7 @@ fn backup_to_old(path: &Path) -> Result<(), Error> {
         Some(bytes) => bytes,
         None => return Ok(()),
     };
-    atomic_write(&old_path(path), &bytes, 0o644, false)
+    replace_bytes(&old_path(path), &bytes, 0o644, false)
 }
 
 fn write_new(path: &Path, bytes: &[u8], mode: u32) -> Result<(), Error> {
@@ -158,12 +147,6 @@ fn write_new(path: &Path, bytes: &[u8], mode: u32) -> Result<(), Error> {
     Ok(())
 }
 
-fn replace_file(from: &Path, to: &Path) -> Result<(), Error> {
-    reject_symlink(to)?;
-    fs::rename(from, to)?;
-    Ok(())
-}
-
 fn parent_dir(path: &Path) -> Result<&Path, Error> {
     path.parent()
         .filter(|dir| !dir.as_os_str().is_empty())
@@ -176,15 +159,49 @@ fn fsync_dir(dir: &Path) -> Result<(), Error> {
     Ok(())
 }
 
-fn temp_path(path: &Path) -> Result<PathBuf, Error> {
-    let seq = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
-    let name = path
-        .file_name()
-        .ok_or_else(|| Error::msg(format!("no file name for {}", path.display())))?;
-    let dir = parent_dir(path)?;
-    Ok(dir.join(format!(
-        ".{}.{}.{seq}.tmp",
-        name.to_string_lossy(),
-        std::process::id()
-    )))
+#[cfg(test)]
+mod tests {
+    use std::os::unix::fs::PermissionsExt;
+
+    use super::{old_path, replace_bytes};
+
+    fn mode(path: &std::path::Path) -> u32 {
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    #[test]
+    fn replace_uses_the_requested_mode_and_keeps_old() {
+        let dir = std::env::temp_dir().join(format!("rr9c-replace-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("index.txt");
+        replace_bytes(&path, b"one\n", 0o644, true).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"one\n");
+        assert_eq!(mode(&path), 0o644);
+        assert!(!old_path(&path).exists());
+        replace_bytes(&path, b"two\n", 0o644, true).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"two\n");
+        assert_eq!(std::fs::read(old_path(&path)).unwrap(), b"one\n");
+        assert_eq!(mode(&old_path(&path)), 0o644);
+        let secret = dir.join("ca.key");
+        replace_bytes(&secret, b"secret", 0o600, false).unwrap();
+        assert_eq!(mode(&secret), 0o600);
+        let link = dir.join("link");
+        std::os::unix::fs::symlink(&path, &link).unwrap();
+        let err = replace_bytes(&link, b"nope", 0o644, false).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            format!("refusing symlink {}", link.display())
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"two\n");
+        let old_link = old_path(&secret);
+        std::os::unix::fs::symlink(&secret, &old_link).unwrap();
+        let err = replace_bytes(&secret, b"next", 0o600, true).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            format!("refusing symlink {}", old_link.display())
+        );
+        assert_eq!(std::fs::read(&secret).unwrap(), b"secret");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

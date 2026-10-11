@@ -54,9 +54,9 @@ pub fn ensure_attr(dir: &Path) -> Result<(), Error> {
     let attr = dir.join("index.txt.attr");
     fsutil::reject_symlink(&attr)?;
     if !attr.exists() {
-        fsutil::atomic_write(&attr, b"unique_subject = no\n", 0o644, false)?;
+        fsutil::replace_bytes(&attr, b"unique_subject = no\n", 0o644, false)?;
     }
     let bytes = fs::read(&attr)?;
-    fsutil::atomic_write(&fsutil::old_path(&attr), &bytes, 0o644, false)?;
+    fsutil::replace_bytes(&fsutil::old_path(&attr), &bytes, 0o644, false)?;
     Ok(())
 }

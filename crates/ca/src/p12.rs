@@ -74,7 +74,7 @@ fn mint_device_p12_locked(
     {
         fsutil::ensure_dir(parent)?;
     }
-    fsutil::atomic_write(output, &bytes, 0o600, false)?;
+    fsutil::replace_bytes(output, &bytes, 0o600, false)?;
     fsutil::remove_file(&key_path)?;
     Ok(())
 }

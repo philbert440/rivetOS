@@ -136,12 +136,12 @@ fn write_if_missing(path: &Path, bytes: &[u8]) -> Result<(), Error> {
     if path.exists() {
         return Ok(());
     }
-    fsutil::atomic_write(path, bytes, 0o644, false)
+    fsutil::replace_bytes(path, bytes, 0o644, false)
 }
 
 fn write_int_cnf(paths: &CaPaths) -> Result<(), Error> {
     let dir = paths.int_dir();
-    fsutil::atomic_write(
+    fsutil::replace_bytes(
         &dir.join("openssl.cnf"),
         openssl_cnf(&dir).as_bytes(),
         0o644,
@@ -195,7 +195,7 @@ fn remember(path: &Path, mode: u32, saved: &mut Vec<SavedFile>) -> Result<(), Er
 fn restore(saved: &[SavedFile]) -> Result<(), Error> {
     for item in saved.iter().rev() {
         match &item.previous {
-            Some(bytes) => fsutil::atomic_write(&item.path, bytes, item.mode, false)?,
+            Some(bytes) => fsutil::replace_bytes(&item.path, bytes, item.mode, false)?,
             None => fsutil::remove_file(&item.path)?,
         }
     }
@@ -212,7 +212,7 @@ fn commit_file(
     if let Err(err) = remember(path, mode, saved) {
         return restore_or(saved, err);
     }
-    if let Err(err) = fsutil::atomic_write(path, bytes, mode, keep_old) {
+    if let Err(err) = fsutil::replace_bytes(path, bytes, mode, keep_old) {
         return restore_or(saved, err);
     }
     Ok(())
@@ -431,14 +431,14 @@ fn init_locked(paths: &CaPaths) -> Result<CommandOutput, Error> {
         },
     )
     .map_err(|err| err.with_lines(&lines))?;
-    fsutil::atomic_write(
+    fsutil::replace_bytes(
         &paths.root_dir.join("ca.crt"),
         issued.pem.as_bytes(),
         0o644,
         false,
     )
     .map_err(|err| err.with_lines(&lines))?;
-    fsutil::atomic_write(&paths.root_dir.join("ca.srl"), b"1000\n", 0o644, false)
+    fsutil::replace_bytes(&paths.root_dir.join("ca.srl"), b"1000\n", 0o644, false)
         .map_err(|err| err.with_lines(&lines))?;
     lines.push(format!(
         "root cert: {}",
@@ -517,7 +517,7 @@ fn issue_intermediate_locked(paths: &CaPaths) -> Result<CommandOutput, Error> {
     serial::write_counter(&serial_path, serial_value, false)
         .map_err(|err| err.with_lines(&lines))?;
     let int_crt = paths.int_dir().join("int.crt");
-    fsutil::atomic_write(&int_crt, issued.pem.as_bytes(), 0o644, false)
+    fsutil::replace_bytes(&int_crt, issued.pem.as_bytes(), 0o644, false)
         .map_err(|err| err.with_lines(&lines))?;
     fsutil::remove_file(&paths.int_dir().join("int.csr")).map_err(|err| err.with_lines(&lines))?;
     let mut chain = fsutil::read_optional(&int_crt)
@@ -531,9 +531,9 @@ fn issue_intermediate_locked(paths: &CaPaths) -> Result<CommandOutput, Error> {
             .map_err(|err| err.with_lines(&lines))?,
     );
     let chain_path = paths.chain_path();
-    fsutil::atomic_write(&chain_path, &chain, 0o644, false)
+    fsutil::replace_bytes(&chain_path, &chain, 0o644, false)
         .map_err(|err| err.with_lines(&lines))?;
-    fsutil::atomic_write(&paths.int_dir().join("ca-chain.pem"), &chain, 0o644, false)
+    fsutil::replace_bytes(&paths.int_dir().join("ca-chain.pem"), &chain, 0o644, false)
         .map_err(|err| err.with_lines(&lines))?;
     let crl_out = crl_locked(paths).map_err(|err| err.with_lines(&lines))?;
     let mut stderr = logged(&lines).stderr;

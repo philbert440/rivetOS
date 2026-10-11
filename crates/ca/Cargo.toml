@@ -14,16 +14,18 @@ name = "rivet-ca"
 path = "src/main.rs"
 
 [dependencies]
-base64 = "0.23.1"
-fd-lock = "4.0.4"
-p12-keystore = "0.4.0"
-rand = "0.8"
-rsa = { version = "0.9.10", features = ["pem", "sha2"] }
-signature = { version = "3", features = ["alloc"] }
+base64 = { workspace = true }
+config = { path = "../config" }
+fd-lock = { workspace = true }
+getrandom = { workspace = true }
+p12-keystore = { workspace = true }
+protocol = { path = "../protocol" }
+rsa = { workspace = true }
+signature = { workspace = true }
 thiserror.workspace = true
-tracing = "0.1.44"
-x509-cert = { version = "0.3.0", features = ["builder", "pem", "std"] }
-x509-parser = "0.18.1"
+tracing = { workspace = true }
+x509-cert = { workspace = true }
+x509-parser = { workspace = true }
 
 [lints]
 workspace = true

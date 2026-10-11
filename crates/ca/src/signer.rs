@@ -79,8 +79,32 @@ pub fn subject_spki(key: &RsaPrivateKey) -> Result<SubjectPublicKeyInfoOwned, Er
     SubjectPublicKeyInfoOwned::from_der(document.as_bytes()).map_err(wrap)
 }
 
+struct OsEntropy;
+
+impl rsa::rand_core::CryptoRng for OsEntropy {}
+
+impl rsa::rand_core::RngCore for OsEntropy {
+    fn next_u32(&mut self) -> u32 {
+        rsa::rand_core::impls::next_u32_via_fill(self)
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        rsa::rand_core::impls::next_u64_via_fill(self)
+    }
+
+    fn fill_bytes(&mut self, dest: &mut [u8]) {
+        if let Err(err) = getrandom::getrandom(dest) {
+            panic!("os entropy unavailable: {err}");
+        }
+    }
+
+    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), rsa::rand_core::Error> {
+        getrandom::getrandom(dest).map_err(rsa::rand_core::Error::from)
+    }
+}
+
 pub fn generate_rsa(bits: usize) -> Result<RsaPrivateKey, Error> {
-    RsaPrivateKey::new(&mut rand::rngs::OsRng, bits).map_err(wrap)
+    RsaPrivateKey::new(&mut OsEntropy, bits).map_err(wrap)
 }
 
 pub fn private_key_matches_cert(key: &RsaPrivateKey, cert_pem: &str) -> Result<(), Error> {
