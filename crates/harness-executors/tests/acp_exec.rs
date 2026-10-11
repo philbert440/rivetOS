@@ -13,7 +13,7 @@ use acp::{
 };
 use harness_executors::*;
 use protocol::TaskVerdict;
-use support::{Tmp, map_env, write_exe};
+use support::{Tmp, map_env, script_runner, write_exe};
 
 struct RecordPolicy {
     kinds: Mutex<Vec<String>>,
@@ -705,10 +705,13 @@ async fn cancel_during_startup_kills_a_silent_child() {
         "#!/usr/bin/env bash\ntrap 'exit 0' TERM\ndir=$(dirname \"$0\")\nprintf '%s\\n' \"$$\" > \"$dir/ready.pid\"\nwhile true; do\n  sleep 0.1\ndone\n",
     );
     assert_eq!(binary, tmp.path("hang-acp"));
-    let mut executor =
-        AcpHarnessExecutor::command("grok-build", binary.display().to_string(), Vec::new());
+    let mut executor = AcpHarnessExecutor::command(
+        "grok-build",
+        script_runner().display().to_string(),
+        Vec::new(),
+    );
     executor.kill_grace = Duration::from_millis(200);
-    executor.env = Arc::new(map_env(&[]));
+    executor.env = Arc::new(map_env(&[("RR4D_SCRIPT", binary.to_str().unwrap())]));
     let handle = executor.start(TaskSpec::conformance("Say hello"), AbortFlag::new());
     let ready = tmp.path("ready.pid");
     let pid = tokio::time::timeout(Duration::from_secs(5), async {

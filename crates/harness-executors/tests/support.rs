@@ -1,9 +1,37 @@
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use harness_executors::MapEnv;
 
 static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+
+const SCRIPT_RUNNER_BODY: &str =
+    "#!/bin/bash\nexec \"${RR4D_INTERP:-/bin/bash}\" \"$RR4D_SCRIPT\" \"$@\"\n";
+
+static SCRIPT_RUNNER: OnceLock<PathBuf> = OnceLock::new();
+
+pub fn script_runner() -> PathBuf {
+    SCRIPT_RUNNER
+        .get_or_init(|| {
+            let path = std::env::temp_dir().join(format!("rr4d-runner-{}.sh", std::process::id()));
+            let stale = std::fs::read(&path)
+                .map(|bytes| bytes != SCRIPT_RUNNER_BODY.as_bytes())
+                .unwrap_or(true);
+            if stale {
+                let part =
+                    std::env::temp_dir().join(format!("rr4d-runner-{}.part", std::process::id()));
+                std::fs::write(&part, SCRIPT_RUNNER_BODY).unwrap();
+                let mut perms = std::fs::metadata(&part).unwrap().permissions();
+                use std::os::unix::fs::PermissionsExt;
+                perms.set_mode(0o755);
+                std::fs::set_permissions(&part, perms).unwrap();
+                std::fs::rename(&part, &path).unwrap();
+            }
+            path
+        })
+        .clone()
+}
 
 pub struct Tmp {
     pub dir: PathBuf,

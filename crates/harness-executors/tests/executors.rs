@@ -8,7 +8,7 @@ use std::time::Duration;
 use harness_executors::*;
 use protocol::{ArtifactKind, TaskVerdict};
 use serde_json::{Value, json};
-use support::{Tmp, map_env, write_exe};
+use support::{Tmp, map_env, script_runner, write_exe};
 
 const KIMI_SESSION: &str = "session_11111111-2222-3333-4444-555555555555";
 const PI_SESSION: &str = "00000000-0000-4000-8000-000000000030";
@@ -173,8 +173,11 @@ fn turn_ids(events: &[TaskEvent]) -> Vec<Option<String>> {
         .collect()
 }
 
-fn env_of() -> Arc<MapEnv> {
-    Arc::new(map_env(&[("RIVETOS_SESSION_KEY", "chat-20260809-dead")]))
+fn env_of(script: &Path) -> Arc<MapEnv> {
+    Arc::new(map_env(&[
+        ("RIVETOS_SESSION_KEY", "chat-20260809-dead"),
+        ("RR4D_SCRIPT", script.to_str().unwrap()),
+    ]))
 }
 
 fn spec_in(fake: &Fake, goal: &str) -> TaskSpec {
@@ -292,11 +295,11 @@ fn prepare_kimi(
         },
         &stdout,
     );
-    let mut executor = KimiCodeExecutor::new(fake.binary.display().to_string());
+    let mut executor = KimiCodeExecutor::new(script_runner().display().to_string());
     executor.cwd = Some(fake.cwd.display().to_string());
     executor.kimi_home = Some(fake.home.display().to_string());
     executor.kill_grace = Duration::from_millis(200);
-    executor.env = env_of();
+    executor.env = env_of(&fake.binary);
     (fake, executor)
 }
 
@@ -358,11 +361,11 @@ fn prepare_pi(
         },
         &stdout,
     );
-    let mut executor = PiExecutor::new(fake.binary.display().to_string());
+    let mut executor = PiExecutor::new(script_runner().display().to_string());
     executor.cwd = Some(fake.cwd.display().to_string());
     executor.pi_home = Some(fake.home.display().to_string());
     executor.kill_grace = Duration::from_millis(200);
-    executor.env = env_of();
+    executor.env = env_of(&fake.binary);
     (fake, executor)
 }
 
@@ -417,11 +420,11 @@ fn prepare_qwen(
         },
         &stdout,
     );
-    let mut executor = QwenCodeExecutor::new(fake.binary.display().to_string());
+    let mut executor = QwenCodeExecutor::new(script_runner().display().to_string());
     executor.cwd = Some(fake.cwd.display().to_string());
     executor.qwen_home = Some(fake.home.display().to_string());
     executor.kill_grace = Duration::from_millis(200);
-    executor.env = env_of();
+    executor.env = env_of(&fake.binary);
     (fake, executor)
 }
 
@@ -490,11 +493,11 @@ fn prepare_opencode(
         },
         &stdout,
     );
-    let mut executor = OpencodeExecutor::new(fake.binary.display().to_string());
+    let mut executor = OpencodeExecutor::new(script_runner().display().to_string());
     executor.cwd = Some(fake.cwd.display().to_string());
     executor.opencode_home = Some(fake.home.display().to_string());
     executor.kill_grace = Duration::from_millis(200);
-    executor.env = env_of();
+    executor.env = env_of(&fake.binary);
     (fake, executor)
 }
 

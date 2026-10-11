@@ -10,7 +10,7 @@ use harness_executors::*;
 use parking_lot::Mutex;
 use protocol::digest::sha256_hex;
 use protocol::{HARNESS_IDS, TaskVerdict};
-use support::{Tmp, map_env, write_exe};
+use support::{Tmp, map_env, script_runner, write_exe};
 
 fn path_env() -> std::collections::BTreeMap<String, String> {
     let mut env = std::collections::BTreeMap::new();
@@ -260,7 +260,7 @@ async fn install_registers_probe_failures_and_a_live_binary() {
     let mut bins = HarnessBinaries::default();
     let missing = "/nonexistent/rr4d-missing";
     bins.claude = missing.to_string();
-    bins.kimi = kimi.display().to_string();
+    bins.kimi = script_runner().display().to_string();
     bins.opencode = missing.to_string();
     bins.pi = missing.to_string();
     bins.qwen = missing.to_string();
@@ -269,7 +269,7 @@ async fn install_registers_probe_failures_and_a_live_binary() {
     bins.codex_acp = missing.to_string();
     bins.cursor = missing.to_string();
     let registry = create_executor_registry(None);
-    let env = Arc::new(map_env(&[]));
+    let env = Arc::new(map_env(&[("RR4D_SCRIPT", kimi.to_str().unwrap())]));
     install_headless_executors(&registry, env, &bins, &HeadlessConfig::default()).await;
     let kimi_exec = registry
         .resolve("harness-session", Some("kimi-code"))
@@ -827,9 +827,10 @@ async fn spawn_wait_exit_survives_signal_and_early_close() {
     let tmp = Tmp::new();
     let slow = write_exe(&tmp.dir, "slow", "#!/usr/bin/env bash\nexec sleep 60\n");
     let env = path_env();
+    let slow_args = vec![slow.to_str().unwrap().to_string()];
     let spawned = spawn_child(SpawnRequest {
-        binary: slow.to_str().unwrap(),
-        args: &[],
+        binary: "/bin/bash",
+        args: &slow_args,
         cwd: None,
         env: &env,
         stdin: StdinMode::Ignore,
@@ -841,9 +842,10 @@ async fn spawn_wait_exit_survives_signal_and_early_close() {
     spawned.kill();
     assert_eq!(spawned.wait_exit().await, None);
     let quick = write_exe(&tmp.dir, "quick", "#!/usr/bin/env bash\nexit 7\n");
+    let quick_args = vec![quick.to_str().unwrap().to_string()];
     let spawned = spawn_child(SpawnRequest {
-        binary: quick.to_str().unwrap(),
-        args: &[],
+        binary: "/bin/bash",
+        args: &quick_args,
         cwd: None,
         env: &env,
         stdin: StdinMode::PipeEof,
@@ -866,9 +868,10 @@ async fn stdout_capture_stops_on_a_utf8_boundary() {
         "#!/usr/bin/env bash\nline=$(printf '%.0s漢' {1..1000})\ni=0\nwhile [ \"$i\" -lt 30 ]; do\n  printf '%s\\n' \"$line\"\n  i=$((i+1))\ndone\n",
     );
     let env = path_env();
+    let wide_args = vec![binary.to_str().unwrap().to_string()];
     let mut spawned = spawn_child(SpawnRequest {
-        binary: binary.to_str().unwrap(),
-        args: &[],
+        binary: "/bin/bash",
+        args: &wide_args,
         cwd: None,
         env: &env,
         stdin: StdinMode::Ignore,
@@ -893,9 +896,10 @@ async fn spawn_records_the_clock_before_the_child_starts() {
         "#!/usr/bin/env bash\nprintf '%s\\n' \"$(date +%s%3N)\"\n",
     );
     let env = path_env();
+    let stamp_args = vec![binary.to_str().unwrap().to_string()];
     let mut spawned = spawn_child(SpawnRequest {
-        binary: binary.to_str().unwrap(),
-        args: &[],
+        binary: "/bin/bash",
+        args: &stamp_args,
         cwd: None,
         env: &env,
         stdin: StdinMode::Ignore,
@@ -925,7 +929,7 @@ async fn install_applies_non_default_config_to_a_resolved_kimi() {
     let mut bins = HarnessBinaries::default();
     let missing = "/nonexistent/rr4d-missing";
     bins.claude = missing.to_string();
-    bins.kimi = kimi.display().to_string();
+    bins.kimi = script_runner().display().to_string();
     bins.opencode = missing.to_string();
     bins.pi = missing.to_string();
     bins.qwen = missing.to_string();
@@ -945,7 +949,7 @@ async fn install_applies_non_default_config_to_a_resolved_kimi() {
     let registry = create_executor_registry(None);
     install_headless_executors(
         &registry,
-        Arc::new(map_env(&[])),
+        Arc::new(map_env(&[("RR4D_SCRIPT", kimi.to_str().unwrap())])),
         &bins,
         &HeadlessConfig {
             history: Some(history),
@@ -982,9 +986,8 @@ async fn install_applies_non_default_config_to_a_resolved_kimi() {
 async fn install_keeps_distinct_harness_defaults() {
     let tmp = Tmp::new();
     let record = "#!/usr/bin/env bash\nif [ \"$1\" = \"--version\" ]; then\n  exit 0\nfi\nout=\"$(dirname \"$0\")/recorded.txt\"\n{\n  printf 'pwd=%s\\n' \"$(pwd)\"\n  printf 'xdg=%s\\n' \"${XDG_DATA_HOME-}\"\n  printf 'kimi_home=%s\\n' \"${KIMI_CODE_HOME-}\"\n  printf 'effort=%s\\n' \"${KIMI_MODEL_THINKING_EFFORT-}\"\n  printf '%s\\n' \"$@\"\n} > \"$out\"\nprintf '%s\\n' '{\"role\":\"assistant\",\"content\":\"ok\"}'\nprintf '%s\\n' '{\"role\":\"meta\",\"type\":\"session.resume_hint\",\"session_id\":\"sess-installed\",\"command\":\"kimi -r sess-installed\"}'\nprintf '%s\\n' '{\"type\":\"text\",\"sessionID\":\"ses_oc\",\"text\":\"ok\"}'\nprintf '%s\\n' '{\"type\":\"session\",\"id\":\"pi-sess\"}'\nprintf '%s\\n' '{\"type\":\"agent_end\"}'\n";
-    let kimi = write_exe(&tmp.dir, "kimi", record);
-    let opencode = write_exe(&tmp.dir, "opencode", record);
-    let pi = write_exe(&tmp.dir, "pi", record);
+    let harness = write_exe(&tmp.dir, "harness", record);
+    let runner = script_runner().display().to_string();
     let kimi_cwd = tmp.path("kimi-work");
     let oc_cwd = tmp.path("oc-work");
     let workspace = tmp.path("shared-work");
@@ -999,9 +1002,9 @@ async fn install_keeps_distinct_harness_defaults() {
     let mut bins = HarnessBinaries::default();
     let missing = "/nonexistent/rr4d-missing";
     bins.claude = missing.to_string();
-    bins.kimi = kimi.display().to_string();
-    bins.opencode = opencode.display().to_string();
-    bins.pi = pi.display().to_string();
+    bins.kimi = runner.clone();
+    bins.opencode = runner.clone();
+    bins.pi = runner.clone();
     bins.qwen = missing.to_string();
     bins.grok = missing.to_string();
     bins.hermes = missing.to_string();
@@ -1019,7 +1022,7 @@ async fn install_keeps_distinct_harness_defaults() {
     let registry = create_executor_registry(None);
     install_headless_executors(
         &registry,
-        Arc::new(map_env(&[])),
+        Arc::new(map_env(&[("RR4D_SCRIPT", harness.to_str().unwrap())])),
         &bins,
         &HeadlessConfig {
             workspace: Some(workspace.display().to_string()),
@@ -1111,7 +1114,7 @@ async fn install_gives_acp_executors_cwd_and_history() {
     bins.opencode = missing.to_string();
     bins.pi = missing.to_string();
     bins.qwen = missing.to_string();
-    bins.grok = grok.display().to_string();
+    bins.grok = script_runner().display().to_string();
     bins.hermes = missing.to_string();
     bins.codex_acp = missing.to_string();
     bins.cursor = missing.to_string();
@@ -1127,7 +1130,10 @@ async fn install_gives_acp_executors_cwd_and_history() {
     let registry = create_executor_registry(None);
     install_headless_executors(
         &registry,
-        Arc::new(map_env(&[])),
+        Arc::new(map_env(&[
+            ("RR4D_SCRIPT", grok.to_str().unwrap()),
+            ("RR4D_INTERP", "/usr/bin/python3"),
+        ])),
         &bins,
         &HeadlessConfig {
             history: Some(history),
