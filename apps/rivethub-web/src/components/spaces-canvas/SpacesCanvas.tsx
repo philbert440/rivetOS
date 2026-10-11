@@ -19,7 +19,7 @@ import {
   type ReactNode,
 } from 'react'
 import * as Dialog from '@radix-ui/react-dialog'
-import { Keyboard, Pencil } from 'lucide-react'
+import { History as HistoryIcon, Keyboard, Pencil } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import type { HarnessDescriptor } from '@rivetos/types'
 import type { ChatItem } from '../../lib/harness-chat.js'
@@ -1147,7 +1147,6 @@ export function SpacesCanvas(props: {
   const crumbThread =
     rows.find((row) => row.key === (altitude === 'thread' ? openId : selectedId)) ??
     rows.find((row) => row.key === selectedId)
-  const zoomPct = Math.round(cam.z * 100)
   const paintMini = altitude === 'space' && cam.z >= LIVE_LO
   const selectedCanvas = placed.find((item) => item.row.key === selectedId)
   const openRow = openId !== undefined ? visibleRows.find((row) => row.key === openId) : undefined
@@ -1488,10 +1487,14 @@ export function SpacesCanvas(props: {
         <nav
           data-hud=""
           aria-label="Location"
-          className="pointer-events-auto absolute top-4 left-4 flex max-w-[60%] items-center gap-1 border border-line bg-panel px-1 py-1 text-sm text-ink-dim material:rounded-2xl material:border-line/40 material:shadow-pop"
+          className="pointer-events-auto absolute top-4 flex max-w-[60%] items-center gap-1 border border-line bg-panel px-1 py-1 text-sm text-ink-dim material:rounded-2xl material:border-line/40 material:shadow-pop"
+          // The breadcrumb is the altitude control, so it steps right of the
+          // History panel (w-60) instead of hiding under it.
+          style={{ left: historyOpen ? 'calc(15rem + 1rem)' : '1rem' }}
         >
           <button
             type="button"
+            data-crumb="everything"
             className="px-2 py-1 hover:text-ink"
             onClick={() => leaveTo('everything')}
           >
@@ -1502,6 +1505,7 @@ export function SpacesCanvas(props: {
               <span aria-hidden="true">›</span>
               <button
                 type="button"
+                data-crumb="space"
                 className="px-2 py-1 hover:text-ink"
                 onClick={() => {
                   if (framedRegionId !== undefined) setSpaceFocus(framedRegionId)
@@ -1519,66 +1523,53 @@ export function SpacesCanvas(props: {
             </>
           ) : null}
         </nav>
-        <nav
+        {/* Top right: History and the shortcuts dock. The breadcrumb is the
+            altitude control (Everything › space › thread), so there is no
+            separate zoom ladder. */}
+        <div
           data-hud=""
-          aria-label="Zoom level"
-          className="pointer-events-auto absolute top-1/2 right-4 flex -translate-y-1/2 flex-col gap-0.5 border border-line bg-panel p-1 material:rounded-2xl material:border-line/40 material:shadow-pop"
+          className="pointer-events-auto absolute top-4 right-4 flex items-center gap-2"
         >
-          {(
-            [
-              ['thread', 'Thread', 'one agent'],
-              ['space', 'Space', 'one part of life'],
-              ['everything', 'Everything', 'all agents'],
-            ] as const
-          ).map(([value, label, hint]) => (
-            <button
-              key={value}
-              type="button"
-              data-alt={value}
-              aria-pressed={altitude === value}
-              className={`flex flex-col items-start px-3 py-2 text-left ${
-                altitude === value ? 'bg-em/15 text-em' : 'text-ink-dim hover:text-ink'
-              }`}
-              onClick={() => {
-                if (value === 'thread') {
-                  if (selectedId) beginThread(selectedId)
-                  return
-                }
-                leaveTo(value)
-              }}
-            >
-              {label}
-              <small className="text-[10px] text-ink-dim">{hint}</small>
-            </button>
-          ))}
-          <div className="border-t border-line px-2 py-1 text-center text-[11px] text-ink-dim">
-            {zoomPct}%
-          </div>
-        </nav>
-        <button
-          type="button"
-          data-hud=""
-          data-dock-toggle=""
-          aria-expanded={dockOpen}
-          aria-label={dockOpen ? 'Hide shortcuts' : 'Show shortcuts'}
-          title={dockOpen ? 'Hide shortcuts' : 'Show shortcuts'}
-          className={`pointer-events-auto absolute right-2 bottom-2 flex items-center gap-1 border border-line bg-panel p-1.5 hover:bg-em/15 ${
-            dockOpen ? 'text-em' : 'text-ink-dim hover:text-ink'
-          }`}
-          onClick={() => setDockOpen((open) => !open)}
-        >
-          <Keyboard aria-hidden="true" className="size-4" />
-          {!dockOpen && needsCount > 0 ? (
-            <span data-dock-needs="" className="text-xs text-warn">
-              {needsCount}
-            </span>
-          ) : null}
-        </button>
+          <button
+            type="button"
+            data-hud-history=""
+            aria-pressed={historyWanted}
+            title={`History (${label('history')})`}
+            className={`flex h-9 items-center gap-1.5 border border-line bg-panel px-3 text-sm hover:bg-em/15 material:rounded-pill material:border-line/40 material:shadow-pop ${
+              historyWanted ? 'text-em' : 'text-ink-dim hover:text-ink'
+            }`}
+            onClick={() => {
+              if (pick) return
+              setHistoryWanted((open) => !open)
+            }}
+          >
+            <HistoryIcon aria-hidden="true" className="size-4" />
+            History
+          </button>
+          <button
+            type="button"
+            data-dock-toggle=""
+            aria-expanded={dockOpen}
+            aria-label={dockOpen ? 'Hide shortcuts' : 'Show shortcuts'}
+            title={dockOpen ? 'Hide shortcuts' : 'Show shortcuts'}
+            className={`flex h-9 items-center gap-1 border border-line bg-panel px-2.5 hover:bg-em/15 material:rounded-pill material:border-line/40 material:shadow-pop ${
+              dockOpen ? 'text-em' : 'text-ink-dim hover:text-ink'
+            }`}
+            onClick={() => setDockOpen((open) => !open)}
+          >
+            <Keyboard aria-hidden="true" className="size-4" />
+            {!dockOpen && needsCount > 0 ? (
+              <span data-dock-needs="" className="text-xs text-warn">
+                {needsCount}
+              </span>
+            ) : null}
+          </button>
+        </div>
         {dockOpen || findOpen || moveOpen ? (
           <div
             data-hud=""
             data-dock-bar=""
-            className="pointer-events-auto absolute right-2 bottom-11 flex max-h-[calc(100%-4rem)] flex-col items-stretch gap-0.5 overflow-y-auto border border-line bg-panel p-1 [&>button]:flex [&>button]:items-baseline [&>button]:gap-2 [&>button]:text-left material:rounded-2xl material:border-line/40 material:shadow-pop"
+            className="pointer-events-auto absolute top-15 right-4 flex max-h-[calc(100%-5rem)] flex-col items-stretch gap-0.5 overflow-y-auto border border-line bg-panel p-1 [&>button]:flex [&>button]:items-baseline [&>button]:gap-2 [&>button]:text-left material:rounded-2xl material:border-line/40 material:shadow-pop"
           >
             <button
               type="button"
@@ -1772,7 +1763,7 @@ export function SpacesCanvas(props: {
         {mruStep > 0 ? (
           <div
             data-mru=""
-            className="pointer-events-none absolute top-16 right-4 flex max-w-sm gap-1 border border-line bg-panel p-1 text-xs material:rounded-2xl material:border-line/40 material:shadow-pop"
+            className="pointer-events-none absolute right-4 bottom-4 flex max-w-sm gap-1 border border-line bg-panel p-1 text-xs material:rounded-2xl material:border-line/40 material:shadow-pop"
           >
             {mruShown.map((id) => (
               <span
