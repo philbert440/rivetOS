@@ -1,17 +1,30 @@
+pub mod banners;
 mod capture_client;
+mod context;
 mod cowork;
+mod embed_prep;
+pub mod embed_wire;
 mod error;
+mod expand;
 mod get_full;
 mod migrate;
+pub mod model_catalog;
 mod pgmigrate;
 mod postgres;
 mod project;
 mod report;
 mod routing;
+pub mod rows;
 mod schema_sql;
+pub mod scoring;
+pub mod search;
 mod slug;
+mod standard_helpers;
 mod store;
+pub mod tagger;
+pub mod tags;
 mod text;
+pub mod token_source;
 mod width;
 mod window;
 mod writers;
@@ -22,6 +35,10 @@ pub use capture_client::{
     checkout_capture, open_capture_pool, with_capture_client,
 };
 pub use error::{StoreError, now_ms};
+pub use expand::{
+    ExpandResult, ExpandedSummary, Expander, SourceMessage, SummaryNode, auto_expand_summaries,
+    expand_depth, substantive_source_messages,
+};
 pub use migrate::{
     MIGRATION_LOCK_BACKOFF_MS, MIGRATION_LOCK_TIMEOUT, MigrateClient, MigrateFault, MigrateRows,
     Migration, apply_migration, apply_session_guards, assert_lock_timeout, embedded_as_migrations,
@@ -33,6 +50,9 @@ pub use pgmigrate::{
 };
 pub use postgres::{PostgresMemory, capture_conversation_upsert_sql, capture_message_insert_sql};
 pub use routing::{RoutingMemory, StoreHandle, user_from_session_key};
+pub use search::{
+    EmbedCall, EmbedFetch, EmbedResponse, EngineOptions, FetchFail, SearchHit, SearchResults,
+};
 pub use store::{
     BrowseFilter, CaptureBatch, CaptureMessage, CaptureOptions, CaptureResult, HealthReport,
     HistoryMessage, IngestInput, IngestMessage, IngestOutput, MemoryEntry, MemoryStore,

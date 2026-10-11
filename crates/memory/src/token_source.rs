@@ -1,0 +1,514 @@
+use std::collections::BTreeMap;
+use std::future::Future;
+use std::pin::Pin;
+use std::process::Command;
+use std::sync::Arc;
+use std::time::Duration;
+
+use parking_lot::Mutex;
+use protocol::js::js_trim;
+use serde_json::Value;
+
+pub const DEFAULT_TOKEN_TTL_MS: i64 = 300_000;
+pub const DEFAULT_TOKEN_COMMAND_TIMEOUT_MS: i64 = 5_000;
+const TOKEN_COMMAND_MAX_BUFFER: usize = 64 * 1024;
+
+pub type CommandFut = Pin<Box<dyn Future<Output = Result<String, String>> + Send>>;
+pub type CommandRunner = Arc<dyn Fn(Vec<String>, i64) -> CommandFut + Send + Sync>;
+
+pub type Clock = Arc<dyn Fn() -> i64 + Send + Sync>;
+type InflightRx = tokio::sync::watch::Receiver<Option<Result<String, String>>>;
+
+enum MintStart {
+    Wait(tokio::sync::watch::Receiver<Option<Result<String, String>>>),
+    Lead(tokio::sync::watch::Sender<Option<Result<String, String>>>),
+}
+
+struct CacheEntry {
+    token: String,
+    expires_at: i64,
+}
+
+struct Inner {
+    argv: Vec<String>,
+    ttl_ms: i64,
+    timeout_ms: i64,
+    run: CommandRunner,
+    now: Clock,
+    cache: Mutex<Option<CacheEntry>>,
+    inflight: Mutex<Option<InflightRx>>,
+}
+
+#[derive(Clone)]
+pub struct TokenSource {
+    inner: Arc<Inner>,
+}
+
+pub fn parse_token_command_argv(raw: Option<&Value>) -> Result<Option<Vec<String>>, String> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    if raw.is_null() {
+        return Ok(None);
+    }
+    if raw.is_string() {
+        return Err("token_command must be an argv array (no shell string)".to_string());
+    }
+    let Some(items) = raw.as_array() else {
+        return Err("token_command argv entries must be non-empty strings".to_string());
+    };
+    if items.is_empty() {
+        return Err("token_command must be a non-empty argv array".to_string());
+    }
+    let mut argv = Vec::with_capacity(items.len());
+    for item in items {
+        match item.as_str() {
+            Some(text) if !text.is_empty() => argv.push(text.to_string()),
+            _ => {
+                return Err("token_command argv entries must be non-empty strings".to_string());
+            }
+        }
+    }
+    Ok(Some(argv))
+}
+
+impl TokenSource {
+    pub fn new(
+        argv: Vec<String>,
+        ttl_ms: Option<i64>,
+        timeout_ms: Option<i64>,
+        run: Option<CommandRunner>,
+        now: Option<Clock>,
+    ) -> Result<Self, String> {
+        if argv.is_empty() || argv.first().is_some_and(String::is_empty) {
+            return Err("token_command argv is empty".to_string());
+        }
+        Ok(Self {
+            inner: Arc::new(Inner {
+                argv,
+                ttl_ms: ttl_ms.unwrap_or(DEFAULT_TOKEN_TTL_MS),
+                timeout_ms: timeout_ms.unwrap_or(DEFAULT_TOKEN_COMMAND_TIMEOUT_MS),
+                run: run.unwrap_or_else(default_runner),
+                now: now.unwrap_or_else(|| Arc::new(crate::error::now_ms)),
+                cache: Mutex::new(None),
+                inflight: Mutex::new(None),
+            }),
+        })
+    }
+
+    pub async fn get_token(&self) -> Result<String, String> {
+        let now = (self.inner.now)();
+        if let Some(token) = self.cached_at(now) {
+            return Ok(token);
+        }
+        let start = {
+            let mut slot = self.inner.inflight.lock();
+            if let Some(token) = self.cached_at((self.inner.now)()) {
+                return Ok(token);
+            }
+            if let Some(rx) = slot.clone() {
+                MintStart::Wait(rx)
+            } else {
+                let (tx, rx) = tokio::sync::watch::channel(None);
+                *slot = Some(rx);
+                MintStart::Lead(tx)
+            }
+        };
+        match start {
+            MintStart::Lead(tx) => {
+                tokio::task::yield_now().await;
+                let minted = self.mint().await;
+                {
+                    let mut slot = self.inner.inflight.lock();
+                    *slot = None;
+                }
+                let _ = tx.send(Some(minted.clone()));
+                minted
+            }
+            MintStart::Wait(mut rx) => {
+                loop {
+                    if let Some(result) = rx.borrow().clone() {
+                        return result;
+                    }
+                    if rx.changed().await.is_err() {
+                        break;
+                    }
+                }
+                self.mint().await
+            }
+        }
+    }
+
+    pub fn get_cached_token(&self) -> Option<String> {
+        self.cached_at((self.inner.now)())
+    }
+
+    pub fn invalidate(&self, rejected: Option<&str>) {
+        let now = (self.inner.now)();
+        let mut cache = self.inner.cache.lock();
+        if let (Some(rejected), Some(entry)) = (rejected, cache.as_ref())
+            && entry.token != rejected
+            && now < entry.expires_at
+        {
+            return;
+        }
+        *cache = None;
+    }
+
+    pub async fn auth_headers(
+        &self,
+        extra: BTreeMap<String, String>,
+    ) -> Result<BTreeMap<String, String>, String> {
+        let token = self.get_token().await?;
+        let mut headers = extra;
+        headers.insert("Authorization".to_string(), format!("Bearer {token}"));
+        Ok(headers)
+    }
+
+    fn cached_at(&self, now: i64) -> Option<String> {
+        let cache = self.inner.cache.lock();
+        let entry = cache.as_ref()?;
+        if now < entry.expires_at {
+            Some(entry.token.clone())
+        } else {
+            None
+        }
+    }
+
+    async fn mint(&self) -> Result<String, String> {
+        let stdout = (self.inner.run)(self.inner.argv.clone(), self.inner.timeout_ms).await?;
+        let token = js_trim(&stdout).to_string();
+        if token.is_empty() {
+            return Err("token_command produced empty stdout".to_string());
+        }
+        if token.contains('\n') || token.contains('\r') {
+            return Err("token_command stdout must be a single line".to_string());
+        }
+        let now = (self.inner.now)();
+        *self.inner.cache.lock() = Some(CacheEntry {
+            token: token.clone(),
+            expires_at: now + self.inner.ttl_ms,
+        });
+        Ok(token)
+    }
+}
+
+fn default_runner() -> CommandRunner {
+    Arc::new(|argv, timeout_ms| {
+        Box::pin(async move {
+            let timeout = Duration::from_millis(timeout_ms.max(0) as u64);
+            let joined =
+                tokio::time::timeout(timeout, tokio::task::spawn_blocking(move || run_argv(argv)))
+                    .await;
+            match joined {
+                Err(_) => Err(format!("timed out after {timeout_ms} ms")),
+                Ok(Ok(result)) => result,
+                Ok(Err(err)) => Err(err.to_string()),
+            }
+        })
+    })
+}
+
+fn run_argv(argv: Vec<String>) -> Result<String, String> {
+    let Some(bin) = argv.first() else {
+        return Err("token_command argv is empty".to_string());
+    };
+    let output = Command::new(bin)
+        .args(argv.iter().skip(1))
+        .output()
+        .map_err(|err| err.to_string())?;
+    if !output.status.success() {
+        return Err(format!("token_command exited {}", output.status));
+    }
+    let bytes = if output.stdout.len() > TOKEN_COMMAND_MAX_BUFFER {
+        &output.stdout[..TOKEN_COMMAND_MAX_BUFFER]
+    } else {
+        &output.stdout
+    };
+    String::from_utf8(bytes.to_vec()).map_err(|err| err.to_string())
+}
+
+pub struct AuthorizedFetch {
+    source: TokenSource,
+    header_name: String,
+}
+
+impl AuthorizedFetch {
+    pub fn new(source: TokenSource, header_name: Option<&str>) -> Self {
+        Self {
+            source,
+            header_name: header_name.unwrap_or("Authorization").to_string(),
+        }
+    }
+
+    pub async fn execute<F, Fut>(
+        &self,
+        headers_of: F,
+    ) -> Result<(u16, Vec<(String, String)>), String>
+    where
+        F: Fn(Vec<(String, String)>) -> Fut,
+        Fut: Future<Output = u16>,
+    {
+        let token = self.source.get_token().await?;
+        let first_headers = self.apply(&token);
+        let status = headers_of(first_headers.clone()).await;
+        if status != 401 {
+            return Ok((status, first_headers));
+        }
+        self.source.invalidate(Some(token.as_str()));
+        let next = self.source.get_token().await?;
+        let next_headers = self.apply(&next);
+        let status = headers_of(next_headers.clone()).await;
+        Ok((status, next_headers))
+    }
+
+    fn apply(&self, token: &str) -> Vec<(String, String)> {
+        if self.header_name == "Authorization" {
+            vec![("Authorization".to_string(), format!("Bearer {token}"))]
+        } else {
+            vec![(self.header_name.clone(), token.to_string())]
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
+
+    fn runner_seq(prefix: &'static str) -> (CommandRunner, Arc<AtomicUsize>) {
+        let n = Arc::new(AtomicUsize::new(0));
+        let count = n.clone();
+        let run: CommandRunner = Arc::new(move |_argv, _timeout| {
+            let count = count.clone();
+            Box::pin(async move {
+                let next = count.fetch_add(1, Ordering::SeqCst) + 1;
+                Ok(format!("{prefix}{next}\n"))
+            })
+        });
+        (run, n)
+    }
+
+    #[test]
+    fn parses_argv() {
+        assert!(parse_token_command_argv(None).unwrap().is_none());
+        assert!(
+            parse_token_command_argv(Some(&Value::Null))
+                .unwrap()
+                .is_none()
+        );
+        let shell = parse_token_command_argv(Some(&Value::String("op read".into()))).unwrap_err();
+        assert!(shell.contains("argv array"));
+        let empty = parse_token_command_argv(Some(&Value::Array(vec![]))).unwrap_err();
+        assert!(empty.contains("non-empty"));
+        let blank = parse_token_command_argv(Some(&serde_json::json!(["ok", ""]))).unwrap_err();
+        assert!(blank.contains("non-empty strings"));
+        let bad = parse_token_command_argv(Some(&serde_json::json!(["ok", 1]))).unwrap_err();
+        assert!(bad.contains("non-empty strings"));
+        let ok = parse_token_command_argv(Some(&serde_json::json!(["/bin/helper", "--out"])))
+            .unwrap()
+            .unwrap();
+        assert_eq!(ok, vec!["/bin/helper".to_string(), "--out".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn mints_caches_and_expires() {
+        let now = Arc::new(AtomicI64::new(1_000));
+        let clock_now = now.clone();
+        let (run, calls) = runner_seq("token-");
+        let src = TokenSource::new(
+            vec!["helper".into()],
+            Some(100),
+            None,
+            Some(run),
+            Some(Arc::new(move || clock_now.load(Ordering::SeqCst))),
+        )
+        .unwrap();
+        assert_eq!(src.get_token().await.unwrap(), "token-1");
+        assert_eq!(src.get_token().await.unwrap(), "token-1");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(src.get_cached_token().as_deref(), Some("token-1"));
+        now.store(1_100, Ordering::SeqCst);
+        assert!(src.get_cached_token().is_none());
+        assert_eq!(src.get_token().await.unwrap(), "token-2");
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn invalidate_keeps_a_newer_mint() {
+        let (run, _) = runner_seq("t-");
+        let src = TokenSource::new(vec!["helper".into()], None, None, Some(run), None).unwrap();
+        assert_eq!(src.get_token().await.unwrap(), "t-1");
+        src.invalidate(Some("t-1"));
+        assert_eq!(src.get_token().await.unwrap(), "t-2");
+        src.invalidate(Some("t-1"));
+        assert_eq!(src.get_cached_token().as_deref(), Some("t-2"));
+        assert_eq!(src.get_token().await.unwrap(), "t-2");
+        src.invalidate(src.get_cached_token().as_deref());
+        assert!(src.get_cached_token().is_none());
+        assert_eq!(src.get_token().await.unwrap(), "t-3");
+    }
+
+    #[tokio::test]
+    async fn coalesces_concurrent_mints() {
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel::<()>();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+        let started_tx = Arc::new(Mutex::new(Some(started_tx)));
+        let release_rx = Arc::new(Mutex::new(Some(release_rx)));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let run: CommandRunner = {
+            let started_tx = started_tx.clone();
+            let release_rx = release_rx.clone();
+            let calls = calls.clone();
+            Arc::new(move |_argv, _timeout| {
+                let started_tx = started_tx.clone();
+                let release_rx = release_rx.clone();
+                let calls = calls.clone();
+                Box::pin(async move {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    if let Some(tx) = started_tx.lock().take() {
+                        let _ = tx.send(());
+                    }
+                    let rx = release_rx.lock().take();
+                    if let Some(rx) = rx {
+                        let _ = rx.await;
+                    }
+                    Ok("shared\n".to_string())
+                })
+            })
+        };
+        let src = TokenSource::new(vec!["helper".into()], None, None, Some(run), None).unwrap();
+        let left = src.clone();
+        let right = src.clone();
+        let a = tokio::spawn(async move { left.get_token().await });
+        let b = tokio::spawn(async move { right.get_token().await });
+        started_rx.await.unwrap();
+        tokio::task::yield_now().await;
+        release_tx.send(()).unwrap();
+        let (a, b) = tokio::join!(a, b);
+        assert_eq!(a.unwrap().unwrap(), "shared");
+        assert_eq!(b.unwrap().unwrap(), "shared");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn rejects_empty_and_multiline_stdout() {
+        let empty: CommandRunner = Arc::new(|_, _| Box::pin(async { Ok("   \n".to_string()) }));
+        let src = TokenSource::new(vec!["helper".into()], None, None, Some(empty), None).unwrap();
+        let err = src.get_token().await.unwrap_err();
+        assert!(err.contains("empty stdout"));
+        let multi: CommandRunner = Arc::new(|_, _| Box::pin(async { Ok("abc\nleak".to_string()) }));
+        let src = TokenSource::new(vec!["helper".into()], None, None, Some(multi), None).unwrap();
+        let err = src.get_token().await.unwrap_err();
+        assert!(err.contains("single line"));
+    }
+
+    #[tokio::test]
+    async fn auth_headers_set_bearer() {
+        let run: CommandRunner = Arc::new(|_, _| Box::pin(async { Ok("sekrit".to_string()) }));
+        let src = TokenSource::new(vec!["helper".into()], None, None, Some(run), None).unwrap();
+        let mut extra = BTreeMap::new();
+        extra.insert("Accept".into(), "application/json".into());
+        let headers = src.auth_headers(extra).await.unwrap();
+        assert_eq!(
+            headers.get("Accept").map(String::as_str),
+            Some("application/json")
+        );
+        assert_eq!(
+            headers.get("Authorization").map(String::as_str),
+            Some("Bearer sekrit")
+        );
+        assert_eq!(DEFAULT_TOKEN_TTL_MS, 300_000);
+    }
+
+    #[tokio::test]
+    async fn authorized_fetch_remints_once_on_401() {
+        let (run, calls) = runner_seq("tok-");
+        let src = TokenSource::new(vec!["helper".into()], None, None, Some(run), None).unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let fetch = AuthorizedFetch::new(src.clone(), None);
+        let seen_call = seen.clone();
+        let (status, _) = fetch
+            .execute(move |headers| {
+                let seen_call = seen_call.clone();
+                async move {
+                    let auth = headers
+                        .iter()
+                        .find(|(k, _)| k == "Authorization")
+                        .map(|(_, v)| v.clone());
+                    seen_call.lock().push(auth);
+                    if seen_call.lock().len() == 1 {
+                        401
+                    } else {
+                        200
+                    }
+                }
+            })
+            .await
+            .unwrap();
+        assert_eq!(status, 200);
+        assert_eq!(
+            seen.lock().clone(),
+            vec![
+                Some("Bearer tok-1".to_string()),
+                Some("Bearer tok-2".to_string())
+            ]
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn authorized_fetch_can_set_api_key_header() {
+        let run: CommandRunner = Arc::new(|_, _| Box::pin(async { Ok("anth-key".to_string()) }));
+        let src = TokenSource::new(vec!["helper".into()], None, None, Some(run), None).unwrap();
+        let fetch = AuthorizedFetch::new(src, Some("x-api-key"));
+        let (status, headers) = fetch
+            .execute(|headers| async move {
+                assert_eq!(
+                    headers
+                        .iter()
+                        .find(|(k, _)| k == "x-api-key")
+                        .map(|(_, v)| v.as_str()),
+                    Some("anth-key")
+                );
+                assert!(headers.iter().all(|(k, _)| k != "Authorization"));
+                let _ = headers;
+                200
+            })
+            .await
+            .unwrap();
+        assert_eq!(status, 200);
+        assert_eq!(headers[0].0, "x-api-key");
+    }
+
+    #[tokio::test]
+    async fn staggered_401_does_not_wipe_a_newer_mint() {
+        let (run, calls) = runner_seq("tok-");
+        let src = TokenSource::new(vec!["helper".into()], None, None, Some(run), None).unwrap();
+        let fetch = AuthorizedFetch::new(src.clone(), None);
+        let src_fetch = src.clone();
+        let (status, _) = fetch
+            .execute(move |headers| {
+                let src_fetch = src_fetch.clone();
+                async move {
+                    let auth = headers
+                        .iter()
+                        .find(|(k, _)| k == "Authorization")
+                        .map(|(_, v)| v.clone())
+                        .unwrap_or_default();
+                    if auth == "Bearer tok-1" {
+                        src_fetch.invalidate(Some("tok-1"));
+                        let _ = src_fetch.get_token().await;
+                        401
+                    } else {
+                        200
+                    }
+                }
+            })
+            .await
+            .unwrap();
+        assert_eq!(status, 200);
+        assert_eq!(src.get_cached_token().as_deref(), Some("tok-2"));
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+}

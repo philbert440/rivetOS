@@ -650,19 +650,22 @@ fn ingest(session_id: &str) -> IngestInput {
 #[tokio::test]
 async fn deferred_methods_do_not_open_a_database() {
     let pool = sqlx::postgres::PgPoolOptions::new()
-        .connect_lazy("postgres://127.0.0.1/rivetos_rr2a")
+        .acquire_timeout(std::time::Duration::from_millis(300))
+        .connect_lazy("postgres://127.0.0.1:1/rivetos_rr2b")
         .expect("lazy");
     let store = PostgresMemory::from_pool(pool, true);
     let err = store
         .search("q", &SearchOptions::default())
         .await
         .expect_err("search");
-    assert!(err.to_string().contains("search"));
+    assert!(err.to_string().contains("Failed"), "{err}");
+    assert!(err.to_string().contains("connect"), "{err}");
     let err = store
         .get_context_for_turn("q", "rivet", None)
         .await
         .expect_err("context");
-    assert!(err.to_string().contains("getContextForTurn"));
+    assert!(err.to_string().contains("Failed"), "{err}");
+    assert!(err.to_string().contains("connect"), "{err}");
     assert!(
         store
             .tags()

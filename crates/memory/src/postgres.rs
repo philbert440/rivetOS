@@ -9,7 +9,11 @@ use serde_json::{Map, Value};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{PgConnection, PgPool, Row};
 
+use crate::banners::memory_search_limit;
+use crate::context::get_context_for_turn;
 use crate::cowork::{CoworkHookRow, pick_cowork_hook_rewrite};
+use crate::embed_prep::clamp_embed_timeout_ms;
+use crate::embed_wire::parse_embed_wire_shape;
 use crate::error::{StoreError, now_ms};
 use crate::get_full::{
     extract_full_from_line, file_missing_message, is_capture_sqlite_path,
@@ -20,9 +24,13 @@ use crate::project::{ProjectHit, plan_project_rule_tag};
 use crate::report::{
     EMBEDDING_HEALTH_SQL, FULL_WINDOW, IDLE_MINUTES, MIN_BATCH_SIZE, OWNER_COLUMN_PROBE_SQL,
     QUEUE_HEALTH_SQL, QueueRow, STALE_MIN_BATCH, STALE_MINUTES, assemble_stats, browse_sql,
-    compaction_sql, embedding_probe_reason, en_us, fmt_date, fmt_queue_age, format_embedding_queue,
-    format_js_iso, format_queue_health, format_unsummarized, health_cached, history_limit,
-    is_missing_schema_code, time_since,
+    compaction_sql, en_us, fmt_date, fmt_queue_age, format_embedding_queue, format_js_iso,
+    format_queue_health, format_unsummarized, health_cached, history_limit, is_missing_schema_code,
+    time_since,
+};
+use crate::scoring::{LooseNumber, clamp_hnsw_ef_search};
+use crate::search::{
+    EngineConfig, EngineOptions, PoolDb, SearchEngine, SearchResults, store_error,
 };
 use crate::slug::{PROJECT_RULE_NAME, normalize_tag_key, normalize_tag_value};
 use crate::store::{
@@ -31,6 +39,7 @@ use crate::store::{
     SearchOptions, StatsReport, ToolDescriptor,
 };
 use crate::text::{capture_cap, ingest_event_id, resolve_memory_write_tags, truncate_content};
+use crate::token_source::{TokenSource, parse_token_command_argv};
 use crate::window::apply_window_args;
 use crate::writers::{append_result_value, prepare_append};
 
@@ -236,7 +245,8 @@ pub struct PostgresMemory {
     pool: PgPool,
     owns_pool: bool,
     user_id: Option<String>,
-    embed_endpoint: Option<String>,
+    engine: SearchEngine<PoolDb>,
+    wiki_available: AtomicBool,
     owner_column: AtomicBool,
     unique_index: AtomicBool,
     task_id_column: AtomicBool,
@@ -256,18 +266,18 @@ impl PostgresMemory {
             .await
             .map_err(connect_failed)?;
         let mut memory = Self::from_pool(pool, true);
-        if let Ok(endpoint) = std::env::var("RIVETOS_EMBED_URL") {
-            memory.embed_endpoint = Some(endpoint);
-        }
+        memory.apply_embed_env();
         Ok(memory)
     }
 
     pub fn from_pool(pool: PgPool, owns_pool: bool) -> Self {
+        let engine = SearchEngine::new(PoolDb::new(pool.clone()), EngineConfig::default());
         Self {
             pool,
             owns_pool,
             user_id: None,
-            embed_endpoint: None,
+            engine,
+            wiki_available: AtomicBool::new(true),
             owner_column: AtomicBool::new(false),
             unique_index: AtomicBool::new(false),
             task_id_column: AtomicBool::new(false),
@@ -283,9 +293,106 @@ impl PostgresMemory {
         self
     }
 
-    pub fn with_embed_endpoint(mut self, endpoint: impl Into<String>) -> Self {
-        self.embed_endpoint = Some(endpoint.into());
+    pub fn with_embed_endpoint(self, endpoint: impl Into<String>) -> Self {
+        self.engine.set_embed_endpoint(Some(endpoint.into()));
         self
+    }
+
+    pub async fn search_with(
+        &self,
+        query: &str,
+        options: &EngineOptions,
+    ) -> Result<SearchResults, StoreError> {
+        self.engine
+            .search(query, options)
+            .await
+            .map_err(store_error)
+    }
+
+    pub fn configure_embed(&self, endpoint: Option<String>, model: impl Into<String>) {
+        self.engine.set_embed_endpoint(endpoint);
+        self.engine.set_embed_model(model);
+    }
+
+    pub fn set_embed_fetch(&self, fetch: crate::search::EmbedFetch) {
+        self.engine.set_fetch(fetch);
+    }
+
+    pub fn expander(&self) -> crate::expand::Expander<PoolDb> {
+        crate::expand::Expander::new(self.engine.database().clone())
+    }
+
+    fn apply_embed_env(&mut self) {
+        if let Ok(endpoint) = std::env::var("RIVETOS_EMBED_URL") {
+            self.engine.set_embed_endpoint(Some(endpoint));
+        }
+        if let Ok(model) = std::env::var("RIVETOS_EMBED_MODEL") {
+            self.engine.set_embed_model(model);
+        }
+        if let Ok(instruction) = std::env::var("RIVETOS_EMBED_QUERY_INSTRUCTION") {
+            self.engine
+                .edit_config(|cfg| cfg.embed_query_instruction = instruction);
+        }
+        if let Ok(raw) = std::env::var("RIVETOS_EMBED_TIMEOUT_MS") {
+            let timeout = clamp_embed_timeout_ms(&LooseNumber::Text(raw));
+            self.engine
+                .edit_config(|cfg| cfg.embed_timeout_ms = timeout);
+        }
+        if let Ok(raw) = std::env::var("RIVETOS_HNSW_EF_SEARCH") {
+            let ef = clamp_hnsw_ef_search(&LooseNumber::Text(raw));
+            self.engine.edit_config(|cfg| cfg.hnsw_ef_search = ef);
+        }
+        if let Ok(key) = std::env::var("RIVETOS_EMBED_API_KEY") {
+            self.engine.edit_config(|cfg| cfg.embed_api_key = key);
+        }
+        if let Ok(raw) = std::env::var("RIVETOS_EMBED_EXPECTED_DIMS")
+            && let Ok(dims) = raw.trim().parse::<usize>()
+        {
+            self.engine
+                .edit_config(|cfg| cfg.embed_expected_dims = Some(dims));
+        }
+        if let Ok(raw) = std::env::var("RIVETOS_EMBED_WIRE_SHAPE") {
+            match parse_embed_wire_shape(Some(&raw)) {
+                Ok(shape) => self.engine.edit_config(|cfg| cfg.embed_wire_shape = shape),
+                Err(err) => tracing::warn!("memory.postgres.embed_wire_shape: {err}"),
+            }
+        }
+        if let Ok(raw) = std::env::var("RIVETOS_EMBED_TOKEN_COMMAND") {
+            self.install_token_command(&raw);
+        }
+    }
+
+    fn install_token_command(&self, raw: &str) {
+        let parsed = match serde_json::from_str::<Value>(raw) {
+            Ok(value) => parse_token_command_argv(Some(&value)),
+            Err(err) => {
+                tracing::warn!("memory.postgres embed_token_command: {err}");
+                return;
+            }
+        };
+        let argv = match parsed {
+            Ok(Some(argv)) => argv,
+            Ok(None) => return,
+            Err(err) => {
+                tracing::warn!("memory.postgres embed_token_command: {err}");
+                return;
+            }
+        };
+        let source = match TokenSource::new(argv, None, None, None, None) {
+            Ok(source) => source,
+            Err(err) => {
+                tracing::warn!("memory.postgres embed_token_command: {err}");
+                return;
+            }
+        };
+        let warmup = source.clone();
+        tokio::spawn(async move {
+            if let Err(err) = warmup.get_token().await {
+                tracing::warn!("memory.postgres embed_token_command mint failed: {err}");
+            }
+        });
+        self.engine
+            .edit_config(|cfg| cfg.embed_token_source = Some(source));
     }
 
     pub fn pool(&self) -> &PgPool {
@@ -1423,17 +1530,49 @@ impl MemoryStore for PostgresMemory {
         self.append_owned(entry).await
     }
 
-    async fn search(&self, _query: &str, _options: &SearchOptions) -> Result<Value, StoreError> {
-        Err(StoreError::NotYetImplemented("search"))
+    async fn search(&self, query: &str, options: &SearchOptions) -> Result<Value, StoreError> {
+        let engine_options = EngineOptions {
+            mode: Some("fts".to_string()),
+            scope: options.scope.clone().or_else(|| Some("both".to_string())),
+            limit: Some(memory_search_limit(options.limit)),
+            agent: options.agent.clone(),
+            tag: options.tag.clone(),
+            ..EngineOptions::default()
+        };
+        let results = self
+            .engine
+            .search(query, &engine_options)
+            .await
+            .map_err(store_error)?;
+        let mut hits = Vec::new();
+        for hit in results.hits {
+            let mut obj = Map::new();
+            obj.insert("id".to_string(), Value::String(hit.id));
+            obj.insert("content".to_string(), Value::String(hit.content));
+            obj.insert("role".to_string(), Value::String(hit.role));
+            obj.insert("agent".to_string(), Value::String(hit.agent));
+            obj.insert(
+                "relevanceScore".to_string(),
+                serde_json::to_value(protocol::JsNumber::from(hit.score)).unwrap_or(Value::Null),
+            );
+            obj.insert(
+                "createdAt".to_string(),
+                Value::String(format_js_iso(hit.created_at)),
+            );
+            hits.push(Value::Object(obj));
+        }
+        Ok(Value::Array(hits))
     }
 
     async fn get_context_for_turn(
         &self,
-        _query: &str,
-        _agent: &str,
+        query: &str,
+        agent: &str,
         _user_id: Option<&str>,
     ) -> Result<String, StoreError> {
-        Err(StoreError::NotYetImplemented("getContextForTurn"))
+        get_context_for_turn(&self.engine, &self.wiki_available, query, agent, 4000)
+            .await
+            .map_err(store_error)
     }
 
     async fn get_session_history(
@@ -1633,7 +1772,7 @@ impl MemoryStore for PostgresMemory {
     async fn health(&self, owner: bool) -> Result<HealthReport, StoreError> {
         let _ = self.is_healthy().await;
         let observed = format_js_iso(Utc::now());
-        let reason = embedding_probe_reason(self.embed_endpoint.as_deref());
+        let probe = self.engine.check_embedding_health().await;
         let counts = self.embedding_counts().await;
         let (msg_queue, sum_queue, unembeddable, failed, recent_failed, counts_ok) = match counts {
             Ok(row) => row,
@@ -1653,25 +1792,33 @@ impl MemoryStore for PostgresMemory {
         let recent_dead = queues
             .as_ref()
             .is_some_and(|rows| rows.iter().any(|row| row.recent_dead > 0));
-        let embedding_available = false;
+        let embedding_available = probe.available;
         let status = if counts_ok && embedding_available && recent_failed == 0 && !recent_dead {
             "ok"
         } else {
             "degraded"
         };
         let mut embeddings = Map::new();
-        embeddings.insert(
-            "status".to_string(),
-            Value::String("unavailable".to_string()),
-        );
-        embeddings.insert("checkedAt".to_string(), Value::String(observed.clone()));
-        embeddings.insert("error".to_string(), Value::String(reason.to_string()));
-        embeddings.insert(
-            "impact".to_string(),
-            Value::String(
-                "Keyword matching still works; meaning-based ranking is offline.".to_string(),
-            ),
-        );
+        if embedding_available {
+            embeddings.insert("status".to_string(), Value::String("ok".to_string()));
+            embeddings.insert("checkedAt".to_string(), Value::String(probe.checked_at));
+        } else {
+            embeddings.insert(
+                "status".to_string(),
+                Value::String("unavailable".to_string()),
+            );
+            embeddings.insert("checkedAt".to_string(), Value::String(probe.checked_at));
+            embeddings.insert(
+                "error".to_string(),
+                Value::String(probe.reason.unwrap_or_else(|| "unknown".to_string())),
+            );
+            embeddings.insert(
+                "impact".to_string(),
+                Value::String(
+                    "Keyword matching still works; meaning-based ranking is offline.".to_string(),
+                ),
+            );
+        }
         let mut body = Map::new();
         body.insert("status".to_string(), Value::String(status.to_string()));
         body.insert("observedAt".to_string(), Value::String(observed));

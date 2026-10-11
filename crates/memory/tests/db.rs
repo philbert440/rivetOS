@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
 use memory::{
-    CaptureBatch, CaptureMessage, CaptureOptions, MemoryStore, PostgresMemory, migrate_connection,
-    utf16_len, utf16_prefix,
+    CaptureBatch, CaptureMessage, CaptureOptions, EmbedCall, EmbedResponse, EngineOptions,
+    MemoryStore, PostgresMemory, ProjectChoice, migrate_connection, utf16_len, utf16_prefix,
 };
 use serde_json::{Map, Value, json};
 use sqlx::postgres::PgPoolOptions;
@@ -656,4 +656,233 @@ async fn fixture_capture_batches() {
         fixture_capture_batches_body,
     )
     .await;
+}
+
+fn capture_options() -> CaptureOptions {
+    CaptureOptions {
+        allow_filesystem: false,
+        owner_user_id: None,
+        project: ProjectChoice::Disabled,
+    }
+}
+
+fn captured(session_key: &str, role: &str, content: &str) -> CaptureBatch {
+    CaptureBatch {
+        session_key: session_key.to_string(),
+        agent: "ranker".to_string(),
+        channel: Some("test".to_string()),
+        title: None,
+        settings: None,
+        task_id: None,
+        finalize: false,
+        created_at: None,
+        updated_at: None,
+        messages: vec![CaptureMessage {
+            event_id: format!("{session_key}-{role}"),
+            role: role.to_string(),
+            content: content.to_string(),
+            tool_name: None,
+            tool_args: None,
+            tool_result: None,
+            metadata: None,
+            created_at: None,
+        }],
+    }
+}
+
+fn axis_literal(axis: usize) -> String {
+    let mut parts = Vec::with_capacity(1024);
+    for index in 0..1024 {
+        parts.push(if index == axis { "1" } else { "0" });
+    }
+    format!("[{}]", parts.join(","))
+}
+
+async fn ranking_orders_body(pool: PgPool) -> Result<(), String> {
+    let store = PostgresMemory::from_pool(pool.clone(), false);
+    let options = capture_options();
+    let assistant = format!("calpha{}", "c".repeat(994));
+    let user = format!("ualpha{}", "a".repeat(994));
+    let system = "balpha".to_string();
+    for (session, role, content) in [
+        ("rank-c", "assistant", assistant.as_str()),
+        ("rank-a", "user", user.as_str()),
+        ("rank-b", "system", system.as_str()),
+    ] {
+        MemoryStore::capture(&store, &captured(session, role, content), &options)
+            .await
+            .map_err(|err| format!("capture {session}: {err}"))?;
+    }
+    sqlx::query("UPDATE ros_messages SET created_at = NOW(), access_count = 25 WHERE content LIKE 'calpha%'")
+        .execute(&pool)
+        .await
+        .map_err(|err| format!("update c: {err}"))?;
+    sqlx::query(
+        "UPDATE ros_messages SET created_at = NOW(), access_count = 0 WHERE content LIKE 'ualpha%'",
+    )
+    .execute(&pool)
+    .await
+    .map_err(|err| format!("update a: {err}"))?;
+    sqlx::query("UPDATE ros_messages SET created_at = NOW() - interval '30 days', access_count = 0 WHERE content LIKE 'balpha%'")
+        .execute(&pool)
+        .await
+        .map_err(|err| format!("update b: {err}"))?;
+    let regex = store
+        .search_with(
+            "alpha",
+            &EngineOptions {
+                mode: Some("regex".to_string()),
+                scope: Some("messages".to_string()),
+                limit: Some(10),
+                ..EngineOptions::default()
+            },
+        )
+        .await
+        .map_err(|err| format!("regex search: {err}"))?;
+    let order: Vec<String> = regex
+        .hits
+        .iter()
+        .map(|hit| hit.content.chars().take(6).collect())
+        .collect();
+    if order != ["calpha", "ualpha", "balpha"] {
+        return Err(format!("regex order {order:?}"));
+    }
+    let short = "banana".to_string();
+    let long = format!("banana {}", "x".repeat(40));
+    MemoryStore::capture(&store, &captured("rank-short", "user", &short), &options)
+        .await
+        .map_err(|err| format!("capture short: {err}"))?;
+    MemoryStore::capture(&store, &captured("rank-long", "user", &long), &options)
+        .await
+        .map_err(|err| format!("capture long: {err}"))?;
+    let hybrid = store
+        .search_with(
+            "banana",
+            &EngineOptions {
+                mode: Some("hybrid".to_string()),
+                scope: Some("messages".to_string()),
+                limit: Some(10),
+                ..EngineOptions::default()
+            },
+        )
+        .await
+        .map_err(|err| format!("hybrid search: {err}"))?;
+    if hybrid.hits.iter().any(|hit| hit.content == "banana") {
+        return Err("hybrid quality floor kept the short banana row".to_string());
+    }
+    if !hybrid
+        .hits
+        .iter()
+        .any(|hit| hit.content.starts_with("banana "))
+    {
+        return Err("hybrid missed the long banana row".to_string());
+    }
+    MemoryStore::capture(&store, &captured("rank-kitten", "user", "kitten"), &options)
+        .await
+        .map_err(|err| format!("capture kitten: {err}"))?;
+    MemoryStore::capture(
+        &store,
+        &captured("rank-kittens", "user", "kittens"),
+        &options,
+    )
+    .await
+    .map_err(|err| format!("capture kittens: {err}"))?;
+    let trigram = store
+        .search_with(
+            "kitten",
+            &EngineOptions {
+                mode: Some("trigram".to_string()),
+                scope: Some("messages".to_string()),
+                limit: Some(10),
+                ..EngineOptions::default()
+            },
+        )
+        .await
+        .map_err(|err| format!("trigram search: {err}"))?;
+    if trigram.hits.first().map(|hit| hit.content.as_str()) != Some("kitten") {
+        return Err(format!(
+            "trigram order {:?}",
+            trigram
+                .hits
+                .iter()
+                .map(|hit| hit.content.clone())
+                .collect::<Vec<_>>()
+        ));
+    }
+    if !trigram.hits.iter().any(|hit| hit.content.len() < 40) {
+        return Err("explicit trigram dropped a short row".to_string());
+    }
+    MemoryStore::capture(
+        &store,
+        &captured("rank-vs", "system", "vsystem vectorneedle"),
+        &options,
+    )
+    .await
+    .map_err(|err| format!("capture vsystem: {err}"))?;
+    MemoryStore::capture(
+        &store,
+        &captured("rank-vu", "user", "vuser vectorneedle"),
+        &options,
+    )
+    .await
+    .map_err(|err| format!("capture vuser: {err}"))?;
+    sqlx::query("DROP INDEX IF EXISTS ros_messages_embedding_hnsw")
+        .execute(&pool)
+        .await
+        .map_err(|err| format!("drop hnsw: {err}"))?;
+    sqlx::query("UPDATE ros_messages SET created_at = NOW() - interval '30 days', access_count = 0, embedding = $1::halfvec(1024) WHERE content = 'vsystem vectorneedle'")
+        .bind(axis_literal(0))
+        .execute(&pool)
+        .await
+        .map_err(|err| format!("embed vsystem: {err}"))?;
+    sqlx::query("UPDATE ros_messages SET created_at = NOW(), access_count = 0, embedding = $1::halfvec(1024) WHERE content = 'vuser vectorneedle'")
+        .bind(axis_literal(1))
+        .execute(&pool)
+        .await
+        .map_err(|err| format!("embed vuser: {err}"))?;
+    let embedding = {
+        let mut values = vec![0.0; 1024];
+        values[0] = 1.0;
+        values
+    };
+    store.configure_embed(
+        Some("http://127.0.0.1:9".to_string()),
+        "text-embedding-3-small",
+    );
+    store.set_embed_fetch(std::sync::Arc::new(move |_call: EmbedCall| {
+        let body = serde_json::json!({ "data": [{ "embedding": embedding.clone(), "index": 0 }] })
+            .to_string();
+        Box::pin(async move { Ok(EmbedResponse { status: 200, body }) })
+            as std::pin::Pin<
+                Box<
+                    dyn std::future::Future<Output = Result<EmbedResponse, memory::FetchFail>>
+                        + Send,
+                >,
+            >
+    }));
+    let vector = store
+        .search_with(
+            "vectorneedle",
+            &EngineOptions {
+                mode: Some("vector".to_string()),
+                scope: Some("messages".to_string()),
+                limit: Some(10),
+                ..EngineOptions::default()
+            },
+        )
+        .await
+        .map_err(|err| format!("vector search: {err:?}"))?;
+    let vector_order: Vec<String> = vector.hits.iter().map(|hit| hit.content.clone()).collect();
+    if vector_order.first().map(String::as_str) != Some("vsystem vectorneedle") {
+        return Err(format!("vector order {vector_order:?}"));
+    }
+    if vector.hits.get(1).map(|hit| hit.content.as_str()) != Some("vuser vectorneedle") {
+        return Err(format!("vector second {vector_order:?}"));
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn ranking_orders() {
+    with_schema("ranking_orders", "rr2b_rank", ranking_orders_body).await;
 }
