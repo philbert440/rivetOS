@@ -86,7 +86,7 @@ pub struct TokenSource {
     timeout_ms: u64,
     now: Arc<dyn Fn() -> i64 + Send + Sync>,
     run: Runner,
-    inner: Mutex<TokenInner>,
+    inner: Arc<Mutex<TokenInner>>,
 }
 
 impl TokenSource {
@@ -119,75 +119,70 @@ impl TokenSource {
             timeout_ms,
             now: now.unwrap_or_else(|| Arc::new(now_ms)),
             run,
-            inner: Mutex::new(TokenInner {
+            inner: Arc::new(Mutex::new(TokenInner {
                 cache: None,
                 inflight: None,
-            }),
+            })),
         })
     }
 
     pub async fn get_token(&self) -> Result<String, TokenError> {
         let now = (self.now)();
-        let existing = {
-            let guard = lock(&self.inner);
+        let shared = {
+            let mut guard = lock(&self.inner);
             if let Some(cache) = &guard.cache
                 && now < cache.expires_at
             {
                 return Ok(cache.token.clone());
             }
-            guard.inflight.clone()
-        };
-        if let Some(inflight) = existing {
-            return inflight.await.map_err(TokenError);
-        }
-        let argv = self.argv.clone();
-        let timeout_ms = self.timeout_ms;
-        let ttl_ms = self.ttl_ms;
-        let now_fn = Arc::clone(&self.now);
-        let run = Arc::clone(&self.run);
-        let shared = {
-            let mut guard = lock(&self.inner);
-            if let Some(cache) = &guard.cache
-                && (self.now)() < cache.expires_at
-            {
-                return Ok(cache.token.clone());
-            }
             if let Some(inflight) = &guard.inflight {
-                Err(inflight.clone())
+                inflight.clone()
             } else {
+                let (tx, rx) = tokio::sync::oneshot::channel();
                 let fut: RunnerFuture = Box::pin(async move {
-                    let stdout = run(argv, timeout_ms).await?;
-                    let token = js_trim(&stdout).to_string();
-                    if token.is_empty() {
-                        return Err("token_command produced empty stdout".to_string());
+                    match rx.await {
+                        Ok(result) => result,
+                        Err(_) => Err("token_command failed (exit error)".to_string()),
                     }
-                    if token.contains('\n') || token.contains('\r') {
-                        return Err("token_command stdout must be a single line".to_string());
-                    }
-                    Ok(token)
                 });
                 let shared = fut.shared();
                 guard.inflight = Some(shared.clone());
-                Ok(shared)
-            }
-        };
-        let shared = match shared {
-            Ok(shared) => shared,
-            Err(inflight) => return inflight.await.map_err(TokenError),
-        };
-        let result = shared.await;
-        {
-            let mut guard = lock(&self.inner);
-            if let Ok(token) = &result {
-                let stamped = (now_fn)();
-                guard.cache = Some(CacheEntry {
-                    token: token.clone(),
-                    expires_at: stamped + ttl_ms,
+                let inner = Arc::clone(&self.inner);
+                let argv = self.argv.clone();
+                let timeout_ms = self.timeout_ms;
+                let ttl_ms = self.ttl_ms;
+                let now_fn = Arc::clone(&self.now);
+                let run = Arc::clone(&self.run);
+                tokio::spawn(async move {
+                    let result = async move {
+                        let stdout = run(argv, timeout_ms).await?;
+                        let token = js_trim(&stdout).to_string();
+                        if token.is_empty() {
+                            return Err("token_command produced empty stdout".to_string());
+                        }
+                        if token.contains('\n') || token.contains('\r') {
+                            return Err("token_command stdout must be a single line".to_string());
+                        }
+                        Ok(token)
+                    }
+                    .await;
+                    {
+                        let mut guard = lock(&inner);
+                        if let Ok(token) = &result {
+                            let stamped = (now_fn)();
+                            guard.cache = Some(CacheEntry {
+                                token: token.clone(),
+                                expires_at: stamped + ttl_ms,
+                            });
+                        }
+                        guard.inflight = None;
+                    }
+                    let _ = tx.send(result);
                 });
+                shared
             }
-            guard.inflight = None;
-        }
-        result.map_err(TokenError)
+        };
+        shared.await.map_err(TokenError)
     }
 
     pub fn get_cached_token(&self) -> Option<String> {
@@ -260,7 +255,8 @@ pub async fn default_run_command(
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .stdin(Stdio::null())
-        .kill_on_drop(true);
+        .kill_on_drop(false)
+        .process_group(0);
     if let Some(env) = env {
         command.env_clear();
         for (key, value) in env {
@@ -276,51 +272,120 @@ pub async fn default_run_command(
         format!("token_command failed (exit {code})")
     })?;
     let mut stdout = child.stdout.take();
-    let read = async {
-        let mut buf = Vec::new();
-        if let Some(pipe) = stdout.as_mut() {
-            let mut tmp = [0u8; 4096];
-            loop {
-                let n = pipe
-                    .read(&mut tmp)
-                    .await
-                    .map_err(|_| "token_command failed (exit error)".to_string())?;
-                if n == 0 {
-                    break;
-                }
-                if buf.len() + n > TOKEN_COMMAND_MAX_BUFFER {
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
+    let mut buf = Vec::new();
+    loop {
+        if tokio::time::Instant::now() >= deadline {
+            reap_token_child(&mut child).await;
+            return Err(format!("token_command timed out after {timeout_ms} ms"));
+        }
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let read = read_token_chunk(&mut stdout);
+        match tokio::time::timeout(remaining, read).await {
+            Err(_) => {
+                reap_token_child(&mut child).await;
+                return Err(format!("token_command timed out after {timeout_ms} ms"));
+            }
+            Ok(Err(_)) => {
+                reap_token_child(&mut child).await;
+                return Err("token_command failed (exit error)".to_string());
+            }
+            Ok(Ok(None)) => break,
+            Ok(Ok(Some(chunk))) => {
+                if buf.len() + chunk.len() > TOKEN_COMMAND_MAX_BUFFER {
+                    reap_token_child(&mut child).await;
                     return Err("token_command failed (exit error)".to_string());
                 }
-                buf.extend_from_slice(&tmp[..n]);
+                buf.extend_from_slice(&chunk);
             }
         }
-        String::from_utf8(buf).map_err(|_| "token_command failed (exit error)".to_string())
-    };
-    let timeout = Duration::from_millis(timeout_ms);
-    let output = tokio::time::timeout(timeout, read).await;
-    let status = child
-        .wait()
-        .await
-        .map_err(|_| "token_command failed (exit error)".to_string());
-    match output {
+    }
+    let text = match String::from_utf8(buf) {
+        Ok(text) => text,
         Err(_) => {
-            let _ = child.kill().await;
+            if matches!(
+                wait_token_child(&mut child, deadline).await,
+                TokenWait::Timeout
+            ) {
+                reap_token_child(&mut child).await;
+            }
+            return Err("token_command failed (exit error)".to_string());
+        }
+    };
+    match wait_token_child(&mut child, deadline).await {
+        TokenWait::Timeout => {
+            reap_token_child(&mut child).await;
             Err(format!("token_command timed out after {timeout_ms} ms"))
         }
-        Ok(Err(err)) => {
-            let _ = child.kill().await;
-            Err(err)
+        TokenWait::Io => Err("token_command failed (exit error)".to_string()),
+        TokenWait::Status(status) if status.success() => Ok(text),
+        TokenWait::Status(status) => {
+            let code = status
+                .code()
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "error".to_string());
+            Err(format!("token_command failed (exit {code})"))
         }
-        Ok(Ok(text)) => match status {
-            Ok(status) if status.success() => Ok(text),
-            Ok(status) => {
-                let code = status
-                    .code()
-                    .map(|code| code.to_string())
-                    .unwrap_or_else(|| "error".to_string());
-                Err(format!("token_command failed (exit {code})"))
-            }
-            Err(err) => Err(err),
-        },
     }
+}
+
+enum TokenWait {
+    Timeout,
+    Io,
+    Status(std::process::ExitStatus),
+}
+
+async fn read_token_chunk(
+    stdout: &mut Option<tokio::process::ChildStdout>,
+) -> Result<Option<Vec<u8>>, ()> {
+    let Some(pipe) = stdout.as_mut() else {
+        return Ok(None);
+    };
+    let mut tmp = [0u8; 4096];
+    match pipe.read(&mut tmp).await {
+        Ok(0) => Ok(None),
+        Ok(n) => Ok(Some(tmp[..n].to_vec())),
+        Err(_) => Err(()),
+    }
+}
+
+async fn wait_token_child(
+    child: &mut tokio::process::Child,
+    deadline: tokio::time::Instant,
+) -> TokenWait {
+    let now = tokio::time::Instant::now();
+    if now >= deadline {
+        return TokenWait::Timeout;
+    }
+    match tokio::time::timeout(deadline.saturating_duration_since(now), child.wait()).await {
+        Err(_) => TokenWait::Timeout,
+        Ok(Err(_)) => TokenWait::Io,
+        Ok(Ok(status)) => TokenWait::Status(status),
+    }
+}
+
+async fn reap_token_child(child: &mut tokio::process::Child) {
+    if let Some(pid) = child.id() {
+        let _ = tokio::task::spawn_blocking(move || signal_token_group(pid, "-TERM")).await;
+    }
+    match tokio::time::timeout(Duration::from_millis(3_000), child.wait()).await {
+        Ok(_) => {}
+        Err(_) => {
+            if let Some(pid) = child.id() {
+                let _ = tokio::task::spawn_blocking(move || signal_token_group(pid, "-KILL")).await;
+            }
+            let _ = child.wait().await;
+        }
+    }
+}
+
+fn signal_token_group(pid: u32, flag: &str) {
+    let _ = std::process::Command::new("/bin/kill")
+        .arg(flag)
+        .arg("--")
+        .arg(format!("-{pid}"))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
 }

@@ -7,7 +7,7 @@ use protocol::{LlmChunk, StreamEvent, ThinkingLevel};
 use serde_json::{Map, Value};
 
 use crate::error::ProviderError;
-use crate::jsonutil::{canonical_pair, parse_schema};
+use crate::jsonutil::canonical_parts;
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
@@ -34,21 +34,26 @@ pub struct ToolDef {
     pub name: String,
     pub description: String,
     pub parameters: Value,
+    pub parameters_raw: Option<String>,
 }
 
 pub fn echo_tool() -> ToolDef {
+    let (parameters, parameters_raw) = crate::jsonutil::parse_schema_parts(ECHO_SCHEMA);
     ToolDef {
         name: "echo".to_string(),
         description: ECHO_DESCRIPTION.to_string(),
-        parameters: parse_schema(ECHO_SCHEMA),
+        parameters,
+        parameters_raw,
     }
 }
 
 pub fn compact_tool() -> ToolDef {
+    let (parameters, parameters_raw) = crate::jsonutil::parse_schema_parts(COMPACT_SCHEMA);
     ToolDef {
         name: "compact_context".to_string(),
         description: COMPACT_DESCRIPTION.to_string(),
-        parameters: parse_schema(COMPACT_SCHEMA),
+        parameters,
+        parameters_raw,
     }
 }
 
@@ -65,13 +70,31 @@ pub struct ReplayTool {
     pub name: String,
     pub arguments_json: String,
     pub arguments: Value,
+    pub arguments_raw: Option<String>,
     pub thought_signature: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MediaKind {
+    Text,
+    Image,
+    Video,
+}
+
+#[derive(Debug, Clone)]
+pub struct MediaPart {
+    pub kind: MediaKind,
+    pub text: String,
+    pub url: Option<String>,
+    pub data: Option<String>,
+    pub mime: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 pub enum TurnMessage {
     User {
         text: String,
+        parts: Vec<MediaPart>,
     },
     Assistant {
         text: String,
@@ -84,6 +107,7 @@ pub enum TurnMessage {
         id: String,
         name: String,
         content: String,
+        parts: Vec<MediaPart>,
     },
     System {
         text: String,
@@ -109,6 +133,7 @@ impl ChatRequest {
             system: system.to_string(),
             messages: vec![TurnMessage::User {
                 text: user.to_string(),
+                parts: Vec::new(),
             }],
             tools: vec![echo_tool(), compact_tool()],
             thinking,
@@ -151,10 +176,15 @@ impl StepCapture {
         self.tools
             .iter()
             .map(|tool| {
-                let (arguments_json, arguments) = canonical_pair(&tool.raw_args);
+                let (arguments_json, arguments, raw) = canonical_parts(&tool.raw_args);
                 ReplayTool {
                     id: tool.id.clone(),
                     name: tool.name.clone(),
+                    arguments_raw: if raw {
+                        Some(arguments_json.clone())
+                    } else {
+                        None
+                    },
                     arguments_json,
                     arguments,
                     thought_signature: tool.thought_signature.clone(),

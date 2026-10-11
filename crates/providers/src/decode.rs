@@ -16,6 +16,7 @@ pub struct Decoder {
     ndjson: NdjsonParser,
     ids: Arc<IdGen>,
     state: State,
+    terminal: Option<crate::error::ProviderError>,
 }
 
 #[derive(Clone, Copy)]
@@ -58,6 +59,7 @@ impl Decoder {
                 anthropic_prompt: 0,
                 open_done: false,
             },
+            terminal: None,
         }
     }
 }
@@ -92,6 +94,10 @@ impl WireDecoder for Decoder {
             }
         }
         self.close_open_tools(chunks, cap);
+    }
+
+    fn take_error(&mut self) -> Option<crate::error::ProviderError> {
+        self.terminal.take()
     }
 }
 
@@ -130,12 +136,12 @@ impl Decoder {
         chunks: &mut Vec<LlmChunk>,
         cap: &mut StepCapture,
     ) {
-        let kind = if event.is_empty() {
+        let event_name = if event.is_empty() {
             str_field(value, "type")
         } else {
             event.to_string()
         };
-        match kind.as_str() {
+        match event_name.as_str() {
             "message_start" => {
                 if let Some(message) = value.get("message") {
                     let id = str_field(message, "id");
@@ -233,6 +239,36 @@ impl Decoder {
                     cap.completion_tokens = output;
                 }
                 cap.prompt_tokens = self.state.anthropic_prompt;
+            }
+            "error" | "overloaded" => {
+                let err_obj = value.get("error").unwrap_or(value);
+                let kind = str_field(err_obj, "type");
+                let message = str_field(err_obj, "message");
+                let status = match kind.as_str() {
+                    "overloaded_error" | "overloaded" => 529,
+                    "rate_limit_error" => 429,
+                    _ if event_name == "overloaded" => 529,
+                    _ => 0,
+                };
+                let detail = if message.is_empty() {
+                    if kind.is_empty() {
+                        "stream error".to_string()
+                    } else {
+                        kind
+                    }
+                } else {
+                    message
+                };
+                let status_text = if status == 0 {
+                    detail
+                } else {
+                    format!("Anthropic {status}: {detail}")
+                };
+                self.terminal = Some(crate::error::ProviderError::new(
+                    status_text,
+                    status,
+                    "anthropic",
+                ));
             }
             _ => {}
         }

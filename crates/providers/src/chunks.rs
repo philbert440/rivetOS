@@ -88,6 +88,17 @@ pub fn done_chunk(usage: LlmUsage, citations: &[String]) -> LlmChunk {
     }
 }
 
+pub fn status_chunk(delta: &str) -> LlmChunk {
+    LlmChunk {
+        r#type: LlmChunkType::Status,
+        delta: Some(delta.to_string()),
+        tool_call: None,
+        usage: None,
+        citations: None,
+        error: None,
+    }
+}
+
 pub fn usage(
     prompt: u64,
     completion: u64,

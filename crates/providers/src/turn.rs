@@ -20,6 +20,7 @@ pub async fn run_agent_turn(
     let tools = with_compact(vec![crate::types::echo_tool()]);
     let mut messages = vec![TurnMessage::User {
         text: "Say hi.".to_string(),
+        parts: Vec::new(),
     }];
     let mut chunks = Vec::new();
     let mut events = Vec::new();
@@ -78,7 +79,12 @@ pub async fn run_agent_turn(
             tool_calls: replay,
         });
         for (id, name, content) in results {
-            messages.push(TurnMessage::ToolResult { id, name, content });
+            messages.push(TurnMessage::ToolResult {
+                id,
+                name,
+                content,
+                parts: Vec::new(),
+            });
         }
     }
     Ok(TurnOutput { chunks, events })

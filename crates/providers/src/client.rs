@@ -16,15 +16,15 @@ use crate::http::{
 };
 use crate::jsonutil::{
     IdGen, encode_path_segment, encode_query, gemini_schema, is_claude_4, join_url, json_number,
-    map_xai_reasoning_effort, splice_video_urls, thinking_name,
+    map_xai_reasoning_effort, raw_marker, splice_video_urls, thinking_name,
 };
 use crate::token::{
     ParsedArgv, TokenCommandInput, TokenEntry, TokenSource, parse_token_command_argv,
 };
 use crate::types::{
-    BoxFuture, ChatRequest, ChatStream, PROBE_TIMEOUT, Provider, ReplayTool, TURN_TIMEOUT_MS,
-    ToolDef, TurnMessage, UA_ANTHROPIC, UA_GOOGLE, UA_OLLAMA, UA_OPENAI, UA_PROBE, UA_XAI,
-    XAI_TIMEOUT_MS, lock,
+    BoxFuture, ChatRequest, ChatStream, MediaKind, MediaPart, PROBE_TIMEOUT, Provider, ReplayTool,
+    TURN_TIMEOUT_MS, ToolDef, TurnMessage, UA_ANTHROPIC, UA_GOOGLE, UA_OLLAMA, UA_OPENAI, UA_PROBE,
+    UA_XAI, XAI_TIMEOUT_MS, lock,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -50,8 +50,7 @@ pub struct HttpProvider {
     context: Mutex<u64>,
     context_pinned: Mutex<bool>,
     max_output: u64,
-    temperature: Value,
-    top_p: Value,
+    sampling: Sampling,
     probe_models: bool,
     model_pinned: bool,
     discovered: AtomicBool,
@@ -94,6 +93,67 @@ pub struct ManifestConfig {
     pub models: Option<Vec<String>>,
     pub models_ttl_ms: Option<i64>,
     pub verify_model_on_init: bool,
+    pub temperature: Option<f64>,
+    pub top_p: Option<f64>,
+    pub top_k: Option<i64>,
+    pub min_p: Option<f64>,
+    pub presence_penalty: Option<f64>,
+    pub frequency_penalty: Option<f64>,
+    pub repetition_penalty: Option<f64>,
+    pub min_tokens: Option<u64>,
+    pub seed: Option<i64>,
+    pub stop: Option<Value>,
+    pub tool_choice: Option<String>,
+    pub chat_template_kwargs: Option<Map<String, Value>>,
+    pub mm_processor_kwargs: Option<Value>,
+    pub extra_body: Option<Map<String, Value>>,
+}
+
+struct Sampling {
+    temperature: Value,
+    top_p: Value,
+    top_k: Option<Value>,
+    min_p: Option<Value>,
+    presence_penalty: Option<Value>,
+    frequency_penalty: Option<Value>,
+    repetition_penalty: Option<Value>,
+    min_tokens: Option<Value>,
+    seed: Option<Value>,
+    stop: Option<Value>,
+    tool_choice: Option<String>,
+    chat_template_kwargs: Map<String, Value>,
+    mm_processor_kwargs: Option<Value>,
+}
+
+fn number_value(value: f64) -> Value {
+    match serde_json::Number::from_f64(value) {
+        Some(number) => Value::Number(number),
+        None => Value::from(0),
+    }
+}
+
+fn apply_sampling(config: &ManifestConfig) -> Sampling {
+    Sampling {
+        temperature: config
+            .temperature
+            .map(number_value)
+            .unwrap_or_else(|| json_number("0.7")),
+        top_p: config
+            .top_p
+            .map(number_value)
+            .unwrap_or_else(|| json_number("0.95")),
+        top_k: config.top_k.map(Value::from),
+        min_p: config.min_p.map(number_value),
+        presence_penalty: config.presence_penalty.map(number_value),
+        frequency_penalty: config.frequency_penalty.map(number_value),
+        repetition_penalty: config.repetition_penalty.map(number_value),
+        min_tokens: config.min_tokens.map(Value::from),
+        seed: config.seed.map(Value::from),
+        stop: config.stop.clone(),
+        tool_choice: config.tool_choice.clone(),
+        chat_template_kwargs: config.chat_template_kwargs.clone().unwrap_or_default(),
+        mm_processor_kwargs: config.mm_processor_kwargs.clone(),
+    }
 }
 
 impl HttpProvider {
@@ -272,7 +332,7 @@ impl HttpProvider {
             *lock(&provider.context) = window;
             *lock(&provider.context_pinned) = true;
         }
-        if let Some(effort) = config.reasoning_effort {
+        if let Some(effort) = config.reasoning_effort.clone() {
             *lock(&provider.reasoning_effort) = Some(effort);
         }
         let max_output = config.max_output_tokens.unwrap_or(provider.max_output);
@@ -285,8 +345,15 @@ impl HttpProvider {
             probe_models,
             max_output,
             verify_model: config.verify_model_on_init,
+            sampling: apply_sampling(&config),
             ..provider
         };
+        if let Some(extra) = config.extra_body.clone() {
+            let mut slot = lock(&provider.extras);
+            for (key, value) in extra {
+                slot.entry(key).or_insert(value);
+            }
+        }
         *lock(provider.api_prefix.as_ref()) = if kind == Wire::Vllm {
             normalize_api_prefix(config.api_prefix.as_deref())
         } else {
@@ -353,8 +420,21 @@ impl HttpProvider {
             context: Mutex::new(0),
             context_pinned: Mutex::new(false),
             max_output: default_max_output(wire),
-            temperature: json_number("0.7"),
-            top_p: json_number("0.95"),
+            sampling: Sampling {
+                temperature: json_number("0.7"),
+                top_p: json_number("0.95"),
+                top_k: None,
+                min_p: None,
+                presence_penalty: None,
+                frequency_penalty: None,
+                repetition_penalty: None,
+                min_tokens: None,
+                seed: None,
+                stop: None,
+                tool_choice: None,
+                chat_template_kwargs: Map::new(),
+                mm_processor_kwargs: None,
+            },
             probe_models: true,
             model_pinned: pinned,
             discovered: AtomicBool::new(false),
@@ -731,7 +811,7 @@ impl HttpProvider {
                 Ok(ProbeTarget {
                     method: Method::POST,
                     url: join_url(&self.root(), "v1/messages"),
-                    body: Some(to_bytes(&body)?),
+                    body: Some(to_bytes(&body, &[])?),
                     query_token: None,
                 })
             }
@@ -909,11 +989,11 @@ impl HttpProvider {
                 "anthropic",
             ));
         }
-        let mut body = chat_body(self, &request, &model);
+        let (mut body, raws) = chat_body(self, &request, &model);
         if self.wire == Wire::Vllm {
             splice_video_urls(&mut body);
         }
-        let bytes = to_bytes(&body)?;
+        let bytes = to_bytes(&body, &raws)?;
         let auth = self.auth(false).await?;
         let headers = self.chat_headers(&request, auth.clone());
         let timeout = self.chat_timeout(request.timeout);
@@ -1391,26 +1471,30 @@ fn replace_auth(headers: &mut Vec<(String, String)>, auth: &(String, String, Opt
     }
 }
 
-fn to_bytes(value: &Value) -> Result<Vec<u8>, ProviderError> {
-    serde_json::to_vec(value).map_err(|err| ProviderError::new(err.to_string(), 0, "providers"))
+fn to_bytes(value: &Value, raws: &[String]) -> Result<Vec<u8>, ProviderError> {
+    let bytes = serde_json::to_vec(value)
+        .map_err(|err| ProviderError::new(err.to_string(), 0, "providers"))?;
+    Ok(crate::jsonutil::splice_raw_json(bytes, raws))
 }
 
 fn obj(pairs: Vec<(&str, Value)>) -> Value {
     crate::jsonutil::obj(pairs)
 }
 
-fn chat_body(provider: &HttpProvider, request: &ChatRequest, model: &str) -> Value {
-    match provider.wire {
-        Wire::Anthropic => anthropic_body(request, model),
-        Wire::Xai => xai_body(provider, request, model),
-        Wire::Google => google_body(request, model),
-        Wire::Vllm => openai_body(provider, request, model, true),
-        Wire::Llama => openai_body(provider, request, model, false),
-        Wire::Ollama => ollama_body(provider, request, model),
-    }
+fn chat_body(provider: &HttpProvider, request: &ChatRequest, model: &str) -> (Value, Vec<String>) {
+    let mut raws = Vec::new();
+    let body = match provider.wire {
+        Wire::Anthropic => anthropic_body(request, model, &mut raws),
+        Wire::Xai => xai_body(provider, request, model, &mut raws),
+        Wire::Google => google_body(request, model, &mut raws),
+        Wire::Vllm => openai_body(provider, request, model, true, &mut raws),
+        Wire::Llama => openai_body(provider, request, model, false, &mut raws),
+        Wire::Ollama => ollama_body(provider, request, model, &mut raws),
+    };
+    (body, raws)
 }
 
-fn anthropic_body(request: &ChatRequest, model: &str) -> Value {
+fn anthropic_body(request: &ChatRequest, model: &str, raws: &mut Vec<String>) -> Value {
     let mut map = Map::new();
     map.insert("model".to_string(), Value::from(model));
     map.insert(
@@ -1453,9 +1537,9 @@ fn anthropic_body(request: &ChatRequest, model: &str) -> Value {
             ])]),
         );
     }
-    map.insert("messages".to_string(), anthropic_messages(request));
+    map.insert("messages".to_string(), anthropic_messages(request, raws));
     if !request.tools.is_empty() {
-        map.insert("tools".to_string(), anthropic_tools(&request.tools));
+        map.insert("tools".to_string(), anthropic_tools(&request.tools, raws));
         map.insert(
             "tool_choice".to_string(),
             obj(vec![("type", Value::from("auto"))]),
@@ -1482,7 +1566,7 @@ fn anthropic_budget(level: ThinkingLevel) -> Option<u64> {
     }
 }
 
-fn anthropic_messages(request: &ChatRequest) -> Value {
+fn anthropic_messages(request: &ChatRequest, raws: &mut Vec<String>) -> Value {
     let mut out = Vec::new();
     let mut pending_results: Vec<&TurnMessage> = Vec::new();
     let flush = |out: &mut Vec<Value>, pending: &mut Vec<&TurnMessage>| {
@@ -1491,11 +1575,14 @@ fn anthropic_messages(request: &ChatRequest) -> Value {
         }
         let mut blocks = Vec::new();
         for message in pending.drain(..) {
-            if let TurnMessage::ToolResult { id, content, .. } = message {
+            if let TurnMessage::ToolResult {
+                id, content, parts, ..
+            } = message
+            {
                 blocks.push(obj(vec![
                     ("type", Value::from("tool_result")),
                     ("tool_use_id", Value::from(id.clone())),
-                    ("content", Value::from(content.clone())),
+                    ("content", Value::from(tool_result_text(content, parts))),
                 ]));
             }
         }
@@ -1506,7 +1593,7 @@ fn anthropic_messages(request: &ChatRequest) -> Value {
     };
     for message in &request.messages {
         match message {
-            TurnMessage::System { text } | TurnMessage::User { text } => {
+            TurnMessage::System { text } => {
                 flush(&mut out, &mut pending_results);
                 out.push(obj(vec![
                     ("role", Value::from("user")),
@@ -1517,6 +1604,13 @@ fn anthropic_messages(request: &ChatRequest) -> Value {
                             ("text", Value::from(text.clone())),
                         ])]),
                     ),
+                ]));
+            }
+            TurnMessage::User { text, parts } => {
+                flush(&mut out, &mut pending_results);
+                out.push(obj(vec![
+                    ("role", Value::from("user")),
+                    ("content", anthropic_user_content(text, parts)),
                 ]));
             }
             TurnMessage::Assistant {
@@ -1548,7 +1642,7 @@ fn anthropic_messages(request: &ChatRequest) -> Value {
                         ("type", Value::from("tool_use")),
                         ("id", Value::from(tool.id.clone())),
                         ("name", Value::from(tool.name.clone())),
-                        ("input", tool.arguments.clone()),
+                        ("input", argument_value(tool, raws)),
                     ]));
                 }
                 out.push(obj(vec![
@@ -1563,7 +1657,7 @@ fn anthropic_messages(request: &ChatRequest) -> Value {
     Value::Array(out)
 }
 
-fn anthropic_tools(tools: &[ToolDef]) -> Value {
+fn anthropic_tools(tools: &[ToolDef], raws: &mut Vec<String>) -> Value {
     Value::Array(
         tools
             .iter()
@@ -1571,7 +1665,7 @@ fn anthropic_tools(tools: &[ToolDef]) -> Value {
                 obj(vec![
                     ("name", Value::from(tool.name.clone())),
                     ("description", Value::from(tool.description.clone())),
-                    ("input_schema", tool.parameters.clone()),
+                    ("input_schema", schema_value(tool, raws)),
                     ("eager_input_streaming", Value::Bool(true)),
                 ])
             })
@@ -1579,10 +1673,15 @@ fn anthropic_tools(tools: &[ToolDef]) -> Value {
     )
 }
 
-fn xai_body(provider: &HttpProvider, request: &ChatRequest, model: &str) -> Value {
+fn xai_body(
+    provider: &HttpProvider,
+    request: &ChatRequest,
+    model: &str,
+    raws: &mut Vec<String>,
+) -> Value {
     let mut map = Map::new();
     map.insert("model".to_string(), Value::from(model));
-    if request.contains_images {
+    if request.contains_images || request.messages.iter().any(message_has_visual) {
         map.insert("store".to_string(), Value::Bool(false));
     }
     map.insert("input".to_string(), xai_input(request));
@@ -1591,7 +1690,10 @@ fn xai_body(provider: &HttpProvider, request: &ChatRequest, model: &str) -> Valu
         || provider.x_search
         || provider.code_execution
     {
-        map.insert("tools".to_string(), xai_tools(provider, &request.tools));
+        map.insert(
+            "tools".to_string(),
+            xai_tools(provider, &request.tools, raws),
+        );
         map.insert("tool_choice".to_string(), Value::from("auto"));
     }
     let configured = lock(&provider.reasoning_effort);
@@ -1617,7 +1719,7 @@ fn xai_input(request: &ChatRequest) -> Value {
     }
     for message in &request.messages {
         match message {
-            TurnMessage::System { text } | TurnMessage::User { text } => {
+            TurnMessage::System { text } => {
                 input.push(obj(vec![
                     ("role", Value::from("user")),
                     (
@@ -1627,6 +1729,12 @@ fn xai_input(request: &ChatRequest) -> Value {
                             ("text", Value::from(text.clone())),
                         ])]),
                     ),
+                ]));
+            }
+            TurnMessage::User { text, parts } => {
+                input.push(obj(vec![
+                    ("role", Value::from("user")),
+                    ("content", xai_user_content(text, parts)),
                 ]));
             }
             TurnMessage::Assistant {
@@ -1675,11 +1783,13 @@ fn xai_input(request: &ChatRequest) -> Value {
                     ]));
                 }
             }
-            TurnMessage::ToolResult { id, content, .. } => {
+            TurnMessage::ToolResult {
+                id, content, parts, ..
+            } => {
                 input.push(obj(vec![
                     ("type", Value::from("function_call_output")),
                     ("call_id", Value::from(id.clone())),
-                    ("output", Value::from(content.clone())),
+                    ("output", Value::from(tool_result_text(content, parts))),
                 ]));
             }
         }
@@ -1687,7 +1797,7 @@ fn xai_input(request: &ChatRequest) -> Value {
     Value::Array(input)
 }
 
-fn xai_tools(provider: &HttpProvider, tools: &[ToolDef]) -> Value {
+fn xai_tools(provider: &HttpProvider, tools: &[ToolDef], raws: &mut Vec<String>) -> Value {
     let mut out: Vec<Value> = tools
         .iter()
         .map(|tool| {
@@ -1695,7 +1805,7 @@ fn xai_tools(provider: &HttpProvider, tools: &[ToolDef]) -> Value {
                 ("type", Value::from("function")),
                 ("name", Value::from(tool.name.clone())),
                 ("description", Value::from(tool.description.clone())),
-                ("parameters", tool.parameters.clone()),
+                ("parameters", schema_value(tool, raws)),
             ])
         })
         .collect();
@@ -1711,13 +1821,13 @@ fn xai_tools(provider: &HttpProvider, tools: &[ToolDef]) -> Value {
     Value::Array(out)
 }
 
-fn google_body(request: &ChatRequest, _model: &str) -> Value {
+fn google_body(request: &ChatRequest, _model: &str, raws: &mut Vec<String>) -> Value {
     let mut map = Map::new();
     map.insert(
         "generationConfig".to_string(),
         google_generation(request.thinking),
     );
-    map.insert("contents".to_string(), google_contents(request));
+    map.insert("contents".to_string(), google_contents(request, raws));
     if !request.system.is_empty() {
         map.insert(
             "systemInstruction".to_string(),
@@ -1743,7 +1853,7 @@ fn google_body(request: &ChatRequest, _model: &str) -> Value {
                             obj(vec![
                                 ("name", Value::from(tool.name.clone())),
                                 ("description", Value::from(tool.description.clone())),
-                                ("parameters", gemini_schema(&tool.parameters)),
+                                ("parameters", gemini_schema(&schema_value(tool, raws))),
                             ])
                         })
                         .collect(),
@@ -1783,7 +1893,7 @@ fn google_budget(level: ThinkingLevel) -> Option<u64> {
     }
 }
 
-fn google_contents(request: &ChatRequest) -> Value {
+fn google_contents(request: &ChatRequest, raws: &mut Vec<String>) -> Value {
     let mut out = Vec::new();
     let mut pending: Vec<&TurnMessage> = Vec::new();
     let flush = |out: &mut Vec<Value>, pending: &mut Vec<&TurnMessage>| {
@@ -1792,7 +1902,13 @@ fn google_contents(request: &ChatRequest) -> Value {
         }
         let mut parts = Vec::new();
         for message in pending.drain(..) {
-            if let TurnMessage::ToolResult { id, name, content } = message {
+            if let TurnMessage::ToolResult {
+                id,
+                name,
+                content,
+                parts: media,
+            } = message
+            {
                 parts.push(obj(vec![(
                     "functionResponse",
                     obj(vec![
@@ -1802,7 +1918,7 @@ fn google_contents(request: &ChatRequest) -> Value {
                             "response",
                             obj(vec![
                                 ("name", Value::from(name.clone())),
-                                ("content", Value::from(content.clone())),
+                                ("content", Value::from(tool_result_text(content, media))),
                             ]),
                         ),
                     ]),
@@ -1816,7 +1932,7 @@ fn google_contents(request: &ChatRequest) -> Value {
     };
     for message in &request.messages {
         match message {
-            TurnMessage::System { text } | TurnMessage::User { text } => {
+            TurnMessage::System { text } => {
                 flush(&mut out, &mut pending);
                 out.push(obj(vec![
                     ("role", Value::from("user")),
@@ -1824,6 +1940,13 @@ fn google_contents(request: &ChatRequest) -> Value {
                         "parts",
                         Value::Array(vec![obj(vec![("text", Value::from(text.clone()))])]),
                     ),
+                ]));
+            }
+            TurnMessage::User { text, parts } => {
+                flush(&mut out, &mut pending);
+                out.push(obj(vec![
+                    ("role", Value::from("user")),
+                    ("parts", google_user_parts(text, parts)),
                 ]));
             }
             TurnMessage::Assistant {
@@ -1844,7 +1967,7 @@ fn google_contents(request: &ChatRequest) -> Value {
                     parts.push(obj(vec![("text", Value::from(text.clone()))]));
                 }
                 for tool in tool_calls {
-                    parts.push(google_function_part(tool));
+                    parts.push(google_function_part(tool, raws));
                 }
                 out.push(obj(vec![
                     ("role", Value::from("model")),
@@ -1858,14 +1981,14 @@ fn google_contents(request: &ChatRequest) -> Value {
     Value::Array(out)
 }
 
-fn google_function_part(tool: &ReplayTool) -> Value {
+fn google_function_part(tool: &ReplayTool, raws: &mut Vec<String>) -> Value {
     let mut part = Map::new();
     part.insert(
         "functionCall".to_string(),
         obj(vec![
             ("id", Value::from(tool.id.clone())),
             ("name", Value::from(tool.name.clone())),
-            ("args", tool.arguments.clone()),
+            ("args", argument_value(tool, raws)),
         ]),
     );
     if let Some(signature) = &tool.thought_signature {
@@ -1877,16 +2000,71 @@ fn google_function_part(tool: &ReplayTool) -> Value {
     Value::Object(part)
 }
 
-fn openai_body(provider: &HttpProvider, request: &ChatRequest, model: &str, vllm: bool) -> Value {
+fn openai_body(
+    provider: &HttpProvider,
+    request: &ChatRequest,
+    model: &str,
+    vllm: bool,
+    raws: &mut Vec<String>,
+) -> Value {
     let mut map = Map::new();
+    let max_tokens = if provider.max_output > 0 {
+        provider.max_output
+    } else {
+        4096
+    };
     map.insert("model".to_string(), Value::from(model));
-    map.insert("max_tokens".to_string(), Value::from(4096u64));
-    map.insert("temperature".to_string(), provider.temperature.clone());
-    map.insert("top_p".to_string(), provider.top_p.clone());
-    map.insert("messages".to_string(), openai_messages(request, true, true));
+    map.insert("max_tokens".to_string(), Value::from(max_tokens));
+    map.insert(
+        "temperature".to_string(),
+        provider.sampling.temperature.clone(),
+    );
+    map.insert("top_p".to_string(), provider.sampling.top_p.clone());
+    fill_absent(
+        &mut map,
+        "presence_penalty",
+        provider.sampling.presence_penalty.clone(),
+    );
+    fill_absent(
+        &mut map,
+        "frequency_penalty",
+        provider.sampling.frequency_penalty.clone(),
+    );
+    fill_absent(&mut map, "seed", provider.sampling.seed.clone());
+    fill_absent(&mut map, "stop", provider.sampling.stop.clone());
+    if vllm {
+        if let Some(value) = provider.sampling.top_k.clone() {
+            map.insert("top_k".to_string(), value);
+        }
+        if let Some(value) = provider.sampling.min_p.clone() {
+            map.insert("min_p".to_string(), value);
+        }
+        if let Some(value) = provider.sampling.repetition_penalty.clone() {
+            map.insert("repetition_penalty".to_string(), value);
+        }
+        if let Some(value) = provider.sampling.min_tokens.clone() {
+            map.insert("min_tokens".to_string(), value);
+        }
+    } else {
+        if let Some(value) = provider.sampling.top_k.clone() {
+            map.insert("top_k".to_string(), value);
+        }
+        if let Some(value) = provider.sampling.min_p.clone() {
+            map.insert("min_p".to_string(), value);
+        }
+    }
+    map.insert(
+        "messages".to_string(),
+        openai_messages(request, true, true, vllm, raws),
+    );
     if !request.tools.is_empty() {
-        map.insert("tools".to_string(), openai_tools(&request.tools));
-        map.insert("tool_choice".to_string(), Value::from("auto"));
+        map.insert("tools".to_string(), openai_tools(&request.tools, raws));
+        let choice = provider
+            .sampling
+            .tool_choice
+            .clone()
+            .unwrap_or_else(|| "auto".to_string());
+        map.insert("tool_choice".to_string(), Value::from(choice));
     }
     map.insert("stream".to_string(), Value::Bool(true));
     map.insert(
@@ -1894,30 +2072,63 @@ fn openai_body(provider: &HttpProvider, request: &ChatRequest, model: &str, vllm
         obj(vec![("include_usage", Value::Bool(true))]),
     );
     for (key, value) in lock(&provider.extras).iter() {
-        map.insert(key.clone(), value.clone());
+        map.entry(key.clone()).or_insert_with(|| value.clone());
+    }
+    let mut kwargs = provider.sampling.chat_template_kwargs.clone();
+    if let Some(Value::Object(existing)) = map.get("chat_template_kwargs").cloned() {
+        for (key, value) in existing {
+            kwargs.insert(key, value);
+        }
     }
     if vllm && request.thinking == ThinkingLevel::Off {
-        map.insert(
-            "chat_template_kwargs".to_string(),
-            obj(vec![("enable_thinking", Value::Bool(false))]),
-        );
+        kwargs.insert("enable_thinking".to_string(), Value::Bool(false));
+    }
+    if !kwargs.is_empty() {
+        map.insert("chat_template_kwargs".to_string(), Value::Object(kwargs));
+    }
+    if vllm && let Some(value) = provider.sampling.mm_processor_kwargs.clone() {
+        let mut merged = match value {
+            Value::Object(map) => map,
+            other => {
+                let mut map = Map::new();
+                map.insert("value".to_string(), other);
+                map
+            }
+        };
+        if let Some(Value::Object(existing)) = map.get("mm_processor_kwargs").cloned() {
+            for (key, value) in existing {
+                merged.insert(key, value);
+            }
+        }
+        map.insert("mm_processor_kwargs".to_string(), Value::Object(merged));
     }
     Value::Object(map)
 }
 
-fn ollama_body(provider: &HttpProvider, request: &ChatRequest, model: &str) -> Value {
+fn fill_absent(map: &mut Map<String, Value>, key: &str, value: Option<Value>) {
+    if let Some(value) = value {
+        map.entry(key.to_string()).or_insert(value);
+    }
+}
+
+fn ollama_body(
+    provider: &HttpProvider,
+    request: &ChatRequest,
+    model: &str,
+    raws: &mut Vec<String>,
+) -> Value {
     let mut map = Map::new();
     map.insert("model".to_string(), Value::from(model));
     map.insert(
         "messages".to_string(),
-        openai_messages(request, false, false),
+        openai_messages(request, false, false, false, raws),
     );
     map.insert(
         "think".to_string(),
         Value::Bool(request.thinking != ThinkingLevel::Off),
     );
     if !request.tools.is_empty() {
-        map.insert("tools".to_string(), openai_tools(&request.tools));
+        map.insert("tools".to_string(), openai_tools(&request.tools, raws));
         map.insert("tool_choice".to_string(), Value::from("auto"));
     }
     map.insert("stream".to_string(), Value::Bool(true));
@@ -1931,7 +2142,7 @@ fn ollama_body(provider: &HttpProvider, request: &ChatRequest, model: &str) -> V
     Value::Object(map)
 }
 
-fn openai_tools(tools: &[ToolDef]) -> Value {
+fn openai_tools(tools: &[ToolDef], raws: &mut Vec<String>) -> Value {
     Value::Array(
         tools
             .iter()
@@ -1943,7 +2154,7 @@ fn openai_tools(tools: &[ToolDef]) -> Value {
                         obj(vec![
                             ("name", Value::from(tool.name.clone())),
                             ("description", Value::from(tool.description.clone())),
-                            ("parameters", tool.parameters.clone()),
+                            ("parameters", schema_value(tool, raws)),
                         ]),
                     ),
                 ])
@@ -1952,7 +2163,13 @@ fn openai_tools(tools: &[ToolDef]) -> Value {
     )
 }
 
-fn openai_messages(request: &ChatRequest, reasoning_field: bool, fold: bool) -> Value {
+fn openai_messages(
+    request: &ChatRequest,
+    reasoning_field: bool,
+    fold: bool,
+    videos: bool,
+    raws: &mut Vec<String>,
+) -> Value {
     let (system, messages) = folded_request(request, fold);
     let mut out = Vec::new();
     if !system.is_empty() {
@@ -1963,10 +2180,16 @@ fn openai_messages(request: &ChatRequest, reasoning_field: bool, fold: bool) -> 
     }
     for message in &messages {
         match message {
-            TurnMessage::System { text } | TurnMessage::User { text } => {
+            TurnMessage::System { text } => {
                 out.push(obj(vec![
                     ("role", Value::from("user")),
                     ("content", Value::from(text.clone())),
+                ]));
+            }
+            TurnMessage::User { text, parts } => {
+                out.push(obj(vec![
+                    ("role", Value::from("user")),
+                    ("content", openai_user_content(text, parts, videos)),
                 ]));
             }
             TurnMessage::Assistant {
@@ -2003,7 +2226,7 @@ fn openai_messages(request: &ChatRequest, reasoning_field: bool, fold: bool) -> 
                                     let arguments = if reasoning_field {
                                         Value::from(tool.arguments_json.clone())
                                     } else {
-                                        tool.arguments.clone()
+                                        argument_value(tool, raws)
                                     };
                                     obj(vec![
                                         ("id", Value::from(tool.id.clone())),
@@ -2023,11 +2246,13 @@ fn openai_messages(request: &ChatRequest, reasoning_field: bool, fold: bool) -> 
                 }
                 out.push(Value::Object(map));
             }
-            TurnMessage::ToolResult { id, content, .. } => {
+            TurnMessage::ToolResult {
+                id, content, parts, ..
+            } => {
                 out.push(obj(vec![
                     ("role", Value::from("tool")),
                     ("tool_call_id", Value::from(id.clone())),
-                    ("content", Value::from(content.clone())),
+                    ("content", Value::from(tool_result_text(content, parts))),
                 ]));
             }
         }
@@ -2067,12 +2292,233 @@ fn folded_request(request: &ChatRequest, fold: bool) -> (String, Vec<TurnMessage
         .map(|item| match item.data {
             Some(message) => message,
             None => match item.content {
-                FoldContent::Text(text) => TurnMessage::User { text },
+                FoldContent::Text(text) => TurnMessage::User {
+                    text,
+                    parts: Vec::new(),
+                },
                 FoldContent::Parts(parts) => TurnMessage::User {
                     text: parts.concat(),
+                    parts: Vec::new(),
                 },
             },
         })
         .collect();
     (system, messages)
+}
+
+fn schema_value(tool: &ToolDef, raws: &mut Vec<String>) -> Value {
+    match &tool.parameters_raw {
+        Some(raw) => Value::String(push_raw(raws, raw)),
+        None => tool.parameters.clone(),
+    }
+}
+
+fn argument_value(tool: &ReplayTool, raws: &mut Vec<String>) -> Value {
+    match &tool.arguments_raw {
+        Some(raw) => Value::String(push_raw(raws, raw)),
+        None => tool.arguments.clone(),
+    }
+}
+
+fn push_raw(raws: &mut Vec<String>, raw: &str) -> String {
+    let marker = raw_marker(raws.len());
+    raws.push(raw.to_string());
+    marker
+}
+
+fn tool_result_text(content: &str, parts: &[MediaPart]) -> String {
+    let images = parts
+        .iter()
+        .filter(|part| part.kind == MediaKind::Image)
+        .count();
+    if images == 0 {
+        content.to_string()
+    } else {
+        format!("{content}\n[{images} image(s) returned — see image content in context]")
+    }
+}
+
+fn message_has_visual(message: &TurnMessage) -> bool {
+    match message {
+        TurnMessage::User { parts, .. } | TurnMessage::ToolResult { parts, .. } => parts
+            .iter()
+            .any(|part| matches!(part.kind, MediaKind::Image | MediaKind::Video)),
+        _ => false,
+    }
+}
+
+fn data_url(part: &MediaPart) -> String {
+    if let Some(data) = &part.data {
+        let mime = part.mime.as_deref().unwrap_or(match part.kind {
+            MediaKind::Video => "video/mp4",
+            _ => "image/jpeg",
+        });
+        format!("data:{mime};base64,{data}")
+    } else {
+        part.url.clone().unwrap_or_default()
+    }
+}
+
+fn anthropic_user_content(text: &str, parts: &[MediaPart]) -> Value {
+    if parts.is_empty() {
+        return Value::Array(vec![obj(vec![
+            ("type", Value::from("text")),
+            ("text", Value::from(text.to_string())),
+        ])]);
+    }
+    let mut blocks = Vec::new();
+    if !text.is_empty() {
+        blocks.push(obj(vec![
+            ("type", Value::from("text")),
+            ("text", Value::from(text.to_string())),
+        ]));
+    }
+    for part in parts {
+        match part.kind {
+            MediaKind::Text if !part.text.is_empty() => blocks.push(obj(vec![
+                ("type", Value::from("text")),
+                ("text", Value::from(part.text.clone())),
+            ])),
+            MediaKind::Image => {
+                let source = if part.data.is_some() {
+                    obj(vec![
+                        ("type", Value::from("base64")),
+                        (
+                            "media_type",
+                            Value::from(
+                                part.mime
+                                    .clone()
+                                    .unwrap_or_else(|| "image/jpeg".to_string()),
+                            ),
+                        ),
+                        ("data", Value::from(part.data.clone().unwrap_or_default())),
+                    ])
+                } else {
+                    obj(vec![
+                        ("type", Value::from("url")),
+                        ("url", Value::from(part.url.clone().unwrap_or_default())),
+                    ])
+                };
+                blocks.push(obj(vec![
+                    ("type", Value::from("image")),
+                    ("source", source),
+                ]));
+            }
+            _ => {}
+        }
+    }
+    Value::Array(blocks)
+}
+
+fn xai_user_content(text: &str, parts: &[MediaPart]) -> Value {
+    if parts.is_empty() {
+        return Value::Array(vec![obj(vec![
+            ("type", Value::from("input_text")),
+            ("text", Value::from(text.to_string())),
+        ])]);
+    }
+    let mut blocks = Vec::new();
+    if !text.is_empty() {
+        blocks.push(obj(vec![
+            ("type", Value::from("input_text")),
+            ("text", Value::from(text.to_string())),
+        ]));
+    }
+    for part in parts {
+        match part.kind {
+            MediaKind::Text if !part.text.is_empty() => blocks.push(obj(vec![
+                ("type", Value::from("input_text")),
+                ("text", Value::from(part.text.clone())),
+            ])),
+            MediaKind::Image => blocks.push(obj(vec![
+                ("type", Value::from("input_image")),
+                ("image_url", Value::from(data_url(part))),
+            ])),
+            _ => {}
+        }
+    }
+    Value::Array(blocks)
+}
+
+fn google_user_parts(text: &str, parts: &[MediaPart]) -> Value {
+    if parts.is_empty() {
+        return Value::Array(vec![obj(vec![("text", Value::from(text.to_string()))])]);
+    }
+    let mut blocks = Vec::new();
+    if !text.is_empty() {
+        blocks.push(obj(vec![("text", Value::from(text.to_string()))]));
+    }
+    for part in parts {
+        match part.kind {
+            MediaKind::Text if !part.text.is_empty() => {
+                blocks.push(obj(vec![("text", Value::from(part.text.clone()))]));
+            }
+            MediaKind::Image => {
+                if let Some(data) = &part.data {
+                    blocks.push(obj(vec![(
+                        "inlineData",
+                        obj(vec![
+                            (
+                                "mimeType",
+                                Value::from(
+                                    part.mime
+                                        .clone()
+                                        .unwrap_or_else(|| "image/jpeg".to_string()),
+                                ),
+                            ),
+                            ("data", Value::from(data.clone())),
+                        ]),
+                    )]));
+                } else if let Some(url) = &part.url {
+                    blocks.push(obj(vec![(
+                        "fileData",
+                        obj(vec![
+                            (
+                                "mimeType",
+                                Value::from(
+                                    part.mime
+                                        .clone()
+                                        .unwrap_or_else(|| "image/jpeg".to_string()),
+                                ),
+                            ),
+                            ("fileUri", Value::from(url.clone())),
+                        ]),
+                    )]));
+                }
+            }
+            _ => {}
+        }
+    }
+    Value::Array(blocks)
+}
+
+fn openai_user_content(text: &str, parts: &[MediaPart], videos: bool) -> Value {
+    if parts.is_empty() {
+        return Value::from(text.to_string());
+    }
+    let mut blocks = Vec::new();
+    if !text.is_empty() {
+        blocks.push(obj(vec![
+            ("type", Value::from("text")),
+            ("text", Value::from(text.to_string())),
+        ]));
+    }
+    for part in parts {
+        match part.kind {
+            MediaKind::Text if !part.text.is_empty() => blocks.push(obj(vec![
+                ("type", Value::from("text")),
+                ("text", Value::from(part.text.clone())),
+            ])),
+            MediaKind::Image => blocks.push(obj(vec![
+                ("type", Value::from("image_url")),
+                ("image_url", obj(vec![("url", Value::from(data_url(part)))])),
+            ])),
+            MediaKind::Video if videos => blocks.push(obj(vec![
+                ("type", Value::from("video_url")),
+                ("video_url", obj(vec![("url", Value::from(data_url(part)))])),
+            ])),
+            _ => {}
+        }
+    }
+    Value::Array(blocks)
 }

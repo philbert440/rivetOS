@@ -26,10 +26,20 @@ pub fn canonical_json(text: &str) -> String {
 }
 
 pub fn canonical_pair(raw: &str) -> (String, Value) {
+    let (text, value, _) = canonical_parts(raw);
+    (text, value)
+}
+
+pub fn canonical_parts(raw: &str) -> (String, Value, bool) {
     let source = if raw.is_empty() { "{}" } else { raw };
     let text = canonical_json(source);
-    let value = serde_json::from_str(&text).unwrap_or(Value::Null);
-    (text, value)
+    match serde_json::from_str::<Value>(&text) {
+        Ok(value) => (text, value, false),
+        Err(_) => {
+            let embed = text.starts_with('{') || text.starts_with('[');
+            (text, Value::Null, embed)
+        }
+    }
 }
 
 pub fn canonical_from_value(value: &Value) -> (String, Value) {
@@ -46,8 +56,37 @@ pub fn js_norm(text: &str) -> String {
     }
 }
 
-pub fn parse_schema(text: &str) -> Value {
-    serde_json::from_str(text).unwrap_or_else(|_| Value::Object(Map::new()))
+pub fn parse_schema_parts(text: &str) -> (Value, Option<String>) {
+    let rendered = match js::parse(text) {
+        Ok(value) => js::stringify(&value),
+        Err(_) => text.to_string(),
+    };
+    match serde_json::from_str::<Value>(&rendered) {
+        Ok(value) => (value, None),
+        Err(_) if rendered.starts_with('{') || rendered.starts_with('[') => {
+            (Value::Object(Map::new()), Some(rendered))
+        }
+        Err(_) => (Value::Object(Map::new()), None),
+    }
+}
+
+pub fn raw_marker(index: usize) -> String {
+    format!("\u{E000}RAW{index}\u{E000}")
+}
+
+pub fn splice_raw_json(bytes: Vec<u8>, raws: &[String]) -> Vec<u8> {
+    if raws.is_empty() {
+        return bytes;
+    }
+    let mut text = match String::from_utf8(bytes) {
+        Ok(text) => text,
+        Err(err) => return err.into_bytes(),
+    };
+    for (index, raw) in raws.iter().enumerate() {
+        let marker = format!("\"{}\"", raw_marker(index));
+        text = text.replace(&marker, raw);
+    }
+    text.into_bytes()
 }
 
 pub fn gemini_schema(value: &Value) -> Value {

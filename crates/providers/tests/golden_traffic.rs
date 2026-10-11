@@ -31,7 +31,7 @@ struct Slot {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn golden_http_traffic() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/golden");
-    let ports = [
+    let fixtures = [
         ("anthropic", 47811u16),
         ("xai", 47812),
         ("google", 47813),
@@ -40,17 +40,17 @@ async fn golden_http_traffic() {
         ("ollama", 47816),
     ];
     let mut slots = Vec::new();
-    for (_, port) in ports {
+    let mut ports = Vec::new();
+    for (name, fixture) in fixtures {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let actual = listener.local_addr().unwrap().port();
         let slot = Arc::new(Mutex::new(Slot {
             responses: Vec::new(),
             index: 0,
             seen: Vec::new(),
         }));
         let bound = Arc::clone(&slot);
-        let (tx, rx) = tokio::sync::oneshot::channel();
         tokio::spawn(async move {
-            let listener = TcpListener::bind(("127.0.0.1", port)).await.unwrap();
-            let _ = tx.send(());
             loop {
                 let Ok((sock, _)) = listener.accept().await else {
                     break;
@@ -61,8 +61,8 @@ async fn golden_http_traffic() {
                 });
             }
         });
-        rx.await.unwrap();
         slots.push(slot);
+        ports.push((name, fixture, actual));
     }
     let scenarios = [
         "probe",
@@ -72,14 +72,21 @@ async fn golden_http_traffic() {
         "D-thinking-off",
         "E-reasoning-tool",
     ];
-    for ((name, _), slot) in ports.iter().copied().zip(slots.iter()) {
+    for ((name, fixture, actual), slot) in ports.iter().copied().zip(slots.iter()) {
         for scenario in scenarios {
-            run_scenario(name, slot, &root, scenario).await;
+            run_scenario(name, fixture, actual, slot, &root, scenario).await;
         }
     }
 }
 
-async fn run_scenario(provider: &str, slot: &Arc<Mutex<Slot>>, root: &Path, scenario: &str) {
+async fn run_scenario(
+    provider: &str,
+    fixture: u16,
+    actual: u16,
+    slot: &Arc<Mutex<Slot>>,
+    root: &Path,
+    scenario: &str,
+) {
     let dir = root.join(provider).join(scenario);
     let requests: Value =
         serde_json::from_str(&std::fs::read_to_string(dir.join("requests.json")).unwrap()).unwrap();
@@ -113,7 +120,7 @@ async fn run_scenario(provider: &str, slot: &Arc<Mutex<Slot>>, root: &Path, scen
     }
     let label = format!("{provider}/{scenario}");
     if scenario == "probe" {
-        let provider_impl = build_provider(provider);
+        let provider_impl = build_provider(provider, actual);
         let available = tokio::time::timeout(Duration::from_secs(15), provider_impl.is_available())
             .await
             .unwrap_or_else(|_| panic!("{label} probe timed out"));
@@ -127,7 +134,7 @@ async fn run_scenario(provider: &str, slot: &Arc<Mutex<Slot>>, root: &Path, scen
             assert_eq!(provider_impl.get_model(), "test-model");
         }
     } else {
-        let provider_impl = build_provider(provider);
+        let provider_impl = build_provider(provider, actual);
         let thinking = match scenario {
             "C-reasoning" => ThinkingLevel::High,
             "D-thinking-off" => ThinkingLevel::Off,
@@ -181,11 +188,18 @@ async fn run_scenario(provider: &str, slot: &Arc<Mutex<Slot>>, root: &Path, scen
     for (index, (got, want)) in seen.iter().zip(expected.iter()).enumerate() {
         let want_method = want["method"].as_str().unwrap();
         let want_target = mask_secret(want["target"].as_str().unwrap());
-        let got_target = apply_map(&mask_secret(&got.target), &id_map_pair(want, got, &canned));
+        let got_target = swap_authority(
+            &apply_map(&mask_secret(&got.target), &id_map_pair(want, got, &canned)),
+            actual,
+            fixture,
+        );
         assert_eq!(got.method, want_method, "{label} request {index} method");
         assert_eq!(got_target, want_target, "{label} request {index} target");
         let want_headers = header_pairs(&want["headers"]);
-        let got_headers = norm_headers(&got.headers);
+        let got_headers = norm_headers(&got.headers)
+            .into_iter()
+            .map(|(name, value)| (name, swap_authority(&value, actual, fixture)))
+            .collect::<Vec<_>>();
         assert_eq!(
             got_headers, want_headers,
             "{label} request {index} headers\n got {got_headers:?}\nwant {want_headers:?}"
@@ -214,36 +228,43 @@ async fn run_scenario(provider: &str, slot: &Arc<Mutex<Slot>>, root: &Path, scen
     }
 }
 
-fn build_provider(name: &str) -> HttpProvider {
+fn swap_authority(text: &str, actual: u16, fixture: u16) -> String {
+    text.replace(
+        &format!("127.0.0.1:{actual}"),
+        &format!("127.0.0.1:{fixture}"),
+    )
+}
+
+fn build_provider(name: &str, port: u16) -> HttpProvider {
     match name {
         "anthropic" => {
             let provider = HttpProvider::anthropic("golden-key", "test-model").unwrap();
-            provider.set_base_url("http://127.0.0.1:47811".to_string());
+            provider.set_base_url(format!("http://127.0.0.1:{port}"));
             provider
         }
         "xai" => {
             let provider = HttpProvider::xai("golden-key", "test-model").unwrap();
-            provider.set_base_url("http://127.0.0.1:47812/v1".to_string());
+            provider.set_base_url(format!("http://127.0.0.1:{port}/v1"));
             provider
         }
         "google" => {
             let provider = HttpProvider::google("golden-key", "test-model").unwrap();
-            provider.set_base_url("http://127.0.0.1:47813/v1beta".to_string());
+            provider.set_base_url(format!("http://127.0.0.1:{port}/v1beta"));
             provider
         }
         "vllm" => HttpProvider::vllm(
             Some("golden-key".to_string()),
             "test-model",
-            "http://127.0.0.1:47814",
+            format!("http://127.0.0.1:{port}"),
         )
         .unwrap(),
         "llama-server" => HttpProvider::llama(
             Some("golden-key".to_string()),
             "test-model",
-            "http://127.0.0.1:47815",
+            format!("http://127.0.0.1:{port}"),
         )
         .unwrap(),
-        "ollama" => HttpProvider::ollama("test-model", "http://127.0.0.1:47816").unwrap(),
+        "ollama" => HttpProvider::ollama("test-model", format!("http://127.0.0.1:{port}")).unwrap(),
         other => panic!("unknown provider {other}"),
     }
 }

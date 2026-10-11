@@ -2,6 +2,7 @@ mod aisdk;
 mod catalog;
 mod chunks;
 mod cli;
+mod cli_machine;
 mod client;
 mod decode;
 mod embed;

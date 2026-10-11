@@ -50,7 +50,7 @@ pub async fn send(
             provider_id,
         ));
     }
-    tracing::debug!(method = %attempt.method, url = %attempt.url, provider = provider_id, "provider http");
+    tracing::debug!(method = %attempt.method, url = %redact_url(&attempt.url), provider = provider_id, "provider http");
     let mut builder = client
         .request(attempt.method.clone(), &attempt.url)
         .timeout(timeout);
@@ -88,7 +88,11 @@ pub async fn send(
                     provider_id,
                 ))
             } else {
-                Err(ProviderError::new(err.to_string(), 0, provider_id))
+                Err(ProviderError::new(
+                    redact_text(&err.to_string()),
+                    0,
+                    provider_id,
+                ))
             }
         }
     }
@@ -112,6 +116,9 @@ pub async fn read_limited(response: reqwest::Response, limit: usize) -> String {
 pub trait WireDecoder: Send {
     fn push(&mut self, bytes: &[u8], chunks: &mut Vec<LlmChunk>, cap: &mut StepCapture);
     fn finish(&mut self, chunks: &mut Vec<LlmChunk>, cap: &mut StepCapture);
+    fn take_error(&mut self) -> Option<ProviderError> {
+        None
+    }
 }
 
 struct Live {
@@ -165,7 +172,7 @@ impl Stream for Live {
                 Poll::Ready(Some(Err(err))) => {
                     live.finish_ran = true;
                     return Poll::Ready(Some(Err(ProviderError::new(
-                        err.to_string(),
+                        redact_text(&err.to_string()),
                         0,
                         live.provider_id.clone(),
                     ))));
@@ -178,6 +185,11 @@ impl Stream for Live {
                     }
                     for chunk in chunks {
                         live.pending.push_back(Ok(chunk));
+                    }
+                    if let Some(err) = live.decoder.take_error() {
+                        live.pending.push_back(Err(err));
+                        live.incoming_done = true;
+                        live.finish_ran = true;
                     }
                 }
             }
@@ -222,6 +234,83 @@ pub fn tail_headers() -> Vec<(String, String)> {
 
 pub fn connection_header() -> (String, String) {
     ("connection".to_string(), "keep-alive".to_string())
+}
+
+const SECRET_QUERY: &[&str] = &[
+    "key",
+    "token",
+    "access_token",
+    "api_key",
+    "apikey",
+    "api-key",
+    "client_secret",
+    "password",
+    "secret",
+    "id_token",
+    "refresh_token",
+];
+
+pub fn redact_url(url: &str) -> String {
+    let Ok(mut parsed) = reqwest::Url::parse(url) else {
+        return redact_text(url);
+    };
+    let pairs: Vec<(String, String)> = parsed
+        .query_pairs()
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect();
+    if pairs.is_empty() {
+        return parsed.to_string();
+    }
+    parsed.set_query(None);
+    let query = pairs
+        .iter()
+        .map(|(key, value)| {
+            if secret_query(key) {
+                format!("{key}=REDACTED")
+            } else {
+                format!("{key}={value}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("&");
+    parsed.set_query(Some(&query));
+    parsed.to_string()
+}
+
+pub fn redact_text(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let bytes = text.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        let rest = &text[index..];
+        if let Some(start) = rest.find("http://").or_else(|| rest.find("https://")) {
+            out.push_str(&rest[..start]);
+            let tail = &rest[start..];
+            let end = tail
+                .find(|ch: char| ch.is_whitespace() || matches!(ch, ')' | '"' | '\'' | '>' | ','))
+                .unwrap_or(tail.len());
+            out.push_str(&redact_url_piece(&tail[..end]));
+            index += start + end;
+        } else {
+            out.push_str(rest);
+            break;
+        }
+    }
+    out
+}
+
+fn redact_url_piece(piece: &str) -> String {
+    if reqwest::Url::parse(piece).is_ok() {
+        redact_url(piece)
+    } else {
+        piece.to_string()
+    }
+}
+
+fn secret_query(key: &str) -> bool {
+    SECRET_QUERY
+        .iter()
+        .any(|name| key.eq_ignore_ascii_case(name))
 }
 
 fn host_header_value(url: &str) -> Option<String> {

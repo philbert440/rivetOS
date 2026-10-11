@@ -4,7 +4,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use protocol::ThinkingLevel;
+use futures_util::{Stream, StreamExt};
+use protocol::{LlmChunk, ThinkingLevel};
 use providers::{
     ChatRequest, CliProvider, HermesTokenCounts, HermesTokenKind, HttpProvider, ManifestConfig,
     PermissionAnswer, PermissionAsk, PermissionEvent, Provider, Runner, TokenCommandInput,
@@ -249,6 +250,20 @@ fn err_of<T>(result: Result<T, providers::ProviderError>) -> providers::Provider
         Err(err) => err,
         Ok(_) => panic!("expected provider error"),
     }
+}
+
+async fn drain(
+    result: Result<
+        impl Stream<Item = Result<LlmChunk, providers::ProviderError>> + Unpin,
+        providers::ProviderError,
+    >,
+) -> Result<Vec<LlmChunk>, providers::ProviderError> {
+    let mut stream = result?;
+    let mut out = Vec::new();
+    while let Some(item) = stream.next().await {
+        out.push(item?);
+    }
+    Ok(out)
 }
 
 fn messages_of(body: &str) -> Vec<(String, String)> {
@@ -675,6 +690,7 @@ async fn fold_system_on_vllm_and_llama_only() {
         text: String::new(),
     });
     request.messages.push(TurnMessage::User {
+        parts: Vec::new(),
         text: "after".to_string(),
     });
     for (wire, fold) in [("vllm", true), ("llama-server", true), ("ollama", false)] {
@@ -972,14 +988,15 @@ async fn cli_sessions_hermes_db_and_signals() {
     hermes.set_home(Some(home.clone()));
     hermes.set_session_map_path(Some(map.clone()));
     hermes.set_hermes_db_path(Some(db.clone()));
-    hermes.stream_chat(chat("hi", "conv", 2_000)).await.unwrap();
+    drain(hermes.stream_chat(chat("hi", "conv", 2_000)).await)
+        .await
+        .unwrap();
     assert_eq!(
         session_map_strings(&map).get("conv").map(String::as_str),
         Some("ses-1")
     );
     assert_eq!(hermes.hermes_turn_counts().input, Some(10.0));
-    hermes
-        .stream_chat(chat("again", "conv", 2_000))
+    drain(hermes.stream_chat(chat("again", "conv", 2_000)).await)
         .await
         .unwrap();
     assert_eq!(hermes.hermes_turn_counts().input, Some(6.0));
@@ -998,7 +1015,9 @@ async fn cli_sessions_hermes_db_and_signals() {
     let mut codex = CliProvider::codex(&codex_bin);
     codex.set_home(Some(home.clone()));
     codex.set_session_map_path(Some(codex_map.clone()));
-    codex.stream_chat(chat("hi", "conv", 2_000)).await.unwrap();
+    drain(codex.stream_chat(chat("hi", "conv", 2_000)).await)
+        .await
+        .unwrap();
     assert_eq!(
         session_map_strings(&codex_map)
             .get("conv")
@@ -1007,7 +1026,9 @@ async fn cli_sessions_hermes_db_and_signals() {
     );
     let mode = std::fs::metadata(&codex_map).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode, 0o600);
-    let err = err_of(codex.stream_chat(chat("again", "conv", 2_000)).await);
+    let err = drain(codex.stream_chat(chat("again", "conv", 2_000)).await)
+        .await
+        .unwrap_err();
     assert!(err.message.contains("codex"));
     assert!(!session_map_strings(&codex_map).contains_key("conv"));
     let logged = std::fs::read_to_string(&codex_log).unwrap();
@@ -1028,9 +1049,11 @@ async fn cli_sessions_hermes_db_and_signals() {
     let mut qwen = CliProvider::qwen(&qwen_bin);
     qwen.set_home(Some(home.clone()));
     qwen.set_session_map_path(Some(qwen_map.clone()));
-    qwen.stream_chat(chat("hi", "conv", 2_000)).await.unwrap();
+    drain(qwen.stream_chat(chat("hi", "conv", 2_000)).await)
+        .await
+        .unwrap();
     let first = session_map_strings(&qwen_map).get("conv").cloned().unwrap();
-    qwen.stream_chat(chat("again", "conv", 2_000))
+    drain(qwen.stream_chat(chat("again", "conv", 2_000)).await)
         .await
         .unwrap();
     let second = session_map_strings(&qwen_map).get("conv").cloned().unwrap();
@@ -1053,12 +1076,16 @@ async fn cli_sessions_hermes_db_and_signals() {
     let mut pi = CliProvider::pi(&pi_bin);
     pi.set_home(Some(home.clone()));
     pi.set_session_map_path(Some(pi_map.clone()));
-    pi.stream_chat(chat("hi", "conv", 2_000)).await.unwrap();
+    drain(pi.stream_chat(chat("hi", "conv", 2_000)).await)
+        .await
+        .unwrap();
     assert_eq!(
         session_map_strings(&pi_map).get("conv").map(String::as_str),
         Some("pi-1")
     );
-    pi.stream_chat(chat("again", "conv", 2_000)).await.unwrap();
+    drain(pi.stream_chat(chat("again", "conv", 2_000)).await)
+        .await
+        .unwrap();
     let plog = std::fs::read_to_string(&pi_log).unwrap();
     assert!(plog.contains("--session"));
     assert!(plog.contains("pi-1"));
@@ -1076,20 +1103,18 @@ async fn cli_sessions_hermes_db_and_signals() {
     let mut opencode = CliProvider::opencode(&oc_bin);
     opencode.set_home(Some(home.clone()));
     opencode.set_session_map_path(Some(oc_map.clone()));
-    opencode
-        .stream_chat(chat("hi", "conv", 2_000))
+    drain(opencode.stream_chat(chat("hi", "conv", 2_000)).await)
         .await
         .unwrap();
     assert_eq!(
         session_map_strings(&oc_map).get("conv").map(String::as_str),
         Some("oc-1")
     );
-    assert!(
-        opencode
-            .stream_chat(chat("again", "conv", 2_000))
-            .await
-            .is_err()
-    );
+    let chunks = drain(opencode.stream_chat(chat("again", "conv", 2_000)).await)
+        .await
+        .unwrap();
+    let text: String = chunks.into_iter().filter_map(|chunk| chunk.delta).collect();
+    assert!(text.contains("opencode-cli bridge error"), "{text}");
     assert!(!session_map_strings(&oc_map).contains_key("conv"));
 
     let kimi_bin = format!("{dir}/kimi");
@@ -1101,7 +1126,9 @@ async fn cli_sessions_hermes_db_and_signals() {
     let mut kimi = CliProvider::kimi(&kimi_bin);
     kimi.set_home(Some(home.clone()));
     kimi.set_session_map_path(Some(kimi_map.clone()));
-    kimi.stream_chat(chat("hi", "conv", 2_000)).await.unwrap();
+    drain(kimi.stream_chat(chat("hi", "conv", 2_000)).await)
+        .await
+        .unwrap();
     assert_eq!(
         session_map_strings(&kimi_map)
             .get("conv")
@@ -1114,7 +1141,7 @@ async fn cli_sessions_hermes_db_and_signals() {
     write_script(
         &grok_bin,
         &format!(
-            "#!/bin/bash\nprintf '%s\\n' \"$@\" > {}\necho '{{\"text\":\"ok\"}}'\necho '{{\"session_id\":\"grok-real\"}}'\nexit 0\n",
+            "#!/bin/bash\nprintf '%s\\n' \"$@\" > {}\necho '{{\"type\":\"result\",\"session_id\":\"grok-real\",\"result\":\"ok\"}}'\nexit 0\n",
             bash_quote(&grok_log)
         ),
     );
@@ -1122,7 +1149,9 @@ async fn cli_sessions_hermes_db_and_signals() {
     let mut grok = CliProvider::grok(&grok_bin);
     grok.set_home(Some(home.clone()));
     grok.set_session_map_path(Some(grok_map.clone()));
-    grok.stream_chat(chat("hi", "conv", 2_000)).await.unwrap();
+    drain(grok.stream_chat(chat("hi", "conv", 2_000)).await)
+        .await
+        .unwrap();
     let first = std::fs::read_to_string(&grok_log).unwrap();
     assert!(first.contains("--session-id"));
     assert!(!first.contains("--resume"));
@@ -1132,7 +1161,7 @@ async fn cli_sessions_hermes_db_and_signals() {
             .map(String::as_str),
         Some("grok-real")
     );
-    grok.stream_chat(chat("again", "conv", 2_000))
+    drain(grok.stream_chat(chat("again", "conv", 2_000)).await)
         .await
         .unwrap();
     let second = std::fs::read_to_string(&grok_log).unwrap();
@@ -1140,7 +1169,7 @@ async fn cli_sessions_hermes_db_and_signals() {
     assert!(second.contains("grok-real"));
     grok.set_session_replay(true);
     std::fs::write(&grok_log, "").unwrap();
-    grok.stream_chat(chat("replay", "conv", 2_000))
+    drain(grok.stream_chat(chat("replay", "conv", 2_000)).await)
         .await
         .unwrap();
     let replay = std::fs::read_to_string(&grok_log).unwrap();
@@ -1165,7 +1194,9 @@ async fn cli_sessions_hermes_db_and_signals() {
     let mut term = CliProvider::claude(&term_bin);
     term.set_home(Some(home.clone()));
     let started = Instant::now();
-    let err = err_of(term.stream_chat(chat("hi", "c", 400)).await);
+    let err = drain(term.stream_chat(chat("hi", "c", 400)).await)
+        .await
+        .unwrap_err();
     assert!(err.message.contains("timed out"));
     assert!(started.elapsed() < Duration::from_millis(2_500));
     assert_eq!(std::fs::read_to_string(&term_file).unwrap(), "TERM");
@@ -1184,7 +1215,9 @@ async fn cli_sessions_hermes_db_and_signals() {
     let mut killer = CliProvider::claude(&kill_bin);
     killer.set_home(Some(home.clone()));
     let started = Instant::now();
-    let err = err_of(killer.stream_chat(chat("hi", "c", 200)).await);
+    let err = drain(killer.stream_chat(chat("hi", "c", 200)).await)
+        .await
+        .unwrap_err();
     let elapsed = started.elapsed();
     assert!(err.message.contains("timed out"));
     assert!(elapsed >= Duration::from_millis(2_900), "{elapsed:?}");
@@ -1205,12 +1238,8 @@ async fn cli_sessions_hermes_db_and_signals() {
     );
     let mut dropped = CliProvider::claude(&drop_bin);
     dropped.set_home(Some(home));
-    let mut work = Box::pin(dropped.stream_chat(chat("hi", "c", 20_000)));
-    tokio::select! {
-        _ = tokio::time::sleep(Duration::from_millis(200)) => {}
-        _ = work.as_mut() => panic!("child exited before cancellation"),
-    }
-    drop(work);
+    let stream = dropped.stream_chat(chat("hi", "c", 20_000)).await.unwrap();
+    drop(stream);
     let deadline = Instant::now() + Duration::from_secs(2);
     let mut saw = String::new();
     while Instant::now() < deadline {
