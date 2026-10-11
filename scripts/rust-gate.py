@@ -8,9 +8,8 @@ Exit 1 on any finding. Test code (tests/, #[cfg(test)]) is exempt from (2) excep
 import os, re, sys, tomllib
 root = sys.argv[1]
 LAYER = {'wire': 0, 'config': 0, 'kernel': 1, 'testkit': 1,
-         'memory-postgres': 2, 'memory-sqlite': 2, 'providers': 2, 'harness-acp': 2, 'harness-codex': 2, 'harness-claude': 2,
-         'harness-headless': 2, 'terminal': 2, 'tools': 2, 'skills': 2, 'hooks': 2, 'mcp': 2, 'capture': 2, 'transcripts': 2,
-         'agents': 2, 'mesh': 2, 'ca': 2, 'local-db': 2, 'wiki': 2, 'workflows': 2, 'tasks': 2,
+         'memory-postgres': 2, 'memory-sqlite': 2, 'providers': 2, 'harness-acp': 2, 'terminal': 2, 'tools': 2, 'mcp': 2,
+         'capture': 2, 'mesh': 2, 'workflows': 2, 'tasks': 2,
          'gateway': 3, 'sessions': 3, 'agent-loop': 3, 'workers': 3,
          'cli': 4, 'rivetos': 4}
 ADAPTER, SERVICE, COMPOSITION = 2, 3, 4
