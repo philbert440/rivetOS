@@ -95,7 +95,7 @@ impl std::fmt::Debug for FileLockOptions {
 }
 
 pub fn system_hostname() -> String {
-    let raw = std::fs::read_to_string("/proc/sys/kernel/hostname").unwrap_or_default();
+    let raw = protocol::host::read_text(Path::new("/proc/sys/kernel/hostname")).unwrap_or_default();
     let name = raw.trim();
     if name.is_empty() {
         "localhost".to_string()

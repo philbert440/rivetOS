@@ -6,10 +6,10 @@ use protocol::host::Env;
 use rivetos::{HttpExchange, HttpReply, MapEnv};
 
 pub fn den_env() -> Arc<dyn Env + Send + Sync> {
-    Arc::new(MapEnv::from_pairs(&[
-        ("RIVETOS_CAPTURE_TRANSPORT", "den"),
-        ("RIVET_DEN_URL", "https://127.0.0.1:5174"),
-    ]))
+    let mut env = MapEnv::new();
+    env.set("RIVETOS_CAPTURE_TRANSPORT", "den");
+    env.set("RIVET_DEN_URL", "https://127.0.0.1:5174");
+    Arc::new(env)
 }
 
 pub fn fixed_clock() -> Arc<dyn Fn() -> String + Send + Sync> {

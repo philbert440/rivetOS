@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use capture::{MapEnv, cap_for_storage, iso_from_unix_ms, sha256_hex};
 use protocol::digest::sha256_hex_js;
 use protocol::js::{
@@ -129,9 +127,8 @@ fn iso_and_date_parse_round_trip() {
         }
     }
     for block in root["dates"].as_array().unwrap() {
-        let mut values = HashMap::new();
-        values.insert("TZ".to_string(), block["tz"].as_str().unwrap().to_string());
-        let env = MapEnv::new(values);
+        let mut env = MapEnv::new();
+        env.set("TZ", block["tz"].as_str().unwrap());
         for item in block["date_parse"].as_array().unwrap() {
             let text = item["text"].as_str().unwrap();
             let parsed = date_parse(text, &env);

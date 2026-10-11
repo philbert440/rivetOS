@@ -10,7 +10,11 @@ const DEN: &str = "https://127.0.0.1:5174";
 const PG: &str = "postgres://localhost/rivet";
 
 fn env(pairs: &[(&str, &str)]) -> MapEnv {
-    MapEnv::from_pairs(pairs)
+    let mut result = MapEnv::new();
+    for (key, value) in pairs {
+        result.set(*key, *value);
+    }
+    result
 }
 
 fn no_config() -> Option<String> {

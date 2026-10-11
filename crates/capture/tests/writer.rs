@@ -1130,7 +1130,8 @@ async fn env_enable_redacts_and_falsey_values_do_not() {
     secret.messages[0].content = "token sk-abcdefghijklmnopqrstuvwxyz".to_string();
     let server = Server::start(|_| (200, ok_body(1, 0)));
     let spool = tempfile::tempdir().unwrap().keep();
-    let env = MapEnv::from_pairs(&[("RIVETOS_CAPTURE_REDACTION", "1")]);
+    let mut env = MapEnv::new();
+    env.set("RIVETOS_CAPTURE_REDACTION", "1");
     let built = open_writer(&server.url, spool, 1000, None, env, UserSource::Owner, None);
     built.writer.write(secret).await.unwrap();
     let posted: CaptureBatch = serde_json::from_str(&server.hits.lock()[0].body).unwrap();
@@ -1141,7 +1142,8 @@ async fn env_enable_redacts_and_falsey_values_do_not() {
         secret.messages[0].content = "token sk-abcdefghijklmnopqrstuvwxyz stays".to_string();
         let server = Server::start(|_| (200, ok_body(1, 0)));
         let spool = tempfile::tempdir().unwrap().keep();
-        let env = MapEnv::from_pairs(&[("RIVETOS_CAPTURE_REDACTION", value)]);
+        let mut env = MapEnv::new();
+        env.set("RIVETOS_CAPTURE_REDACTION", value);
         let built = open_writer(&server.url, spool, 1000, None, env, UserSource::Owner, None);
         built.writer.write(secret.clone()).await.unwrap();
         assert_eq!(
@@ -1157,7 +1159,8 @@ async fn empty_redaction_options_do_not_override_env() {
     secret.messages[0].content = "token sk-abcdefghijklmnopqrstuvwxyz".to_string();
     let server = Server::start(|_| (200, ok_body(1, 0)));
     let spool = tempfile::tempdir().unwrap().keep();
-    let env = MapEnv::from_pairs(&[("RIVETOS_CAPTURE_REDACTION", "1")]);
+    let mut env = MapEnv::new();
+    env.set("RIVETOS_CAPTURE_REDACTION", "1");
     let built = open_writer(
         &server.url,
         spool,
@@ -1178,7 +1181,8 @@ async fn explicit_disable_wins_over_env() {
     secret.messages[0].content = "token sk-abcdefghijklmnopqrstuvwxyz stays".to_string();
     let server = Server::start(|_| (200, ok_body(1, 0)));
     let spool = tempfile::tempdir().unwrap().keep();
-    let env = MapEnv::from_pairs(&[("RIVETOS_CAPTURE_REDACTION", "1")]);
+    let mut env = MapEnv::new();
+    env.set("RIVETOS_CAPTURE_REDACTION", "1");
     let redaction = CaptureRedactionOptions {
         enabled: Some(false),
         ..CaptureRedactionOptions::default()
@@ -1292,7 +1296,9 @@ async fn routed_user_token_and_private_spool() {
         ("../visitor", "t2-padding-padding"),
     ] {
         let mut opts = CaptureWriterOptions::new(server.url.clone());
-        opts.env = Arc::new(MapEnv::from_pairs(&[("HOME", home.to_str().unwrap())]));
+        let mut env = MapEnv::new();
+        env.set("HOME", home.to_str().unwrap());
+        opts.env = Arc::new(env);
         opts.user = UserSource::Routed(capture::CaptureUser {
             id: id.to_string(),
             token: token.to_string(),
@@ -1305,7 +1311,9 @@ async fn routed_user_token_and_private_spool() {
             .unwrap();
     }
     let mut opts = CaptureWriterOptions::new(server.url.clone());
-    opts.env = Arc::new(MapEnv::from_pairs(&[("HOME", home.to_str().unwrap())]));
+    let mut env = MapEnv::new();
+    env.set("HOME", home.to_str().unwrap());
+    opts.env = Arc::new(env);
     opts.user = UserSource::Owner;
     opts.now_ms = Some(Arc::new(|| 1000));
     create_capture_writer(opts)
@@ -1339,10 +1347,9 @@ async fn routed_user_token_and_private_spool() {
 async fn user_comes_from_the_environment() {
     let server = Server::start(|_| (200, ok_body(1, 0)));
     let spool_a = tempfile::tempdir().unwrap().keep();
-    let env = MapEnv::from_pairs(&[
-        ("RIVETOS_USER_ID", "guest"),
-        ("RIVETOS_USER_TOKEN", "tok-123"),
-    ]);
+    let mut env = MapEnv::new();
+    env.set("RIVETOS_USER_ID", "guest");
+    env.set("RIVETOS_USER_TOKEN", "tok-123");
     let built = open_writer(
         &server.url,
         spool_a,
@@ -1354,10 +1361,9 @@ async fn user_comes_from_the_environment() {
     );
     built.writer.write(one()).await.unwrap();
     let spool_b = tempfile::tempdir().unwrap().keep();
-    let env = MapEnv::from_pairs(&[
-        ("RIVETOS_USER_ID", "guest"),
-        ("RIVETOS_USER_TOKEN", "tok-123"),
-    ]);
+    let mut env = MapEnv::new();
+    env.set("RIVETOS_USER_ID", "guest");
+    env.set("RIVETOS_USER_TOKEN", "tok-123");
     let owner = open_writer(
         &server.url,
         spool_b,
@@ -1369,7 +1375,9 @@ async fn user_comes_from_the_environment() {
     );
     owner.writer.write(one()).await.unwrap();
     let mut opts = CaptureWriterOptions::new(server.url.clone());
-    opts.env = Arc::new(MapEnv::from_pairs(&[("RIVETOS_USER_ID", "guest")]));
+    let mut env = MapEnv::new();
+    env.set("RIVETOS_USER_ID", "guest");
+    opts.env = Arc::new(env);
     opts.spool_dir = Some(tempfile::tempdir().unwrap().keep());
     assert!(create_capture_writer(opts).is_err());
     let spool_c = tempfile::tempdir().unwrap().keep();

@@ -167,14 +167,16 @@ fn resolve_conversation_key_precedence() {
 
 #[test]
 fn resolve_task_context_from_env() {
-    let task_only = MapEnv::from_pairs(&[("RIVETOS_TASK_ID", TASK_UUID)]);
+    let mut task_only = MapEnv::new();
+    task_only.set("RIVETOS_TASK_ID", TASK_UUID);
     let ctx = resolve_task_context(&task_only);
     assert!(ctx.session_key_override.is_none());
     assert_eq!(ctx.task_id.as_deref(), Some(TASK_UUID));
     assert!(!ctx.legacy_task_key);
 
     let legacy_key = format!("task:{TASK_UUID}");
-    let legacy = MapEnv::from_pairs(&[("RIVETOS_SESSION_KEY", legacy_key.as_str())]);
+    let mut legacy = MapEnv::new();
+    legacy.set("RIVETOS_SESSION_KEY", legacy_key.as_str());
     let ctx = resolve_task_context(&legacy);
     assert_eq!(
         ctx.session_key_override.as_deref(),
@@ -183,18 +185,18 @@ fn resolve_task_context_from_env() {
     assert_eq!(ctx.task_id.as_deref(), Some(TASK_UUID));
     assert!(ctx.legacy_task_key);
 
-    let both = MapEnv::from_pairs(&[
-        (
-            "RIVETOS_SESSION_KEY",
-            "task:00000000-0000-4000-8000-000000000000",
-        ),
-        ("RIVETOS_TASK_ID", TASK_UUID),
-    ]);
+    let mut both = MapEnv::new();
+    both.set(
+        "RIVETOS_SESSION_KEY",
+        "task:00000000-0000-4000-8000-000000000000",
+    );
+    both.set("RIVETOS_TASK_ID", TASK_UUID);
     let ctx = resolve_task_context(&both);
     assert_eq!(ctx.task_id.as_deref(), Some(TASK_UUID));
     assert!(ctx.legacy_task_key);
 
-    let den = MapEnv::from_pairs(&[("RIVETOS_SESSION_KEY", "chat-20260808-abcd")]);
+    let mut den = MapEnv::new();
+    den.set("RIVETOS_SESSION_KEY", "chat-20260808-abcd");
     let ctx = resolve_task_context(&den);
     assert_eq!(
         ctx.session_key_override.as_deref(),
@@ -203,12 +205,14 @@ fn resolve_task_context_from_env() {
     assert!(ctx.task_id.is_none());
     assert!(!ctx.legacy_task_key);
 
-    let plain = MapEnv::from_pairs(&[]);
+    let plain = MapEnv::new();
     let ctx = resolve_task_context(&plain);
     assert!(ctx.session_key_override.is_none());
     assert!(ctx.task_id.is_none());
     assert!(!ctx.legacy_task_key);
-    let empty = MapEnv::from_pairs(&[("RIVETOS_SESSION_KEY", ""), ("RIVETOS_TASK_ID", "")]);
+    let mut empty = MapEnv::new();
+    empty.set("RIVETOS_SESSION_KEY", "");
+    empty.set("RIVETOS_TASK_ID", "");
     assert!(resolve_task_context(&empty).task_id.is_none());
 }
 

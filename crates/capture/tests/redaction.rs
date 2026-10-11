@@ -6,6 +6,12 @@ use capture::{
 };
 use serde_json::json;
 
+fn redaction_env(value: &str) -> MapEnv {
+    let mut env = MapEnv::new();
+    env.set("RIVETOS_CAPTURE_REDACTION", value);
+    env
+}
+
 fn enabled() -> capture::ResolvedCaptureRedaction {
     resolve_capture_redaction(Some(&CaptureRedactionOptions {
         enabled: Some(true),
@@ -101,39 +107,20 @@ fn resolve_enables_builtins_and_compiles_patterns() {
 
 #[test]
 fn env_redaction_is_none_for_falsey_values() {
-    assert!(capture_redaction_from_env(&MapEnv::from_pairs(&[])).is_none());
-    assert!(
-        capture_redaction_from_env(&MapEnv::from_pairs(&[("RIVETOS_CAPTURE_REDACTION", "0")]))
-            .is_none()
-    );
-    assert!(
-        capture_redaction_from_env(&MapEnv::from_pairs(&[(
-            "RIVETOS_CAPTURE_REDACTION",
-            "false"
-        )]))
-        .is_none()
-    );
+    assert!(capture_redaction_from_env(&MapEnv::default()).is_none());
+    assert!(capture_redaction_from_env(&redaction_env("0")).is_none());
+    assert!(capture_redaction_from_env(&redaction_env("false")).is_none());
 }
 
 #[test]
 fn env_redaction_enables_builtins() {
     for value in ["1", "true", "YES", "on", "\u{FEFF}true"] {
-        let options = capture_redaction_from_env(&MapEnv::from_pairs(&[(
-            "RIVETOS_CAPTURE_REDACTION",
-            value,
-        )]))
-        .unwrap();
+        let options = capture_redaction_from_env(&redaction_env(value)).unwrap();
         assert_eq!(options.enabled, Some(true));
         assert_eq!(options.builtins, Some(true));
         assert!(options.patterns.is_none());
     }
-    assert!(
-        capture_redaction_from_env(&MapEnv::from_pairs(&[(
-            "RIVETOS_CAPTURE_REDACTION",
-            "\u{0085}true"
-        )]))
-        .is_none()
-    );
+    assert!(capture_redaction_from_env(&redaction_env("\u{0085}true")).is_none());
 }
 
 #[test]

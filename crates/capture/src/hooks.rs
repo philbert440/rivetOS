@@ -824,9 +824,9 @@ async fn read_stdin() -> String {
     tokio::task::spawn_blocking(|| {
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let mut buf = String::new();
-            let _ = std::io::Read::read_to_string(&mut std::io::stdin(), &mut buf);
-            let _ = tx.send(buf);
+            let mut buf = Vec::new();
+            let _ = std::io::Read::read_to_end(&mut std::io::stdin(), &mut buf);
+            let _ = tx.send(String::from_utf8_lossy(&buf).into_owned());
         });
         rx.recv_timeout(STDIN_TIMEOUT).unwrap_or_default()
     })
