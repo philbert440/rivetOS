@@ -756,7 +756,9 @@ export class RivetGateway {
    */
   startHarnessSession(
     harnessId: HarnessId,
-    body: StartSessionOpts = {},
+    /** `agentId` starts the session from an agent preset: its directory,
+     *  model and effort, resolved on the node. */
+    body: StartSessionOpts & { agentId?: string } = {},
     signal?: AbortSignal,
   ): Promise<HarnessSessionSummary> {
     return request(this.config, `/api/harnesses/${encodeURIComponent(harnessId)}/sessions`, {
