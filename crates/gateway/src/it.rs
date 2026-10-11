@@ -252,8 +252,11 @@ async fn plain_http_routes_match_disabled_and_event_bodies() {
 
     let garbage = exchange(addr, "GARBAGE\r\n\r\n").await;
     assert_eq!(garbage.status, 400);
-    assert!(garbage.head.contains("Connection: close"));
-    assert!(!garbage.head.contains("Transfer-Encoding"));
+    assert_eq!(
+        garbage.head,
+        "HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n"
+    );
+    assert!(content_length(&garbage.head).is_none());
 
     let encoded = exchange(addr, &request("GET", "/heal%74hz", &host, "", "")).await;
     assert_eq!(encoded.status, 200);
@@ -758,6 +761,9 @@ async fn websocket_missed_pong_closes() {
         }
     };
     assert!(buf[..end].starts_with(b"HTTP/1.1 101"));
+    let head = String::from_utf8_lossy(&buf[..end]);
+    assert!(head.contains("Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo="));
+    assert!(!head.contains("Sec-Websocket-Accept"));
     let mut pending = buf[end..].to_vec();
     let frame = read_frame(&mut stream, &mut pending).await;
     assert_eq!(frame.0 & 0x0f, 0x1);
@@ -1333,6 +1339,73 @@ async fn non_owner_phone_pairing_is_403() {
 }
 
 #[tokio::test]
+async fn post_healthz_keeps_the_connection() {
+    let dir = scratch("healthz-post");
+    let running = boot(isolated(&dir)).await;
+    let addr = running.addr();
+    let host = format!("127.0.0.1:{}", addr.port());
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+    let first = request("POST", "/healthz", &host, "", r#"{"v":1}"#);
+    stream.write_all(first.as_bytes()).await.unwrap();
+    let resp = read_http(&mut stream).await;
+    assert_eq!(resp.status, 200);
+    assert!(resp.head.contains("Connection: keep-alive"));
+    let second = request("GET", "/healthz", &host, "", "");
+    stream.write_all(second.as_bytes()).await.unwrap();
+    let again = read_http(&mut stream).await;
+    assert_eq!(again.status, 200);
+    running.shutdown().await;
+}
+
+#[tokio::test]
+async fn shutdown_sends_empty_websocket_close() {
+    let dir = scratch("ws-close");
+    let running = boot(isolated(&dir)).await;
+    let addr = running.addr();
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+    let key = "dGhlIHNhbXBsZSBub25jZQ==";
+    let upgrade = format!(
+        "GET /ws HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n",
+        addr.port()
+    );
+    stream.write_all(upgrade.as_bytes()).await.unwrap();
+    let mut buf = Vec::new();
+    let mut tmp = [0_u8; 4096];
+    let end = loop {
+        let read = stream.read(&mut tmp).await.unwrap();
+        assert!(read > 0);
+        buf.extend_from_slice(&tmp[..read]);
+        if let Some(end) = header_end(&buf) {
+            break end;
+        }
+    };
+    let head = String::from_utf8_lossy(&buf[..end]);
+    assert!(head.starts_with("HTTP/1.1 101"));
+    assert!(head.contains("Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo="));
+    assert!(!head.contains("Sec-Websocket-Accept"));
+    let mut pending = buf[end..].to_vec();
+    let frame = read_frame(&mut stream, &mut pending).await;
+    assert_eq!(frame.0 & 0x0f, 0x1);
+    let shut = tokio::spawn(async move {
+        running.shutdown().await;
+    });
+    let frame = read_frame(&mut stream, &mut pending).await;
+    assert_eq!(frame.0 & 0x0f, 0x8);
+    assert!(frame.1.is_empty());
+    shut.await.unwrap();
+}
+
+fn assert_error_line(err: &crate::listen::ServeError) {
+    let dump = err.node_stderr();
+    assert_eq!(dump, format!("Error: {err}\n"));
+    assert_eq!(dump.matches('\n').count(), 1);
+    assert!(!dump.contains("    at "));
+    assert!(!dump.contains("Node.js"));
+    assert!(!dump.contains("file://"));
+    assert!(!dump.contains("throw "));
+}
+
+#[tokio::test]
 async fn startup_refusals_match_node_stderr() {
     let dir = scratch("startup-dump");
     let mut env = isolated(&dir);
@@ -1340,29 +1413,16 @@ async fn startup_refusals_match_node_stderr() {
     let Err(err) = serve(GatewayConfig::from_env(&env)).await else {
         panic!("bind refusal");
     };
-    let dump = err.node_stderr();
-    assert!(dump.starts_with("file://"), "{dump}");
-    assert!(!dump.starts_with("Error:"));
-    assert!(dump.ends_with('\n'));
-    assert!(dump.contains("services/den-server/dist/server.js:1995\n"));
-    assert!(dump.contains(
-        "        throw new Error(`[den-server] refusing to bind ${config.host}: gateway TLS is required off-loopback ` +\n"
-    ));
-    assert!(dump.contains("\n              ^\n"));
-    assert!(dump.contains(&format!("Error: {err}\n")));
-    assert!(dump.contains("    at createDenServer (file://"));
-    assert!(dump.contains(":1995:15)\n"));
-    assert!(dump.contains("\nNode.js v22.22.2\n"));
+    assert_error_line(&err);
+    assert!(err.to_string().contains("refusing to bind 0.0.0.0"));
 
     let mut env = isolated(&dir);
     env.insert("RIVETOS_DEN_HOST".to_string(), String::new());
     let Err(err) = serve(GatewayConfig::from_env(&env)).await else {
         panic!("empty host");
     };
+    assert_error_line(&err);
     assert!(err.to_string().contains("refusing to bind :"));
-    let dump = err.node_stderr();
-    assert!(dump.contains("server.js:1995"));
-    assert!(dump.contains("Error: [den-server] refusing to bind :"));
 
     std::fs::write(dir.join("cert.pem"), b"cert").unwrap();
     std::fs::write(dir.join("key.pem"), b"key").unwrap();
@@ -1379,16 +1439,9 @@ async fn startup_refusals_match_node_stderr() {
     let Err(err) = serve(GatewayConfig::from_env(&env)).await else {
         panic!("missing ca");
     };
-    let dump = err.node_stderr();
-    assert!(dump.starts_with("file://"));
-    assert!(!dump.contains("SECURITY"));
-    assert!(dump.contains("server.js:2005\n"));
-    assert!(dump.contains(
-        "            throw new Error(`[den-server] TLS CA chain missing at ${config.tls.caPath} — cannot verify device client certs`);\n"
-    ));
-    assert!(dump.contains("\n                  ^\n"));
-    assert!(dump.contains(":2005:19)\n"));
-    assert!(dump.contains(&format!("Error: {err}\n")));
+    assert_error_line(&err);
+    assert!(err.to_string().contains("TLS CA chain missing"));
+    assert!(!err.node_stderr().contains("SECURITY"));
 
     let mut env = isolated(&dir);
     env.insert("RIVETOS_DEN_HOST".to_string(), "0.0.0.0".to_string());
@@ -1404,14 +1457,14 @@ async fn startup_refusals_match_node_stderr() {
     let Err(err) = serve(GatewayConfig::from_env(&env)).await else {
         panic!("missing cert");
     };
-    let dump = err.node_stderr();
-    assert!(dump.starts_with("node:fs:560\n  return binding.open(\n                 ^\n"));
-    assert!(dump.contains(&format!("Error: {err}\n")));
-    assert!(dump.contains("errno: -2,\n"));
-    assert!(dump.contains("code: 'ENOENT',\n"));
-    assert!(dump.contains(&format!("path: '{}'\n", missing.to_string_lossy())));
-    assert!(dump.contains("server.js:2001:22)\n"));
-    assert!(dump.contains("run_main:117:5) {\n"));
+    assert_error_line(&err);
+    assert_eq!(
+        err.to_string(),
+        format!(
+            "ENOENT: no such file or directory, open '{}'",
+            missing.to_string_lossy()
+        )
+    );
 
     let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = held.local_addr().unwrap().port();
@@ -1421,20 +1474,11 @@ async fn startup_refusals_match_node_stderr() {
     let Err(err) = serve(GatewayConfig::from_env(&env)).await else {
         panic!("port in use");
     };
-    let dump = err.node_stderr();
-    let mut throw_line = String::from("node:events:497\n      throw er; ");
-    throw_line.push('/');
-    throw_line.push('/');
-    throw_line.push_str(" Unhandled 'error' event\n      ^\n");
-    assert!(dump.starts_with(&throw_line));
-    assert!(dump.contains(&format!(
-        "Error: listen EADDRINUSE: address already in use 127.0.0.1:{port}\n"
-    )));
-    assert!(dump.contains("errno: -98,\n"));
-    assert!(dump.contains("code: 'EADDRINUSE',\n"));
-    assert!(dump.contains("address: '127.0.0.1',\n"));
-    assert!(dump.contains(&format!("port: {port}\n")));
-    assert!(dump.ends_with("\nNode.js v22.22.2\n"));
+    assert_error_line(&err);
+    assert_eq!(
+        err.to_string(),
+        format!("listen EADDRINUSE: address already in use 127.0.0.1:{port}")
+    );
     drop(held);
 }
 
@@ -1585,6 +1629,31 @@ async fn body_limits_run_after_origin_and_auth() {
     let unauth = tls_exchange(addr, client_config(&ca_pem, None), &huge).await;
     assert_eq!(unauth.status, 401);
     body_eq(&unauth.body, "unauthorized");
+    let connector = TlsConnector::from(Arc::new(client_config(&ca_pem, None)));
+    let socket = tokio::net::TcpSocket::new_v4().unwrap();
+    socket.bind(SocketAddr::new(addr.ip(), 0)).unwrap();
+    let tcp = socket.connect(addr).await.unwrap();
+    let mut stream = connector
+        .connect(ServerName::try_from("127.0.0.2").unwrap(), tcp)
+        .await
+        .unwrap();
+    let enroll = request("POST", "/api/devices/enroll", &host, "", "{}");
+    stream.write_all(enroll.as_bytes()).await.unwrap();
+    let first = read_http(&mut stream).await;
+    assert_eq!(first.status, 401);
+    body_eq(&first.body, "unauthorized");
+    assert!(first.head.contains("Connection: keep-alive"));
+    let event = request(
+        "POST",
+        "/event",
+        &host,
+        "Accept: text/html\r\n",
+        r#"{"v":1,"session":"x","type":"turn.end"}"#,
+    );
+    stream.write_all(event.as_bytes()).await.unwrap();
+    let second = read_http(&mut stream).await;
+    assert_eq!(second.status, 401);
+    body_eq(&second.body, "unauthorized");
     let tls12 = tls_exchange(
         addr,
         client_config_with(&ca_pem, None, TLS12_ONLY),
@@ -1613,7 +1682,11 @@ async fn ambiguous_framing_follows_hyper() {
     );
     let bad = exchange(addr, &differ).await;
     assert_eq!(bad.status, 400);
-    assert!(bad.head.contains("Connection: close"));
+    assert_eq!(
+        bad.head,
+        "HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n"
+    );
+    assert!(content_length(&bad.head).is_none());
     assert!(!bad.head.to_ascii_lowercase().contains("transfer-encoding"));
     let smuggle = format!(
         "POST /event HTTP/1.1\r\nHost: {host}\r\nContent-Length: 1\r\nTransfer-Encoding: chunked\r\n\r\n2\r\n[]\r\n0\r\n\r\n"
@@ -1692,6 +1765,9 @@ async fn websocket_data_and_ping_do_not_count_as_pong() {
         }
     };
     assert!(buf[..end].starts_with(b"HTTP/1.1 101"));
+    let head = String::from_utf8_lossy(&buf[..end]);
+    assert!(head.contains("Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo="));
+    assert!(!head.contains("Sec-Websocket-Accept"));
     let mut pending = buf[end..].to_vec();
     let frame = read_frame(&mut stream, &mut pending).await;
     assert_eq!(frame.0 & 0x0f, 0x1);

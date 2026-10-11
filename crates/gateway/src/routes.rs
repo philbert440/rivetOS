@@ -32,6 +32,15 @@ pub struct App {
     pub refused: Mutex<Vec<String>>,
     pub mesh_cache: Mutex<MeshCache>,
     pub routes: GatewayRoutes,
+    pub ws_jobs: Mutex<Vec<tokio::task::JoinHandle<()>>>,
+}
+
+impl App {
+    pub(crate) fn track_ws(&self, job: tokio::task::JoinHandle<()>) {
+        let mut jobs = self.ws_jobs.lock();
+        jobs.retain(|job| !job.is_finished());
+        jobs.push(job);
+    }
 }
 
 pub enum Outcome {

@@ -35,8 +35,10 @@ const IDLE_DEADLINE: Duration = Duration::from_secs(5);
 const WS_WRITE_DEADLINE: Duration = Duration::from_secs(30);
 const HEADER_BACKSTOP: Duration = Duration::from_secs(24 * 60 * 60);
 const VIEW_QUEUE: usize = 1024 * 1024;
-const AUTO_400: &[u8] = b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n";
 const NODE_400: &[u8] = b"HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n";
+const WS_TITLE: &[u8] = b"Sec-Websocket-";
+const WS_NODE: &[u8] = b"Sec-WebSocket-";
+const _: () = assert!(WS_TITLE.len() == WS_NODE.len());
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Mode {
@@ -173,12 +175,6 @@ where
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
         let this = self.get_mut();
-        if this.shut() {
-            return Poll::Ready(Err(io::Error::new(
-                ErrorKind::ConnectionAborted,
-                "shutdown",
-            )));
-        }
         this.sync();
         let mode = this.gate.lock().mode;
         if mode != Mode::Open && this.sleep.as_mut().poll(cx).is_ready() {
@@ -214,17 +210,25 @@ where
     S: AsyncWrite + Unpin,
 {
     fn replacement(&mut self, buf: &[u8]) -> Option<Vec<u8>> {
-        if buf == AUTO_400 {
-            return Some(NODE_400.to_vec());
-        }
+        let mut owned = None;
         let rewrite = self.gate.lock().rewrite;
         if rewrite && buf.starts_with(b"HTTP/1.0 ") {
             self.gate.lock().rewrite = false;
-            let mut owned = buf.to_vec();
-            owned[..9].copy_from_slice(b"HTTP/1.1 ");
-            return Some(owned);
+            let mut next = buf.to_vec();
+            next[..9].copy_from_slice(b"HTTP/1.1 ");
+            owned = Some(next);
         }
-        None
+        let view = owned.as_deref().unwrap_or(buf);
+        if let Some(fixed) = bare_node_400(view) {
+            owned = Some(fixed);
+        }
+        let view = owned.as_deref().unwrap_or(buf);
+        if needs_websocket_case(view) {
+            let mut next = owned.unwrap_or_else(|| buf.to_vec());
+            rewrite_websocket_names(&mut next);
+            owned = Some(next);
+        }
+        owned
     }
 
     fn drive_pending(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<usize>> {
@@ -364,25 +368,70 @@ impl Service<Request<HyperIncoming>> for GatewaySvc {
                     let key = header(&incoming.headers, "sec-websocket-key").unwrap_or("");
                     let reply = switching_protocols(key);
                     note_open(&gate);
-                    let app = Arc::clone(&app);
-                    tokio::spawn(async move {
+                    let session_app = Arc::clone(&app);
+                    let job = tokio::spawn(async move {
                         let Ok(upgraded) = on_upgrade.await else {
                             return;
                         };
                         let io = hyper_util::rt::TokioIo::new(upgraded);
-                        ws_session(io, app, plan, shutdown).await;
+                        ws_session(io, session_app, plan, shutdown).await;
                     });
+                    app.track_ws(job);
                     Ok(to_response(&reply, false, false, false, &gate))
                 }
-                Outcome::Reply(reply) => Ok(to_response(
-                    &reply,
-                    incoming.http10,
-                    incoming.head,
-                    req_close,
-                    &gate,
-                )),
+                Outcome::Reply(reply) => {
+                    if !reply.close && !incoming.http10 && !req_close {
+                        body.finish_unread().await;
+                    }
+                    Ok(to_response(
+                        &reply,
+                        incoming.http10,
+                        incoming.head,
+                        req_close,
+                        &gate,
+                    ))
+                }
             }
         })
+    }
+}
+
+fn bare_node_400(buf: &[u8]) -> Option<Vec<u8>> {
+    let rest = buf.strip_prefix(b"HTTP/1.1 400 Bad Request\r\n")?;
+    let end = rest.windows(4).position(|window| window == b"\r\n\r\n")?;
+    if end + 4 != rest.len() {
+        return None;
+    }
+    let headers = &rest[..end];
+    if !headers.is_empty() {
+        for line in headers.split(|&byte| byte == b'\n') {
+            let line = line.strip_suffix(b"\r").unwrap_or(line);
+            if line.is_empty() {
+                continue;
+            }
+            let allowed = line.eq_ignore_ascii_case(b"Content-Length: 0")
+                || line.eq_ignore_ascii_case(b"Connection: close");
+            if !allowed {
+                return None;
+            }
+        }
+    }
+    Some(NODE_400.to_vec())
+}
+
+fn needs_websocket_case(buf: &[u8]) -> bool {
+    buf.windows(WS_TITLE.len()).any(|window| window == WS_TITLE)
+}
+
+fn rewrite_websocket_names(buf: &mut [u8]) {
+    let mut index = 0;
+    while index + WS_TITLE.len() <= buf.len() {
+        if buf[index..].starts_with(WS_TITLE) {
+            buf[index..index + WS_NODE.len()].copy_from_slice(WS_NODE);
+            index += WS_TITLE.len();
+        } else {
+            index += 1;
+        }
     }
 }
 
@@ -632,6 +681,7 @@ where
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tokio::select! {
+            biased;
             changed = shutdown.changed() => {
                 if changed.is_err() || *shutdown.borrow() {
                     let _ = send_deadline(&mut socket, Message::Close(None)).await;
@@ -655,7 +705,13 @@ where
                             break;
                         }
                     }
-                    Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
+                    Some(Ok(Message::Close(_))) | None => break,
+                    Some(Err(_)) => {
+                        if *shutdown.borrow() {
+                            let _ = send_deadline(&mut socket, Message::Close(None)).await;
+                        }
+                        break;
+                    }
                     Some(Ok(_)) => {}
                 }
             }

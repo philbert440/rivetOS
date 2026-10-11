@@ -34,7 +34,7 @@ pub fn capturing_mesh_logs<T>(body: impl FnOnce() -> T) -> (T, Vec<String>) {
     (value, logs)
 }
 
-use crate::standard_helpers::{homedir_from, join_path, repo_root, unix_millis};
+use crate::standard_helpers::{homedir_from, join_path, unix_millis};
 
 const BODY_LIMIT: usize = 256 * 1024;
 
@@ -60,18 +60,15 @@ pub struct MeshFailure {
     pub code: &'static str,
     pub message: String,
     pub path: String,
-    pub line: u32,
 }
 
 impl MeshFailure {
     pub fn log_block(&self) -> String {
-        let repo = repo_root();
         let stamp = unix_millis();
         let path = inspect_string(&self.path);
-        let types_mesh = ["packages", "types", "dist", "mesh.js"].join("/");
         format!(
-            "mesh.json parse failed: MeshParseError: {}\n    at assertRecordMeshFile ({repo}/{types_mesh}:{}:15)\n    at parseMeshFile ({repo}/{types_mesh}:272:12)\n    at loadMeshFile (file://{repo}/services/den-server/dist/mesh.js:60:20)\n    at async build (file://{repo}/services/den-server/dist/mesh.js:192:22) {{\n  code: '{}',\n  severity: 'fatal',\n  context: {{ path: {path} }},\n  retryable: false,\n  timestamp: {stamp},\n  path: {path}\n}}",
-            self.message, self.line, self.code
+            "mesh.json parse failed: MeshParseError: {}\n  code: '{}',\n  severity: 'fatal',\n  context: {{ path: {path} }},\n  retryable: false,\n  timestamp: {stamp},\n  path: {path}\n}}",
+            self.message, self.code
         )
     }
 }
@@ -127,7 +124,6 @@ fn parse_mesh_file(raw: &str, path: &str, shared_root: &str) -> Result<MeshFile,
                 code: "MESH_JSON_INVALID",
                 message: format!("mesh.json at {path} is not valid JSON"),
                 path: path.to_string(),
-                line: 216,
             });
         }
     };
@@ -136,7 +132,6 @@ fn parse_mesh_file(raw: &str, path: &str, shared_root: &str) -> Result<MeshFile,
             code: "MESH_INVALID_SHAPE",
             message: format!("mesh.json at {path} is not a JSON object"),
             path: path.to_string(),
-            line: 216,
         });
     };
     if object.get("nodes").is_some_and(Value::is_array) {
@@ -147,7 +142,6 @@ fn parse_mesh_file(raw: &str, path: &str, shared_root: &str) -> Result<MeshFile,
                 "mesh.json at {path} uses the pre-capabilities flat-array format, which is no longer supported. Rewrite the file as Record-format {{ version, nodes: {{ [id]: node }}, updatedAt }} (see live {live}; override with RIVETOS_SHARED_DIR)."
             ),
             path: path.to_string(),
-            line: 221,
         });
     }
     if let Some(nodes) = object.get("nodes")
@@ -158,7 +152,6 @@ fn parse_mesh_file(raw: &str, path: &str, shared_root: &str) -> Result<MeshFile,
             code: "MESH_INVALID_SHAPE",
             message: format!("mesh.json at {path}: nodes must be an object keyed by node id"),
             path: path.to_string(),
-            line: 224,
         });
     }
     let mut nodes = Vec::new();
@@ -272,7 +265,6 @@ fn node_err(path: &str, key: &str) -> MeshFailure {
         code: "MESH_NODE_INVALID",
         message: format!("mesh.json at {path}: node \"{key}\" is not an object"),
         path: path.to_string(),
-        line: 224,
     }
 }
 

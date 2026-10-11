@@ -39,6 +39,16 @@ impl RequestBody {
         self.cached = Some(result.clone());
         result
     }
+
+    pub async fn finish_unread(&mut self) {
+        if self.cached.is_some() || self.stream.is_none() {
+            return;
+        }
+        if self.declared.is_some_and(|len| len > BODY_LIMIT as u64) {
+            return;
+        }
+        let _ = self.bytes().await;
+    }
 }
 
 async fn collect_limited(stream: &mut hyper::body::Incoming) -> Result<Vec<u8>, BodyFail> {

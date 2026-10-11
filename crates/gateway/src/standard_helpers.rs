@@ -139,27 +139,3 @@ pub fn http_date(unix_secs: i64) -> String {
         second
     )
 }
-
-pub fn repo_root() -> String {
-    let mut starts = Vec::new();
-    starts.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")));
-    if let Ok(exe) = std::env::current_exe()
-        && let Some(parent) = exe.parent()
-    {
-        starts.push(parent.to_path_buf());
-    }
-    if let Ok(current) = std::env::current_dir() {
-        starts.push(current);
-    }
-    for start in starts {
-        let mut dir = Some(start);
-        while let Some(current) = dir {
-            if current.join("packages").join("types").is_dir() {
-                let canon = std::fs::canonicalize(&current).unwrap_or(current);
-                return canon.to_string_lossy().into_owned();
-            }
-            dir = current.parent().map(std::path::Path::to_path_buf);
-        }
-    }
-    String::new()
-}

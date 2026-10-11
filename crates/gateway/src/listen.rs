@@ -22,94 +22,16 @@ use crate::tls::{TlsMaterial, load_server, peer_auth};
 #[error("{message}")]
 pub struct ServeError {
     pub message: String,
-    crash: Crash,
-}
-
-#[derive(Debug)]
-enum Crash {
-    BindRefusal,
-    MissingCa,
-    MissingFile {
-        path: String,
-        errno: i32,
-    },
-    AddrInUse {
-        address: String,
-        port: u16,
-        errno: i32,
-    },
-    Other,
 }
 
 impl ServeError {
     pub fn node_stderr(&self) -> String {
-        match &self.crash {
-            Crash::BindRefusal => bind_refusal_stderr(&self.message),
-            Crash::MissingCa => missing_ca_stderr(&self.message),
-            Crash::MissingFile { path, errno } => missing_file_stderr(&self.message, path, *errno),
-            Crash::AddrInUse {
-                address,
-                port,
-                errno,
-            } => addr_in_use_stderr(&self.message, address, *port, *errno),
-            Crash::Other => format!("Error: {}\n", self.message),
-        }
+        format!("Error: {}\n", self.message)
     }
 }
 
 fn other(message: String) -> ServeError {
-    ServeError {
-        message,
-        crash: Crash::Other,
-    }
-}
-
-fn dist_file(name: &str) -> String {
-    let repo = crate::standard_helpers::repo_root();
-    let rel = ["services", "den-server", "dist", name].join("/");
-    format!("{repo}/{rel}")
-}
-
-fn node_version_footer() -> &'static str {
-    "\nNode.js v22.22.2\n"
-}
-
-fn bind_refusal_stderr(message: &str) -> String {
-    let server = dist_file("server.js");
-    let index = dist_file("index.js");
-    format!(
-        "file://{server}:1995\n        throw new Error(`[den-server] refusing to bind ${{config.host}}: gateway TLS is required off-loopback ` +\n              ^\n\nError: {message}\n    at createDenServer (file://{server}:1995:15)\n    at file://{index}:5:13\n    at ModuleJob.run (node:internal/modules/esm/module_job:343:25)\n    at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:665:26)\n    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:117:5){footer}",
-        footer = node_version_footer()
-    )
-}
-
-fn missing_ca_stderr(message: &str) -> String {
-    let server = dist_file("server.js");
-    let index = dist_file("index.js");
-    format!(
-        "file://{server}:2005\n            throw new Error(`[den-server] TLS CA chain missing at ${{config.tls.caPath}} — cannot verify device client certs`);\n                  ^\n\nError: {message}\n    at createDenServer (file://{server}:2005:19)\n    at file://{index}:5:13\n    at ModuleJob.run (node:internal/modules/esm/module_job:343:25)\n    at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:665:26)\n    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:117:5){footer}",
-        footer = node_version_footer()
-    )
-}
-
-fn missing_file_stderr(message: &str, path: &str, errno: i32) -> String {
-    let server = dist_file("server.js");
-    let index = dist_file("index.js");
-    format!(
-        "node:fs:560\n  return binding.open(\n                 ^\n\nError: {message}\n    at Object.openSync (node:fs:560:18)\n    at readFileSync (node:fs:444:35)\n    at createDenServer (file://{server}:2001:22)\n    at file://{index}:5:13\n    at ModuleJob.run (node:internal/modules/esm/module_job:343:25)\n    at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:665:26)\n    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:117:5) {{\n  errno: {errno},\n  code: 'ENOENT',\n  syscall: 'open',\n  path: '{path}'\n}}{footer}",
-        footer = node_version_footer()
-    )
-}
-
-fn addr_in_use_stderr(message: &str, address: &str, port: u16, errno: i32) -> String {
-    let mut throw_line = String::from("      throw er; ");
-    throw_line.push('/');
-    throw_line.push('/');
-    throw_line.push_str(" Unhandled 'error' event");
-    format!(
-        "node:events:497\n{throw_line}\n      ^\n\nError: {message}\n    at Server.setupListenHandle [as _listen2] (node:net:1940:16)\n    at listenInCluster (node:net:1997:12)\n    at node:net:2206:7\n    at process.processTicksAndRejections (node:internal/process/task_queues:89:21)\nEmitted 'error' event on Server instance at:\n    at emitErrorNT (node:net:1976:8)\n    at process.processTicksAndRejections (node:internal/process/task_queues:89:21) {{\n  code: 'EADDRINUSE',\n  errno: {errno},\n  syscall: 'listen',\n  address: '{address}',\n  port: {port}\n}}{footer}",
-        footer = node_version_footer()
-    )
+    ServeError { message }
 }
 
 pub struct Running {
@@ -147,10 +69,7 @@ pub async fn serve_with(
         eprintln!("{line}");
     }
     if let Some(message) = bind_refusal(&config) {
-        return Err(ServeError {
-            message,
-            crash: Crash::BindRefusal,
-        });
+        return Err(ServeError { message });
     }
     let tls = if config.tls_ready() {
         Some(prepare_tls(&config)?)
@@ -170,6 +89,7 @@ pub async fn serve_with(
         refused: parking_lot::Mutex::new(Vec::new()),
         mesh_cache: parking_lot::Mutex::new(MeshCache::empty()),
         routes,
+        ws_jobs: parking_lot::Mutex::new(Vec::new()),
     });
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let done = tokio::spawn(run_loop(listener, tls, app, shutdown_rx));
@@ -203,7 +123,6 @@ fn prepare_tls(config: &GatewayConfig) -> Result<TlsMaterial, ServeError> {
                 "[den-server] TLS CA chain missing at {} — cannot verify device client certs",
                 config.tls.ca_path
             ),
-            crash: Crash::MissingCa,
         });
     }
     let ca = read_required(&config.tls.ca_path)?;
@@ -223,16 +142,9 @@ fn prepare_tls(config: &GatewayConfig) -> Result<TlsMaterial, ServeError> {
 fn read_required(path: &str) -> Result<Vec<u8>, ServeError> {
     match std::fs::read(path) {
         Ok(bytes) => Ok(bytes),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            let errno = err.raw_os_error().map(|code| -code).unwrap_or(-2);
-            Err(ServeError {
-                message: format!("ENOENT: no such file or directory, open '{path}'"),
-                crash: Crash::MissingFile {
-                    path: path.to_string(),
-                    errno,
-                },
-            })
-        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Err(ServeError {
+            message: format!("ENOENT: no such file or directory, open '{path}'"),
+        }),
         Err(err) => Err(other(err.to_string())),
     }
 }
@@ -293,21 +205,13 @@ fn bind_listener(addr: SocketAddr) -> Result<TcpListener, ServeError> {
                 .map_err(|err| other(err.to_string()))?;
             TcpListener::from_std(listener).map_err(|err| other(err.to_string()))
         }
-        Err(err) if err.kind() == std::io::ErrorKind::AddrInUse => {
-            let errno = err.raw_os_error().map(|code| -code).unwrap_or(-98);
-            Err(ServeError {
-                message: format!(
-                    "listen EADDRINUSE: address already in use {}:{}",
-                    addr.ip(),
-                    addr.port()
-                ),
-                crash: Crash::AddrInUse {
-                    address: addr.ip().to_string(),
-                    port: addr.port(),
-                    errno,
-                },
-            })
-        }
+        Err(err) if err.kind() == std::io::ErrorKind::AddrInUse => Err(ServeError {
+            message: format!(
+                "listen EADDRINUSE: address already in use {}:{}",
+                addr.ip(),
+                addr.port()
+            ),
+        }),
         Err(err) => Err(other(format!(
             "listen {}:{}: {err}",
             addr.ip(),
@@ -352,9 +256,13 @@ async fn run_loop(
         }
     }
     app.hub.close_viewers();
+    let mut jobs = std::mem::take(&mut *app.ws_jobs.lock());
     let pending = async {
         for task in &mut tasks {
             let _ = task.await;
+        }
+        for job in &mut jobs {
+            let _ = job.await;
         }
     };
     if tokio::time::timeout(Duration::from_millis(800), pending)
@@ -364,6 +272,13 @@ async fn run_loop(
         for task in tasks {
             task.abort();
         }
+        for job in jobs {
+            job.abort();
+        }
+    }
+    let late = std::mem::take(&mut *app.ws_jobs.lock());
+    for job in late {
+        let _ = job.await;
     }
 }
 
