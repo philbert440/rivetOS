@@ -1,7 +1,7 @@
 import { memo, useEffect, useMemo, useRef, useState, type JSX, type ReactNode } from 'react'
 import { ArrowDown, ArrowUp, Check, Clock3, Copy, Zap } from 'lucide-react'
 import type { HarnessTranscriptTool, MessageUsage, SessionMessage } from '@rivetos/types'
-import type { LiveTurn, LiveToolEntry } from '../lib/fold-stream.js'
+import { storedToolStatus, type LiveTurn, type LiveToolEntry } from '../lib/fold-stream.js'
 import { humanToolTitle, type ToolArgs } from '../lib/tool-titles.js'
 import { formatSpinnerMeta, parseSpinnerMeta } from '../lib/spinner-meta.js'
 import { copyTextToClipboard } from '../lib/clipboard.js'
@@ -9,9 +9,15 @@ import { Markdown } from './markdown.js'
 import { SpeakMessage } from './speak-message.js'
 
 /** Transcript-sourced tool → the live stack's entry shape (same renderer). */
-function toLiveTool(t: HarnessTranscriptTool, id: string): LiveToolEntry {
+function toLiveTool(t: HarnessTranscriptTool, id: string, over: boolean): LiveToolEntry {
   const args: ToolArgs = t.args
-  return { id, name: t.name, title: humanToolTitle(t.name, args), status: t.status, args }
+  return {
+    id,
+    name: t.name,
+    title: humanToolTitle(t.name, args),
+    status: storedToolStatus(t.status, over),
+    args,
+  }
 }
 
 /** Time-only stamp; cold-backfilled messages carry ts:0 (timestamp lost on
@@ -254,14 +260,17 @@ const Bubble = memo(function Bubble(props: {
   outboundStatus?: 'sending' | 'failed'
   /** Why a failed send didn't land (lib/send-block-note.ts); replaces "send failed". */
   outboundNote?: string
+  /** This message's turn has ended (see `Transcript` `idle`). */
+  over?: boolean
 }): JSX.Element {
   const mine = props.msg.role === 'user'
+  const over = props.over === true
   const tools = useMemo(
     () =>
       props.msg.tools && props.msg.tools.length > 0
-        ? props.msg.tools.map((t, i) => toLiveTool(t, `${props.msg.id}:${String(i)}`))
+        ? props.msg.tools.map((t, i) => toLiveTool(t, `${props.msg.id}:${String(i)}`, over))
         : undefined,
-    [props.msg],
+    [props.msg, over],
   )
   return (
     <Row
@@ -389,6 +398,9 @@ export function Transcript(props: {
   statusLine?: { text: string; tool?: string }
   /** per-harness bot accent (claude clay / grok grey / local emerald) */
   accent?: string
+  /** The session is idle: no turn is running, so none of these messages is
+   *  still being written. Unset = unknown (tools render as stored). */
+  idle?: boolean
 }): JSX.Element {
   const scrollRef = useRef<HTMLDivElement>(null)
   const endRef = useRef<HTMLDivElement>(null)
@@ -448,6 +460,7 @@ export function Transcript(props: {
               offscreenSkip={i < props.messages.length - CV_EDGE_ROWS}
               outboundStatus={props.outbound?.[m.id]}
               outboundNote={props.outboundNotes?.[m.id]}
+              over={props.idle === true || i < props.messages.length - 1}
             />
           ))}
           {props.live && <LiveBubble turn={props.live} accent={props.accent} />}
