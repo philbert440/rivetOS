@@ -34,6 +34,7 @@ pub async fn run_agent_turn(
             tools: tools.clone(),
             thinking,
             session_id: Some("test-session".to_string()),
+            conversation_key: None,
             model_override: None,
             timeout: Duration::from_millis(TURN_TIMEOUT_MS),
             contains_images: false,

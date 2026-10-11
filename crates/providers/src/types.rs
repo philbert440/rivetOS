@@ -85,6 +85,9 @@ pub enum TurnMessage {
         name: String,
         content: String,
     },
+    System {
+        text: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -94,6 +97,7 @@ pub struct ChatRequest {
     pub tools: Vec<ToolDef>,
     pub thinking: ThinkingLevel,
     pub session_id: Option<String>,
+    pub conversation_key: Option<String>,
     pub model_override: Option<String>,
     pub timeout: Duration,
     pub contains_images: bool,
@@ -109,6 +113,7 @@ impl ChatRequest {
             tools: vec![echo_tool(), compact_tool()],
             thinking,
             session_id: None,
+            conversation_key: None,
             model_override: None,
             timeout: Duration::from_millis(TURN_TIMEOUT_MS),
             contains_images: false,

@@ -1,7 +1,9 @@
+use std::collections::BTreeMap;
+use std::os::unix::io::{AsFd, OwnedFd};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use protocol::{LlmChunk, LlmChunkType, ThinkingLevel};
 use serde_json::{Map, Value};
@@ -9,8 +11,19 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 
 use crate::chunks::{reasoning_chunk, text_chunk};
-use crate::error::ProviderError;
+use crate::error::{ProviderError, now_ms};
+use crate::hermes_db::{
+    HermesTokenCounts, HermesTokenSnapshot, read_hermes_session_tokens, tokens_for_turn,
+    unknown_tokens,
+};
 use crate::jsonutil::thinking_name;
+use crate::session::{
+    CODEX_SESSION_MAP, GROK_SESSION_MAP, HERMES_SESSION_MAP, KIMI_SESSION_MAP,
+    OPENCODE_SESSION_MAP, PI_SESSION_MAP, QWEN_SESSION_MAP, delete_session_map_key,
+    delete_session_map_key_merge, qwen_resume_rejected, qwen_saw_init, random_uuid_v4,
+    save_session_map, save_session_map_merge, session_map_strings, session_not_found,
+    uuid_for_conversation,
+};
 use crate::types::{BoxFuture, ChatRequest, ChatStream, Provider, StepCapture, TurnMessage, lock};
 
 pub const CLAUDE_DEFAULT_TOOLS: &str =
@@ -22,6 +35,16 @@ pub const PERMISSION_PROMPT_SERVER: &str = "rivetos";
 pub const NO_INSTRUCTION: &str = "(no instruction was provided for this turn)";
 
 const STDOUT_LIMIT: usize = 8 * 1024 * 1024;
+
+#[derive(Clone)]
+struct SessionPlan {
+    session_id: Option<String>,
+    pin_session_id: Option<String>,
+    resume: bool,
+    conv_key: String,
+    map_path: Option<String>,
+    resumed: bool,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum CliKind {
@@ -62,6 +85,11 @@ pub struct CliProvider {
     mcp_config: Option<String>,
     json_schema: Option<String>,
     session_warned: AtomicBool,
+    session_map_path: Mutex<Option<String>>,
+    hermes_db_path: Mutex<Option<String>>,
+    session_replay: AtomicBool,
+    session_mint: Mutex<Option<String>>,
+    hermes_turn: Mutex<HermesTokenCounts>,
 }
 
 pub enum LooseNumber {
@@ -234,6 +262,11 @@ impl CliProvider {
             mcp_config: None,
             json_schema: None,
             session_warned: AtomicBool::new(false),
+            session_map_path: Mutex::new(None),
+            hermes_db_path: Mutex::new(None),
+            session_replay: AtomicBool::new(false),
+            session_mint: Mutex::new(None),
+            hermes_turn: Mutex::new(HermesTokenCounts::default()),
         }
     }
 
@@ -274,6 +307,26 @@ impl CliProvider {
         }
     }
 
+    pub fn set_session_map_path(&self, path: Option<String>) {
+        *lock(&self.session_map_path) = path;
+    }
+
+    pub fn set_hermes_db_path(&self, path: Option<String>) {
+        *lock(&self.hermes_db_path) = path;
+    }
+
+    pub fn set_session_replay(&self, replay: bool) {
+        self.session_replay.store(replay, Ordering::Relaxed);
+    }
+
+    pub fn set_session_mint(&self, mint: Option<String>) {
+        *lock(&self.session_mint) = mint;
+    }
+
+    pub fn hermes_turn_counts(&self) -> HermesTokenCounts {
+        lock(&self.hermes_turn).clone()
+    }
+
     pub fn warn_session_map(&self, message: &str) {
         if self.session_warned.swap(true, Ordering::Relaxed) {
             return;
@@ -285,7 +338,7 @@ impl CliProvider {
         &self.binary
     }
 
-    fn argv(&self, request: &ChatRequest, prompt: &str) -> Vec<String> {
+    fn argv(&self, request: &ChatRequest, prompt: &str, plan: &SessionPlan) -> Vec<String> {
         let model = request
             .model_override
             .clone()
@@ -318,7 +371,7 @@ impl CliProvider {
                 approve_for_me: self.approve_for_me,
                 skip_git_repo_check: default_skip_git_repo_check(&self.sandbox, self.skip_git),
                 profile: self.profile.clone(),
-                session_id: request.session_id.clone(),
+                session_id: plan.session_id.clone(),
             }),
             CliKind::Grok => grok_args(
                 &GrokArgs {
@@ -331,8 +384,8 @@ impl CliProvider {
                     allow: Vec::new(),
                     tools: None,
                     cwd: self.cwd.clone(),
-                    session_id: request.session_id.clone(),
-                    resume: false,
+                    session_id: plan.session_id.clone(),
+                    resume: plan.resume,
                 },
                 prompt,
             ),
@@ -347,21 +400,21 @@ impl CliProvider {
                         }
                     }),
                     cwd: self.cwd.clone(),
-                    session_id: request.session_id.clone(),
+                    session_id: plan.session_id.clone(),
                 },
                 prompt,
             ),
             CliKind::Kimi => kimi_args(
                 &KimiArgs {
                     model_id: model,
-                    session_id: request.session_id.clone(),
+                    session_id: plan.session_id.clone(),
                 },
                 prompt,
             ),
             CliKind::Opencode => opencode_args(
                 &OpencodeArgs {
                     model_id: model,
-                    session_id: request.session_id.clone(),
+                    session_id: plan.session_id.clone(),
                     effort: Some(thinking_name(request.thinking).to_string()),
                 },
                 prompt,
@@ -369,8 +422,8 @@ impl CliProvider {
             CliKind::Pi => pi_args(
                 &PiArgs {
                     model_id: model,
-                    session_id: request.session_id.clone(),
-                    pin_session_id: None,
+                    session_id: plan.session_id.clone(),
+                    pin_session_id: plan.pin_session_id.clone(),
                     session_dir: None,
                     append_system_prompt: optional_text(&request.system),
                 },
@@ -379,8 +432,8 @@ impl CliProvider {
             CliKind::Qwen => qwen_args(
                 &QwenArgs {
                     model_id: model.filter(|value| !value.is_empty()),
-                    session_id: request.session_id.clone(),
-                    pin_session_id: None,
+                    session_id: plan.session_id.clone(),
+                    pin_session_id: plan.pin_session_id.clone(),
                     append_system_prompt: optional_text(&request.system),
                 },
                 prompt,
@@ -427,7 +480,8 @@ impl CliProvider {
             ));
         }
         let prompt = last_user(&request);
-        let args = self.argv(&request, &prompt);
+        let mut plan = self.prepare_session(&request).await;
+        let prior = self.prior_tokens(&plan).await;
         let env = self.child_env();
         let stdin = match self.kind {
             CliKind::Claude => Some(claude_stdin(&prompt)),
@@ -435,7 +489,8 @@ impl CliProvider {
             _ => None,
         };
         let timeout_ms = request.timeout.as_millis() as u64;
-        let output = run_child(
+        let args = self.argv(&request, &prompt, &plan);
+        let mut output = run_child(
             &self.binary,
             &args,
             &env,
@@ -445,9 +500,21 @@ impl CliProvider {
             &self.id,
         )
         .await?;
-        if self.kind == CliKind::Hermes {
-            let _ = hermes_session_id(&output.stderr);
+        if self.should_retry_qwen(&plan, &output) {
+            plan = self.fresh_qwen(&plan).await;
+            let args = self.argv(&request, &prompt, &plan);
+            output = run_child(
+                &self.binary,
+                &args,
+                &env,
+                self.cwd.as_deref(),
+                stdin.as_deref(),
+                timeout_ms,
+                &self.id,
+            )
+            .await?;
         }
+        self.finish_session(&plan, &prior, &output).await;
         if self.kind == CliKind::Codex && output.code.is_none() {
             self.warn_session_map("child produced no exit status");
         }
@@ -465,6 +532,290 @@ impl CliProvider {
             ));
         }
         Ok(chunk_stream(chunks))
+    }
+
+    fn map_path(&self) -> Option<String> {
+        if let Some(path) = lock(&self.session_map_path).clone() {
+            return Some(path);
+        }
+        let file = match self.kind {
+            CliKind::Codex => CODEX_SESSION_MAP,
+            CliKind::Hermes => HERMES_SESSION_MAP,
+            CliKind::Kimi => KIMI_SESSION_MAP,
+            CliKind::Opencode => OPENCODE_SESSION_MAP,
+            CliKind::Pi => PI_SESSION_MAP,
+            CliKind::Qwen => QWEN_SESSION_MAP,
+            CliKind::Grok => GROK_SESSION_MAP,
+            CliKind::Claude => return None,
+        };
+        let home = self
+            .home
+            .clone()
+            .or_else(|| std::env::var("HOME").ok())
+            .filter(|home| !home.is_empty())?;
+        Some(format!("{home}/.rivetos/{file}"))
+    }
+
+    fn hermes_db(&self) -> String {
+        if let Some(path) = lock(&self.hermes_db_path).clone() {
+            return path;
+        }
+        let base = std::env::var("HERMES_HOME")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .or_else(|| {
+                std::env::var("HOME")
+                    .ok()
+                    .map(|home| format!("{home}/.hermes"))
+            })
+            .unwrap_or_else(|| ".hermes".to_string());
+        format!("{base}/state.db")
+    }
+
+    async fn mint_session(&self) -> String {
+        if let Some(mint) = lock(&self.session_mint).clone() {
+            return mint;
+        }
+        match tokio::task::spawn_blocking(random_uuid_v4).await {
+            Ok(Ok(id)) => id,
+            _ => uuid_for_conversation(&now_ms().to_string()),
+        }
+    }
+
+    async fn load_stored(&self, path: &str, key: &str) -> Option<String> {
+        let path = path.to_string();
+        let key = key.to_string();
+        tokio::task::spawn_blocking(move || session_map_strings(&path).get(&key).cloned())
+            .await
+            .ok()
+            .flatten()
+    }
+
+    async fn prepare_session(&self, request: &ChatRequest) -> SessionPlan {
+        let conv_key = request
+            .conversation_key
+            .clone()
+            .filter(|key| !key.is_empty())
+            .unwrap_or_else(|| "default".to_string());
+        let map_path = self.map_path();
+        let replay = self.session_replay.load(Ordering::Relaxed);
+        let mut plan = SessionPlan {
+            session_id: None,
+            pin_session_id: None,
+            resume: false,
+            conv_key: conv_key.clone(),
+            map_path: map_path.clone(),
+            resumed: false,
+        };
+        if self.kind == CliKind::Claude {
+            return plan;
+        }
+        let stored = match &map_path {
+            Some(path) => self.load_stored(path, &conv_key).await,
+            None => None,
+        };
+        match self.kind {
+            CliKind::Codex => {
+                if !replay {
+                    plan.session_id = stored.or_else(|| request.session_id.clone());
+                    plan.resumed = plan.session_id.is_some();
+                }
+            }
+            CliKind::Grok => {
+                if replay || map_path.is_none() {
+                    if !replay {
+                        plan.session_id = request.session_id.clone();
+                    }
+                } else if let Some(existing) = stored {
+                    plan.session_id = Some(existing);
+                    plan.resume = true;
+                    plan.resumed = true;
+                } else {
+                    plan.session_id = Some(uuid_for_conversation(&conv_key));
+                }
+            }
+            CliKind::Pi => {
+                plan.session_id = stored;
+            }
+            CliKind::Qwen => {
+                if let Some(existing) = stored {
+                    plan.session_id = Some(existing);
+                    plan.resumed = true;
+                } else {
+                    let minted = self.mint_session().await;
+                    self.remember(&plan, &minted).await;
+                    plan.pin_session_id = Some(minted);
+                }
+            }
+            CliKind::Hermes | CliKind::Kimi | CliKind::Opencode => {
+                plan.resumed = stored.is_some();
+                plan.session_id = stored.or_else(|| request.session_id.clone());
+            }
+            CliKind::Claude => {}
+        }
+        plan
+    }
+
+    async fn prior_tokens(&self, plan: &SessionPlan) -> HermesTokenSnapshot {
+        if self.kind != CliKind::Hermes {
+            return unknown_tokens();
+        }
+        let Some(session_id) = plan.session_id.clone() else {
+            return unknown_tokens();
+        };
+        let path = self.hermes_db();
+        tokio::task::spawn_blocking(move || read_hermes_session_tokens(&path, &session_id))
+            .await
+            .unwrap_or_else(|_| unknown_tokens())
+    }
+
+    fn should_retry_qwen(&self, plan: &SessionPlan, output: &ChildOutput) -> bool {
+        if self.kind != CliKind::Qwen || !plan.resumed {
+            return false;
+        }
+        if output.stdout.lines().any(qwen_saw_init) {
+            return false;
+        }
+        output.stdout.lines().any(qwen_resume_rejected)
+            || output.stderr.lines().any(qwen_resume_rejected)
+    }
+
+    async fn fresh_qwen(&self, plan: &SessionPlan) -> SessionPlan {
+        if let Some(path) = plan.map_path.clone() {
+            let key = plan.conv_key.clone();
+            let _ = tokio::task::spawn_blocking(move || delete_session_map_key(&path, &key)).await;
+        }
+        let minted = self.mint_session().await;
+        let mut next = plan.clone();
+        next.session_id = None;
+        next.pin_session_id = Some(minted.clone());
+        next.resumed = false;
+        self.remember(&next, &minted).await;
+        next
+    }
+
+    async fn remember(&self, plan: &SessionPlan, id: &str) {
+        let Some(path) = plan.map_path.clone() else {
+            return;
+        };
+        let key = plan.conv_key.clone();
+        let id = id.to_string();
+        let codex = self.kind == CliKind::Codex;
+        let saved = tokio::task::spawn_blocking(move || {
+            if codex {
+                let mut changes = BTreeMap::new();
+                changes.insert(key, id);
+                save_session_map_merge(&path, &changes)
+            } else {
+                let mut map = session_map_strings(&path);
+                map.insert(key, id);
+                save_session_map(&path, &map);
+                Ok(())
+            }
+        })
+        .await;
+        if codex && let Ok(Err(err)) = saved {
+            self.warn_session_map(&err);
+        }
+    }
+
+    async fn finish_session(
+        &self,
+        plan: &SessionPlan,
+        prior: &HermesTokenSnapshot,
+        output: &ChildOutput,
+    ) {
+        match self.kind {
+            CliKind::Codex => {
+                if self.session_replay.load(Ordering::Relaxed) {
+                    return;
+                }
+                if let Some(id) = codex_thread_id(&output.stdout) {
+                    self.remember(plan, &id).await;
+                } else if plan.session_id.is_some() && output.code != Some(0) {
+                    self.delete_codex_key(plan).await;
+                }
+            }
+            CliKind::Hermes => {
+                let found = hermes_session_id(&output.stderr);
+                if let Some(id) = found.clone()
+                    && plan.session_id.as_ref() != Some(&id)
+                {
+                    self.remember(plan, &id).await;
+                }
+                let after_id = found.or_else(|| plan.session_id.clone());
+                let Some(after_id) = after_id else {
+                    return;
+                };
+                let resumed = plan.session_id.as_deref() == Some(after_id.as_str());
+                let path = self.hermes_db();
+                let after = tokio::task::spawn_blocking(move || {
+                    read_hermes_session_tokens(&path, &after_id)
+                })
+                .await
+                .unwrap_or_else(|_| unknown_tokens());
+                *lock(&self.hermes_turn) = tokens_for_turn(resumed, prior, &after);
+            }
+            CliKind::Kimi => {
+                if let Some(id) = kimi_resume_hint(&output.stdout)
+                    && plan.session_id.as_ref() != Some(&id)
+                {
+                    self.remember(plan, &id).await;
+                }
+            }
+            CliKind::Pi => {
+                if let Some(id) = pi_session_id(&output.stdout) {
+                    self.remember(plan, &id).await;
+                }
+            }
+            CliKind::Opencode => {
+                let learned = opencode_session_id(&output.stdout);
+                let tail = output
+                    .stdout
+                    .lines()
+                    .rev()
+                    .find(|line| !line.trim().is_empty())
+                    .unwrap_or("");
+                if plan.session_id.is_some()
+                    && (session_not_found(&output.stderr) || session_not_found(tail))
+                {
+                    self.delete_best_effort(plan).await;
+                } else if let Some(id) = learned {
+                    self.remember(plan, &id).await;
+                }
+            }
+            CliKind::Grok => {
+                if self.session_replay.load(Ordering::Relaxed) {
+                    return;
+                }
+                let keep = grok_session_id(&output.stdout).or_else(|| plan.session_id.clone());
+                if let Some(id) = keep {
+                    self.remember(plan, &id).await;
+                }
+            }
+            CliKind::Claude | CliKind::Qwen => {}
+        }
+    }
+
+    async fn delete_codex_key(&self, plan: &SessionPlan) {
+        let Some(path) = plan.map_path.clone() else {
+            return;
+        };
+        let key = plan.conv_key.clone();
+        let deleted =
+            tokio::task::spawn_blocking(move || delete_session_map_key_merge(&path, &key)).await;
+        if let Ok(Err(err)) = deleted {
+            self.warn_session_map(&err);
+        }
+    }
+
+    async fn delete_best_effort(&self, plan: &SessionPlan) {
+        let Some(path) = plan.map_path.clone() else {
+            return;
+        };
+        let key = plan.conv_key.clone();
+        let _ = tokio::task::spawn_blocking(move || delete_session_map_key(&path, &key)).await;
     }
 
     async fn available_inner(&self) -> bool {
@@ -1162,7 +1513,8 @@ async fn run_child(
     let mut command = Command::new(binary);
     command
         .args(args)
-        .kill_on_drop(true)
+        .kill_on_drop(false)
+        .process_group(0)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .stdin(if stdin_text.is_some() {
@@ -1184,47 +1536,282 @@ async fn run_child(
             provider_id,
         )
     })?;
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let hold_out = stdout.as_ref().and_then(dup_owned);
+    let hold_err = stderr.as_ref().and_then(dup_owned);
+    let guard = ChildWatch::arm(child.id(), hold_out, hold_err);
     if let Some(text) = stdin_text
         && let Some(mut stdin) = child.stdin.take()
     {
         let _ = stdin.write_all(text.as_bytes()).await;
     }
-    let stdout = child.stdout.take();
-    let stderr = child.stderr.take();
-    let work = async move {
-        let out = read_limited(stdout, STDOUT_LIMIT);
-        let err = read_limited_err(stderr, STDOUT_LIMIT);
-        let (out, err) = tokio::join!(out, err);
-        let status = child.wait().await;
-        (out, err, status)
-    };
-    let (out, err, status) = if timeout_ms == 0 {
-        work.await
-    } else {
-        match tokio::time::timeout(Duration::from_millis(timeout_ms), work).await {
-            Ok(value) => value,
-            Err(_) => {
-                return Err(ProviderError::timeout(provider_id, timeout_ms));
+    let mut read_out = Box::pin(read_limited(stdout, STDOUT_LIMIT));
+    let mut read_err = Box::pin(read_limited_err(stderr, STDOUT_LIMIT));
+    let mut timeout_sleep = Box::pin(async {
+        if timeout_ms == 0 {
+            std::future::pending::<()>().await;
+        } else {
+            tokio::time::sleep(Duration::from_millis(timeout_ms)).await;
+        }
+    });
+    let mut out_res = None;
+    let mut err_res = None;
+    let mut waited = false;
+    let mut status = None;
+    let mut timed_out = false;
+    loop {
+        tokio::select! {
+            biased;
+            res = &mut read_out, if out_res.is_none() => {
+                out_res = Some(res);
+            }
+            res = &mut read_err, if err_res.is_none() => {
+                err_res = Some(res);
+            }
+            res = child.wait(), if !waited => {
+                waited = true;
+                status = Some(res);
+            }
+            _ = &mut timeout_sleep, if !timed_out && !waited => {
+                timed_out = true;
             }
         }
-    };
-    let stdout = out.map_err(|err| ProviderError::new(err, 0, provider_id))?;
-    let stderr = err.map_err(|err| ProviderError::new(err, 0, provider_id))?;
+        if timed_out || (out_res.is_some() && err_res.is_some() && waited) {
+            break;
+        }
+    }
+    if timed_out {
+        terminate_child(&mut child).await;
+        guard.disarm();
+        return Err(ProviderError::timeout(provider_id, timeout_ms));
+    }
+    guard.disarm();
+    let stdout = out_res
+        .unwrap_or_else(|| Ok(String::new()))
+        .map_err(|err| ProviderError::new(err, 0, provider_id))?;
+    let stderr = err_res
+        .unwrap_or_else(|| Ok(String::new()))
+        .map_err(|err| ProviderError::new(err, 0, provider_id))?;
     let code = match status {
-        Ok(status) => status.code(),
-        Err(err) => {
+        Some(Ok(status)) => status.code(),
+        Some(Err(err)) => {
             return Err(ProviderError::new(
                 format!("{provider_id} failed to spawn: {err}"),
                 0,
                 provider_id,
             ));
         }
+        None => None,
     };
     Ok(ChildOutput {
         stdout,
         stderr,
         code,
     })
+}
+
+const KILL_GRACE: Duration = Duration::from_millis(3_000);
+
+struct ChildWatch {
+    stop: Arc<AtomicBool>,
+    cancel: Arc<AtomicBool>,
+}
+
+impl ChildWatch {
+    fn arm(pid: Option<u32>, stdout: Option<OwnedFd>, stderr: Option<OwnedFd>) -> Self {
+        let stop = Arc::new(AtomicBool::new(false));
+        let cancel = Arc::new(AtomicBool::new(false));
+        if let Some(pid) = pid {
+            let started = proc_start(pid).unwrap_or(0);
+            let stop_flag = Arc::clone(&stop);
+            let cancel_flag = Arc::clone(&cancel);
+            let _ = std::thread::Builder::new().spawn(move || {
+                let _hold = (stdout, stderr);
+                watch_child(pid, started, &stop_flag, &cancel_flag);
+            });
+        }
+        Self { stop, cancel }
+    }
+
+    fn disarm(&self) {
+        self.stop.store(true, Ordering::Release);
+    }
+}
+
+impl Drop for ChildWatch {
+    fn drop(&mut self) {
+        if !self.stop.load(Ordering::Acquire) {
+            self.cancel.store(true, Ordering::Release);
+        }
+    }
+}
+
+fn watch_child(pid: u32, started: u64, stop: &AtomicBool, cancel: &AtomicBool) {
+    loop {
+        if stop.load(Ordering::Acquire) {
+            return;
+        }
+        if cancel.load(Ordering::Acquire) {
+            if stop.load(Ordering::Acquire) {
+                return;
+            }
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    std::thread::sleep(Duration::from_millis(50));
+    if stop.load(Ordering::Acquire) {
+        return;
+    }
+    let started_at = Instant::now();
+    let deadline = started_at + KILL_GRACE;
+    signal_tree(pid, "-TERM");
+    while still_running(pid, started) {
+        if Instant::now() >= deadline {
+            signal_tree(pid, "-KILL");
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(40));
+        if !still_running(pid, started) {
+            break;
+        }
+        if started_at.elapsed() < Duration::from_millis(500) || has_children(pid) {
+            signal_tree(pid, "-TERM");
+        }
+    }
+}
+
+fn dup_owned(fd: &impl AsFd) -> Option<OwnedFd> {
+    fd.as_fd().try_clone_to_owned().ok()
+}
+
+fn proc_start(pid: u32) -> Option<u64> {
+    proc_identity(pid).map(|(_, start)| start)
+}
+
+fn proc_identity(pid: u32) -> Option<(char, u64)> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let end = stat.rfind(')')?;
+    let mut parts = stat[end + 1..].split_whitespace();
+    let state = parts.next()?.chars().next()?;
+    let start = parts.nth(18)?.parse().ok()?;
+    Some((state, start))
+}
+
+fn still_running(pid: u32, started: u64) -> bool {
+    let Some((state, start)) = proc_identity(pid) else {
+        return false;
+    };
+    if started != 0 && start != started {
+        return false;
+    }
+    !matches!(state, 'Z' | 'X' | 'x')
+}
+
+fn signal_tree(pid: u32, flag: &str) {
+    let group = kill_cmd(flag).arg(format!("-{pid}")).status();
+    if !matches!(group, Ok(status) if status.success()) {
+        signal_one(pid, flag);
+    }
+    let mut kids = child_pids(pid);
+    if kids.is_empty() {
+        kids = ppid_children(pid);
+    }
+    for kid in kids {
+        signal_descendants(kid, flag);
+        signal_one(kid, flag);
+    }
+}
+
+fn has_children(pid: u32) -> bool {
+    if !child_pids(pid).is_empty() {
+        return true;
+    }
+    !ppid_children(pid).is_empty()
+}
+
+fn child_pids(pid: u32) -> Vec<u32> {
+    let mut out = Vec::new();
+    if let Ok(kids) = std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children")) {
+        for kid in kids.split_whitespace() {
+            if let Ok(kid) = kid.parse::<u32>() {
+                out.push(kid);
+            }
+        }
+    }
+    out
+}
+
+fn ppid_children(pid: u32) -> Vec<u32> {
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        let Ok(cand) = name.parse::<u32>() else {
+            continue;
+        };
+        if parent_pid(cand) == Some(pid) {
+            out.push(cand);
+        }
+    }
+    out
+}
+
+fn parent_pid(pid: u32) -> Option<u32> {
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    for line in status.lines() {
+        if let Some(rest) = line.strip_prefix("PPid:") {
+            return rest.trim().parse().ok();
+        }
+    }
+    None
+}
+
+fn signal_descendants(pid: u32, flag: &str) {
+    for kid in child_pids(pid) {
+        signal_descendants(kid, flag);
+        signal_one(kid, flag);
+    }
+}
+
+fn signal_one(pid: u32, flag: &str) {
+    let _ = kill_cmd(flag).arg(pid.to_string()).status();
+}
+
+fn kill_cmd(flag: &str) -> std::process::Command {
+    let mut cmd = std::process::Command::new("/bin/kill");
+    cmd.arg(flag)
+        .arg("--")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    cmd
+}
+
+async fn terminate_child(child: &mut tokio::process::Child) {
+    if let Some(pid) = child.id() {
+        let _ = tokio::task::spawn_blocking(move || signal_tree(pid, "-TERM")).await;
+    }
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            _ if started.elapsed() >= KILL_GRACE => {
+                if let Some(pid) = child.id() {
+                    let _ = tokio::task::spawn_blocking(move || signal_tree(pid, "-KILL")).await;
+                }
+                break;
+            }
+            _ => tokio::time::sleep(Duration::from_millis(50)).await,
+        }
+    }
+    let _ = child.wait().await;
 }
 
 fn chunks_from_output(kind: CliKind, stdout: &str) -> Vec<LlmChunk> {
@@ -1324,4 +1911,229 @@ fn chunk_stream(chunks: Vec<LlmChunk>) -> ChatStream {
         capture,
         inner: Box::pin(inner),
     }
+}
+
+fn codex_thread_id(stdout: &str) -> Option<String> {
+    for line in stdout.lines() {
+        let Some(value) = parse_codex_line(line.trim()) else {
+            continue;
+        };
+        if value.get("type").and_then(Value::as_str) == Some("thread.started") {
+            return value
+                .get("thread_id")
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty())
+                .map(str::to_string);
+        }
+    }
+    None
+}
+
+fn kimi_resume_hint(stdout: &str) -> Option<String> {
+    for line in stdout.lines() {
+        let Ok(value) = serde_json::from_str::<Value>(line.trim()) else {
+            continue;
+        };
+        if value.get("role").and_then(Value::as_str) == Some("meta")
+            && value.get("type").and_then(Value::as_str) == Some("session.resume_hint")
+        {
+            return value
+                .get("session_id")
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty())
+                .map(str::to_string);
+        }
+    }
+    None
+}
+
+fn pi_session_id(stdout: &str) -> Option<String> {
+    for line in stdout.lines() {
+        let Ok(value) = serde_json::from_str::<Value>(line.trim()) else {
+            continue;
+        };
+        if value.get("type").and_then(Value::as_str) != Some("session") {
+            continue;
+        }
+        for key in ["id", "session_id", "sessionId"] {
+            if let Some(id) = value
+                .get(key)
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty())
+            {
+                return Some(id.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn opencode_session_id(stdout: &str) -> Option<String> {
+    for line in stdout.lines() {
+        let Ok(value) = serde_json::from_str::<Value>(line.trim()) else {
+            continue;
+        };
+        if let Some(id) = session_id_from_value(&value) {
+            return Some(id);
+        }
+    }
+    None
+}
+
+fn session_id_from_value(value: &Value) -> Option<String> {
+    let obj = value.as_object()?;
+    for key in ["sessionID", "sessionId", "session_id"] {
+        if let Some(id) = obj
+            .get(key)
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+        {
+            return Some(id.to_string());
+        }
+    }
+    if let Some(id) = obj
+        .get("session")
+        .and_then(|session| session.get("id"))
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+    {
+        return Some(id.to_string());
+    }
+    if let Some(part) = obj.get("part")
+        && let Some(id) = session_id_from_value(part)
+    {
+        return Some(id);
+    }
+    if let Some(params) = obj.get("params")
+        && let Some(id) = session_id_from_value(params)
+    {
+        return Some(id);
+    }
+    None
+}
+
+fn grok_session_id(stdout: &str) -> Option<String> {
+    for line in stdout.lines() {
+        let Ok(value) = serde_json::from_str::<Value>(line.trim()) else {
+            continue;
+        };
+        if let Some(id) = value
+            .get("session_id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+        {
+            return Some(id.to_string());
+        }
+        if let Some(id) = value
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+        {
+            return Some(id.to_string());
+        }
+    }
+    None
+}
+
+#[derive(Debug, Clone)]
+pub struct PermissionEvent {
+    pub ts: i64,
+    pub kind: String,
+    pub task_id: String,
+    pub request_id: String,
+    pub name: Option<String>,
+    pub input: Option<Value>,
+    pub tool_call_id: Option<String>,
+    pub decision: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PermissionAnswer {
+    pub behavior: String,
+    pub message: Option<String>,
+    pub decision: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct PermissionAsk {
+    pub task_id: String,
+    pub request_id: String,
+    pub name: String,
+    pub input: Value,
+    pub tool_use_id: Option<String>,
+}
+
+static PERMISSION_IDS: AtomicU64 = AtomicU64::new(1);
+
+pub fn permission_decision_text(behavior: &str, message: Option<&str>) -> String {
+    if behavior == "allow" {
+        return "{\"behavior\":\"allow\"}".to_string();
+    }
+    let message = message
+        .filter(|item| !item.is_empty())
+        .unwrap_or("permission denied");
+    let mut map = Map::new();
+    map.insert("behavior".to_string(), Value::from("deny"));
+    map.insert("message".to_string(), Value::from(message));
+    serde_json::to_string(&Value::Object(map))
+        .unwrap_or_else(|_| "{\"behavior\":\"deny\",\"message\":\"permission denied\"}".to_string())
+}
+
+pub async fn execute_permission_prompt<F, Fut>(
+    task_id: &str,
+    tool_name: &str,
+    input: Value,
+    tool_use_id: Option<String>,
+    ask: F,
+    mut emit: impl FnMut(PermissionEvent),
+) -> String
+where
+    F: FnOnce(PermissionAsk) -> Fut,
+    Fut: std::future::Future<Output = Result<PermissionAnswer, ()>>,
+{
+    if tool_name.is_empty() {
+        return permission_decision_text("deny", Some("permission request missing tool_name"));
+    }
+    let request_id = format!(
+        "perm-{}-{}",
+        now_ms(),
+        PERMISSION_IDS.fetch_add(1, Ordering::Relaxed)
+    );
+    emit(PermissionEvent {
+        ts: now_ms(),
+        kind: "approval-request".to_string(),
+        task_id: task_id.to_string(),
+        request_id: request_id.clone(),
+        name: Some(tool_name.to_string()),
+        input: Some(input.clone()),
+        tool_call_id: tool_use_id.clone(),
+        decision: None,
+    });
+    let answer = match ask(PermissionAsk {
+        task_id: task_id.to_string(),
+        request_id: request_id.clone(),
+        name: tool_name.to_string(),
+        input,
+        tool_use_id,
+    })
+    .await
+    {
+        Ok(answer) => answer,
+        Err(()) => PermissionAnswer {
+            behavior: "deny".to_string(),
+            message: Some("permission request failed closed".to_string()),
+            decision: "deny".to_string(),
+        },
+    };
+    emit(PermissionEvent {
+        ts: now_ms(),
+        kind: "approval-resolved".to_string(),
+        task_id: task_id.to_string(),
+        request_id,
+        name: None,
+        input: None,
+        tool_call_id: None,
+        decision: Some(answer.decision.clone()),
+    });
+    permission_decision_text(&answer.behavior, answer.message.as_deref())
 }

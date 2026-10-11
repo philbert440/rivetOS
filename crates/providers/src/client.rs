@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -6,8 +7,10 @@ use protocol::ThinkingLevel;
 use reqwest::Method;
 use serde_json::{Map, Value};
 
+use crate::catalog::{FetchIds, ModelCatalog};
 use crate::decode::{Decoder, Kind as DecKind};
-use crate::error::ProviderError;
+use crate::error::{ProviderError, now_ms};
+use crate::fold::{FoldContent, FoldMessage, split_and_fold_system};
 use crate::http::{
     HttpAttempt, build_client, connection_header, decode_response, read_limited, send, tail_headers,
 };
@@ -15,7 +18,9 @@ use crate::jsonutil::{
     IdGen, encode_path_segment, encode_query, gemini_schema, is_claude_4, join_url, json_number,
     map_xai_reasoning_effort, splice_video_urls, thinking_name,
 };
-use crate::token::TokenSource;
+use crate::token::{
+    ParsedArgv, TokenCommandInput, TokenEntry, TokenSource, parse_token_command_argv,
+};
 use crate::types::{
     BoxFuture, ChatRequest, ChatStream, PROBE_TIMEOUT, Provider, ReplayTool, TURN_TIMEOUT_MS,
     ToolDef, TurnMessage, UA_ANTHROPIC, UA_GOOGLE, UA_OLLAMA, UA_OPENAI, UA_PROBE, UA_XAI,
@@ -37,9 +42,9 @@ pub struct HttpProvider {
     id: String,
     name: String,
     model: Mutex<String>,
-    base_url: Mutex<String>,
-    api_key: Mutex<Option<String>>,
-    tokens: Option<Arc<TokenSource>>,
+    base_url: Arc<Mutex<String>>,
+    api_key: Arc<Mutex<Option<String>>>,
+    tokens: Arc<Mutex<Option<Arc<TokenSource>>>>,
     client: reqwest::Client,
     ids: Arc<IdGen>,
     context: Mutex<u64>,
@@ -57,8 +62,15 @@ pub struct HttpProvider {
     provider_timeout_ms: u64,
     num_ctx: Mutex<u64>,
     extras: Mutex<Map<String, Value>>,
+    api_prefix: Arc<Mutex<String>>,
+    models_url: Arc<Mutex<Option<String>>>,
+    pending_ids: Arc<Mutex<Option<Vec<String>>>>,
+    catalog: Option<ModelCatalog>,
+    warnings: Arc<Mutex<Vec<String>>>,
+    verify_model: bool,
 }
 
+#[derive(Default)]
 pub struct ManifestConfig {
     pub api_key: Option<String>,
     pub model: String,
@@ -66,12 +78,22 @@ pub struct ManifestConfig {
     pub context_window: Option<u64>,
     pub max_output_tokens: Option<u64>,
     pub token_argv: Option<Vec<String>>,
+    pub token_command: Option<TokenCommandInput>,
+    pub token_runner: Option<crate::token::Runner>,
+    pub token_ttl_ms: Option<i64>,
+    pub token_timeout_ms: Option<u64>,
     pub reasoning_effort: Option<String>,
     pub web_search: bool,
     pub x_search: bool,
     pub code_execution: bool,
     pub num_ctx: Option<u64>,
     pub probe_models: Option<bool>,
+    pub env: HashMap<String, String>,
+    pub api_prefix: Option<String>,
+    pub models_url: Option<String>,
+    pub models: Option<Vec<String>>,
+    pub models_ttl_ms: Option<i64>,
+    pub verify_model_on_init: bool,
 }
 
 impl HttpProvider {
@@ -193,15 +215,57 @@ impl HttpProvider {
         } else {
             config.model.clone()
         };
-        let tokens = match config.token_argv {
-            Some(argv) if !argv.is_empty() => {
-                Some(Arc::new(TokenSource::new(argv).map_err(|err| {
-                    ProviderError::new(err.0, 400, id_of(kind))
-                })?))
-            }
-            _ => None,
+        let mut register_warnings = Vec::new();
+        let parsed = match &config.token_command {
+            Some(raw) => parse_token_command_argv(Some(raw.clone())),
+            None => match &config.token_argv {
+                Some(argv) => parse_token_command_argv(Some(TokenCommandInput::Array(
+                    argv.iter().cloned().map(TokenEntry::String).collect(),
+                ))),
+                None => ParsedArgv::Unset,
+            },
         };
-        let provider = Self::open(kind, config.api_key, model, base, tokens)?;
+        let tokens = match parsed {
+            ParsedArgv::Unset => None,
+            ParsedArgv::Invalid(message) => {
+                register_warnings.push(message.to_string());
+                None
+            }
+            ParsedArgv::Argv(argv) => {
+                match TokenSource::build(
+                    argv,
+                    config.token_ttl_ms,
+                    config.token_timeout_ms,
+                    None,
+                    config.token_runner.clone(),
+                    None,
+                ) {
+                    Ok(source) => Some(Arc::new(source)),
+                    Err(err) => {
+                        register_warnings.push(err.0);
+                        None
+                    }
+                }
+            }
+        };
+        let resolved = match &config.api_key {
+            Some(key) => key.clone(),
+            None => env_key(kind)
+                .and_then(|name| config.env.get(name).cloned())
+                .unwrap_or_default(),
+        };
+        if kind == Wire::Anthropic && resolved.is_empty() && tokens.is_none() {
+            register_warnings.push(
+                "No Anthropic API key found. Set ANTHROPIC_API_KEY or providers.anthropic.api_key"
+                    .to_string(),
+            );
+        }
+        let key = if resolved.is_empty() {
+            None
+        } else {
+            Some(resolved)
+        };
+        let provider = Self::open(kind, key, model, base, tokens)?;
         if let Some(window) = config.context_window
             && window > 0
         {
@@ -212,15 +276,45 @@ impl HttpProvider {
             *lock(&provider.reasoning_effort) = Some(effort);
         }
         let max_output = config.max_output_tokens.unwrap_or(provider.max_output);
-        let provider = Self {
+        let probe_models = config.probe_models.unwrap_or(true);
+        let mut provider = Self {
             web_search: config.web_search,
             x_search: config.x_search,
             code_execution: config.code_execution,
             num_ctx: Mutex::new(config.num_ctx.unwrap_or(0)),
-            probe_models: config.probe_models.unwrap_or(true),
+            probe_models,
             max_output,
+            verify_model: config.verify_model_on_init,
             ..provider
         };
+        *lock(provider.api_prefix.as_ref()) = if kind == Wire::Vllm {
+            normalize_api_prefix(config.api_prefix.as_deref())
+        } else {
+            "/v1".to_string()
+        };
+        *lock(provider.models_url.as_ref()) =
+            config.models_url.clone().filter(|url| !url.is_empty());
+        if matches!(kind, Wire::Vllm | Wire::Llama) {
+            let floor = if let Some(models) = config.models.clone() {
+                models
+            } else if provider.model_pinned {
+                vec![provider.get_model()]
+            } else {
+                Vec::new()
+            };
+            let ttl = config.models_ttl_ms;
+            provider.catalog = Some(provider.make_catalog(floor, ttl));
+        }
+        if kind == Wire::Vllm && !probe_models && !provider.model_pinned {
+            register_warnings.push(format!(
+                "[{}] probe_models is false and model is unset/default; the literal \"default\" will be sent as the model id. Set \"model\" in config.",
+                provider.id
+            ));
+        }
+        for message in register_warnings {
+            provider.note(message);
+        }
+        provider.warm();
         Ok(provider)
     }
 
@@ -246,14 +340,14 @@ impl HttpProvider {
         let client =
             build_client().map_err(|err| ProviderError::new(err.message, 0, id_of(wire)))?;
         let pinned = !model.is_empty() && model != "default";
-        Ok(Self {
+        let mut provider = Self {
             wire,
             id: id_of(wire).to_string(),
             name: name_of(wire).to_string(),
             model: Mutex::new(model),
-            base_url: Mutex::new(base_url),
-            api_key: Mutex::new(api_key.filter(|key| !key.is_empty())),
-            tokens,
+            base_url: Arc::new(Mutex::new(base_url)),
+            api_key: Arc::new(Mutex::new(api_key.filter(|key| !key.is_empty()))),
+            tokens: Arc::new(Mutex::new(tokens)),
             client,
             ids: Arc::new(IdGen::new()),
             context: Mutex::new(0),
@@ -275,15 +369,91 @@ impl HttpProvider {
             },
             num_ctx: Mutex::new(0),
             extras: Mutex::new(Map::new()),
-        })
+            api_prefix: Arc::new(Mutex::new("/v1".to_string())),
+            models_url: Arc::new(Mutex::new(None)),
+            pending_ids: Arc::new(Mutex::new(None)),
+            catalog: None,
+            warnings: Arc::new(Mutex::new(Vec::new())),
+            verify_model: false,
+        };
+        if matches!(wire, Wire::Vllm | Wire::Llama) {
+            let floor = if provider.model_pinned {
+                vec![provider.get_model()]
+            } else {
+                Vec::new()
+            };
+            provider.catalog = Some(provider.make_catalog(floor, None));
+        }
+        Ok(provider)
     }
 
     pub fn base_url(&self) -> String {
-        lock(&self.base_url).clone()
+        lock(self.base_url.as_ref()).clone()
+    }
+
+    pub fn api_key(&self) -> Option<String> {
+        lock(self.api_key.as_ref()).clone()
+    }
+
+    pub fn warnings(&self) -> Vec<String> {
+        lock(self.warnings.as_ref()).clone()
     }
 
     pub fn set_api_key(&self, key: Option<String>) {
-        *lock(&self.api_key) = key.filter(|key| !key.is_empty());
+        *lock(self.api_key.as_ref()) = key.filter(|key| !key.is_empty());
+    }
+
+    pub fn set_token_source(&self, source: Option<Arc<TokenSource>>) {
+        *lock(self.tokens.as_ref()) = source;
+    }
+
+    pub fn set_probe_models(&mut self, probe: bool) {
+        self.probe_models = probe;
+        if self.wire == Wire::Vllm && !probe && !self.model_pinned {
+            self.note(format!(
+                "[{}] probe_models is false and model is unset/default; the literal \"default\" will be sent as the model id. Set \"model\" in config.",
+                self.id
+            ));
+        }
+    }
+
+    pub fn set_api_prefix(&self, prefix: Option<&str>) {
+        *lock(self.api_prefix.as_ref()) = normalize_api_prefix(prefix);
+    }
+
+    pub fn set_models_url(&self, url: Option<String>) {
+        *lock(self.models_url.as_ref()) = url.filter(|item| !item.is_empty());
+    }
+
+    pub fn set_verify_model(&mut self, verify: bool) {
+        self.verify_model = verify;
+    }
+
+    pub async fn unload_model(&self, model: Option<String>) -> Result<(), ProviderError> {
+        if self.wire != Wire::Ollama {
+            return Ok(());
+        }
+        let model = model.unwrap_or_else(|| self.get_model());
+        let mut map = Map::new();
+        map.insert("model".to_string(), Value::from(model));
+        map.insert("messages".to_string(), Value::Array(Vec::new()));
+        map.insert("keep_alive".to_string(), Value::from("0"));
+        let body = serde_json::to_vec(&Value::Object(map))
+            .map_err(|err| ProviderError::new(err.to_string(), 0, &self.id))?;
+        let response = send(
+            &self.client,
+            &HttpAttempt {
+                method: Method::POST,
+                url: join_url(&self.root(), "api/chat"),
+                headers: vec![("content-type".to_string(), "application/json".to_string())],
+                body: Some(body),
+            },
+            PROBE_TIMEOUT,
+            &self.id,
+        )
+        .await?;
+        let _ = read_limited(response.response, 2048).await;
+        Ok(())
     }
 
     pub fn set_num_ctx(&self, num_ctx: u64) {
@@ -302,6 +472,63 @@ impl HttpProvider {
 
     pub fn set_extra(&self, key: impl Into<String>, value: Value) {
         lock(&self.extras).insert(key.into(), value);
+    }
+
+    fn token_source(&self) -> Option<Arc<TokenSource>> {
+        lock(self.tokens.as_ref()).clone()
+    }
+
+    fn note(&self, message: String) {
+        tracing::warn!(provider = %self.id, "{message}");
+        lock(self.warnings.as_ref()).push(message);
+    }
+
+    fn warm(&self) {
+        let Some(source) = self.token_source() else {
+            return;
+        };
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let warnings = Arc::clone(&self.warnings);
+        handle.spawn(async move {
+            if let Err(err) = source.get_token().await {
+                let message = TokenSource::warm_log(&err);
+                tracing::warn!("{message}");
+                lock(warnings.as_ref()).push(message);
+            }
+        });
+    }
+
+    fn make_catalog(&self, floor: Vec<String>, ttl_ms: Option<i64>) -> ModelCatalog {
+        let shared = CatalogShared {
+            pending: Arc::clone(&self.pending_ids),
+            base_url: Arc::clone(&self.base_url),
+            api_prefix: Arc::clone(&self.api_prefix),
+            models_url: Arc::clone(&self.models_url),
+            tokens: Arc::clone(&self.tokens),
+            api_key: Arc::clone(&self.api_key),
+            client: self.client.clone(),
+            id: self.id.clone(),
+            wire: self.wire,
+        };
+        let fetch: FetchIds = Arc::new(move || {
+            let shared = shared.clone();
+            Box::pin(async move { shared.fetch_ids().await })
+        });
+        let warnings = Arc::clone(&self.warnings);
+        ModelCatalog::new(
+            floor,
+            fetch,
+            ttl_ms,
+            None,
+            Some(Arc::new(now_ms)),
+            Some(Arc::new(move |message| {
+                tracing::warn!("{message}");
+                lock(warnings.as_ref()).push(message);
+            })),
+            Some(self.id.clone()),
+        )
     }
 
     fn dec_kind(&self) -> DecKind {
@@ -329,14 +556,14 @@ impl HttpProvider {
         if self.wire == Wire::Ollama || (self.wire == Wire::Google && probe) {
             return Ok(None);
         }
-        if let Some(source) = &self.tokens {
+        if let Some(source) = self.token_source() {
             let token = source
                 .get_token()
                 .await
                 .map_err(|err| ProviderError::new(err.0, 0, &self.id))?;
             return Ok(Some(self.auth_header(&token, probe, true)));
         }
-        let key = lock(&self.api_key).clone();
+        let key = lock(self.api_key.as_ref()).clone();
         let Some(key) = key else {
             return Ok(None);
         };
@@ -449,15 +676,17 @@ impl HttpProvider {
     }
 
     fn root(&self) -> String {
-        lock(&self.base_url).trim_end_matches('/').to_string()
-    }
-
-    fn openai_root(&self) -> String {
-        let root = self.root();
-        root.strip_suffix("/v1")
-            .unwrap_or(&root)
+        lock(self.base_url.as_ref())
             .trim_end_matches('/')
             .to_string()
+    }
+
+    fn stored_base(&self) -> String {
+        lock(self.base_url.as_ref()).clone()
+    }
+
+    fn prefix(&self) -> String {
+        lock(self.api_prefix.as_ref()).clone()
     }
 
     fn chat_url(&self, model: &str) -> String {
@@ -469,12 +698,21 @@ impl HttpProvider {
                 self.root(),
                 encode_path_segment(model)
             ),
-            Wire::Vllm | Wire::Llama => join_url(&self.openai_root(), "v1/chat/completions"),
+            Wire::Vllm => chat_completions_url(&self.stored_base(), &self.prefix()),
+            Wire::Llama => chat_completions_url(&self.stored_base(), "/v1"),
             Wire::Ollama => join_url(&self.root(), "api/chat"),
         }
     }
 
-    async fn probe_target(&self) -> Result<(Method, String, Option<Vec<u8>>), ProviderError> {
+    fn models_endpoint(&self) -> String {
+        let override_url = lock(self.models_url.as_ref()).clone();
+        match self.wire {
+            Wire::Llama => models_probe_url(&self.stored_base(), "/v1", None),
+            _ => models_probe_url(&self.stored_base(), &self.prefix(), override_url.as_deref()),
+        }
+    }
+
+    async fn probe_target(&self) -> Result<ProbeTarget, ProviderError> {
         let model = self.get_model();
         match self.wire {
             Wire::Anthropic => {
@@ -490,13 +728,19 @@ impl HttpProvider {
                     ),
                     ("stream", Value::Bool(false)),
                 ]);
-                Ok((
-                    Method::POST,
-                    join_url(&self.root(), "v1/messages"),
-                    Some(to_bytes(&body)?),
-                ))
+                Ok(ProbeTarget {
+                    method: Method::POST,
+                    url: join_url(&self.root(), "v1/messages"),
+                    body: Some(to_bytes(&body)?),
+                    query_token: None,
+                })
             }
-            Wire::Xai => Ok((Method::GET, join_url(&self.root(), "models"), None)),
+            Wire::Xai => Ok(ProbeTarget {
+                method: Method::GET,
+                url: join_url(&self.root(), "models"),
+                body: None,
+                query_token: None,
+            }),
             Wire::Google => {
                 let key = self.probe_key().await?;
                 let url = format!(
@@ -505,42 +749,60 @@ impl HttpProvider {
                     encode_path_segment(&model),
                     encode_query(&key)
                 );
-                Ok((Method::GET, url, None))
+                Ok(ProbeTarget {
+                    method: Method::GET,
+                    url,
+                    body: None,
+                    query_token: if self.token_source().is_some() {
+                        Some(key)
+                    } else {
+                        None
+                    },
+                })
             }
-            Wire::Vllm | Wire::Llama => Ok((
-                Method::GET,
-                join_url(&self.openai_root(), "v1/models"),
-                None,
-            )),
-            Wire::Ollama => Ok((Method::GET, join_url(&self.root(), "api/tags"), None)),
+            Wire::Vllm | Wire::Llama => Ok(ProbeTarget {
+                method: Method::GET,
+                url: self.models_endpoint(),
+                body: None,
+                query_token: None,
+            }),
+            Wire::Ollama => Ok(ProbeTarget {
+                method: Method::GET,
+                url: join_url(&self.root(), "api/tags"),
+                body: None,
+                query_token: None,
+            }),
         }
     }
 
     async fn probe_key(&self) -> Result<String, ProviderError> {
-        if let Some(source) = &self.tokens {
+        if let Some(source) = self.token_source() {
             return source
                 .get_token()
                 .await
                 .map_err(|err| ProviderError::new(err.0, 0, &self.id));
         }
-        Ok(lock(&self.api_key).clone().unwrap_or_default())
+        Ok(lock(self.api_key.as_ref()).clone().unwrap_or_default())
     }
 
     async fn exchange(
         &self,
         ExchangeCall {
             method,
-            url,
+            mut url,
             mut headers,
             body,
             timeout,
             retry,
             auth,
+            query_token,
         }: ExchangeCall,
     ) -> Result<crate::http::RawResponse, ProviderError> {
         let mut attempts = 0u32;
         let mut reminted = false;
         let mut current_auth = auth;
+        let mut query_token = query_token;
+        let probe_auth = method == Method::GET && body.is_none();
         loop {
             let attempt = HttpAttempt {
                 method: method.clone(),
@@ -550,15 +812,24 @@ impl HttpProvider {
             };
             let response = send(&self.client, &attempt, timeout, &self.id).await?;
             let status = response.status;
-            if status == 401 && self.tokens.is_some() && !reminted {
-                if let Some((_, _, Some(token))) = &current_auth
-                    && let Some(source) = &self.tokens
+            if status == 401 && self.token_source().is_some() && !reminted {
+                let rejected = current_auth
+                    .as_ref()
+                    .and_then(|(_, _, token)| token.clone())
+                    .or_else(|| query_token.clone());
+                if let Some(token) = rejected.as_deref()
+                    && let Some(source) = self.token_source()
                 {
                     source.invalidate(Some(token));
                 }
                 let _ = read_limited(response.response, 2048).await;
                 reminted = true;
-                if let Some(next) = self.auth(method == Method::GET && body.is_none()).await? {
+                if query_token.is_some() {
+                    let next = self.probe_key().await?;
+                    url = replace_query_key(&url, &next);
+                    query_token = Some(next);
+                }
+                if let Some(next) = self.auth(probe_auth).await? {
                     replace_auth(&mut headers, &next);
                     current_auth = Some(next);
                 }
@@ -586,36 +857,42 @@ impl HttpProvider {
         }
     }
 
-    fn adopt_listing(&self, text: &str) {
-        if self.discovered.swap(true, Ordering::Relaxed) {
+    fn apply_discovery(&self, models: &[ListedModel]) {
+        if models.is_empty() || self.discovered.swap(true, Ordering::Relaxed) {
             return;
         }
-        let Ok(value) = serde_json::from_str::<Value>(text) else {
-            return;
-        };
-        let Some(data) = value.get("data").and_then(Value::as_array) else {
-            return;
-        };
-        let model = self.get_model();
-        let chosen = if self.model_pinned {
-            data.iter()
-                .find(|item| item.get("id").and_then(Value::as_str) == Some(model.as_str()))
-        } else {
-            data.first()
-        };
-        let Some(chosen) = chosen else {
-            return;
-        };
         if !self.model_pinned
-            && let Some(id) = chosen.get("id").and_then(Value::as_str)
-            && !id.is_empty()
+            && let Some(picked) = models.first().map(|model| model.id.clone())
+            && !picked.is_empty()
         {
-            *lock(&self.model) = id.to_string();
+            *lock(&self.model) = picked.clone();
+            if self.wire == Wire::Vllm && models.len() > 1 {
+                let others = models
+                    .iter()
+                    .skip(1)
+                    .map(|model| model.id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                self.note(format!(
+                    "[{}] auto-selected model \"{picked}\" (also available: {others}). Set \"model\" in config to choose another.",
+                    self.id
+                ));
+            } else {
+                self.note(format!(
+                    "[{}] auto-selected served model \"{picked}\".",
+                    self.id
+                ));
+            }
         }
         if *lock(&self.context_pinned) {
             return;
         }
-        if let Some(len) = chosen.get("max_model_len").and_then(Value::as_u64) {
+        let current = self.get_model();
+        let chosen = models
+            .iter()
+            .find(|model| model.id == current)
+            .or_else(|| models.first());
+        if let Some(len) = chosen.and_then(|model| model.max_model_len) {
             *lock(&self.context) = len;
         }
     }
@@ -649,6 +926,7 @@ impl HttpProvider {
                 timeout,
                 retry: true,
                 auth,
+                query_token: None,
             })
             .await?;
         let deadline = Instant::now() + timeout;
@@ -672,7 +950,12 @@ impl HttpProvider {
                 return false;
             }
         };
-        let (method, url, body) = match self.probe_target().await {
+        let ProbeTarget {
+            method,
+            url,
+            body,
+            query_token,
+        } = match self.probe_target().await {
             Ok(parts) => parts,
             Err(err) => {
                 tracing::warn!(provider = %self.id, error = %err.message, "probe target failed");
@@ -683,12 +966,13 @@ impl HttpProvider {
         match self
             .exchange(ExchangeCall {
                 method,
-                url,
+                url: url.clone(),
                 headers,
                 body,
                 timeout: PROBE_TIMEOUT,
                 retry: false,
                 auth,
+                query_token,
             })
             .await
         {
@@ -696,7 +980,33 @@ impl HttpProvider {
                 let status = response.status;
                 if matches!(self.wire, Wire::Vllm | Wire::Llama) && (200..300).contains(&status) {
                     let text = read_limited(response.response, 1_000_000).await;
-                    self.adopt_listing(&text);
+                    let models = parse_listed_models(&text);
+                    let ids: Vec<String> = models.iter().map(|model| model.id.clone()).collect();
+                    self.apply_discovery(&models);
+                    *lock(self.pending_ids.as_ref()) = Some(ids.clone());
+                    if let Some(catalog) = &self.catalog {
+                        catalog.refresh();
+                    }
+                    if self.verify_model && self.model_pinned {
+                        let model = self.get_model();
+                        if !ids.iter().any(|id| id == &model) {
+                            let served = if ids.is_empty() {
+                                "none".to_string()
+                            } else {
+                                ids.join(", ")
+                            };
+                            let where_shown = if self.wire == Wire::Llama {
+                                "/v1/models".to_string()
+                            } else {
+                                url
+                            };
+                            self.note(format!(
+                                "[{}] configured model \"{model}\" not in {where_shown} (served: {served}).",
+                                self.id
+                            ));
+                            return false;
+                        }
+                    }
                 }
                 if self.wire == Wire::Anthropic {
                     (200..300).contains(&status) || status == 429
@@ -705,7 +1015,35 @@ impl HttpProvider {
                 }
             }
             Err(err) => {
-                tracing::warn!(provider = %self.id, error = %err.message, "probe failed");
+                if matches!(self.wire, Wire::Vllm | Wire::Llama) {
+                    if err.status == 0 {
+                        let hint = if self.wire == Wire::Vllm {
+                            "For local vLLM: vllm serve <model> --port <port>."
+                        } else {
+                            "For llama.cpp: llama-server -m <model.gguf> --port <port>."
+                        };
+                        self.note(format!(
+                            "[{}] cannot reach {url} ({}). Is the server running? {hint}",
+                            self.id, err.message
+                        ));
+                    } else {
+                        let hint = if matches!(err.status, 401 | 403) {
+                            if self.wire == Wire::Vllm {
+                                " — set api_key (vLLM: pass --api-key and match it here)."
+                            } else {
+                                " — set api_key (llama-server: pass --api-key and match it here)."
+                            }
+                        } else {
+                            ""
+                        };
+                        self.note(format!(
+                            "[{}] {url} returned HTTP {}{hint}",
+                            self.id, err.status
+                        ));
+                    }
+                } else {
+                    tracing::warn!(provider = %self.id, error = %err.message, "probe failed");
+                }
                 false
             }
         }
@@ -730,7 +1068,7 @@ impl Provider for HttpProvider {
     }
 
     fn set_base_url(&self, url: String) {
-        *lock(&self.base_url) = url;
+        *lock(self.base_url.as_ref()) = url;
     }
 
     fn context_window(&self) -> u64 {
@@ -750,6 +1088,16 @@ impl Provider for HttpProvider {
 
     fn is_available<'a>(&'a self) -> BoxFuture<'a, bool> {
         Box::pin(self.available_inner())
+    }
+
+    fn list_models<'a>(&'a self) -> BoxFuture<'a, Result<Vec<String>, ProviderError>> {
+        if let Some(catalog) = &self.catalog {
+            let models = catalog.refresh();
+            Box::pin(async move { Ok(models) })
+        } else {
+            let model = self.get_model();
+            Box::pin(async move { Ok(vec![model]) })
+        }
     }
 }
 
@@ -794,6 +1142,216 @@ struct ExchangeCall {
     timeout: Duration,
     retry: bool,
     auth: Option<(String, String, Option<String>)>,
+    query_token: Option<String>,
+}
+
+struct ProbeTarget {
+    method: Method,
+    url: String,
+    body: Option<Vec<u8>>,
+    query_token: Option<String>,
+}
+
+struct ListedModel {
+    id: String,
+    max_model_len: Option<u64>,
+}
+
+#[derive(Clone)]
+struct CatalogShared {
+    pending: Arc<Mutex<Option<Vec<String>>>>,
+    base_url: Arc<Mutex<String>>,
+    api_prefix: Arc<Mutex<String>>,
+    models_url: Arc<Mutex<Option<String>>>,
+    tokens: Arc<Mutex<Option<Arc<TokenSource>>>>,
+    api_key: Arc<Mutex<Option<String>>>,
+    client: reqwest::Client,
+    id: String,
+    wire: Wire,
+}
+
+impl CatalogShared {
+    async fn fetch_ids(&self) -> Result<Vec<String>, String> {
+        if let Some(ids) = lock(self.pending.as_ref()).take() {
+            return Ok(ids);
+        }
+        let base = lock(self.base_url.as_ref()).clone();
+        let prefix = lock(self.api_prefix.as_ref()).clone();
+        let override_url = lock(self.models_url.as_ref()).clone();
+        let url = if self.wire == Wire::Llama {
+            models_probe_url(&base, "/v1", None)
+        } else {
+            models_probe_url(&base, &prefix, override_url.as_deref())
+        };
+        let (header, sent) = self.auth_header().await?;
+        let mut response = self.get(&url, header.as_ref()).await?;
+        if response.status == 401 && sent.is_some() {
+            if let Some(source) = lock(self.tokens.as_ref()).clone() {
+                source.invalidate(sent.as_deref());
+            }
+            let _ = read_limited(response.response, 2048).await;
+            let (header, _) = self.auth_header().await?;
+            response = self.get(&url, header.as_ref()).await?;
+        }
+        if !(200..300).contains(&response.status) {
+            return Err(format!("HTTP {}", response.status));
+        }
+        let text = read_limited(response.response, 1_000_000).await;
+        Ok(parse_listed_models(&text)
+            .into_iter()
+            .map(|model| model.id)
+            .collect())
+    }
+
+    async fn auth_header(&self) -> Result<(Option<(String, String)>, Option<String>), String> {
+        let source = lock(self.tokens.as_ref()).clone();
+        if let Some(source) = source {
+            let token = source.get_token().await.map_err(|err| err.0)?;
+            return Ok((
+                Some(("Authorization".to_string(), format!("Bearer {token}"))),
+                Some(token),
+            ));
+        }
+        let key = lock(self.api_key.as_ref()).clone();
+        if let Some(key) = key {
+            return Ok((
+                Some(("Authorization".to_string(), format!("Bearer {key}"))),
+                None,
+            ));
+        }
+        Ok((None, None))
+    }
+
+    async fn get(
+        &self,
+        url: &str,
+        auth: Option<&(String, String)>,
+    ) -> Result<crate::http::RawResponse, String> {
+        let mut headers = vec![connection_header()];
+        if let Some((name, value)) = auth {
+            headers.push((name.clone(), value.clone()));
+        }
+        headers.extend(probe_tail());
+        send(
+            &self.client,
+            &HttpAttempt {
+                method: Method::GET,
+                url: url.to_string(),
+                headers,
+                body: None,
+            },
+            Duration::from_millis(crate::catalog::DEFAULT_CATALOG_TIMEOUT_MS),
+            &self.id,
+        )
+        .await
+        .map_err(|err| err.message)
+    }
+}
+
+fn env_key(wire: Wire) -> Option<&'static str> {
+    match wire {
+        Wire::Anthropic => Some("ANTHROPIC_API_KEY"),
+        Wire::Xai => Some("XAI_API_KEY"),
+        Wire::Google => Some("GOOGLE_API_KEY"),
+        Wire::Vllm => Some("VLLM_API_KEY"),
+        Wire::Llama => Some("LLAMA_SERVER_API_KEY"),
+        Wire::Ollama => None,
+    }
+}
+
+pub fn process_env(keys: &[&str]) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    for key in keys {
+        if let Ok(value) = std::env::var(key) {
+            map.insert((*key).to_string(), value);
+        }
+    }
+    map
+}
+
+pub fn normalize_api_prefix(api_prefix: Option<&str>) -> String {
+    let Some(api_prefix) = api_prefix else {
+        return "/v1".to_string();
+    };
+    let trimmed = api_prefix.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let with_leading = if trimmed.starts_with('/') {
+        trimmed.to_string()
+    } else {
+        format!("/{trimmed}")
+    };
+    with_leading.trim_end_matches('/').to_string()
+}
+
+pub fn strip_openai_base(base_url: &str) -> String {
+    let root = base_url.trim_end_matches('/');
+    root.strip_suffix("/v1")
+        .unwrap_or(root)
+        .trim_end_matches('/')
+        .to_string()
+}
+
+pub fn chat_completions_url(base_url: &str, api_prefix: &str) -> String {
+    format!(
+        "{}{api_prefix}/chat/completions",
+        strip_openai_base(base_url)
+    )
+}
+
+pub fn models_probe_url(base_url: &str, api_prefix: &str, models_url: Option<&str>) -> String {
+    if let Some(url) = models_url.filter(|url| !url.is_empty()) {
+        return url.to_string();
+    }
+    format!("{}{api_prefix}/models", strip_openai_base(base_url))
+}
+
+fn replace_query_key(url: &str, key: &str) -> String {
+    let encoded = encode_query(key);
+    if let Some(index) = url.find("?key=") {
+        return format!("{}?key={encoded}", &url[..index]);
+    }
+    if let Some(index) = url.find("&key=") {
+        return format!("{}&key={encoded}", &url[..index]);
+    }
+    url.to_string()
+}
+
+fn parse_listed_models(text: &str) -> Vec<ListedModel> {
+    let Ok(value) = serde_json::from_str::<Value>(text) else {
+        return Vec::new();
+    };
+    let Some(data) = value.get("data").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    data.iter()
+        .filter_map(|item| {
+            let id = item.get("id").and_then(Value::as_str)?.to_string();
+            if id.is_empty() {
+                return None;
+            }
+            Some(ListedModel {
+                id,
+                max_model_len: json_len(item.get("max_model_len")),
+            })
+        })
+        .collect()
+}
+
+fn json_len(value: Option<&Value>) -> Option<u64> {
+    let value = value?;
+    if let Some(number) = value.as_u64()
+        && number > 0
+    {
+        return Some(number);
+    }
+    let number = value.as_f64()?;
+    if number.is_finite() && number > 0.0 {
+        Some(number as u64)
+    } else {
+        None
+    }
 }
 
 fn default_model(wire: Wire) -> &'static str {
@@ -948,7 +1506,7 @@ fn anthropic_messages(request: &ChatRequest) -> Value {
     };
     for message in &request.messages {
         match message {
-            TurnMessage::User { text } => {
+            TurnMessage::System { text } | TurnMessage::User { text } => {
                 flush(&mut out, &mut pending_results);
                 out.push(obj(vec![
                     ("role", Value::from("user")),
@@ -1059,7 +1617,7 @@ fn xai_input(request: &ChatRequest) -> Value {
     }
     for message in &request.messages {
         match message {
-            TurnMessage::User { text } => {
+            TurnMessage::System { text } | TurnMessage::User { text } => {
                 input.push(obj(vec![
                     ("role", Value::from("user")),
                     (
@@ -1258,7 +1816,7 @@ fn google_contents(request: &ChatRequest) -> Value {
     };
     for message in &request.messages {
         match message {
-            TurnMessage::User { text } => {
+            TurnMessage::System { text } | TurnMessage::User { text } => {
                 flush(&mut out, &mut pending);
                 out.push(obj(vec![
                     ("role", Value::from("user")),
@@ -1325,7 +1883,7 @@ fn openai_body(provider: &HttpProvider, request: &ChatRequest, model: &str, vllm
     map.insert("max_tokens".to_string(), Value::from(4096u64));
     map.insert("temperature".to_string(), provider.temperature.clone());
     map.insert("top_p".to_string(), provider.top_p.clone());
-    map.insert("messages".to_string(), openai_messages(request, true));
+    map.insert("messages".to_string(), openai_messages(request, true, true));
     if !request.tools.is_empty() {
         map.insert("tools".to_string(), openai_tools(&request.tools));
         map.insert("tool_choice".to_string(), Value::from("auto"));
@@ -1350,7 +1908,10 @@ fn openai_body(provider: &HttpProvider, request: &ChatRequest, model: &str, vllm
 fn ollama_body(provider: &HttpProvider, request: &ChatRequest, model: &str) -> Value {
     let mut map = Map::new();
     map.insert("model".to_string(), Value::from(model));
-    map.insert("messages".to_string(), openai_messages(request, false));
+    map.insert(
+        "messages".to_string(),
+        openai_messages(request, false, false),
+    );
     map.insert(
         "think".to_string(),
         Value::Bool(request.thinking != ThinkingLevel::Off),
@@ -1391,17 +1952,18 @@ fn openai_tools(tools: &[ToolDef]) -> Value {
     )
 }
 
-fn openai_messages(request: &ChatRequest, reasoning_field: bool) -> Value {
+fn openai_messages(request: &ChatRequest, reasoning_field: bool, fold: bool) -> Value {
+    let (system, messages) = folded_request(request, fold);
     let mut out = Vec::new();
-    if !request.system.is_empty() {
+    if !system.is_empty() {
         out.push(obj(vec![
             ("role", Value::from("system")),
-            ("content", Value::from(request.system.clone())),
+            ("content", Value::from(system)),
         ]));
     }
-    for message in &request.messages {
+    for message in &messages {
         match message {
-            TurnMessage::User { text } => {
+            TurnMessage::System { text } | TurnMessage::User { text } => {
                 out.push(obj(vec![
                     ("role", Value::from("user")),
                     ("content", Value::from(text.clone())),
@@ -1471,4 +2033,46 @@ fn openai_messages(request: &ChatRequest, reasoning_field: bool) -> Value {
         }
     }
     Value::Array(out)
+}
+
+fn folded_request(request: &ChatRequest, fold: bool) -> (String, Vec<TurnMessage>) {
+    if !fold {
+        return (request.system.clone(), request.messages.clone());
+    }
+    let mut input = Vec::new();
+    if !request.system.is_empty() {
+        input.push(FoldMessage {
+            role: "system".to_string(),
+            content: FoldContent::Text(request.system.clone()),
+            data: None,
+        });
+    }
+    for message in &request.messages {
+        match message {
+            TurnMessage::System { text } => input.push(FoldMessage {
+                role: "system".to_string(),
+                content: FoldContent::Text(text.clone()),
+                data: None,
+            }),
+            other => input.push(FoldMessage {
+                role: "keep".to_string(),
+                content: FoldContent::Text(String::new()),
+                data: Some(other.clone()),
+            }),
+        }
+    }
+    let (system, rest) = split_and_fold_system(&input);
+    let messages = rest
+        .into_iter()
+        .map(|item| match item.data {
+            Some(message) => message,
+            None => match item.content {
+                FoldContent::Text(text) => TurnMessage::User { text },
+                FoldContent::Parts(parts) => TurnMessage::User {
+                    text: parts.concat(),
+                },
+            },
+        })
+        .collect();
+    (system, messages)
 }
