@@ -137,9 +137,9 @@ pub struct TaskResult {
     pub summary: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output: Option<String>,
-    pub artifacts: Vec<ParsedArtifact>,
+    pub artifacts: Vec<TaskArtifact>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub criteria_self_report: Option<Vec<ParsedCriterion>>,
+    pub criteria_self_report: Option<Vec<CriterionSelfReport>>,
     pub usage: TaskUsage,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
