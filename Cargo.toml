@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/protocol", "crates/config"]
+members = ["crates/protocol", "crates/config", "crates/agents"]
 
 [workspace.package]
 edition = "2024"
@@ -51,7 +51,7 @@ sha2 = "0.10"
 signature = { version = "3", features = ["alloc"] }
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json"] }
 thiserror = "2"
-tokio = "1.47.1"
+tokio = { version = "1", features = ["fs", "io-util", "macros", "rt-multi-thread", "sync", "time"] }
 tokio-rustls = "0.26"
 tokio-util = "0.7.16"
 tower = "0.5"
