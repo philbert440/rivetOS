@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/protocol", "crates/config", "crates/identity", "crates/memory", "crates/rivetos", "crates/session-events"]
+members = ["crates/protocol", "crates/config", "crates/identity", "crates/memory", "crates/rivetos", "crates/session-events", "crates/gateway"]
 
 [workspace.package]
 edition = "2024"
@@ -13,6 +13,28 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order", "raw_value", "float_roundtrip"] }
 serde_saphyr = { package = "serde-saphyr", version = "0.0.16" }
 thiserror = "2"
+axum = { version = "0.8", default-features = false, features = ["http1", "json"] }
+clap = { version = "4", features = ["derive"] }
+base64 = "0.22"
+bytes = "1"
+futures-util = "0.3"
+hostname = "0.4"
+http = "1"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["http1", "client", "server"] }
+hyper-util = { version = "0.1", features = ["tokio", "client-legacy", "http1"] }
+parking_lot = "0.12"
+rcgen = "0.13"
+regress = "0.10"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-pemfile = "2"
+sha1 = "0.10"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "time", "io-util", "sync"] }
+tokio-rustls = "0.26"
+tokio-tungstenite = { version = "0.26", default-features = false, features = ["connect", "handshake"] }
+tungstenite = { version = "0.26", default-features = false, features = ["handshake"] }
+url = "2"
+x509-parser = "0.16"
 
 [workspace.lints.rust]
 unsafe_code = "deny"

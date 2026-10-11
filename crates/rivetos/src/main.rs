@@ -17,6 +17,8 @@ enum Command {
         #[command(subcommand)]
         action: Option<DbAction>,
     },
+    #[command(about = "Serve the den gateway on HTTP and WebSocket")]
+    Gateway,
 }
 
 #[derive(Subcommand)]
@@ -64,6 +66,9 @@ fn main() -> ExitCode {
 }
 
 fn dispatch(args: &[String]) -> Result<ExitCode, String> {
+    if args.first().map(String::as_str) == Some("gateway") {
+        return gateway_main();
+    }
     if args.first().map(String::as_str) != Some("db") {
         print_usage();
         return Ok(if args.is_empty() {
@@ -171,6 +176,14 @@ fn status() -> Result<ExitCode, String> {
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+fn gateway_main() -> Result<ExitCode, String> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|err| err.to_string())?;
+    Ok(runtime.block_on(gateway::run(gateway::GatewayArgs)))
 }
 
 fn print_usage() {
