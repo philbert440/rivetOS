@@ -94,6 +94,8 @@ import { useAgentFilter } from '../stores/agent-filter.js'
 import { Tooltip } from './ui/tooltip.js'
 import { cn } from '../lib/utils.js'
 import { AGENT_DRAG_MIME } from '../lib/agent-drag.js'
+import { modelIconKey, type ModelIconKey } from '../lib/model-icon.js'
+import { ModelIcon } from './model-icon.js'
 
 type RosterAgent = ResolvedRosterAgent
 
@@ -680,11 +682,16 @@ function agentAccent(agent: Pick<RosterAgent, 'color' | 'harnessId' | 'model'>):
 function AgentTile(props: {
   accent: string
   initials?: string
+  /** Brand logo for the agent's model / harness; replaces the initials. */
+  icon?: ModelIconKey
   compact?: boolean
   current?: boolean
   /** Folded rail badge only: separate a dark accent from the Bot stroke. */
   halo?: boolean
 }): JSX.Element {
+  // A logo sits on a neutral chip (brand colours, or ink for single-colour
+  // marks); without one the initials sit on the agent's accent.
+  const logo = props.icon !== undefined && props.initials !== undefined
   return (
     <span
       className={cn(
@@ -696,8 +703,8 @@ function AgentTile(props: {
             : 'size-6 text-[10px] classic:size-5',
       )}
       style={{
-        background: props.accent,
-        color: inkOn(props.accent),
+        background: logo ? 'var(--color-panel-2)' : props.accent,
+        color: logo ? 'var(--color-ink)' : inkOn(props.accent),
         ...(props.current
           ? { boxShadow: `0 0 0 2px var(--color-em-container), 0 0 0 3.5px ${props.accent}` }
           : props.halo
@@ -706,7 +713,16 @@ function AgentTile(props: {
       }}
       aria-hidden
     >
-      {props.initials}
+      {logo && props.icon ? (
+        <ModelIcon
+          icon={props.icon}
+          className={
+            props.compact ? 'text-base classic:text-[12px]' : 'text-[14px] classic:text-[12px]'
+          }
+        />
+      ) : (
+        props.initials
+      )}
     </span>
   )
 }
@@ -826,6 +842,7 @@ function AgentRow({
     <AgentTile
       accent={accent}
       initials={agentInitials(agent.name)}
+      icon={modelIconKey({ model: agent.model, harnessId: agent.harnessId })}
       compact={compact}
       current={current}
     />
@@ -1446,7 +1463,14 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
                 </span>
               ) : (
                 <span className="ml-auto flex min-w-0 items-center gap-1.5 pl-2 text-xs text-em">
-                  <AgentTile accent={currentAccent} initials={agentInitials(currentAgent.name)} />
+                  <AgentTile
+                    accent={currentAccent}
+                    initials={agentInitials(currentAgent.name)}
+                    icon={modelIconKey({
+                      model: currentAgent.model,
+                      harnessId: currentAgent.harnessId,
+                    })}
+                  />
                   <span className="min-w-0 truncate">{currentAgent.name}</span>
                 </span>
               ))}
