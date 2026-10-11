@@ -9,7 +9,7 @@ use tokio::io::AsyncWriteExt;
 use crate::config_resolve::{embedded_pg_env, embedded_pg_url};
 use crate::error::{LocalDbError, Result};
 use crate::lock::{
-    EmbeddedPgLog, LockClaim, PidProbe, claim_owner_lock, embedded_pg_lock_alive, probe_lock_pid,
+    EmbeddedPgLog, FileLock, LockClaim, claim_owner_lock, embedded_pg_lock_alive,
     read_embedded_pg_lock, release_owner_lock,
 };
 use crate::paths::{lexical_absolute, migrate_dir, shell_quote};
@@ -96,6 +96,7 @@ pub enum ExportAction {
         last: String,
         called: bool,
     },
+    Ddl(String),
     Done,
 }
 
@@ -105,7 +106,13 @@ struct MigratedFile {
 }
 
 struct LedgerLock {
-    path: PathBuf,
+    _held: FileLock,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypedName {
+    pub name: String,
+    pub type_name: String,
 }
 
 pub fn pending_marker(engine_dir: &Path) -> PathBuf {
@@ -209,6 +216,147 @@ pub fn copy_this_table(table: &str) -> bool {
     table != "_rivetos_migrations"
 }
 
+pub fn missing_relation_message(schema: &str, name: &str) -> String {
+    format!(
+        "embedded postgres: PGlite migration refused: destination has no relation {schema}.{name}; refusing to record a partial migration"
+    )
+}
+
+pub fn mask_self_link_columns(
+    columns: &[String],
+    rows: &[Vec<Option<String>>],
+    self_columns: &[String],
+) -> Result<Vec<Vec<Option<String>>>> {
+    let indexes = column_indexes(columns, self_columns)?;
+    let mut masked = Vec::with_capacity(rows.len());
+    for row in rows {
+        if row.len() != columns.len() {
+            return Err(LocalDbError::message(
+                "embedded postgres: PGlite self-link row has the wrong width",
+            ));
+        }
+        let mut next = row.clone();
+        for index in &indexes {
+            next[*index] = None;
+        }
+        masked.push(next);
+    }
+    Ok(masked)
+}
+
+pub fn plan_self_link_updates(
+    schema: &str,
+    table: &str,
+    keys: &[TypedName],
+    links: &[TypedName],
+    columns: &[String],
+    rows: &[Vec<Option<String>>],
+) -> Result<Vec<BoundInsert>> {
+    if keys.is_empty() || links.is_empty() {
+        return Ok(Vec::new());
+    }
+    let key_names = keys
+        .iter()
+        .map(|column| column.name.clone())
+        .collect::<Vec<_>>();
+    let link_names = links
+        .iter()
+        .map(|column| column.name.clone())
+        .collect::<Vec<_>>();
+    let key_indexes = column_indexes(columns, &key_names)?;
+    let link_indexes = column_indexes(columns, &link_names)?;
+    let mut pending = Vec::new();
+    for row in rows {
+        if row.len() != columns.len() {
+            return Err(LocalDbError::message(
+                "embedded postgres: PGlite self-link row has the wrong width",
+            ));
+        }
+        if link_indexes.iter().all(|index| row[*index].is_none()) {
+            continue;
+        }
+        let mut values = Vec::with_capacity(keys.len() + links.len());
+        for index in &key_indexes {
+            values.push(row[*index].clone());
+        }
+        for index in &link_indexes {
+            values.push(row[*index].clone());
+        }
+        pending.push(values);
+    }
+    let mut plans = Vec::new();
+    for chunk in pending.chunks(100) {
+        plans.push(self_link_update(schema, table, keys, links, chunk));
+    }
+    Ok(plans)
+}
+
+fn column_indexes(columns: &[String], wanted: &[String]) -> Result<Vec<usize>> {
+    let mut indexes = Vec::with_capacity(wanted.len());
+    for name in wanted {
+        let Some(index) = columns.iter().position(|column| column == name) else {
+            return Err(LocalDbError::message(format!(
+                "embedded postgres: PGlite export is missing column {name}"
+            )));
+        };
+        indexes.push(index);
+    }
+    Ok(indexes)
+}
+
+fn self_link_update(
+    schema: &str,
+    table: &str,
+    keys: &[TypedName],
+    links: &[TypedName],
+    rows: &[Vec<Option<String>>],
+) -> BoundInsert {
+    let mut params = Vec::new();
+    let mut tuples = Vec::new();
+    let mut number = 1usize;
+    let width = keys.len() + links.len();
+    for row in rows {
+        let mut places = Vec::with_capacity(width);
+        for (offset, column) in keys.iter().chain(links.iter()).enumerate() {
+            places.push(format!("(${number}::text)::{}", column.type_name));
+            params.push(row.get(offset).cloned().flatten());
+            number += 1;
+        }
+        tuples.push(format!("({})", places.join(", ")));
+    }
+    let value_names = keys
+        .iter()
+        .chain(links.iter())
+        .map(|column| quote_ident(&column.name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let assignments = links
+        .iter()
+        .map(|column| {
+            let quoted = quote_ident(&column.name);
+            format!("{quoted} = v.{quoted}")
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let predicate = keys
+        .iter()
+        .map(|column| {
+            let quoted = quote_ident(&column.name);
+            format!("t.{quoted} = v.{quoted}")
+        })
+        .collect::<Vec<_>>()
+        .join(" AND ");
+    BoundInsert {
+        sql: format!(
+            "UPDATE {}.{} AS t SET {assignments} FROM (VALUES {}) AS v({value_names}) WHERE {predicate}",
+            quote_ident(schema),
+            quote_ident(table),
+            tuples.join(", ")
+        ),
+        params,
+    }
+}
+
 pub fn setval_statement() -> &'static str {
     "SELECT setval(format('%I.%I', $1::text, $2::text)::regclass, $3::text::bigint, $4::text::boolean)"
 }
@@ -297,6 +445,7 @@ pub fn parse_export_line(line: &str) -> Result<Option<ExportAction>> {
                     LocalDbError::message("embedded postgres: PGlite setval needs called")
                 })?,
         },
+        "ddl" => ExportAction::Ddl(required_str(&value, "sql")?),
         "done" => ExportAction::Done,
         other => {
             return Err(LocalDbError::message(format!(
@@ -832,62 +981,19 @@ async fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
 
 impl LedgerLock {
     async fn acquire(home: &Path) -> Result<Self> {
+        Self::acquire_timeout(home, LEDGER_LOCK_TIMEOUT).await
+    }
+
+    async fn acquire_timeout(home: &Path, timeout: Duration) -> Result<Self> {
         let path = migrated_record(home).with_file_name("migrated-sources.lock");
-        if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent).await?;
-        }
-        let deadline = tokio::time::Instant::now() + LEDGER_LOCK_TIMEOUT;
-        loop {
-            let mut options = tokio::fs::OpenOptions::new();
-            options.write(true).create_new(true);
-            #[cfg(unix)]
-            {
-                options.mode(0o600);
-            }
-            match options.open(&path).await {
-                Ok(mut file) => {
-                    let body = std::process::id().to_string();
-                    file.write_all(body.as_bytes()).await?;
-                    file.flush().await?;
-                    file.sync_all().await?;
-                    return Ok(Self { path });
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                    if ledger_lock_stale(&path).await {
-                        let _ = tokio::fs::remove_file(&path).await;
-                        continue;
-                    }
-                    if tokio::time::Instant::now() >= deadline {
-                        return Err(LocalDbError::message(
-                            "embedded postgres: timed out waiting for the migration ledger lock",
-                        ));
-                    }
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                }
-                Err(error) => return Err(error.into()),
-            }
-        }
+        let held = FileLock::acquire(
+            &path,
+            timeout,
+            "embedded postgres: timed out waiting for the migration ledger lock".to_string(),
+        )
+        .await?;
+        Ok(Self { _held: held })
     }
-}
-
-impl Drop for LedgerLock {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
-    }
-}
-
-async fn ledger_lock_stale(path: &Path) -> bool {
-    let text = match tokio::fs::read_to_string(path).await {
-        Ok(text) => text,
-        Err(_) => return true,
-    };
-    let Ok(pid) = text.trim().parse::<i64>() else {
-        return true;
-    };
-    if pid <= 0 {
-        return true;
-    }
-    probe_lock_pid(pid) == PidProbe::Dead
 }
 
 async fn set_mode(path: &Path, mode: u32) -> Result<()> {
@@ -1021,6 +1127,12 @@ mod tests {
         assert!(!EXPORT_SCRIPT.contains("OFFSET"));
         assert!(EXPORT_SCRIPT.contains("--seed"));
         assert!(EXPORT_SCRIPT.contains("::text"));
+        assert!(EXPORT_SCRIPT.contains("op: 'ddl'"));
+        assert!(EXPORT_SCRIPT.contains("schema !== 'public'"));
+        assert!(EXPORT_SCRIPT.contains("pg_get_functiondef"));
+        assert!(EXPORT_SCRIPT.contains("parent_task_id"));
+        assert!(EXPORT_SCRIPT.contains("extract-wiki"));
+        assert!(EXPORT_SCRIPT.contains("job_count"));
         assert!(!EXPORT_SCRIPT.contains("op: 'table'"));
         assert!(!EXPORT_SCRIPT.contains("pgDump"));
         assert!(!EXPORT_SCRIPT.contains("pglite-tools"));
@@ -1102,6 +1214,77 @@ mod tests {
         assert!(!stamped.sql.contains("$1::text::timestamp"));
         assert!(copy_this_table("ros_messages"));
         assert!(!copy_this_table("_rivetos_migrations"));
+        assert!(
+            missing_relation_message("graphile_worker", "_private_jobs")
+                .contains("destination has no relation graphile_worker._private_jobs")
+        );
+    }
+
+    #[test]
+    fn self_links_insert_null_and_update_after_a_child_that_is_stored_first() {
+        let columns = vec!["id".to_string(), "parent_id".to_string()];
+        let child = "33333333-3333-4333-8333-000000000002";
+        let parent = "33333333-3333-4333-8333-000000000001";
+        let rows = vec![
+            vec![Some(child.to_string()), Some(parent.to_string())],
+            vec![Some(parent.to_string()), None],
+        ];
+        let masked =
+            mask_self_link_columns(&columns, &rows, &["parent_id".to_string()]).expect("mask");
+        assert_eq!(masked[0][1], None);
+        assert_eq!(masked[1][1], None);
+        assert_eq!(masked[0][0].as_deref(), Some(child));
+        let keys = vec![TypedName {
+            name: "id".to_string(),
+            type_name: "uuid".to_string(),
+        }];
+        let links = vec![TypedName {
+            name: "parent_id".to_string(),
+            type_name: "uuid".to_string(),
+        }];
+        let plans =
+            plan_self_link_updates("public", "ros_summaries", &keys, &links, &columns, &rows)
+                .expect("updates");
+        assert_eq!(plans.len(), 1);
+        assert_eq!(
+            plans[0].params,
+            vec![Some(child.to_string()), Some(parent.to_string())]
+        );
+        assert!(plans[0].sql.contains("UPDATE"));
+        assert!(plans[0].sql.contains("($1::text)::uuid"));
+        assert!(plans[0].sql.contains("($2::text)::uuid"));
+        assert!(!plans[0].sql.contains(parent));
+        let tasks = plan_self_link_updates(
+            "public",
+            "ros_tasks",
+            &[TypedName {
+                name: "id".to_string(),
+                type_name: "uuid".to_string(),
+            }],
+            &[TypedName {
+                name: "parent_task_id".to_string(),
+                type_name: "uuid".to_string(),
+            }],
+            &["id".to_string(), "parent_task_id".to_string()],
+            &[vec![
+                Some("22222222-2222-4222-8222-000000000002".to_string()),
+                Some("22222222-2222-4222-8222-000000000001".to_string()),
+            ]],
+        )
+        .expect("tasks");
+        assert!(tasks[0].sql.contains("parent_task_id"));
+        assert!(
+            !tasks[0]
+                .sql
+                .contains("22222222-2222-4222-8222-000000000001")
+        );
+        let ddl = parse_export_line(r#"{"op":"ddl","sql":"CREATE SCHEMA graphile_worker"}"#)
+            .expect("ddl")
+            .expect("action");
+        assert_eq!(
+            ddl,
+            ExportAction::Ddl("CREATE SCHEMA graphile_worker".to_string())
+        );
     }
 
     #[test]

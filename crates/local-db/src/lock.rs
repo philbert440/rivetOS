@@ -294,6 +294,183 @@ fn pid_is_alive(pid: i32) -> bool {
     }
 }
 
+enum LockTry {
+    Busy,
+    Failed(std::io::Error),
+}
+
+#[cfg(unix)]
+type HeldLock = nix::fcntl::Flock<std::fs::File>;
+#[cfg(not(unix))]
+type HeldLock = std::fs::File;
+
+#[derive(Debug)]
+pub struct FileLock {
+    path: PathBuf,
+    file: Option<HeldLock>,
+}
+
+impl FileLock {
+    pub async fn acquire(path: &Path, timeout: Duration, busy: String) -> Result<Self> {
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        let deadline = tokio::time::Instant::now() + timeout;
+        let owned = path.to_path_buf();
+        loop {
+            let attempt = owned.clone();
+            let outcome = tokio::task::spawn_blocking(move || try_file_lock(&attempt))
+                .await
+                .map_err(|error| LocalDbError::message(error.to_string()))?;
+            match outcome {
+                Ok(lock) => return Ok(lock),
+                Err(LockTry::Busy) => {
+                    if tokio::time::Instant::now() >= deadline {
+                        return Err(LocalDbError::message(busy));
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                Err(LockTry::Failed(error)) => return Err(error.into()),
+            }
+        }
+    }
+}
+
+impl Drop for FileLock {
+    fn drop(&mut self) {
+        let Some(file) = self.file.take() else {
+            return;
+        };
+        release_file_lock(file, &self.path);
+    }
+}
+
+fn write_lock_owner(file: &mut std::fs::File) -> std::io::Result<()> {
+    use std::io::{Seek, SeekFrom, Write};
+    file.set_len(0)?;
+    file.seek(SeekFrom::Start(0))?;
+    writeln!(file, "{}", std::process::id())?;
+    file.sync_all()
+}
+
+#[cfg(unix)]
+fn try_file_lock(path: &Path) -> std::result::Result<FileLock, LockTry> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut options = std::fs::OpenOptions::new();
+    options
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600);
+    let mut file = options.open(path).map_err(LockTry::Failed)?;
+    let mut locked = loop {
+        match nix::fcntl::Flock::lock(file, nix::fcntl::FlockArg::LockExclusiveNonblock) {
+            Ok(locked) => break locked,
+            Err((returned, nix::errno::Errno::EINTR)) => {
+                file = returned;
+            }
+            Err((_, errno))
+                if errno == nix::errno::Errno::EWOULDBLOCK
+                    || errno == nix::errno::Errno::EAGAIN =>
+            {
+                return Err(LockTry::Busy);
+            }
+            Err((_, errno)) => {
+                return Err(LockTry::Failed(std::io::Error::other(errno.to_string())));
+            }
+        }
+    };
+    if let Err(error) = write_lock_owner(&mut locked) {
+        let _ = locked.unlock();
+        return Err(LockTry::Failed(error));
+    }
+    Ok(FileLock {
+        path: path.to_path_buf(),
+        file: Some(locked),
+    })
+}
+
+#[cfg(unix)]
+fn release_file_lock(file: HeldLock, path: &Path) {
+    use std::os::unix::fs::MetadataExt;
+    let same = match (file.metadata(), std::fs::metadata(path)) {
+        (Ok(ours), Ok(current)) => ours.dev() == current.dev() && ours.ino() == current.ino(),
+        _ => false,
+    };
+    if same {
+        let _ = std::fs::remove_file(path);
+    }
+    let _ = file.unlock();
+}
+
+#[cfg(not(unix))]
+fn try_file_lock(path: &Path) -> std::result::Result<FileLock, LockTry> {
+    let tmp = path.with_extension(format!("tmp-{}", std::process::id()));
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&tmp)
+        .map_err(LockTry::Failed)?;
+    if let Err(error) = write_lock_owner(&mut file) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(LockTry::Failed(error));
+    }
+    drop(file);
+    match std::fs::hard_link(&tmp, path) {
+        Ok(()) => {
+            let _ = std::fs::remove_file(&tmp);
+            let held = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(path)
+                .map_err(LockTry::Failed)?;
+            Ok(FileLock {
+                path: path.to_path_buf(),
+                file: Some(held),
+            })
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            let _ = std::fs::remove_file(&tmp);
+            if lock_text_is_dead(path) {
+                let _ = std::fs::remove_file(path);
+            }
+            Err(LockTry::Busy)
+        }
+        Err(error) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(LockTry::Failed(error))
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn lock_text_is_dead(path: &Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return true;
+    };
+    let Ok(pid) = text.trim().parse::<i64>() else {
+        return true;
+    };
+    probe_lock_pid(pid) == PidProbe::Dead
+}
+
+#[cfg(not(unix))]
+fn release_file_lock(file: HeldLock, path: &Path) {
+    let _ = file;
+    let ours = std::process::id().to_string();
+    if std::fs::read_to_string(path).ok().as_deref() == Some(ours.as_str())
+        || std::fs::read_to_string(path)
+            .ok()
+            .is_some_and(|text| text.trim() == ours)
+    {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -479,6 +656,47 @@ mod tests {
         assert!(text.contains("holds"));
         assert!(text.contains("nothing listens on 127.0.0.1:"));
         assert!(text.contains("if that process is dead, remove the lock"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn file_lock_waits_out_an_empty_publication_and_recovers_a_dead_holder() {
+        use std::os::unix::fs::OpenOptionsExt;
+        let dir = temp_dir("file-lock");
+        let path = dir.join("migrated-sources.lock");
+        let held = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&path)
+            .expect("open");
+        let held = match nix::fcntl::Flock::lock(held, nix::fcntl::FlockArg::LockExclusiveNonblock)
+        {
+            Ok(locked) => locked,
+            Err((_, errno)) => panic!("flock {errno}"),
+        };
+        held.set_len(0).expect("truncate");
+        let started = std::time::Instant::now();
+        let error = FileLock::acquire(&path, Duration::from_millis(200), "lock busy".to_string())
+            .await
+            .expect_err("held");
+        assert_eq!(error.to_string(), "lock busy");
+        assert!(started.elapsed() >= Duration::from_millis(150));
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert_eq!(std::fs::read(&path).expect("empty"), b"");
+        drop(held);
+        std::fs::write(&path, format!("{}\n", std::process::id())).expect("reused pid");
+        let recovered =
+            FileLock::acquire(&path, Duration::from_millis(500), "lock busy".to_string())
+                .await
+                .expect("recovered");
+        let text = std::fs::read_to_string(&path).expect("pid");
+        assert_eq!(text.trim(), std::process::id().to_string());
+        drop(recovered);
+        assert!(!path.exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

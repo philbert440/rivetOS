@@ -14,13 +14,14 @@ use crate::config_resolve::{
 };
 use crate::error::{LocalDbError, Result, engine_error, extension_error};
 use crate::lock::{
-    EmbeddedPgLog, LockClaim, PidProbe, claim_owner_lock, embedded_pg_lock_alive, probe_lock_pid,
-    read_embedded_pg_lock, release_owner_lock,
+    EmbeddedPgLog, FileLock, LockClaim, PidProbe, claim_owner_lock, embedded_pg_lock_alive,
+    probe_lock_pid, read_embedded_pg_lock, release_owner_lock,
 };
 use crate::migrate::{
-    DestColumn, ExportAction, MigrationPlan, SkipReason, clear_store_work, copy_this_table,
-    export_pglite_source, parse_export_line, pending_marker, pgdata_dir, plan_insert,
-    plan_migration, record_migrated_sources, setval_statement, source_is_migrated,
+    BoundInsert, DestColumn, ExportAction, MigrationPlan, SkipReason, TypedName, clear_store_work,
+    copy_this_table, export_pglite_source, mask_self_link_columns, missing_relation_message,
+    parse_export_line, pending_marker, pgdata_dir, plan_insert, plan_migration,
+    plan_self_link_updates, record_migrated_sources, setval_statement, source_is_migrated,
 };
 use crate::paths::{
     backups_dir, cluster_dir_for, expand_tilde, lexical_absolute, real_of_nearest, rivet_dir,
@@ -157,7 +158,16 @@ pub async fn acquire_embedded_pg(
     resolved: ResolvedEmbeddedPg,
     log: &dyn EmbeddedPgLog,
 ) -> Result<EmbeddedPg> {
-    acquire_embedded_pg_with(resolved, log, None, &MapEnv::new()).await
+    let env = boot_env_for_export(&protocol::host::ProcessEnv);
+    acquire_embedded_pg_with(resolved, log, None, &env).await
+}
+
+fn boot_env_for_export(boot: &dyn Env) -> MapEnv {
+    let mut env = MapEnv::new();
+    if let Some(root) = boot.var("RIVETOS_ROOT").filter(|value| !value.is_empty()) {
+        env.set("RIVETOS_ROOT", root);
+    }
+    env
 }
 
 pub async fn acquire_embedded_pg_with(
@@ -456,7 +466,13 @@ async fn start_server(
     let early = find_pg_ctl(&resolved.installation_dir);
     clear_stale_postmaster(&pgdata, early.as_deref(), log).await?;
     remove_incomplete(&pgdata, log).await?;
-    let guard = acquire_install_lock(&resolved.installation_dir).await?;
+    remove_incomplete_install(&resolved.installation_dir, log).await?;
+    let guard = if binary_install_required(&resolved.installation_dir) {
+        Some(acquire_install_lock(&resolved.installation_dir).await?)
+    } else {
+        None
+    };
+    remove_incomplete_install(&resolved.installation_dir, log).await?;
     let settings = engine_settings(resolved, port, max, env).await?;
     write_password_file(&settings.password_file, &settings.password).await?;
     ensure_crypto_provider();
@@ -521,6 +537,7 @@ async fn setup_cluster(
     log: &dyn EmbeddedPgLog,
 ) -> Result<()> {
     let install_dir = server.settings().installation_dir.clone();
+    let releases = server.settings().releases_url.clone();
     let setup = with_timeout(SETUP_TIMEOUT, async {
         server.setup().await.map_err(engine_error)
     })
@@ -533,7 +550,7 @@ async fn setup_cluster(
             ));
             let _ = clear_dir(pgdata).await;
         }
-        if !postgres_binaries_present(&install_dir) {
+        if offline_without_binaries(&install_dir, &releases) {
             return Err(binaries_offline_error(&install_dir, &error.to_string()));
         }
         return Err(error);
@@ -634,7 +651,7 @@ async fn engine_settings(
         Some(value) if !value.is_empty() => value,
         _ => default_releases,
     };
-    if !postgres_binaries_present(&resolved.installation_dir) && !theseus_releases(&releases_url) {
+    if offline_without_binaries(&resolved.installation_dir, &releases_url) {
         return Err(binaries_offline_error(
             &resolved.installation_dir,
             "releases URL is not the theseus PostgreSQL archive",
@@ -672,6 +689,43 @@ fn postgres_binaries_present(installation_dir: &Path) -> bool {
     find_pg_ctl(&pinned_version_dir(installation_dir)).is_some()
 }
 
+fn offline_without_binaries(installation_dir: &Path, releases_url: &str) -> bool {
+    !postgres_binaries_present(installation_dir) && !theseus_releases(releases_url)
+}
+
+fn binary_install_required(installation_dir: &Path) -> bool {
+    !postgres_binaries_present(installation_dir) || !pgvector_recorded(installation_dir)
+}
+
+fn pgvector_recorded(installation_dir: &Path) -> bool {
+    let root = pinned_version_dir(installation_dir);
+    marker_lists_pgvector(&root.join("share").join("postgresql_extensions.json"))
+        || marker_lists_pgvector(
+            &root
+                .join("share")
+                .join("postgresql")
+                .join("postgresql_extensions.json"),
+        )
+}
+
+fn marker_lists_pgvector(path: &Path) -> bool {
+    std::fs::read_to_string(path)
+        .ok()
+        .is_some_and(|text| text.contains("pgvector_compiled"))
+}
+
+async fn remove_incomplete_install(installation_dir: &Path, log: &dyn EmbeddedPgLog) -> Result<()> {
+    let dir = pinned_version_dir(installation_dir);
+    if !dir.is_dir() || find_pg_ctl(&dir).is_some() {
+        return Ok(());
+    }
+    log.info(&format!(
+        "embedded postgres: removing incomplete PostgreSQL {POSTGRES_VERSION} install at {}",
+        dir.display()
+    ));
+    clear_dir(&dir).await
+}
+
 fn theseus_releases(url: &str) -> bool {
     url.starts_with(THESEUS_RELEASES)
 }
@@ -684,86 +738,17 @@ fn binaries_offline_error(installation_dir: &Path, detail: &str) -> LocalDbError
     ))
 }
 
-struct InstallGuard {
-    path: PathBuf,
-}
-
-impl Drop for InstallGuard {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
-    }
-}
-
-async fn acquire_install_lock(installation_dir: &Path) -> Result<InstallGuard> {
-    tokio::fs::create_dir_all(installation_dir).await?;
+async fn acquire_install_lock(installation_dir: &Path) -> Result<FileLock> {
     let path = installation_dir.join(INSTALL_LOCK);
-    let deadline = tokio::time::Instant::now() + SETUP_TIMEOUT;
-    loop {
-        match open_exclusive(&path).await {
-            Ok(mut file) => {
-                let body = std::process::id().to_string();
-                if let Err(error) = file.write_all(body.as_bytes()).await {
-                    drop(file);
-                    let _ = tokio::fs::remove_file(&path).await;
-                    return Err(error.into());
-                }
-                if let Err(error) = file.flush().await {
-                    drop(file);
-                    let _ = tokio::fs::remove_file(&path).await;
-                    return Err(error.into());
-                }
-                drop(file);
-                return Ok(InstallGuard { path });
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                if install_lock_is_stale(&path).await {
-                    let _ = tokio::fs::remove_file(&path).await;
-                    continue;
-                }
-                if tokio::time::Instant::now() >= deadline {
-                    return Err(LocalDbError::message(format!(
-                        "embedded postgres: timed out waiting for the PostgreSQL binary install lock {}",
-                        path.display()
-                    )));
-                }
-                tokio::time::sleep(Duration::from_millis(200)).await;
-            }
-            Err(error) => return Err(error.into()),
-        }
-    }
-}
-
-async fn open_exclusive(path: &Path) -> std::io::Result<tokio::fs::File> {
-    let mut options = tokio::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        options.mode(0o600);
-    }
-    options.open(path).await
-}
-
-async fn install_lock_is_stale(path: &Path) -> bool {
-    let text = match tokio::fs::read_to_string(path).await {
-        Ok(text) => text,
-        Err(_) => return true,
-    };
-    if let Ok(pid) = text.trim().parse::<i64>() {
-        return pid <= 0 || probe_lock_pid(pid) == PidProbe::Dead;
-    }
-    lock_file_is_old(path).await
-}
-
-async fn lock_file_is_old(path: &Path) -> bool {
-    let Ok(meta) = tokio::fs::metadata(path).await else {
-        return true;
-    };
-    let Ok(modified) = meta.modified() else {
-        return true;
-    };
-    modified
-        .elapsed()
-        .is_ok_and(|age| age > Duration::from_secs(5))
+    FileLock::acquire(
+        &path,
+        SETUP_TIMEOUT,
+        format!(
+            "embedded postgres: timed out waiting for the PostgreSQL binary install lock {}",
+            path.display()
+        ),
+    )
+    .await
 }
 
 async fn install_pgvector(settings: &postgresql_embedded::Settings) -> Result<()> {
@@ -897,6 +882,22 @@ struct CopyState {
     verified: u64,
     saw_done: bool,
     triggers: Option<(String, String)>,
+    defer: Option<TableDefer>,
+}
+
+struct TableDefer {
+    schema: String,
+    table: String,
+    keys: Vec<TypedName>,
+    links: Vec<TypedName>,
+    updates: Vec<BoundInsert>,
+    restore: Vec<String>,
+}
+
+struct SelfConstraint {
+    name: String,
+    columns: Vec<TypedName>,
+    not_null: bool,
 }
 
 async fn apply_export(
@@ -916,6 +917,7 @@ async fn apply_export(
         verified: 0,
         saw_done: false,
         triggers: None,
+        defer: None,
     };
     while let Some(line) = lines.next_line().await? {
         let Some(action) = parse_export_line(&line)? else {
@@ -955,6 +957,7 @@ async fn apply_action(
     match action {
         ExportAction::Exec(sql) => {
             if sql == "COMMIT" {
+                flush_self_links(client, state).await?;
                 if let Some((schema, table)) = state.triggers.take() {
                     client
                         .exec(
@@ -972,21 +975,49 @@ async fn apply_action(
             client.exec(&sql, &[], SETUP_TIMEOUT).await?;
             Ok(false)
         }
+        ExportAction::Ddl(sql) => {
+            client.exec(&sql, &[], SETUP_TIMEOUT).await?;
+            Ok(false)
+        }
         ExportAction::Insert(batch) => {
             if !copy_this_table(&batch.table) {
                 return Ok(false);
             }
             if !relation_exists(client, &batch.schema, &batch.table).await? {
-                return Ok(false);
+                return Err(LocalDbError::message(missing_relation_message(
+                    &batch.schema,
+                    &batch.table,
+                )));
             }
             let dest = dest_columns(client, &batch.schema, &batch.table).await?;
-            let Some(bound) = plan_insert(
-                &batch.schema,
-                &batch.table,
-                &batch.columns,
-                &dest,
-                &batch.rows,
-            )?
+            ensure_self_links(client, state, &batch.schema, &batch.table, &batch.columns).await?;
+            let link_names = self_link_names(state, &batch.schema, &batch.table);
+            let rows = if link_names.is_empty() {
+                batch.rows.clone()
+            } else {
+                let planned = plan_self_link_updates(
+                    &batch.schema,
+                    &batch.table,
+                    &state
+                        .defer
+                        .as_ref()
+                        .map(|defer| defer.keys.clone())
+                        .unwrap_or_default(),
+                    &state
+                        .defer
+                        .as_ref()
+                        .map(|defer| defer.links.clone())
+                        .unwrap_or_default(),
+                    &batch.columns,
+                    &batch.rows,
+                )?;
+                if let Some(defer) = state.defer.as_mut() {
+                    defer.updates.extend(planned);
+                }
+                mask_self_link_columns(&batch.columns, &batch.rows, &link_names)?
+            };
+            let Some(bound) =
+                plan_insert(&batch.schema, &batch.table, &batch.columns, &dest, &rows)?
             else {
                 return Ok(false);
             };
@@ -1001,8 +1032,13 @@ async fn apply_action(
             table,
             expected,
         } => {
-            if !copy_this_table(&table) || !relation_exists(client, &schema, &table).await? {
+            if !copy_this_table(&table) {
                 return Ok(false);
+            }
+            if !relation_exists(client, &schema, &table).await? {
+                return Err(LocalDbError::message(missing_relation_message(
+                    &schema, &table,
+                )));
             }
             check_count(client, &schema, &table, expected).await?;
             state.verified += 1;
@@ -1015,7 +1051,9 @@ async fn apply_action(
             called,
         } => {
             if !relation_exists(client, &schema, &name).await? {
-                return Ok(false);
+                return Err(LocalDbError::message(missing_relation_message(
+                    &schema, &name,
+                )));
             }
             let called_text = if called { "true" } else { "false" };
             client
@@ -1045,6 +1083,202 @@ fn trigger_change(schema: &str, table: &str, action: &str) -> String {
         quote_ident(schema),
         quote_ident(table)
     )
+}
+
+fn self_link_names(state: &CopyState, schema: &str, table: &str) -> Vec<String> {
+    state
+        .defer
+        .as_ref()
+        .filter(|defer| defer.schema == schema && defer.table == table)
+        .map(|defer| {
+            defer
+                .links
+                .iter()
+                .map(|column| column.name.clone())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+async fn ensure_self_links(
+    client: &mut PgClient,
+    state: &mut CopyState,
+    schema: &str,
+    table: &str,
+    export_columns: &[String],
+) -> Result<()> {
+    if state
+        .defer
+        .as_ref()
+        .is_some_and(|defer| defer.schema == schema && defer.table == table)
+    {
+        return Ok(());
+    }
+    flush_self_links(client, state).await?;
+    let constraints = self_constraints(client, schema, table).await?;
+    let keys = primary_key(client, schema, table).await?;
+    let keys_ready = !keys.is_empty()
+        && keys
+            .iter()
+            .all(|column| export_columns.iter().any(|name| name == &column.name));
+    let mut links = Vec::new();
+    let mut restore = Vec::new();
+    for constraint in constraints {
+        let present = constraint
+            .columns
+            .iter()
+            .all(|column| export_columns.iter().any(|name| name == &column.name));
+        if constraint.not_null || !keys_ready || !present {
+            client
+                .exec(
+                    &constraint_deferral(schema, table, &constraint.name, true),
+                    &[],
+                    SETUP_TIMEOUT,
+                )
+                .await?;
+            client
+                .exec(
+                    &constraint_timing(schema, &constraint.name, true),
+                    &[],
+                    SETUP_TIMEOUT,
+                )
+                .await?;
+            restore.push(constraint.name);
+        } else {
+            links.extend(constraint.columns);
+        }
+    }
+    state.defer = Some(TableDefer {
+        schema: schema.to_string(),
+        table: table.to_string(),
+        keys,
+        links,
+        updates: Vec::new(),
+        restore,
+    });
+    Ok(())
+}
+
+async fn flush_self_links(client: &mut PgClient, state: &mut CopyState) -> Result<()> {
+    let Some(defer) = state.defer.as_mut() else {
+        return Ok(());
+    };
+    let updates = std::mem::take(&mut defer.updates);
+    let restore = std::mem::take(&mut defer.restore);
+    let schema = defer.schema.clone();
+    let table = defer.table.clone();
+    for update in updates {
+        client
+            .exec(&update.sql, &update.params, SETUP_TIMEOUT)
+            .await?;
+    }
+    if !restore.is_empty() {
+        client
+            .exec("SET CONSTRAINTS ALL IMMEDIATE", &[], SETUP_TIMEOUT)
+            .await?;
+        for name in &restore {
+            client
+                .exec(
+                    &constraint_deferral(&schema, &table, name, false),
+                    &[],
+                    SETUP_TIMEOUT,
+                )
+                .await?;
+        }
+    }
+    Ok(())
+}
+
+fn constraint_deferral(schema: &str, table: &str, name: &str, deferrable: bool) -> String {
+    let mode = if deferrable {
+        "DEFERRABLE INITIALLY DEFERRED"
+    } else {
+        "NOT DEFERRABLE"
+    };
+    format!(
+        "ALTER TABLE {}.{} ALTER CONSTRAINT {} {mode}",
+        quote_ident(schema),
+        quote_ident(table),
+        quote_ident(name)
+    )
+}
+
+fn constraint_timing(schema: &str, name: &str, deferred: bool) -> String {
+    let mode = if deferred { "DEFERRED" } else { "IMMEDIATE" };
+    format!(
+        "SET CONSTRAINTS {}.{} {mode}",
+        quote_ident(schema),
+        quote_ident(name)
+    )
+}
+
+async fn self_constraints(
+    client: &mut PgClient,
+    schema: &str,
+    table: &str,
+) -> Result<Vec<SelfConstraint>> {
+    let rows = client
+        .query_columns(
+            "SELECT con.conname::text, a.attname::text, pg_catalog.format_type(a.atttypid, a.atttypmod), \
+             CASE WHEN a.attnotnull THEN 't' ELSE 'f' END \
+             FROM pg_constraint con \
+             JOIN pg_class c ON c.oid = con.conrelid \
+             JOIN pg_namespace n ON n.oid = c.relnamespace \
+             JOIN LATERAL unnest(con.conkey) AS ck(attnum) ON true \
+             JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = ck.attnum \
+             WHERE con.contype = 'f' AND con.conrelid = con.confrelid \
+             AND n.nspname = $1::text AND c.relname = $2::text \
+             ORDER BY con.conname::text, a.attnum",
+            &[Some(schema.to_string()), Some(table.to_string())],
+            4,
+        )
+        .await?;
+    let mut grouped = Vec::new();
+    for row in rows {
+        let column = TypedName {
+            name: row[1].clone(),
+            type_name: row[2].clone(),
+        };
+        let not_null = row[3] == "t";
+        if let Some(existing) = grouped
+            .iter_mut()
+            .find(|constraint: &&mut SelfConstraint| constraint.name == row[0])
+        {
+            existing.not_null |= not_null;
+            existing.columns.push(column);
+        } else {
+            grouped.push(SelfConstraint {
+                name: row[0].clone(),
+                columns: vec![column],
+                not_null,
+            });
+        }
+    }
+    Ok(grouped)
+}
+
+async fn primary_key(client: &mut PgClient, schema: &str, table: &str) -> Result<Vec<TypedName>> {
+    let rows = client
+        .query_columns(
+            "SELECT a.attname::text, pg_catalog.format_type(a.atttypid, a.atttypmod) \
+             FROM pg_index i \
+             JOIN pg_class c ON c.oid = i.indrelid \
+             JOIN pg_namespace n ON n.oid = c.relnamespace \
+             JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS k(attnum, ord) ON true \
+             JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = k.attnum AND NOT a.attisdropped \
+             WHERE i.indisprimary AND n.nspname = $1::text AND c.relname = $2::text AND k.attnum > 0 \
+             ORDER BY k.ord",
+            &[Some(schema.to_string()), Some(table.to_string())],
+            2,
+        )
+        .await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| TypedName {
+            name: row[0].clone(),
+            type_name: row[1].clone(),
+        })
+        .collect())
 }
 
 async fn disable_user_triggers(
@@ -1743,6 +1977,9 @@ mod tests {
             "memory": {"postgres": {"embedded": {"port": 5433, "max_connections": 16}}}
         });
         let resolved = resolve_embedded_pg(&config, &home, None).expect("resolved");
+        let version = resolved.installation_dir.join("16.10.0");
+        std::fs::create_dir_all(version.join("share")).expect("incomplete");
+        std::fs::write(version.join("share").join("README"), b"partial").expect("partial");
         let failed =
             acquire_embedded_pg_with(resolved, &TracingLog, None, &offline_releases_env()).await;
         let Err(error) = failed else {
@@ -1753,7 +1990,76 @@ mod tests {
         assert!(text.contains("network path is unavailable"));
         assert!(text.contains("later boots stay offline"));
         assert!(!text.contains("api.github.com"));
+        assert!(
+            !version.exists(),
+            "incomplete install remains at {}",
+            version.display()
+        );
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn install_waits_for_pg_ctl_and_the_pgvector_marker() {
+        let root = temp_home("bin-marker");
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(offline_without_binaries(
+            &root,
+            "offline://postgresql-binaries"
+        ));
+        assert!(!offline_without_binaries(
+            &root,
+            "https://github.com/theseus-rs/postgresql-binaries/releases/download"
+        ));
+        assert!(binary_install_required(&root));
+        let version = root.join("16.10.0");
+        let bin = version.join("bin");
+        std::fs::create_dir_all(&bin).expect("bin");
+        assert!(version.is_dir());
+        assert!(binary_install_required(&root));
+        assert!(offline_without_binaries(
+            &root,
+            "offline://postgresql-binaries"
+        ));
+        std::fs::write(bin.join(crate::supervisor::pg_ctl_name()), b"x").expect("pg_ctl");
+        assert!(binary_install_required(&root));
+        assert!(!offline_without_binaries(
+            &root,
+            "offline://postgresql-binaries"
+        ));
+        let share = version.join("share");
+        std::fs::create_dir_all(&share).expect("share");
+        std::fs::write(
+            share.join("postgresql_extensions.json"),
+            r#"{"name":"pgvector_compiled"}"#,
+        )
+        .expect("marker");
+        assert!(!binary_install_required(&root));
+        std::fs::remove_file(share.join("postgresql_extensions.json")).expect("remove marker");
+        assert!(binary_install_required(&root));
+        let nested = share.join("postgresql");
+        std::fs::create_dir_all(&nested).expect("nested");
+        std::fs::write(
+            nested.join("postgresql_extensions.json"),
+            "pgvector_compiled",
+        )
+        .expect("fallback");
+        assert!(!binary_install_required(&root));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn export_env_keeps_only_a_non_empty_rivetos_root() {
+        let mut boot = MapEnv::new();
+        boot.set("RIVETOS_ROOT", "/opt/rivetos");
+        boot.set("RIVETOS_EMBED_URL", "http://127.0.0.1:9/v1");
+        boot.set("RIVETOS_PG_RELEASES_URL", "offline://postgresql-binaries");
+        let env = boot_env_for_export(&boot);
+        assert_eq!(env.var("RIVETOS_ROOT").as_deref(), Some("/opt/rivetos"));
+        assert!(env.var("RIVETOS_EMBED_URL").is_none());
+        assert!(env.var("RIVETOS_PG_RELEASES_URL").is_none());
+        let mut empty = MapEnv::new();
+        empty.set("RIVETOS_ROOT", "");
+        assert!(boot_env_for_export(&empty).var("RIVETOS_ROOT").is_none());
     }
 
     #[tokio::test]
@@ -1914,14 +2220,20 @@ mod tests {
             .expect("rt")
     }
 
+    fn lane_database_url() -> Option<String> {
+        if std::env::var("RIVETOS_TEST_LANE_PG").ok().as_deref() != Some("1") {
+            return None;
+        }
+        std::env::var("RIVETOS_TEST_PG_URL")
+            .ok()
+            .filter(|url| !url.is_empty())
+    }
+
     #[tokio::test]
     async fn applies_product_schema_and_text_casts_on_the_lane_database() {
-        let Ok(url) = std::env::var("RIVETOS_PG_URL") else {
+        let Some(url) = lane_database_url() else {
             return;
         };
-        if url.is_empty() {
-            return;
-        }
         let mut client = PgClient::connect(&url).await.expect("connect lane");
         let schema = format!(
             "rr9l_{}_{}",
@@ -2104,6 +2416,35 @@ mod tests {
                 "rolled back conversation count is {leftover}"
             )));
         }
+        let absent = incomplete.join("absent.jsonl");
+        std::fs::write(
+            &absent,
+            export_line(&json!({"op": "begin"}))
+                + &export_line(&json!({
+                    "op": "insert",
+                    "schema": schema,
+                    "table": "not_in_product",
+                    "columns": ["id"],
+                    "rows": [[cell("1")]]
+                })),
+        )
+        .expect("absent");
+        let refused = apply_export(client, &absent, Path::new("source"), &TracingLog).await;
+        let Err(error) = refused else {
+            return Err(LocalDbError::message(
+                "missing relation was accepted".to_string(),
+            ));
+        };
+        let refused_text = error.to_string();
+        if !refused_text.contains("no relation") || !refused_text.contains("not_in_product") {
+            return Err(LocalDbError::message(refused_text));
+        }
+        let still = count_table(client, schema, "ros_conversations").await?;
+        if still != 0 {
+            return Err(LocalDbError::message(format!(
+                "missing relation left conversation count {still}"
+            )));
+        }
         let good = incomplete.join("good.jsonl");
         std::fs::write(&good, lane_export(schema)).expect("good");
         apply_export(client, &good, Path::new("source"), &TracingLog).await?;
@@ -2182,8 +2523,201 @@ mod tests {
                 "setval called is {called:?}"
             )));
         }
+        lane_self_links(client, schema, &incomplete).await?;
         let _ = std::fs::remove_dir_all(&incomplete);
         Ok(())
+    }
+
+    async fn lane_self_links(client: &mut PgClient, schema: &str, dir: &Path) -> Result<()> {
+        let summaries = dir.join("summaries.jsonl");
+        std::fs::write(&summaries, summary_hierarchy_export(schema)).expect("summaries");
+        apply_export(client, &summaries, Path::new("source"), &TracingLog).await?;
+        let summary_links = client
+            .query_i64("SELECT count(*)::bigint FROM ros_summaries WHERE parent_id IS NOT NULL")
+            .await?;
+        if summary_links != 100 {
+            return Err(LocalDbError::message(format!(
+                "summary parent links are {summary_links}"
+            )));
+        }
+        let summary_parent = client
+            .query_text(
+                "SELECT parent_id::text FROM ros_summaries WHERE id = '55555555-5555-4555-8555-000000000002'::uuid",
+            )
+            .await?;
+        if summary_parent.as_deref() != Some("55555555-5555-4555-8555-000000000001") {
+            return Err(LocalDbError::message(format!(
+                "first summary child points at {summary_parent:?}"
+            )));
+        }
+        let tasks = dir.join("tasks.jsonl");
+        std::fs::write(&tasks, task_hierarchy_export(schema)).expect("tasks");
+        apply_export(client, &tasks, Path::new("source"), &TracingLog).await?;
+        let task_links = client
+            .query_i64("SELECT count(*)::bigint FROM ros_tasks WHERE parent_task_id IS NOT NULL")
+            .await?;
+        if task_links != 1 {
+            return Err(LocalDbError::message(format!(
+                "task parent links are {task_links}"
+            )));
+        }
+        let task_parent = client
+            .query_text(
+                "SELECT parent_task_id::text FROM ros_tasks WHERE id = '66666666-6666-4666-8666-000000000002'::uuid",
+            )
+            .await?;
+        if task_parent.as_deref() != Some("66666666-6666-4666-8666-000000000001") {
+            return Err(LocalDbError::message(format!(
+                "task child points at {task_parent:?}"
+            )));
+        }
+        let nodes = dir.join("nodes.jsonl");
+        std::fs::write(&nodes, not_null_self_export(schema)).expect("nodes");
+        apply_export(client, &nodes, Path::new("source"), &TracingLog).await?;
+        let node_parent = client
+            .query_text(
+                "SELECT parent_id::text FROM self_node WHERE id = '44444444-4444-4444-8444-000000000002'::uuid",
+            )
+            .await?;
+        if node_parent.as_deref() != Some("44444444-4444-4444-8444-000000000001") {
+            return Err(LocalDbError::message(format!(
+                "not-null self link points at {node_parent:?}"
+            )));
+        }
+        let deferrable = client
+            .query_one_text(
+                "SELECT CASE WHEN con.condeferrable THEN 't' ELSE 'f' END \
+                 FROM pg_constraint con \
+                 JOIN pg_class c ON c.oid = con.conrelid \
+                 JOIN pg_namespace n ON n.oid = c.relnamespace \
+                 WHERE n.nspname = $1::text AND c.relname = 'self_node' AND con.contype = 'f'",
+                &[Some(schema.to_string())],
+            )
+            .await?;
+        if deferrable.as_deref() != Some("f") {
+            return Err(LocalDbError::message(format!(
+                "self_node foreign key stayed deferrable ({deferrable:?})"
+            )));
+        }
+        Ok(())
+    }
+
+    fn summary_hierarchy_export(schema: &str) -> String {
+        let parent = "55555555-5555-4555-8555-000000000001";
+        let mut rows = Vec::new();
+        for index in 2..=101 {
+            let id = format!("55555555-5555-4555-8555-{index:012x}");
+            rows.push(json!([cell(&id), cell(parent), cell("child summary")]));
+        }
+        let mut out = String::new();
+        out.push_str(&export_line(&json!({"op": "begin"})));
+        out.push_str(&export_line(&json!({
+            "op": "insert",
+            "schema": schema,
+            "table": "ros_summaries",
+            "columns": ["id", "parent_id", "content"],
+            "rows": rows
+        })));
+        out.push_str(&export_line(&json!({
+            "op": "insert",
+            "schema": schema,
+            "table": "ros_summaries",
+            "columns": ["id", "parent_id", "content"],
+            "rows": [[cell(parent), Value::Null, cell("parent summary")]]
+        })));
+        out.push_str(&export_line(&json!({
+            "op": "count",
+            "schema": schema,
+            "table": "ros_summaries",
+            "n": 101
+        })));
+        out.push_str(&export_line(&json!({"op": "commit"})));
+        out.push_str(&export_line(&json!({"op": "done"})));
+        out
+    }
+
+    fn task_hierarchy_export(schema: &str) -> String {
+        let parent = "66666666-6666-4666-8666-000000000001";
+        let child = "66666666-6666-4666-8666-000000000002";
+        let mut out = String::new();
+        out.push_str(&export_line(&json!({"op": "begin"})));
+        out.push_str(&export_line(&json!({
+            "op": "insert",
+            "schema": schema,
+            "table": "ros_tasks",
+            "columns": ["id", "goal", "executor", "agent_id", "origin", "parent_task_id"],
+            "rows": [[
+                cell(child),
+                cell("child goal"),
+                cell("chat-loop"),
+                cell("sample-agent"),
+                cell("chat"),
+                cell(parent)
+            ]]
+        })));
+        out.push_str(&export_line(&json!({
+            "op": "insert",
+            "schema": schema,
+            "table": "ros_tasks",
+            "columns": ["id", "goal", "executor", "agent_id", "origin", "parent_task_id"],
+            "rows": [[
+                cell(parent),
+                cell("parent goal"),
+                cell("chat-loop"),
+                cell("sample-agent"),
+                cell("chat"),
+                Value::Null
+            ]]
+        })));
+        out.push_str(&export_line(&json!({
+            "op": "count",
+            "schema": schema,
+            "table": "ros_tasks",
+            "n": 2
+        })));
+        out.push_str(&export_line(&json!({"op": "commit"})));
+        out.push_str(&export_line(&json!({"op": "done"})));
+        out
+    }
+
+    fn not_null_self_export(schema: &str) -> String {
+        let parent = "44444444-4444-4444-8444-000000000001";
+        let child = "44444444-4444-4444-8444-000000000002";
+        let qualified = format!("{}.{}", quote_ident(schema), quote_ident("self_node"));
+        let create = format!(
+            "CREATE TABLE {qualified} (id uuid PRIMARY KEY, parent_id uuid NOT NULL REFERENCES {qualified} (id))"
+        );
+        let mut out = String::new();
+        out.push_str(&export_line(&json!({"op": "begin"})));
+        out.push_str(&export_line(&json!({
+            "op": "ddl",
+            "sql": create
+        })));
+        out.push_str(&export_line(&json!({"op": "commit"})));
+        out.push_str(&export_line(&json!({"op": "begin"})));
+        out.push_str(&export_line(&json!({
+            "op": "insert",
+            "schema": schema,
+            "table": "self_node",
+            "columns": ["id", "parent_id"],
+            "rows": [[cell(child), cell(parent)]]
+        })));
+        out.push_str(&export_line(&json!({
+            "op": "insert",
+            "schema": schema,
+            "table": "self_node",
+            "columns": ["id", "parent_id"],
+            "rows": [[cell(parent), cell(parent)]]
+        })));
+        out.push_str(&export_line(&json!({
+            "op": "count",
+            "schema": schema,
+            "table": "self_node",
+            "n": 2
+        })));
+        out.push_str(&export_line(&json!({"op": "commit"})));
+        out.push_str(&export_line(&json!({"op": "done"})));
+        out
     }
 
     fn cell(text: &str) -> Value {
@@ -2397,7 +2931,6 @@ mod tests {
                 .expect("count")
                 .parse::<i64>()
                 .expect("count int");
-            assert_eq!(expected, 1, "{key}");
             let got = count_table(&mut client, schema, name).await.expect("count");
             assert_eq!(got, expected, "{key}");
             if let Some(sample) = entry.get("sample").and_then(|value| value.as_object())
@@ -2439,6 +2972,64 @@ mod tests {
             .await
             .expect("fresh id");
         assert!(fresh.as_deref().is_some_and(|id| !id.is_empty()));
+        let links = manifest_value
+            .get("links")
+            .and_then(Value::as_object)
+            .expect("links");
+        assert_eq!(links.get("ros_tasks").and_then(Value::as_str), Some("1"));
+        assert_eq!(
+            links.get("ros_summaries").and_then(Value::as_str),
+            Some("100")
+        );
+        let task_links = client
+            .query_i64("SELECT count(*)::bigint FROM ros_tasks WHERE parent_task_id IS NOT NULL")
+            .await
+            .expect("task links");
+        assert_eq!(task_links, 1);
+        let summary_links = client
+            .query_i64("SELECT count(*)::bigint FROM ros_summaries WHERE parent_id IS NOT NULL")
+            .await
+            .expect("summary links");
+        assert_eq!(summary_links, 100);
+        let joined = client
+            .query_i64(
+                "SELECT count(*)::bigint FROM ros_summaries c JOIN ros_summaries p ON p.id = c.parent_id",
+            )
+            .await
+            .expect("joined summaries");
+        assert_eq!(joined, 100);
+        let definition = client
+            .query_text("SELECT pg_get_functiondef('graphile_worker.job_count()'::regprocedure)")
+            .await
+            .expect("job_count");
+        let definition_text = definition.expect("job_count def").to_lowercase();
+        assert!(definition_text.contains("language sql"));
+        assert!(!definition_text.contains("plpgsql"));
+        let view_kind = client
+            .query_text(
+                "SELECT c.relkind::text FROM pg_class c \
+                 JOIN pg_namespace n ON n.oid = c.relnamespace \
+                 WHERE n.nspname = 'graphile_worker' AND c.relname = 'jobs'",
+            )
+            .await
+            .expect("jobs view");
+        assert_eq!(view_kind.as_deref(), Some("v"));
+        let payload = client
+            .query_text("SELECT payload::text FROM graphile_worker.jobs")
+            .await
+            .expect("payload");
+        assert!(
+            payload
+                .as_deref()
+                .is_some_and(|text| text.contains("extract-wiki"))
+        );
+        let index = client
+            .query_text(
+                "SELECT indexname FROM pg_indexes WHERE schemaname = 'graphile_worker' AND indexname = 'jobs_state'",
+            )
+            .await
+            .expect("jobs_state");
+        assert_eq!(index.as_deref(), Some("jobs_state"));
         handle.close().await.expect("close");
         let _ = std::fs::remove_dir_all(&home);
     }

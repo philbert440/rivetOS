@@ -424,8 +424,11 @@ async function seed(pg, migrationsDir, manifestPath) {
     }
     inserted.set(tableId(table.schema, table.name), sample)
   }
-  const manifest = { tables: {} }
-  for (const table of ordered) {
+  await seedWorkerQueue(pg)
+  await seedHierarchies(pg)
+  const recounted = await listTables(pg)
+  const manifest = { tables: {}, links: {} }
+  for (const table of recounted) {
     const qual = quoteIdent(table.schema) + '.' + quoteIdent(table.name)
     const counted = rowsOf(await pg.query('SELECT count(*)::bigint AS n FROM ' + qual))
     const key = table.schema + '.' + table.name
@@ -436,11 +439,532 @@ async function seed(pg, migrationsDir, manifestPath) {
       sample: inserted.get(tableId(table.schema, table.name)) || {},
     }
   }
+  const taskLinks = rowsOf(
+    await pg.query('SELECT count(*)::bigint AS n FROM public.ros_tasks WHERE parent_task_id IS NOT NULL'),
+  )
+  const summaryLinks = rowsOf(
+    await pg.query('SELECT count(*)::bigint AS n FROM public.ros_summaries WHERE parent_id IS NOT NULL'),
+  )
+  manifest.links.ros_tasks = taskLinks[0] ? String(taskLinks[0].n) : '0'
+  manifest.links.ros_summaries = summaryLinks[0] ? String(summaryLinks[0].n) : '0'
   mkdirSync(dirname(manifestPath), { recursive: true })
   writeFileSync(manifestPath, JSON.stringify(manifest), { mode: 0o600 })
 }
 
+function fixedUuid(prefix, n) {
+  return prefix + n.toString(16).padStart(12, '0')
+}
+
+function sqlNumber(value) {
+  const text = String(value)
+  if (!/^-?[0-9]+$/.test(text)) {
+    throw new Error('sequence value is not an integer: ' + text)
+  }
+  return text
+}
+
+function oneStatement(sql) {
+  const trimmed = String(sql).trim()
+  if (trimmed.endsWith(';')) {
+    return trimmed.slice(0, -1).trim()
+  }
+  return trimmed
+}
+
+function qualifyType(typeSchema, formatted) {
+  const typeName = formatted == null ? 'text' : String(formatted)
+  if (!typeSchema || typeSchema === 'pg_catalog' || typeSchema === 'public' || typeName.includes('.')) {
+    return typeName
+  }
+  const match = /^([A-Za-z_][A-Za-z0-9_]*)(.*)$/.exec(typeName)
+  if (!match) {
+    return quoteIdent(typeSchema) + '.' + typeName
+  }
+  return quoteIdent(typeSchema) + '.' + match[1] + match[2]
+}
+
+function isExportedSchema(schema) {
+  return schema !== 'public' && schema !== 'information_schema' && !String(schema).startsWith('pg_')
+}
+
+async function seedWorkerQueue(pg) {
+  await pg.exec(
+    'CREATE SCHEMA graphile_worker;' +
+      "CREATE TYPE graphile_worker.job_state AS ENUM ('created', 'running');" +
+      'CREATE TABLE graphile_worker._private_tasks (id integer PRIMARY KEY, identifier text NOT NULL);' +
+      'CREATE TABLE graphile_worker._private_jobs (' +
+      'id integer PRIMARY KEY, ' +
+      'task_id integer NOT NULL REFERENCES graphile_worker._private_tasks (id), ' +
+      "state graphile_worker.job_state NOT NULL DEFAULT 'created', " +
+      'payload json NOT NULL);' +
+      'CREATE INDEX jobs_state ON graphile_worker._private_jobs (state);' +
+      'CREATE FUNCTION graphile_worker.job_count() RETURNS bigint LANGUAGE sql STABLE AS $$ SELECT count(*)::bigint FROM graphile_worker._private_jobs $$;' +
+      'CREATE VIEW graphile_worker.jobs AS SELECT id, payload, state FROM graphile_worker._private_jobs;',
+  )
+  await pg.query(
+    'INSERT INTO graphile_worker._private_tasks (id, identifier) VALUES (1, $1)',
+    ['extract-wiki'],
+  )
+  await pg.query(
+    "INSERT INTO graphile_worker._private_jobs (id, task_id, state, payload) VALUES (1, 1, 'created', $1::json)",
+    ['{"task":"extract-wiki"}'],
+  )
+}
+
+async function seedHierarchies(pg) {
+  const taskParent = fixedUuid('22222222-2222-4222-8222-', 1)
+  const taskChild = fixedUuid('22222222-2222-4222-8222-', 2)
+  const summaryParent = fixedUuid('33333333-3333-4333-8333-', 1)
+  await withUserTriggersDisabled(pg, 'public.ros_tasks', async () => {
+    await pg.query(
+      'INSERT INTO public.ros_tasks (id, goal, executor, agent_id, origin) VALUES ($1::uuid, $2, $3, $4, $5)',
+      [taskParent, 'parent goal', 'chat-loop', 'sample-agent', 'chat'],
+    )
+    await pg.query(
+      'INSERT INTO public.ros_tasks (id, goal, executor, agent_id, origin, parent_task_id) VALUES ($1::uuid, $2, $3, $4, $5, $6::uuid)',
+      [taskChild, 'child goal', 'chat-loop', 'sample-agent', 'chat', taskParent],
+    )
+    await pg.query("UPDATE public.ros_tasks SET status = 'running' WHERE id = $1::uuid", [taskParent])
+  })
+  const taskOrder = rowsOf(
+    await pg.query(
+      'SELECT CASE WHEN p.ctid > c.ctid THEN \'t\' ELSE \'f\' END AS ok FROM public.ros_tasks p JOIN public.ros_tasks c ON c.parent_task_id = p.id WHERE p.id = $1::uuid',
+      [taskParent],
+    ),
+  )
+  if (!taskOrder[0] || String(taskOrder[0].ok) !== 't') {
+    throw new Error('ros_tasks parent ctid is not after its child')
+  }
+  const childValues = []
+  const childParams = []
+  for (let index = 0; index < 100; index += 1) {
+    childParams.push(fixedUuid('33333333-3333-4333-8333-', index + 2))
+    childValues.push('($' + String(childParams.length) + '::uuid, $' + String(childParams.length + 1) + '::uuid, $' + String(childParams.length + 2) + ')')
+    childParams.push(summaryParent)
+    childParams.push('child summary ' + String(index))
+  }
+  await withUserTriggersDisabled(pg, 'public.ros_summaries', async () => {
+    await pg.query(
+      'INSERT INTO public.ros_summaries (id, content) VALUES ($1::uuid, $2)',
+      [summaryParent, 'parent summary'],
+    )
+    await pg.query(
+      'INSERT INTO public.ros_summaries (id, parent_id, content) VALUES ' + childValues.join(', '),
+      childParams,
+    )
+    await pg.query('UPDATE public.ros_summaries SET content = content || $1 WHERE id = $2::uuid', [
+      ' moved',
+      summaryParent,
+    ])
+  })
+  const summaryOrder = rowsOf(
+    await pg.query(
+      'SELECT CASE WHEN p.ctid > ALL (SELECT c.ctid FROM public.ros_summaries c WHERE c.id <> p.id) THEN \'t\' ELSE \'f\' END AS ok FROM public.ros_summaries p WHERE p.id = $1::uuid',
+      [summaryParent],
+    ),
+  )
+  if (!summaryOrder[0] || String(summaryOrder[0].ok) !== 't') {
+    throw new Error('ros_summaries parent ctid is not last')
+  }
+}
+
+async function withUserTriggersDisabled(pg, reg, body) {
+  await pg.exec('BEGIN')
+  try {
+    await pg.exec('ALTER TABLE ' + reg + ' DISABLE TRIGGER USER')
+    await body()
+    await pg.exec('COMMIT')
+  } catch (error) {
+    try {
+      await pg.exec('ROLLBACK')
+    } catch (rollbackError) {
+      console.error(rollbackError && rollbackError.stack ? rollbackError.stack : String(rollbackError))
+    }
+    throw error
+  }
+}
+
+async function exportSchemas(pg, stream) {
+  const listed = rowsOf(
+    await pg.query(
+      "SELECT nspname AS name FROM pg_namespace WHERE nspname <> 'information_schema' AND nspname NOT LIKE 'pg_%' ORDER BY nspname",
+    ),
+  )
+  for (const row of listed) {
+    const schema = String(row.name)
+    if (!isExportedSchema(schema)) {
+      continue
+    }
+    await writeLine(stream, { op: 'begin' })
+    await writeLine(stream, { op: 'ddl', sql: 'CREATE SCHEMA ' + quoteIdent(schema) })
+    await writeLine(stream, {
+      op: 'ddl',
+      sql: 'SET LOCAL search_path TO ' + quoteIdent(schema) + ', public',
+    })
+    const statements = await schemaDdl(pg, schema)
+    for (const sql of statements) {
+      await writeLine(stream, { op: 'ddl', sql })
+    }
+    await writeLine(stream, { op: 'commit' })
+  }
+}
+
+async function schemaDdl(pg, schema) {
+  const unsupported = rowsOf(
+    await pg.query(
+      "SELECT c.relkind::text AS kind, c.relname AS name FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = $1 AND c.relkind IN ('m', 'f', 'p') ORDER BY c.relname",
+      [schema],
+    ),
+  )
+  if (unsupported.length > 0) {
+    throw new Error(
+      'unsupported relation ' + schema + '.' + String(unsupported[0].name) + ' kind ' + String(unsupported[0].kind),
+    )
+  }
+  const oddConstraints = rowsOf(
+    await pg.query(
+      "SELECT con.contype::text AS kind, c.relname AS name FROM pg_constraint con JOIN pg_class c ON c.oid = con.conrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = $1 AND con.contype NOT IN ('p', 'u', 'c', 'f', 'x', 'n') ORDER BY c.relname",
+      [schema],
+    ),
+  )
+  if (oddConstraints.length > 0) {
+    throw new Error(
+      'unsupported constraint type ' + String(oddConstraints[0].kind) + ' on ' + schema + '.' + String(oddConstraints[0].name),
+    )
+  }
+  const statements = []
+  statements.push(...(await enumStatements(pg, schema)))
+  statements.push(...(await compositeStatements(pg, schema)))
+  statements.push(...(await domainStatements(pg, schema)))
+  const sequences = await sequencePlans(pg, schema)
+  for (const sequence of sequences) {
+    statements.push(sequence.createSql)
+  }
+  const tables = await tablePlans(pg, schema)
+  for (const table of tables) {
+    statements.push(table.createSql)
+  }
+  for (const sequence of sequences) {
+    if (sequence.ownedSql) {
+      statements.push(sequence.ownedSql)
+    }
+  }
+  statements.push(...(await constraintStatements(pg, schema)))
+  statements.push(...(await indexStatements(pg, schema)))
+  statements.push(...(await functionStatements(pg, schema)))
+  statements.push(...(await viewStatements(pg, schema)))
+  statements.push(...(await triggerStatements(pg, schema)))
+  return statements
+}
+
+async function enumStatements(pg, schema) {
+  const rows = rowsOf(
+    await pg.query(
+      "SELECT t.typname AS name, e.enumlabel AS label FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace JOIN pg_enum e ON e.enumtypid = t.oid WHERE n.nspname = $1 AND t.typtype = 'e' AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.objid = t.oid AND d.deptype = 'e') ORDER BY t.typname, e.enumsortorder",
+      [schema],
+    ),
+  )
+  const grouped = new Map()
+  for (const row of rows) {
+    const name = String(row.name)
+    const labels = grouped.get(name) ?? []
+    labels.push(sqlText(String(row.label)))
+    grouped.set(name, labels)
+  }
+  const statements = []
+  for (const [name, labels] of grouped) {
+    statements.push('CREATE TYPE ' + quoteIdent(schema) + '.' + quoteIdent(name) + ' AS ENUM (' + labels.join(', ') + ')')
+  }
+  return statements
+}
+
+async function compositeStatements(pg, schema) {
+  const rows = rowsOf(
+    await pg.query(
+      "SELECT t.typname AS name, a.attname AS column_name, tn.nspname AS type_schema, pg_catalog.format_type(a.atttypid, a.atttypmod) AS type FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace JOIN pg_class c ON c.oid = t.typrelid AND c.relkind = 'c' JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped JOIN pg_type bt ON bt.oid = a.atttypid JOIN pg_namespace tn ON tn.oid = bt.typnamespace WHERE n.nspname = $1 AND t.typtype = 'c' AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.objid = t.oid AND d.deptype = 'e') ORDER BY t.typname, a.attnum",
+      [schema],
+    ),
+  )
+  const grouped = new Map()
+  for (const row of rows) {
+    const name = String(row.name)
+    const columns = grouped.get(name) ?? []
+    columns.push(quoteIdent(String(row.column_name)) + ' ' + qualifyType(row.type_schema, row.type))
+    grouped.set(name, columns)
+  }
+  const statements = []
+  for (const [name, columns] of grouped) {
+    statements.push(
+      'CREATE TYPE ' + quoteIdent(schema) + '.' + quoteIdent(name) + ' AS (' + columns.join(', ') + ')',
+    )
+  }
+  return statements
+}
+
+async function domainStatements(pg, schema) {
+  const rows = rowsOf(
+    await pg.query(
+      "SELECT t.oid::text AS oid, t.typname AS name, tn.nspname AS type_schema, pg_catalog.format_type(t.typbasetype, t.typtypmod) AS base, CASE WHEN t.typnotnull THEN 't' ELSE 'f' END AS notnull, t.typdefault AS default_expr FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace JOIN pg_type bt ON bt.oid = t.typbasetype JOIN pg_namespace tn ON tn.oid = bt.typnamespace WHERE n.nspname = $1 AND t.typtype = 'd' AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.objid = t.oid AND d.deptype = 'e') ORDER BY t.typname",
+      [schema],
+    ),
+  )
+  const statements = []
+  for (const row of rows) {
+    let sql =
+      'CREATE DOMAIN ' +
+      quoteIdent(schema) +
+      '.' +
+      quoteIdent(String(row.name)) +
+      ' AS ' +
+      qualifyType(row.type_schema, row.base)
+    if (row.default_expr != null && String(row.default_expr) !== '') {
+      sql += ' DEFAULT ' + String(row.default_expr)
+    }
+    if (isTrue(row.notnull)) {
+      sql += ' NOT NULL'
+    }
+    statements.push(sql)
+    const checks = rowsOf(
+      await pg.query(
+        "SELECT conname AS name, pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE contypid = $1::oid AND contype = 'c' ORDER BY conname",
+        [String(row.oid)],
+      ),
+    )
+    for (const check of checks) {
+      statements.push(
+        'ALTER DOMAIN ' +
+          quoteIdent(schema) +
+          '.' +
+          quoteIdent(String(row.name)) +
+          ' ADD CONSTRAINT ' +
+          quoteIdent(String(check.name)) +
+          ' ' +
+          oneStatement(check.def),
+      )
+    }
+  }
+  return statements
+}
+
+async function sequencePlans(pg, schema) {
+  const rows = rowsOf(
+    await pg.query(
+      "SELECT c.relname AS name, s.seqstart::text AS seqstart, s.seqincrement::text AS seqincrement, s.seqmin::text AS seqmin, s.seqmax::text AS seqmax, s.seqcache::text AS seqcache, CASE WHEN s.seqcycle THEN 't' ELSE 'f' END AS seqcycle FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace JOIN pg_sequence s ON s.seqrelid = c.oid WHERE n.nspname = $1 AND c.relkind = 'S' AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.objid = c.oid AND d.deptype = 'e') AND NOT EXISTS (SELECT 1 FROM pg_depend d JOIN pg_attribute a ON a.attrelid = d.refobjid AND a.attnum = d.refobjsubid WHERE d.objid = c.oid AND a.attidentity IN ('a', 'd')) ORDER BY c.relname",
+      [schema],
+    ),
+  )
+  const owned = rowsOf(
+    await pg.query(
+      "SELECT seq.relname AS seq, tab.relname AS table_name, a.attname AS column_name FROM pg_class seq JOIN pg_namespace n ON n.oid = seq.relnamespace JOIN pg_depend d ON d.objid = seq.oid AND d.deptype IN ('a', 'i') JOIN pg_class tab ON tab.oid = d.refobjid JOIN pg_namespace tn ON tn.oid = tab.relnamespace JOIN pg_attribute a ON a.attrelid = tab.oid AND a.attnum = d.refobjsubid WHERE n.nspname = $1 AND seq.relkind = 'S' AND a.attidentity NOT IN ('a', 'd') AND NOT EXISTS (SELECT 1 FROM pg_depend ext WHERE ext.objid = seq.oid AND ext.deptype = 'e')",
+      [schema],
+    ),
+  )
+  const ownedBy = new Map(owned.map((row) => [String(row.seq), row]))
+  return rows.map((row) => {
+    const name = String(row.name)
+    const cycle = isTrue(row.seqcycle) ? ' CYCLE' : ' NO CYCLE'
+    const createSql =
+      'CREATE SEQUENCE ' +
+      quoteIdent(schema) +
+      '.' +
+      quoteIdent(name) +
+      ' START WITH ' +
+      sqlNumber(row.seqstart) +
+      ' INCREMENT BY ' +
+      sqlNumber(row.seqincrement) +
+      ' MINVALUE ' +
+      sqlNumber(row.seqmin) +
+      ' MAXVALUE ' +
+      sqlNumber(row.seqmax) +
+      ' CACHE ' +
+      sqlNumber(row.seqcache) +
+      cycle
+    const owner = ownedBy.get(name)
+    let ownedSql = ''
+    if (owner && String(owner.table_name)) {
+      ownedSql =
+        'ALTER SEQUENCE ' +
+        quoteIdent(schema) +
+        '.' +
+        quoteIdent(name) +
+        ' OWNED BY ' +
+        quoteIdent(schema) +
+        '.' +
+        quoteIdent(String(owner.table_name)) +
+        '.' +
+        quoteIdent(String(owner.column_name))
+    }
+    return { createSql, ownedSql }
+  })
+}
+
+async function tablePlans(pg, schema) {
+  const tables = rowsOf(
+    await pg.query(
+      "SELECT c.oid::text AS oid, c.relname AS name FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = $1 AND c.relkind = 'r' AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.objid = c.oid AND d.deptype = 'e') ORDER BY c.relname",
+      [schema],
+    ),
+  )
+  const plans = []
+  for (const table of tables) {
+    const columns = rowsOf(
+      await pg.query(
+        'SELECT a.attname AS name, tn.nspname AS type_schema, pg_catalog.format_type(a.atttypid, a.atttypmod) AS type, CASE WHEN a.attnotnull THEN \'t\' ELSE \'f\' END AS notnull, a.attidentity AS identity, a.attgenerated AS generated, pg_get_expr(ad.adbin, ad.adrelid) AS expr FROM pg_attribute a JOIN pg_type bt ON bt.oid = a.atttypid JOIN pg_namespace tn ON tn.oid = bt.typnamespace LEFT JOIN pg_attrdef ad ON ad.adrelid = a.attrelid AND ad.adnum = a.attnum WHERE a.attrelid = $1::oid AND a.attnum > 0 AND NOT a.attisdropped ORDER BY a.attnum',
+        [String(table.oid)],
+      ),
+    )
+    if (columns.length === 0) {
+      throw new Error('no columns to declare for ' + schema + '.' + String(table.name))
+    }
+    const clauses = columns.map((column) => columnClause(column))
+    plans.push({
+      createSql:
+        'CREATE TABLE ' +
+        quoteIdent(schema) +
+        '.' +
+        quoteIdent(String(table.name)) +
+        ' (' +
+        clauses.join(', ') +
+        ')',
+    })
+  }
+  return plans
+}
+
+function columnClause(column) {
+  const identity = column.identity == null ? '' : String(column.identity).trim()
+  const generated = isGenerated(column.generated)
+  let clause = quoteIdent(String(column.name)) + ' ' + qualifyType(column.type_schema, column.type)
+  if (identity === 'a') {
+    clause += ' GENERATED ALWAYS AS IDENTITY'
+  } else if (identity === 'd') {
+    clause += ' GENERATED BY DEFAULT AS IDENTITY'
+  } else if (generated) {
+    if (column.expr == null || String(column.expr) === '') {
+      throw new Error('generated column has no expression: ' + String(column.name))
+    }
+    clause += ' GENERATED ALWAYS AS (' + String(column.expr) + ') STORED'
+  } else if (column.expr != null && String(column.expr) !== '') {
+    clause += ' DEFAULT ' + String(column.expr)
+  }
+  if (isTrue(column.notnull)) {
+    clause += ' NOT NULL'
+  }
+  return clause
+}
+
+async function constraintStatements(pg, schema) {
+  const rows = rowsOf(
+    await pg.query(
+      "SELECT c.relname AS table_name, con.conname AS name, con.contype::text AS kind, pg_get_constraintdef(con.oid) AS def FROM pg_constraint con JOIN pg_class c ON c.oid = con.conrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = $1 AND con.contype IN ('p', 'u', 'c', 'f', 'x') ORDER BY c.relname, con.conname",
+      [schema],
+    ),
+  )
+  const rank = { p: 0, u: 1, c: 2, f: 3, x: 4 }
+  rows.sort((left, right) => {
+    const delta = (rank[String(left.kind)] ?? 9) - (rank[String(right.kind)] ?? 9)
+    if (delta !== 0) {
+      return delta
+    }
+    return String(left.table_name).localeCompare(String(right.table_name)) || String(left.name).localeCompare(String(right.name))
+  })
+  return rows.map(
+    (row) =>
+      'ALTER TABLE ' +
+      quoteIdent(schema) +
+      '.' +
+      quoteIdent(String(row.table_name)) +
+      ' ADD CONSTRAINT ' +
+      quoteIdent(String(row.name)) +
+      ' ' +
+      oneStatement(row.def),
+  )
+}
+
+async function indexStatements(pg, schema) {
+  const rows = rowsOf(
+    await pg.query(
+      'SELECT pg_get_indexdef(i.indexrelid) AS def FROM pg_index i JOIN pg_class t ON t.oid = i.indrelid JOIN pg_namespace n ON n.oid = t.relnamespace WHERE n.nspname = $1 AND NOT EXISTS (SELECT 1 FROM pg_constraint con WHERE con.conindid = i.indexrelid) ORDER BY t.relname, i.indexrelid',
+      [schema],
+    ),
+  )
+  return rows.map((row) => oneStatement(row.def))
+}
+
+async function functionStatements(pg, schema) {
+  const rows = rowsOf(
+    await pg.query(
+      "SELECT p.oid::text AS oid, l.lanname AS lang, pg_get_functiondef(p.oid) AS def FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace JOIN pg_language l ON l.oid = p.prolang WHERE n.nspname = $1 AND p.prokind = 'f' AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.objid = p.oid AND d.deptype = 'e') ORDER BY p.oid",
+      [schema],
+    ),
+  )
+  for (const row of rows) {
+    const lang = String(row.lang)
+    if (lang === 'c' || lang === 'internal') {
+      throw new Error('unsupported function language ' + lang + ' in ' + schema)
+    }
+  }
+  const otherKinds = rowsOf(
+    await pg.query(
+      "SELECT p.prokind::text AS kind, p.proname AS name FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = $1 AND p.prokind <> 'f' AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.objid = p.oid AND d.deptype = 'e') ORDER BY p.proname",
+      [schema],
+    ),
+  )
+  if (otherKinds.length > 0) {
+    throw new Error(
+      'unsupported routine ' + schema + '.' + String(otherKinds[0].name) + ' kind ' + String(otherKinds[0].kind),
+    )
+  }
+  const deps = rowsOf(
+    await pg.query(
+      'SELECT p.oid::text AS child, ref.oid::text AS parent FROM pg_depend d JOIN pg_proc p ON p.oid = d.objid JOIN pg_proc ref ON ref.oid = d.refobjid JOIN pg_namespace n ON n.oid = p.pronamespace JOIN pg_namespace rn ON rn.oid = ref.pronamespace WHERE n.nspname = $1 AND rn.nspname = $1 AND p.oid <> ref.oid',
+      [schema],
+    ),
+  )
+  const byId = new Map(rows.map((row) => [String(row.oid), oneStatement(row.def)]))
+  const edges = deps.map((row) => ({ child: String(row.child), parent: String(row.parent) }))
+  return orderTables([...byId.keys()], edges)
+    .map((id) => byId.get(id))
+    .filter((sql) => sql)
+}
+
+async function viewStatements(pg, schema) {
+  const rows = rowsOf(
+    await pg.query(
+      "SELECT c.oid::text AS oid, c.relname AS name, pg_get_viewdef(c.oid, true) AS def FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = $1 AND c.relkind = 'v' AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.objid = c.oid AND d.deptype = 'e') ORDER BY c.relname",
+      [schema],
+    ),
+  )
+  const deps = rowsOf(
+    await pg.query(
+      "SELECT c.oid::text AS child, ref.oid::text AS parent FROM pg_depend d JOIN pg_rewrite r ON r.oid = d.objid JOIN pg_class c ON c.oid = r.ev_class JOIN pg_class ref ON ref.oid = d.refobjid JOIN pg_namespace n ON n.oid = c.relnamespace JOIN pg_namespace rn ON rn.oid = ref.relnamespace WHERE n.nspname = $1 AND rn.nspname = $1 AND c.relkind = 'v' AND ref.relkind = 'v' AND c.oid <> ref.oid",
+      [schema],
+    ),
+  )
+  const byId = new Map(
+    rows.map((row) => [
+      String(row.oid),
+      'CREATE VIEW ' + quoteIdent(schema) + '.' + quoteIdent(String(row.name)) + ' AS ' + oneStatement(row.def),
+    ]),
+  )
+  const edges = deps.map((row) => ({ child: String(row.child), parent: String(row.parent) }))
+  return orderTables([...byId.keys()], edges)
+    .map((id) => byId.get(id))
+    .filter((sql) => sql)
+}
+
+async function triggerStatements(pg, schema) {
+  const rows = rowsOf(
+    await pg.query(
+      'SELECT pg_get_triggerdef(t.oid) AS def FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = $1 AND NOT t.tgisinternal ORDER BY c.relname, t.tgname',
+      [schema],
+    ),
+  )
+  return rows.map((row) => oneStatement(row.def))
+}
+
 async function exportRows(pg, stream) {
+  await exportSchemas(pg, stream)
   const tables = await listTables(pg)
   const ordered = await orderedTables(pg, tables)
   for (const table of ordered) {
