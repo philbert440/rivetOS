@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use protocol::js::{JsObject, JsString, JsValue};
-use reqwest::header::{CONTENT_TYPE, HeaderValue};
+use reqwest::header::{CONTENT_TYPE, HeaderValue, LOCATION};
 use sha2::{Digest, Sha256};
 use tokio::sync::OnceCell;
 
@@ -299,35 +299,76 @@ impl CaptureWriter {
             return classify_response(self.user.is_some(), reply);
         }
         let client = self.client().await?;
-        let mut request = client
-            .post(capture_endpoint(&self.den_url))
-            .header(CONTENT_TYPE, "application/json")
-            .body(body);
-        if let Some(user) = &self.user {
-            let value = HeaderValue::from_str(&user.token)
+        let mut url = capture_endpoint(&self.den_url);
+        let mut method_post = true;
+        let mut payload = Some(body);
+        let mut followed = 0u32;
+        loop {
+            let mut request = if method_post {
+                client.post(&url)
+            } else {
+                client.get(&url)
+            };
+            if method_post {
+                request = request.header(CONTENT_TYPE, "application/json");
+                if let Some(payload) = payload.clone() {
+                    request = request.body(payload);
+                }
+            }
+            if let Some(user) = &self.user {
+                let value = HeaderValue::from_str(&user.token)
+                    .map_err(|error| CaptureError::Transport(error.to_string()))?;
+                request = request.header("x-rivetos-user-token", value);
+            }
+            let response = request
+                .send()
+                .await
                 .map_err(|error| CaptureError::Transport(error.to_string()))?;
-            request = request.header("x-rivetos-user-token", value);
-        }
-        let response = request
-            .send()
-            .await
-            .map_err(|error| CaptureError::Transport(error.to_string()))?;
-        let status = response.status().as_u16();
-        if !(200..300).contains(&status) {
+            let status = response.status().as_u16();
+            if !is_redirect(status) {
+                if !(200..300).contains(&status) {
+                    drop(response);
+                    return classify_response(
+                        self.user.is_some(),
+                        HttpReply {
+                            status,
+                            body: String::new(),
+                        },
+                    );
+                }
+                let text = response
+                    .text()
+                    .await
+                    .map_err(|error| CaptureError::Transport(error.to_string()))?;
+                return classify_response(self.user.is_some(), HttpReply { status, body: text });
+            }
+            if followed >= 20 {
+                return Err(CaptureError::Transport(
+                    "maximum redirect reached".to_string(),
+                ));
+            }
+            let location = response
+                .headers()
+                .get(LOCATION)
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_string);
             drop(response);
-            return classify_response(
-                self.user.is_some(),
-                HttpReply {
-                    status,
-                    body: String::new(),
-                },
-            );
+            let Some(location) = location.filter(|value| !value.is_empty()) else {
+                return classify_response(
+                    self.user.is_some(),
+                    HttpReply {
+                        status,
+                        body: String::new(),
+                    },
+                );
+            };
+            url = resolve_redirect(&url, &location)?;
+            followed += 1;
+            if method_post && matches!(status, 301..=303) {
+                method_post = false;
+                payload = None;
+            }
         }
-        let text = response
-            .text()
-            .await
-            .map_err(|error| CaptureError::Transport(error.to_string()))?;
-        classify_response(self.user.is_some(), HttpReply { status, body: text })
     }
 
     async fn client(&self) -> Result<reqwest::Client, CaptureError> {
@@ -386,6 +427,27 @@ fn classify_response(has_user: bool, reply: HttpReply) -> Result<CaptureResult, 
 fn capture_endpoint(den_url: &str) -> String {
     let base = den_url.strip_suffix('/').unwrap_or(den_url);
     format!("{base}/api/capture")
+}
+
+fn is_redirect(status: u16) -> bool {
+    matches!(status, 301 | 302 | 303 | 307 | 308)
+}
+
+fn resolve_redirect(current: &str, location: &str) -> Result<String, CaptureError> {
+    let base =
+        url::Url::parse(current).map_err(|error| CaptureError::Transport(error.to_string()))?;
+    let mut next = base
+        .join(location)
+        .map_err(|error| CaptureError::Transport(error.to_string()))?;
+    next.set_fragment(None);
+    if next.scheme() != "http" && next.scheme() != "https" {
+        return Err(CaptureError::Transport(format!(
+            "unsupported protocol {}:{}",
+            next.scheme(),
+            next.as_str()
+        )));
+    }
+    Ok(next.to_string())
 }
 
 fn build_client(pem: Option<Vec<u8>>, timeout: Duration) -> Result<reqwest::Client, CaptureError> {

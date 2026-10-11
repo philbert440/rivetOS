@@ -65,7 +65,7 @@ pub fn den_settings(raw: &str) -> DenConfigScalars {
         if !wanted(section_name, key) || scalar_set(&result, key) {
             continue;
         }
-        let value = unwrap_quotes(strip_inline_comment(raw_value).trim());
+        let value = unwrap_quotes(protocol::js::js_trim(&strip_inline_comment(raw_value)));
         set_scalar(&mut result, key, value);
     }
     result
@@ -93,7 +93,7 @@ fn starts_unindented(line: &str) -> bool {
 }
 
 fn blank_or_comment(line: &str) -> bool {
-    let trimmed = line.trim();
+    let trimmed = protocol::js::js_trim(line);
     trimmed.is_empty() || trimmed.starts_with('#')
 }
 
@@ -198,7 +198,7 @@ pub fn den_tls_configured(
         let shared_env = env.get("RIVETOS_SHARED_DIR");
         let shared = shared_env
             .as_deref()
-            .map(str::trim)
+            .map(protocol::js::js_trim)
             .filter(|value| !value.is_empty())
             .unwrap_or("/rivet-shared");
         let issued = Path::new(shared).join("rivet-ca").join("issued");
@@ -229,9 +229,9 @@ fn first_non_empty(values: [Option<&str>; 2]) -> String {
 
 pub fn guard_den_url(raw: &str, tls_configured: bool) -> GuardedDenUrl {
     let mut warnings = Vec::new();
-    let mut url = raw.trim().to_string();
+    let mut url = protocol::js::js_trim(raw).to_string();
     if url.contains(',') {
-        let first = url.split(',').next().unwrap_or("").trim().to_string();
+        let first = protocol::js::js_trim(url.split(',').next().unwrap_or("")).to_string();
         warnings.push(format!(
             "RIVET_DEN_URL lists several origins; den transport uses one — using {first} (fix ~/.rivetos/.env)"
         ));
@@ -299,7 +299,7 @@ pub fn resolve_den_url(
     let mut warnings = Vec::new();
     if let Some(preset) = env
         .get("RIVET_DEN_URL")
-        .map(|value| value.trim().to_string())
+        .map(|value| protocol::js::js_trim(&value).to_string())
         .filter(|value| !value.is_empty())
     {
         let guarded = guard_den_url(&preset, den_tls_configured(env, &config, exists));
@@ -313,7 +313,7 @@ pub fn resolve_den_url(
     let tls_ca_env = env.get("RIVETOS_DEN_TLS_CA");
     let ca_path = den_ca
         .as_deref()
-        .map(str::trim)
+        .map(protocol::js::js_trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
         .or_else(|| {
@@ -326,7 +326,7 @@ pub fn resolve_den_url(
         .or_else(|| {
             tls_ca_env
                 .as_deref()
-                .map(str::trim)
+                .map(protocol::js::js_trim)
                 .filter(|value| !value.is_empty())
                 .map(str::to_string)
         })

@@ -117,7 +117,7 @@ fn env_redaction_is_none_for_falsey_values() {
 
 #[test]
 fn env_redaction_enables_builtins() {
-    for value in ["1", "true", "YES", "on"] {
+    for value in ["1", "true", "YES", "on", "\u{FEFF}true"] {
         let options = capture_redaction_from_env(&MapEnv::from_pairs(&[(
             "RIVETOS_CAPTURE_REDACTION",
             value,
@@ -127,6 +127,13 @@ fn env_redaction_enables_builtins() {
         assert_eq!(options.builtins, Some(true));
         assert!(options.patterns.is_none());
     }
+    assert!(
+        capture_redaction_from_env(&MapEnv::from_pairs(&[(
+            "RIVETOS_CAPTURE_REDACTION",
+            "\u{0085}true"
+        )]))
+        .is_none()
+    );
 }
 
 #[test]

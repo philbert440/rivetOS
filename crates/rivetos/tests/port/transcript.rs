@@ -612,7 +612,9 @@ async fn missing_tool_transcript_uses_an_occurrence_id() {
         role: "tool".to_string(),
         content: "[tool call] Bash".to_string(),
         tool_name: Some("Bash".to_string()),
-        tool_args: Some(serde_json::json!({"command": "ls"})),
+        tool_args: Some(protocol::js::from_serde(
+            &serde_json::json!({"command": "ls"}),
+        )),
     });
     let posted = harness.body(0);
     let message = &common::msgs(&posted)[0];
@@ -1012,4 +1014,194 @@ async fn an_empty_transcript_skips() {
         .await
         .unwrap();
     assert_eq!(result.skipped.as_deref(), Some("nothing to ingest"));
+}
+
+#[tokio::test]
+async fn post_tool_use_keeps_unpaired_surrogates() {
+    let harness = common::DenHarness::new();
+    let payload = protocol::js::parse(
+        r#"{"hook_event_name":"PostToolUse","session_id":"sess-1","tool_name":"Bash","tool_input":{"q":"\ud800","\ud801":"a","\ud802":"b"},"tool_response":"\ud803"}"#,
+    )
+    .unwrap();
+    let mut opts = HookEventOptions::from_js(payload);
+    opts.idempotency_key = Some("surrogate".to_string());
+    opts.poll_for_ms = Some(0);
+    ingest_hook_event(attach_hook(&harness, opts))
+        .await
+        .unwrap();
+    let raw = harness.bodies.lock().unwrap()[0].clone();
+    assert!(raw.contains(r#""q":"\ud800""#), "{raw}");
+    assert!(raw.contains(r#""\ud801":"a""#), "{raw}");
+    assert!(raw.contains(r#""\ud802":"b""#), "{raw}");
+    assert!(raw.contains(r#""tool_result":"\ud803""#), "{raw}");
+    assert!(!raw.contains("\\ufffd"), "{raw}");
+}
+
+#[tokio::test]
+async fn prompt_title_keeps_a_split_surrogate() {
+    let harness = common::DenHarness::new();
+    let prompt = format!("{}😀", "a".repeat(119));
+    let mut opts = HookEventOptions::new(serde_json::json!({
+        "hook_event_name": "UserPromptSubmit",
+        "session_id": "sess-1",
+        "prompt": prompt
+    }));
+    opts.idempotency_key = Some("title-split".to_string());
+    opts.poll_for_ms = Some(0);
+    ingest_hook_event(attach_hook(&harness, opts))
+        .await
+        .unwrap();
+    let raw = harness.bodies.lock().unwrap()[0].clone();
+    let title = raw.split("\"title\":\"").nth(1).unwrap();
+    let title_value = title.split('"').next().unwrap();
+    assert!(title_value.ends_with("\\ud83d"), "{title_value}");
+    assert!(!title_value.contains("\\ude00"), "{title_value}");
+    assert!(raw.contains('😀'), "{raw}");
+    assert!(!raw.contains("\\ude00"), "{raw}");
+}
+
+#[tokio::test]
+async fn transcript_title_keeps_a_split_surrogate() {
+    let harness = common::DenHarness::new();
+    let prompt = format!("{}😀", "a".repeat(119));
+    let file = common::write_jsonl(
+        harness.dir.path(),
+        "sess.jsonl",
+        &[user_line(None, &prompt)],
+    );
+    ingest_transcript(attach(&harness, IngestOptions::new(&file)))
+        .await
+        .unwrap();
+    let raw = harness.bodies.lock().unwrap()[0].clone();
+    let title = raw.split("\"title\":\"").nth(1).unwrap();
+    let title_value = title.split('"').next().unwrap();
+    assert!(title_value.ends_with("\\ud83d"), "{title_value}");
+    assert!(raw.contains('😀'), "{raw}");
+    assert!(!raw.contains("\\ude00"), "{raw}");
+}
+
+#[tokio::test]
+async fn prompt_whitespace_follows_javascript_trim() {
+    let harness = common::DenHarness::new();
+    let mut bom = HookEventOptions::new(serde_json::json!({
+        "hook_event_name": "UserPromptSubmit",
+        "session_id": "sess-1",
+        "prompt": "\u{FEFF}"
+    }));
+    bom.idempotency_key = Some("bom-empty".to_string());
+    bom.poll_for_ms = Some(0);
+    let skipped = ingest_hook_event(attach_hook(&harness, bom)).await.unwrap();
+    assert_eq!(skipped.skipped.as_deref(), Some("empty prompt"));
+    assert!(harness.bodies.lock().unwrap().is_empty());
+
+    let mut next = HookEventOptions::new(serde_json::json!({
+        "hook_event_name": "UserPromptSubmit",
+        "session_id": "sess-1",
+        "prompt": "\u{0085}"
+    }));
+    next.idempotency_key = Some("next-line".to_string());
+    next.poll_for_ms = Some(0);
+    let posted = ingest_hook_event(attach_hook(&harness, next))
+        .await
+        .unwrap();
+    assert_eq!(posted.skipped, None);
+    assert_eq!(posted.inserted, 1);
+    let raw = harness.bodies.lock().unwrap()[0].clone();
+    assert!(raw.contains('\u{0085}'), "{raw}");
+
+    let mut kept = HookEventOptions::new(serde_json::json!({
+        "hook_event_name": "UserPromptSubmit",
+        "session_id": "sess-1",
+        "prompt": "\u{FEFF}hello"
+    }));
+    kept.idempotency_key = Some("bom-kept".to_string());
+    kept.poll_for_ms = Some(0);
+    ingest_hook_event(attach_hook(&harness, kept))
+        .await
+        .unwrap();
+    let raw = harness.bodies.lock().unwrap()[1].clone();
+    assert!(raw.contains("\u{FEFF}hello"), "{raw}");
+}
+
+#[tokio::test]
+async fn spaces_only_ai_title_is_kept_and_empty_falls_through() {
+    let harness = common::DenHarness::new();
+    let spaces = common::write_jsonl(
+        harness.dir.path(),
+        "spaces.jsonl",
+        &[
+            serde_json::json!({"type": "ai-title", "aiTitle": "   ", "sessionId": "sess-1"}),
+            user_line(None, "hello"),
+        ],
+    );
+    ingest_transcript(attach(&harness, IngestOptions::new(&spaces)))
+        .await
+        .unwrap();
+    assert_eq!(harness.body(0)["title"], "   ");
+
+    let empty = common::write_jsonl(
+        harness.dir.path(),
+        "empty-title.jsonl",
+        &[
+            serde_json::json!({"type": "ai-title", "aiTitle": "", "sessionId": "sess-1"}),
+            user_line(None, "hello"),
+        ],
+    );
+    ingest_transcript(attach(&harness, IngestOptions::new(&empty)))
+        .await
+        .unwrap();
+    assert_eq!(harness.body(1)["title"], "hello");
+}
+
+#[test]
+fn jsonl_trim_matches_javascript_whitespace() {
+    let dir = tempfile::tempdir().unwrap();
+    let bom_line = dir.path().join("bom-line.jsonl");
+    std::fs::write(
+        &bom_line,
+        "\u{FEFF}{\"type\":\"user\",\"sessionId\":\"sess-1\",\"uuid\":\"u1\",\"cwd\":\"/srv\",\"message\":{\"role\":\"user\",\"content\":\"hi\"}}\n",
+    )
+    .unwrap();
+    let parsed = parse_transcript(&bom_line).unwrap();
+    assert_eq!(parsed.msgs.len(), 1);
+    assert_eq!(parsed.msgs[0].content, "hi");
+    assert_eq!(parsed.cwd.as_deref(), Some("/srv"));
+
+    let bom_cwd = dir.path().join("bom-cwd.jsonl");
+    std::fs::write(
+        &bom_cwd,
+        "{\"type\":\"user\",\"sessionId\":\"s\",\"uuid\":\"u\",\"cwd\":\"\\uFEFF\",\"message\":{\"role\":\"user\",\"content\":\"x\"}}\n",
+    )
+    .unwrap();
+    assert_eq!(parse_transcript(&bom_cwd).unwrap().cwd, None);
+
+    let bom_prefix = dir.path().join("bom-prefix.jsonl");
+    std::fs::write(
+        &bom_prefix,
+        "{\"type\":\"user\",\"sessionId\":\"s\",\"uuid\":\"u\",\"cwd\":\"\\uFEFF/srv\",\"message\":{\"role\":\"user\",\"content\":\"x\"}}\n",
+    )
+    .unwrap();
+    assert_eq!(
+        parse_transcript(&bom_prefix).unwrap().cwd.as_deref(),
+        Some("/srv")
+    );
+
+    let next_line = dir.path().join("next-line.jsonl");
+    std::fs::write(
+        &next_line,
+        "{\"type\":\"user\",\"sessionId\":\"s\",\"uuid\":\"u\",\"cwd\":\"\\u0085/srv\",\"message\":{\"role\":\"user\",\"content\":\"x\"}}\n",
+    )
+    .unwrap();
+    assert_eq!(
+        parse_transcript(&next_line).unwrap().cwd.as_deref(),
+        Some("\u{0085}/srv")
+    );
+
+    let skipped = dir.path().join("next-line-prefix.jsonl");
+    std::fs::write(
+        &skipped,
+        "\u{0085}{\"type\":\"user\",\"sessionId\":\"s\",\"uuid\":\"u\",\"message\":{\"role\":\"user\",\"content\":\"kept\"}}\n",
+    )
+    .unwrap();
+    assert!(parse_transcript(&skipped).unwrap().msgs.is_empty());
 }

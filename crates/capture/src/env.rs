@@ -47,7 +47,7 @@ impl EnvLookup for Arc<dyn EnvLookup> {
 
 pub fn trimmed(env: &dyn EnvLookup, key: &str) -> String {
     env.get(key)
-        .map(|value| value.trim().to_string())
+        .map(|value| protocol::js::js_trim(&value).to_string())
         .unwrap_or_default()
 }
 

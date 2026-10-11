@@ -5,12 +5,13 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use capture::{
-    CaptureBatch, CaptureError, CaptureMessage, CaptureRole, CaptureTransport, CaptureUser,
-    CaptureWriterOptions, EventIdParts, HttpExchange, OccurrenceKey, ProcessEnv, UserSource,
-    WriteOutcome, content_tuple_hash, create_capture_writer, event_id_from_content,
-    occurrence_index, resolve_capture_transport, resolve_den_url,
+    CaptureError, CaptureRole, CaptureTransport, CaptureUser, CaptureWriterOptions, EventIdParts,
+    HttpExchange, OccurrenceKey, ProcessEnv, UserSource, WriteOutcome, content_tuple_hash,
+    create_capture_writer, event_id_from_content, occurrence_index, resolve_capture_transport,
+    resolve_den_url,
 };
-use serde_json::{Map, Value};
+use protocol::js::{JsObject, JsString, JsValue};
+use serde_json::Value;
 
 pub const CAPTURE_CHANNEL: &str = "claude-code";
 pub const LEGACY_TASK_KEY_PREFIX: &str = "task:";
@@ -54,23 +55,28 @@ pub fn capture_agent(env: &dyn capture::EnvLookup) -> String {
 
 pub struct ToolUse {
     pub name: String,
-    pub input: Option<Value>,
+    pub input: Option<JsValue>,
     pub id: Option<String>,
     pub result: Option<String>,
     pub result_line: Option<usize>,
+    name_units: JsString,
+    id_units: Option<JsString>,
+    result_units: Option<JsString>,
 }
 
 pub struct ParsedMessage {
     pub role: String,
     pub content: String,
     pub tool_name: Option<String>,
-    pub tool_args: Option<Value>,
+    pub tool_args: Option<JsValue>,
     pub tool_result: Option<String>,
     pub ts: Option<String>,
     pub uuid: Option<String>,
     pub sidechain: bool,
     pub line_index: usize,
     pub tools: Vec<ToolUse>,
+    content_units: JsString,
+    uuid_units: Option<JsString>,
 }
 
 pub struct ParsedTranscript {
@@ -80,6 +86,10 @@ pub struct ParsedTranscript {
     pub pr_url: Option<String>,
     pub cwd: Option<String>,
     pub msgs: Vec<ParsedMessage>,
+    ai_title_units: Option<JsString>,
+    pr_url_units: Option<JsString>,
+    cwd_units: Option<JsString>,
+    session_id_units: Option<JsString>,
 }
 
 pub struct HerdrPane {
@@ -140,7 +150,7 @@ impl IngestOptions {
 }
 
 pub struct HookEventOptions {
-    pub payload: Value,
+    pub payload: JsValue,
     pub session_key_override: Option<String>,
     pub task_id: Option<String>,
     pub pg_url: Option<String>,
@@ -156,6 +166,10 @@ pub struct HookEventOptions {
 
 impl HookEventOptions {
     pub fn new(payload: Value) -> Self {
+        Self::from_js(protocol::js::from_serde(&payload))
+    }
+
+    pub fn from_js(payload: JsValue) -> Self {
         Self {
             payload,
             session_key_override: None,
@@ -187,7 +201,7 @@ pub struct TaskCaptureContext {
 }
 
 pub struct ResolvedHookId {
-    pub event_id: String,
+    pub event_id: JsString,
     pub hook_only: bool,
 }
 
@@ -198,11 +212,11 @@ struct PostedCounts {
 }
 
 struct ToolCall {
-    name: String,
-    input: Option<Value>,
-    result: Option<String>,
+    name_units: JsString,
+    input: Option<JsValue>,
+    result_units: Option<JsString>,
     result_line: Option<usize>,
-    uuid: Option<String>,
+    uuid_units: Option<JsString>,
     ts: Option<String>,
     line_index: usize,
 }
@@ -325,38 +339,49 @@ pub(crate) fn select_transport(
 }
 
 pub async fn resolve_hook_event_id(opts: &HookEventOptions) -> ResolvedHookId {
-    if let Some(stored) =
-        field_str(&opts.payload, "rivetos_event_id").filter(|value| !value.is_empty())
+    if let Some(stored) = js_field(&opts.payload, "rivetos_event_id")
+        && !stored.to_utf8().is_empty()
     {
+        let view = stored.to_utf8();
         return ResolvedHookId {
-            hook_only: stored.contains(":hook:") || !stored.starts_with("claude-code:"),
-            event_id: stored.to_string(),
+            hook_only: view.contains(":hook:") || !view.starts_with("claude-code:"),
+            event_id: stored.clone(),
         };
     }
-    let session_id = field_str(&opts.payload, "session_id");
+    let session_units = js_field(&opts.payload, "session_id")
+        .filter(|value| !value.to_utf8().is_empty())
+        .cloned();
+    let session_id = session_units
+        .as_ref()
+        .map(|value| value.to_utf8().to_string());
     let session_key = resolve_conversation_key(ConversationKeyParts {
         override_key: opts.session_key_override.as_deref(),
-        hook_session_id: session_id,
+        hook_session_id: session_id.as_deref(),
         transcript_session_id: None,
         fallback_key: "",
     });
-    let session_part = nonempty(session_id)
-        .map(str::to_string)
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| {
-            if session_key.is_empty() {
-                "unknown".to_string()
-            } else {
-                session_key.clone()
-            }
-        });
+    let session_part = session_units.unwrap_or_else(|| {
+        if session_key.is_empty() {
+            JsString::from_text("unknown")
+        } else {
+            JsString::from_text(&session_key)
+        }
+    });
     let event = field_str(&opts.payload, "hook_event_name").unwrap_or("");
     let key = hook_occurrence_key(&opts.payload);
     if event == "PostToolUse"
-        && let Some(tool_id) = payload_tool_use_id(&opts.payload)
+        && let Some(tool_id) = js_field(&opts.payload, "tool_use_id")
+        && !tool_id.to_utf8().is_empty()
     {
+        let prefix: Vec<u16> = "claude-code:".encode_utf16().collect();
+        let marker: Vec<u16> = ":tool:".encode_utf16().collect();
         return ResolvedHookId {
-            event_id: format!("claude-code:{session_part}:tool:{tool_id}"),
+            event_id: concat_units(&[
+                prefix.as_slice(),
+                session_part.units(),
+                marker.as_slice(),
+                tool_id.units(),
+            ]),
             hook_only: false,
         };
     }
@@ -367,7 +392,7 @@ pub async fn resolve_hook_event_id(opts: &HookEventOptions) -> ResolvedHookId {
         let poll_ms = opts.poll_ms.unwrap_or(HOOK_TRANSCRIPT_POLL_MS);
         let poll_for = opts.poll_for_ms.unwrap_or(HOOK_TRANSCRIPT_POLL_FOR_MS);
         let deadline = Instant::now() + Duration::from_millis(poll_for);
-        let hint = session_id.unwrap_or("");
+        let hint = session_id.as_deref().unwrap_or("");
         loop {
             if let Some(bound) = last_match_async(Path::new(path), &key, hint).await {
                 return ResolvedHookId {
@@ -385,13 +410,13 @@ pub async fn resolve_hook_event_id(opts: &HookEventOptions) -> ResolvedHookId {
         && let Some(key) = &key
     {
         return ResolvedHookId {
-            event_id: occ_event_id(&session_part, key, 0),
+            event_id: JsString::from_text(&occ_event_id(session_part.to_utf8(), key, 0)),
             hook_only: false,
         };
     }
     ResolvedHookId {
         event_id: hook_fallback_id(
-            &session_part,
+            session_part.to_utf8(),
             opts.idempotency_key.as_deref(),
             &session_key,
             key.as_ref(),
@@ -444,58 +469,56 @@ pub async fn ingest_transcript(opts: IngestOptions) -> Result<IngestResult, Stri
         CaptureTransport::Pg { .. } => Err("capture postgres pool is not ported".to_string()),
         CaptureTransport::Den { den_url, user, .. } => {
             let session_part = nonempty(opts.session_id.as_deref())
-                .or(nonempty(parsed.session_id.as_deref()))
-                .unwrap_or("unknown");
-            let ids = den_event_ids(&parsed, session_part);
+                .map(JsString::from_text)
+                .or_else(|| {
+                    parsed
+                        .session_id_units
+                        .clone()
+                        .filter(|value| !value.to_utf8().is_empty())
+                })
+                .unwrap_or_else(|| JsString::from_text("unknown"));
+            let ids = den_event_ids(&parsed, &session_part);
             let file = std::path::absolute(&opts.transcript_path)
                 .unwrap_or_else(|_| opts.transcript_path.clone());
             let mut messages = Vec::new();
             for (offset, index) in assistant.iter().enumerate() {
                 let message = &parsed.msgs[*index];
-                let mut metadata = Map::new();
-                metadata.insert(
-                    "source".to_string(),
-                    Value::String("claude-code-hook".to_string()),
-                );
-                metadata.insert("uuid".to_string(), json_opt(&message.uuid));
-                metadata.insert("sidechain".to_string(), Value::Bool(message.sidechain));
+                let mut metadata = JsObject::new();
+                insert_text(&mut metadata, "source", "claude-code-hook");
+                insert_opt_units(&mut metadata, "uuid", message.uuid_units.as_ref());
+                metadata.insert(js_key("sidechain"), JsValue::Bool(message.sidechain));
                 insert_pointer(&mut metadata, &file, message.line_index);
                 insert_herdr(&mut metadata, opts.herdr.as_ref());
-                messages.push(message_row(
-                    ids.assistant.get(offset).cloned().unwrap_or_default(),
+                messages.push(message_js(
+                    ids.assistant.get(offset),
                     CaptureRole::Assistant,
-                    message.content.clone(),
+                    &message.content_units,
                     (None, None, None),
                     metadata,
                     iso_timestamp(message.ts.as_deref()),
                 ));
             }
             for (offset, tool) in tools.iter().enumerate() {
-                let mut metadata = Map::new();
-                metadata.insert(
-                    "source".to_string(),
-                    Value::String("claude-code-hook".to_string()),
-                );
-                metadata.insert("uuid".to_string(), json_opt(&tool.uuid));
-                metadata.insert(
-                    "hook_event".to_string(),
-                    Value::String("PostToolUse".to_string()),
-                );
-                metadata.insert("recovered".to_string(), Value::Bool(true));
+                let mut metadata = JsObject::new();
+                insert_text(&mut metadata, "source", "claude-code-hook");
+                insert_opt_units(&mut metadata, "uuid", tool.uuid_units.as_ref());
+                insert_text(&mut metadata, "hook_event", "PostToolUse");
+                metadata.insert(js_key("recovered"), JsValue::Bool(true));
                 insert_pointer(
                     &mut metadata,
                     &file,
                     tool.result_line.unwrap_or(tool.line_index),
                 );
                 insert_herdr(&mut metadata, opts.herdr.as_ref());
-                messages.push(message_row(
-                    ids.tool.get(offset).cloned().unwrap_or_default(),
+                let content = tool_content(&tool.name_units);
+                messages.push(message_js(
+                    ids.tool.get(offset),
                     CaptureRole::Tool,
-                    format!("[tool call] {}", tool.name),
+                    &content,
                     (
-                        Some(tool.name.clone()),
-                        tool.input.clone(),
-                        tool.result.clone(),
+                        Some(&tool.name_units),
+                        tool.input.as_ref(),
+                        tool.result_units.as_ref(),
                     ),
                     metadata,
                     iso_timestamp(tool.ts.as_deref()),
@@ -503,60 +526,80 @@ pub async fn ingest_transcript(opts: IngestOptions) -> Result<IngestResult, Stri
             }
             for (offset, index) in users.iter().enumerate() {
                 let message = &parsed.msgs[*index];
-                let mut metadata = Map::new();
-                metadata.insert(
-                    "source".to_string(),
-                    Value::String("claude-code-hook".to_string()),
-                );
-                metadata.insert("uuid".to_string(), json_opt(&message.uuid));
-                metadata.insert("recovered".to_string(), Value::Bool(true));
+                let mut metadata = JsObject::new();
+                insert_text(&mut metadata, "source", "claude-code-hook");
+                insert_opt_units(&mut metadata, "uuid", message.uuid_units.as_ref());
+                metadata.insert(js_key("recovered"), JsValue::Bool(true));
                 insert_pointer(&mut metadata, &file, message.line_index);
                 insert_herdr(&mut metadata, opts.herdr.as_ref());
-                messages.push(message_row(
-                    ids.user.get(offset).cloned().unwrap_or_default(),
+                messages.push(message_js(
+                    ids.user.get(offset),
                     CaptureRole::User,
-                    message.content.clone(),
+                    &message.content_units,
                     (None, None, None),
                     metadata,
                     iso_timestamp(message.ts.as_deref()),
                 ));
             }
-            let mut settings = Map::new();
-            settings.insert(
-                "source".to_string(),
-                Value::String("claude-code-hook".to_string()),
+            let mut settings = JsObject::new();
+            insert_text(&mut settings, "source", "claude-code-hook");
+            insert_text(
+                &mut settings,
+                "file",
+                &opts.transcript_path.display().to_string(),
             );
-            settings.insert(
-                "file".to_string(),
-                Value::String(opts.transcript_path.display().to_string()),
-            );
-            settings.insert(
-                "session_id".to_string(),
-                json_opt(&opts.session_id.clone().or(parsed.session_id.clone())),
-            );
-            settings.insert("pr_url".to_string(), json_opt(&parsed.pr_url));
-            if let Some(cwd) = parsed.cwd.clone() {
-                settings.insert("cwd".to_string(), Value::String(cwd));
+            let session_setting = opts
+                .session_id
+                .as_deref()
+                .filter(|value| !value.is_empty())
+                .map(JsString::from_text)
+                .or_else(|| parsed.session_id_units.clone());
+            insert_opt_units(&mut settings, "session_id", session_setting.as_ref());
+            insert_opt_units(&mut settings, "pr_url", parsed.pr_url_units.as_ref());
+            if let Some(cwd) = parsed.cwd_units.as_ref() {
+                insert_units(&mut settings, "cwd", cwd);
             }
-            settings.insert("last_event".to_string(), json_opt(&opts.event));
-            settings.insert(
-                "last_ingest_at".to_string(),
-                Value::String(now_iso(&opts.now_iso)),
+            insert_opt_text(&mut settings, "last_event", opts.event.as_deref());
+            insert_text(&mut settings, "last_ingest_at", &now_iso(&opts.now_iso));
+            let mut batch = JsObject::new();
+            let hook_units = opts
+                .session_id
+                .as_deref()
+                .filter(|value| !value.is_empty())
+                .map(JsString::from_text);
+            insert_units(
+                &mut batch,
+                "session_key",
+                &wire_session_key(
+                    opts.session_key_override.as_deref(),
+                    hook_units.as_ref(),
+                    parsed.session_id_units.as_ref(),
+                    &fallback_key,
+                ),
             );
-            let batch = CaptureBatch {
-                session_key: session_key.clone(),
-                agent: capture_agent(env_ref.unwrap_or(&ProcessEnv)),
-                channel: Some(CAPTURE_CHANNEL.to_string()),
-                title: Some(fallback_title(&parsed)),
-                settings: Some(Value::Object(settings)),
-                task_id: opts.task_id.clone().filter(|value| is_task_id(Some(value))),
-                finalize: opts.mark_inactive.then_some(true),
-                created_at: None,
-                updated_at: None,
-                messages,
-            };
-            let posted = post_batch(
-                batch,
+            insert_text(
+                &mut batch,
+                "agent",
+                &capture_agent(env_ref.unwrap_or(&ProcessEnv)),
+            );
+            insert_text(&mut batch, "channel", CAPTURE_CHANNEL);
+            insert_units(&mut batch, "title", &fallback_title_units(&parsed));
+            batch.insert(js_key("settings"), JsValue::Object(settings));
+            if let Some(task_id) = opts
+                .task_id
+                .as_deref()
+                .filter(|value| is_task_id(Some(value)))
+            {
+                insert_text(&mut batch, "task_id", task_id);
+            }
+            if opts.mark_inactive {
+                batch.insert(js_key("finalize"), JsValue::Bool(true));
+            }
+            let count = u64::try_from(messages.len()).unwrap_or(u64::MAX);
+            batch.insert(js_key("messages"), JsValue::Array(messages));
+            let posted = post_js(
+                JsValue::Object(batch),
+                count,
                 &den_url,
                 user,
                 opts.env.clone(),
@@ -591,29 +634,25 @@ pub async fn ingest_hook_event(opts: HookEventOptions) -> Result<HookEventResult
         return Ok(skipped_hook(String::new(), "no session_id"));
     }
     let (role, content, title, tool_name, tool_args, tool_result) = if event == "UserPromptSubmit" {
-        let prompt = field_str(&opts.payload, "prompt").unwrap_or("");
-        if prompt.trim().is_empty() {
+        let prompt = js_field(&opts.payload, "prompt")
+            .cloned()
+            .unwrap_or_else(|| JsString::from_text(""));
+        if protocol::js::js_trim(prompt.to_utf8()).is_empty() {
             return Ok(skipped_hook(session_key, "empty prompt"));
         }
-        (
-            CaptureRole::User,
-            prompt.to_string(),
-            slice_title(prompt),
-            None,
-            None,
-            None,
-        )
+        let title = slice_units(prompt.units(), TITLE_LIMIT);
+        (CaptureRole::User, prompt, title, None, None, None)
     } else if event == "PostToolUse" {
-        let name = field_str(&opts.payload, "tool_name")
-            .unwrap_or("unknown")
-            .to_string();
+        let name = js_field(&opts.payload, "tool_name")
+            .cloned()
+            .unwrap_or_else(|| JsString::from_text("unknown"));
         let raw = match opts.payload.get("tool_response") {
             Some(value) if !value.is_null() => value.clone(),
             _ => opts
                 .payload
                 .get("tool_result")
                 .cloned()
-                .unwrap_or(Value::Null),
+                .unwrap_or(JsValue::Null),
         };
         let result = stringify_result(&raw);
         let args = opts
@@ -623,8 +662,8 @@ pub async fn ingest_hook_event(opts: HookEventOptions) -> Result<HookEventResult
             .cloned();
         (
             CaptureRole::Tool,
-            format!("[tool call] {name}"),
-            "Claude Code session".to_string(),
+            tool_content(&name),
+            JsString::from_text("Claude Code session"),
             Some(name),
             args,
             result,
@@ -647,53 +686,73 @@ pub async fn ingest_hook_event(opts: HookEventOptions) -> Result<HookEventResult
         CaptureTransport::Pg { .. } => Err("capture postgres pool is not ported".to_string()),
         CaptureTransport::Den { den_url, user, .. } => {
             let resolved = resolve_hook_event_id(&opts).await;
-            let mut metadata = Map::new();
+            let mut metadata = JsObject::new();
             let source = if resolved.hook_only {
                 "hook-only"
             } else {
                 "claude-code-hook"
             };
-            metadata.insert("source".to_string(), Value::String(source.to_string()));
-            metadata.insert("hook_event".to_string(), Value::String(event.clone()));
+            insert_text(&mut metadata, "source", source);
+            insert_text(&mut metadata, "hook_event", &event);
             if let Some(key) = opts.idempotency_key.clone() {
-                metadata.insert("ingest_key".to_string(), Value::String(key));
+                insert_text(&mut metadata, "ingest_key", &key);
             }
             insert_herdr(&mut metadata, opts.herdr.as_ref());
-            let mut settings = Map::new();
-            settings.insert(
-                "source".to_string(),
-                Value::String("claude-code-hook".to_string()),
-            );
-            settings.insert("session_id".to_string(), json_opt(&session_id));
-            if let Some(cwd) = field_str(&opts.payload, "cwd").filter(|value| !value.is_empty()) {
-                settings.insert("cwd".to_string(), Value::String(cwd.to_string()));
+            let mut settings = JsObject::new();
+            insert_text(&mut settings, "source", "claude-code-hook");
+            match js_field(&opts.payload, "session_id") {
+                Some(text) => insert_units(&mut settings, "session_id", text),
+                None => {
+                    settings.insert(js_key("session_id"), JsValue::Null);
+                }
             }
-            settings.insert("last_event".to_string(), Value::String(event));
-            settings.insert(
-                "last_ingest_at".to_string(),
-                Value::String(now_iso(&opts.now_iso)),
+            if let Some(cwd) = js_field(&opts.payload, "cwd")
+                && !cwd.to_utf8().is_empty()
+            {
+                insert_units(&mut settings, "cwd", cwd);
+            }
+            insert_text(&mut settings, "last_event", &event);
+            insert_text(&mut settings, "last_ingest_at", &now_iso(&opts.now_iso));
+            let mut batch = JsObject::new();
+            insert_units(
+                &mut batch,
+                "session_key",
+                &wire_session_key(
+                    opts.session_key_override.as_deref(),
+                    js_field(&opts.payload, "session_id"),
+                    None,
+                    "",
+                ),
             );
-            let batch = CaptureBatch {
-                session_key: session_key.clone(),
-                agent: capture_agent(env_ref.unwrap_or(&ProcessEnv)),
-                channel: Some(CAPTURE_CHANNEL.to_string()),
-                title: Some(title),
-                settings: Some(Value::Object(settings)),
-                task_id: opts.task_id.clone().filter(|value| is_task_id(Some(value))),
-                finalize: None,
-                created_at: None,
-                updated_at: None,
-                messages: vec![message_row(
-                    resolved.event_id,
+            insert_text(
+                &mut batch,
+                "agent",
+                &capture_agent(env_ref.unwrap_or(&ProcessEnv)),
+            );
+            insert_text(&mut batch, "channel", CAPTURE_CHANNEL);
+            insert_units(&mut batch, "title", &title);
+            batch.insert(js_key("settings"), JsValue::Object(settings));
+            if let Some(task_id) = opts
+                .task_id
+                .as_deref()
+                .filter(|value| is_task_id(Some(value)))
+            {
+                insert_text(&mut batch, "task_id", task_id);
+            }
+            batch.insert(
+                js_key("messages"),
+                JsValue::Array(vec![message_js(
+                    Some(&resolved.event_id),
                     role,
-                    content,
-                    (tool_name, tool_args, tool_result),
+                    &content,
+                    (tool_name.as_ref(), tool_args.as_ref(), tool_result.as_ref()),
                     metadata,
                     None,
-                )],
-            };
-            let posted = post_batch(
-                batch,
+                )]),
+            );
+            let posted = post_js(
+                JsValue::Object(batch),
+                1,
                 &den_url,
                 user,
                 opts.env.clone(),
@@ -714,17 +773,17 @@ pub async fn ingest_hook_event(opts: HookEventOptions) -> Result<HookEventResult
 
 fn parse_transcript_text(file: &Path, text: &str) -> ParsedTranscript {
     let lines: Vec<&str> = text.split('\n').collect();
-    let mut result_by_id = HashMap::<String, String>::new();
-    let mut result_line_by_id = HashMap::<String, usize>::new();
+    let mut result_by_id = HashMap::<Vec<u16>, JsString>::new();
+    let mut result_line_by_id = HashMap::<Vec<u16>, usize>::new();
     for (index, line) in lines.iter().enumerate() {
         let Some(object) = parse_object(line) else {
             continue;
         };
         let Some(blocks) = object
             .get("message")
-            .and_then(Value::as_object)
+            .and_then(JsValue::as_object)
             .and_then(|message| message.get("content"))
-            .and_then(Value::as_array)
+            .and_then(JsValue::as_array)
         else {
             continue;
         };
@@ -732,52 +791,56 @@ fn parse_transcript_text(file: &Path, text: &str) -> ParsedTranscript {
             let Some(block) = block.as_object() else {
                 continue;
             };
-            if block.get("type").and_then(Value::as_str) != Some("tool_result") {
+            if block.get("type").and_then(JsValue::as_str) != Some("tool_result") {
                 continue;
             }
-            let Some(id) = block.get("tool_use_id").and_then(Value::as_str) else {
+            let Some(id) = block.get("tool_use_id").and_then(JsValue::as_js_string) else {
                 continue;
             };
-            if id.is_empty() {
+            if id.units().is_empty() {
                 continue;
             }
             let rendered = block
                 .get("content")
-                .map(stringify_result_value)
-                .unwrap_or_else(|| "null".to_string());
-            result_by_id.insert(id.to_string(), rendered);
-            result_line_by_id.entry(id.to_string()).or_insert(index);
+                .map(stringify_result_units)
+                .unwrap_or_else(|| JsString::from_text("null"));
+            let key = id.units().to_vec();
+            result_by_id.insert(key.clone(), rendered);
+            result_line_by_id.entry(key).or_insert(index);
         }
     }
-    let mut ai_title = None;
-    let mut session_id = None;
-    let mut pr_url = None;
-    let mut cwd = None;
+    let mut ai_title_units = None;
+    let mut session_id_units = None;
+    let mut pr_url_units = None;
+    let mut cwd_units = None;
     let mut msgs = Vec::new();
     for (index, line) in lines.iter().enumerate() {
         let Some(object) = parse_object(line) else {
             continue;
         };
-        if cwd.is_none()
-            && let Some(value) = object.get("cwd").and_then(trimmed_string)
+        if cwd_units.is_none()
+            && let Some(value) = object.get("cwd").and_then(JsValue::as_js_string)
         {
-            cwd = Some(value);
-        }
-        let kind = object.get("type").and_then(Value::as_str).unwrap_or("");
-        if kind == "ai-title" {
-            if let Some(title) = object.get("aiTitle").and_then(Value::as_str) {
-                ai_title = Some(title.to_string());
+            let trimmed = JsString::from_units(trim_units(value.units()));
+            if !trimmed.to_utf8().is_empty() {
+                cwd_units = Some(trimmed);
             }
-            if session_id.is_none()
-                && let Some(id) = object.get("sessionId").and_then(Value::as_str)
+        }
+        let kind = object.get("type").and_then(JsValue::as_str).unwrap_or("");
+        if kind == "ai-title" {
+            if let Some(title) = object.get("aiTitle").and_then(JsValue::as_js_string) {
+                ai_title_units = Some(title.clone());
+            }
+            if session_id_units.is_none()
+                && let Some(id) = object.get("sessionId").and_then(JsValue::as_js_string)
             {
-                session_id = Some(id.to_string());
+                session_id_units = Some(id.clone());
             }
             continue;
         }
         if kind == "pr-link" {
-            if let Some(url) = object.get("prUrl").and_then(Value::as_str) {
-                pr_url = Some(url.to_string());
+            if let Some(url) = object.get("prUrl").and_then(JsValue::as_js_string) {
+                pr_url_units = Some(url.clone());
             }
             continue;
         }
@@ -787,201 +850,203 @@ fn parse_transcript_text(file: &Path, text: &str) -> ParsedTranscript {
         if object.get("isMeta").is_some_and(truthy) {
             continue;
         }
-        if session_id.is_none()
-            && let Some(id) = object.get("sessionId").and_then(Value::as_str)
+        if session_id_units.is_none()
+            && let Some(id) = object.get("sessionId").and_then(JsValue::as_js_string)
         {
-            session_id = Some(id.to_string());
+            session_id_units = Some(id.clone());
         }
-        let message = object.get("message").and_then(Value::as_object);
+        let message = object.get("message").and_then(JsValue::as_object);
         let role = message
             .and_then(|item| item.get("role"))
-            .and_then(Value::as_str)
+            .and_then(JsValue::as_str)
             .unwrap_or(kind)
             .to_string();
         let content_value = message.and_then(|item| item.get("content"));
-        let mut text_parts = Vec::new();
-        let mut think_parts = Vec::new();
-        let mut result_parts = Vec::new();
+        let mut text_parts: Vec<JsString> = Vec::new();
+        let mut think_parts: Vec<JsString> = Vec::new();
+        let mut result_parts: Vec<JsString> = Vec::new();
         let mut tools = Vec::new();
-        let mut text_body = String::new();
-        if let Some(content) = content_value.and_then(Value::as_str) {
-            text_body = content.to_string();
-        } else if let Some(blocks) = content_value.and_then(Value::as_array) {
+        let mut text_units = JsString::from_text("");
+        if let Some(content) = content_value.and_then(JsValue::as_js_string) {
+            text_units = content.clone();
+        } else if let Some(blocks) = content_value.and_then(JsValue::as_array) {
             for block in blocks {
                 let Some(block) = block.as_object() else {
                     continue;
                 };
-                match block.get("type").and_then(Value::as_str) {
+                match block.get("type").and_then(JsValue::as_str) {
                     Some("text") => text_parts.push(
                         block
                             .get("text")
-                            .and_then(Value::as_str)
-                            .unwrap_or("")
-                            .to_string(),
+                            .and_then(JsValue::as_js_string)
+                            .cloned()
+                            .unwrap_or_else(|| JsString::from_text("")),
                     ),
                     Some("thinking") => think_parts.push(
                         block
                             .get("thinking")
-                            .and_then(Value::as_str)
-                            .or_else(|| block.get("text").and_then(Value::as_str))
-                            .unwrap_or("")
-                            .to_string(),
+                            .and_then(JsValue::as_js_string)
+                            .or_else(|| block.get("text").and_then(JsValue::as_js_string))
+                            .cloned()
+                            .unwrap_or_else(|| JsString::from_text("")),
                     ),
                     Some("tool_use") => {
                         let id = block
                             .get("id")
-                            .and_then(Value::as_str)
-                            .filter(|value| !value.is_empty());
-                        let id_owned = id.map(str::to_string);
+                            .and_then(JsValue::as_js_string)
+                            .filter(|value| !value.units().is_empty())
+                            .cloned();
+                        let id_key = id.as_ref().map(|value| value.units().to_vec());
+                        let name = block
+                            .get("name")
+                            .and_then(JsValue::as_js_string)
+                            .cloned()
+                            .unwrap_or_else(|| JsString::from_text("unknown"));
                         tools.push(ToolUse {
-                            name: block
-                                .get("name")
-                                .and_then(Value::as_str)
-                                .map(str::to_string)
-                                .unwrap_or_else(|| "unknown".to_string()),
+                            name: name.to_utf8().to_string(),
                             input: block.get("input").filter(|value| !value.is_null()).cloned(),
-                            result: id_owned
+                            result: id_key
                                 .as_ref()
-                                .and_then(|id| result_by_id.get(id).cloned()),
-                            result_line: id_owned
+                                .and_then(|id| result_by_id.get(id))
+                                .map(|value| value.to_utf8().to_string()),
+                            result_line: id_key
                                 .as_ref()
                                 .and_then(|id| result_line_by_id.get(id).copied()),
-                            id: id_owned,
+                            id: id.as_ref().map(|value| value.to_utf8().to_string()),
+                            name_units: name,
+                            id_units: id,
+                            result_units: id_key
+                                .as_ref()
+                                .and_then(|id| result_by_id.get(id).cloned()),
                         });
                     }
                     Some("tool_result") => {
                         result_parts.push(
                             block
                                 .get("content")
-                                .map(stringify_result_value)
-                                .unwrap_or_else(|| "null".to_string()),
+                                .map(stringify_result_units)
+                                .unwrap_or_else(|| JsString::from_text("null")),
                         );
                     }
                     _ => {}
                 }
             }
-            text_body = text_parts.join("\n").trim().to_string();
-            if text_body.is_empty() && !think_parts.is_empty() {
-                text_body = format!("[thinking] {}", think_parts.join("\n").trim());
+            text_units = join_trimmed(&text_parts);
+            if text_units.to_utf8().is_empty() && !think_parts.is_empty() {
+                let mut units: Vec<u16> = "[thinking] ".encode_utf16().collect();
+                units.extend_from_slice(join_trimmed(&think_parts).units());
+                text_units = JsString::from_units(units);
             }
         }
-        let tool_result = if result_parts.is_empty() {
+        let tool_result_units = if result_parts.is_empty() {
             None
         } else {
-            Some(result_parts.join("\n"))
+            Some(join_units(&result_parts, u16::from(b'\n')))
         };
         let (tool_name, tool_args) = if let Some(first) = tools.first() {
-            if text_body.is_empty() {
-                text_body = format!(
-                    "[tool call] {}",
-                    tools
-                        .iter()
-                        .map(|tool| tool.name.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                );
+            if text_units.to_utf8().is_empty() {
+                text_units = join_tool_names(&tools);
             }
             (Some(first.name.clone()), first.input.clone())
         } else {
             (None, None)
         };
-        if text_body.is_empty() && tool_result.is_none() {
+        if text_units.to_utf8().is_empty() && tool_result_units.is_none() {
             continue;
         }
-        if text_body.is_empty()
-            && let Some(result) = &tool_result
+        if text_units.to_utf8().is_empty()
+            && let Some(result) = &tool_result_units
         {
-            text_body = result.clone();
+            text_units = result.clone();
         }
+        let uuid_units = object.get("uuid").and_then(JsValue::as_js_string).cloned();
         msgs.push(ParsedMessage {
             role,
-            content: text_body,
+            content: text_units.to_utf8().to_string(),
             tool_name,
             tool_args,
-            tool_result,
+            tool_result: tool_result_units
+                .as_ref()
+                .map(|value| value.to_utf8().to_string()),
             ts: object
                 .get("timestamp")
-                .and_then(Value::as_str)
+                .and_then(JsValue::as_str)
                 .map(str::to_string),
-            uuid: object
-                .get("uuid")
-                .and_then(Value::as_str)
-                .map(str::to_string),
+            uuid: uuid_units.as_ref().map(|value| value.to_utf8().to_string()),
             sidechain: object.get("isSidechain").is_some_and(truthy),
             line_index: index,
             tools,
+            content_units: text_units,
+            uuid_units,
         });
     }
     ParsedTranscript {
         file: file.display().to_string(),
-        session_id,
-        ai_title,
-        pr_url,
-        cwd,
+        session_id: session_id_units
+            .as_ref()
+            .map(|value| value.to_utf8().to_string()),
+        ai_title: ai_title_units
+            .as_ref()
+            .map(|value| value.to_utf8().to_string()),
+        pr_url: pr_url_units
+            .as_ref()
+            .map(|value| value.to_utf8().to_string()),
+        cwd: cwd_units.as_ref().map(|value| value.to_utf8().to_string()),
         msgs,
+        ai_title_units,
+        pr_url_units,
+        cwd_units,
+        session_id_units,
     }
 }
 
-fn parse_object(line: &str) -> Option<Map<String, Value>> {
-    let trimmed = line.trim();
+fn parse_object(line: &str) -> Option<JsValue> {
+    let trimmed = protocol::js::js_trim(line);
     if trimmed.is_empty() {
         return None;
     }
-    let value = protocol::js::to_serde(&protocol::js::parse(trimmed).ok()?);
-    match value {
-        Value::Object(map) => Some(map),
-        _ => None,
-    }
+    let value = protocol::js::parse(trimmed).ok()?;
+    value.as_object()?;
+    Some(value)
 }
 
-fn stringify_result_value(value: &Value) -> String {
+fn stringify_result_units(value: &JsValue) -> JsString {
     if let Some(items) = value.as_array() {
-        return items
-            .iter()
-            .map(|item| {
-                if let Some(text) = item.as_str() {
-                    text.to_string()
-                } else {
-                    item.get("text")
-                        .and_then(Value::as_str)
-                        .unwrap_or("")
-                        .to_string()
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
+        let parts = items.iter().map(array_item_units).collect::<Vec<_>>();
+        return join_units(&parts, u16::from(b'\n'));
     }
-    if let Some(text) = value.as_str() {
-        return text.to_string();
+    if let Some(text) = value.as_js_string() {
+        return text.clone();
     }
-    protocol::js::stringify(&protocol::js::from_serde(value))
+    JsString::from_text(&protocol::js::stringify(value))
 }
 
-fn stringify_result(value: &Value) -> Option<String> {
+fn array_item_units(item: &JsValue) -> JsString {
+    if let Some(text) = item.as_js_string() {
+        return text.clone();
+    }
+    item.get("text")
+        .and_then(JsValue::as_js_string)
+        .cloned()
+        .unwrap_or_else(|| JsString::from_text(""))
+}
+
+fn stringify_result(value: &JsValue) -> Option<JsString> {
     if value.is_null() {
         None
     } else {
-        Some(stringify_result_value(value))
+        Some(stringify_result_units(value))
     }
 }
 
-fn truthy(value: &Value) -> bool {
+fn truthy(value: &JsValue) -> bool {
     match value {
-        Value::Null => false,
-        Value::Bool(flag) => *flag,
-        Value::Number(number) => number.as_f64().is_some_and(|item| item != 0.0),
-        Value::String(text) => !text.is_empty(),
-        Value::Array(items) => !items.is_empty(),
-        Value::Object(map) => !map.is_empty(),
-    }
-}
-
-fn trimmed_string(value: &Value) -> Option<String> {
-    let text = value.as_str()?.trim();
-    if text.is_empty() {
-        None
-    } else {
-        Some(text.to_string())
+        JsValue::Null => false,
+        JsValue::Bool(flag) => *flag,
+        JsValue::Number(number) => *number != 0.0,
+        JsValue::String(text) => !text.to_utf8().is_empty(),
+        JsValue::Array(items) => !items.is_empty(),
+        JsValue::Object(object) => object.iter().next().is_some(),
     }
 }
 
@@ -989,31 +1054,29 @@ fn nonempty(value: Option<&str>) -> Option<&str> {
     value.filter(|text| !text.is_empty())
 }
 
-fn slice_title(text: &str) -> String {
-    capture::utf16_slice(text, TITLE_LIMIT)
+fn slice_units(units: &[u16], limit: usize) -> JsString {
+    JsString::from_units(units.iter().take(limit).copied().collect())
 }
 
-fn fallback_title(parsed: &ParsedTranscript) -> String {
-    let first_user = parsed
-        .msgs
-        .iter()
-        .find(|message| message.role == "user")
-        .map(|message| message.content.as_str());
-    let raw = nonempty(parsed.ai_title.as_deref())
-        .or_else(|| nonempty(first_user))
-        .unwrap_or("Claude Code session");
-    slice_title(raw)
-}
-
-fn json_opt(value: &Option<String>) -> Value {
-    match value {
-        Some(text) => Value::String(text.clone()),
-        None => Value::Null,
+fn fallback_title_units(parsed: &ParsedTranscript) -> JsString {
+    if let Some(title) = parsed
+        .ai_title_units
+        .as_ref()
+        .filter(|value| !value.to_utf8().is_empty())
+    {
+        return slice_units(title.units(), TITLE_LIMIT);
     }
+    if let Some(message) = parsed.msgs.iter().find(|message| message.role == "user")
+        && !message.content_units.to_utf8().is_empty()
+    {
+        return slice_units(message.content_units.units(), TITLE_LIMIT);
+    }
+    let fallback = JsString::from_text("Claude Code session");
+    slice_units(fallback.units(), TITLE_LIMIT)
 }
 
 fn iso_timestamp(value: Option<&str>) -> Option<String> {
-    let text = value?.trim();
+    let text = protocol::js::js_trim(value?);
     if text.is_empty() || !text.contains('T') {
         return None;
     }
@@ -1069,11 +1132,11 @@ fn tool_calls(parsed: &ParsedTranscript) -> Vec<ToolCall> {
     for message in &parsed.msgs {
         for tool in &message.tools {
             calls.push(ToolCall {
-                name: tool.name.clone(),
+                name_units: tool.name_units.clone(),
                 input: tool.input.clone(),
-                result: tool.result.clone(),
+                result_units: tool.result_units.clone(),
                 result_line: tool.result_line,
-                uuid: message.uuid.clone(),
+                uuid_units: message.uuid_units.clone(),
                 ts: message.ts.clone(),
                 line_index: message.line_index,
             });
@@ -1100,7 +1163,7 @@ fn occurrence_key_user(content: &str) -> OccurrenceKey {
     }
 }
 
-fn occurrence_key_tool(name: &str, input: Option<&Value>) -> OccurrenceKey {
+fn occurrence_key_tool(name: &str, input: Option<&JsValue>) -> OccurrenceKey {
     OccurrenceKey {
         role: "tool".to_string(),
         content: format!("[tool call] {name}"),
@@ -1143,12 +1206,12 @@ fn for_each_captured(
 }
 
 struct DenIds {
-    assistant: Vec<String>,
-    tool: Vec<String>,
-    user: Vec<String>,
+    assistant: Vec<JsString>,
+    tool: Vec<JsString>,
+    user: Vec<JsString>,
 }
 
-fn den_event_ids(parsed: &ParsedTranscript, session_part: &str) -> DenIds {
+fn den_event_ids(parsed: &ParsedTranscript, session_part: &JsString) -> DenIds {
     let mut ids = DenIds {
         assistant: Vec::new(),
         tool: Vec::new(),
@@ -1157,29 +1220,56 @@ fn den_event_ids(parsed: &ParsedTranscript, session_part: &str) -> DenIds {
     for_each_captured(parsed, |key, n, slot| match slot {
         CapturedSlot::Assistant(index) => {
             let message = assistant_message(parsed, index);
-            ids.assistant
-                .push(match message.and_then(|item| item.uuid.clone()) {
-                    Some(uuid) => format!("claude-code:{session_part}:{uuid}"),
-                    None => occ_event_id(session_part, key, n),
-                });
+            ids.assistant.push(native_event_id(
+                session_part,
+                ":",
+                message.and_then(|item| item.uuid_units.as_ref()),
+                key,
+                n,
+            ));
         }
         CapturedSlot::Tool(index) => {
             let tool = tool_at(parsed, index);
-            ids.tool.push(match tool.and_then(|item| item.id.clone()) {
-                Some(id) => format!("claude-code:{session_part}:tool:{id}"),
-                None => occ_event_id(session_part, key, n),
-            });
+            ids.tool.push(native_event_id(
+                session_part,
+                ":tool:",
+                tool.and_then(|item| item.id_units.as_ref()),
+                key,
+                n,
+            ));
         }
         CapturedSlot::User(index) => {
             let message = user_message(parsed, index);
-            ids.user
-                .push(match message.and_then(|item| item.uuid.clone()) {
-                    Some(uuid) => format!("claude-code:{session_part}:{uuid}"),
-                    None => occ_event_id(session_part, key, n),
-                });
+            ids.user.push(native_event_id(
+                session_part,
+                ":",
+                message.and_then(|item| item.uuid_units.as_ref()),
+                key,
+                n,
+            ));
         }
     });
     ids
+}
+
+fn native_event_id(
+    session_part: &JsString,
+    marker: &str,
+    id: Option<&JsString>,
+    key: &OccurrenceKey,
+    n: u64,
+) -> JsString {
+    let Some(id) = id else {
+        return JsString::from_text(&occ_event_id(session_part.to_utf8(), key, n));
+    };
+    let prefix: Vec<u16> = "claude-code:".encode_utf16().collect();
+    let middle: Vec<u16> = marker.encode_utf16().collect();
+    concat_units(&[
+        prefix.as_slice(),
+        session_part.units(),
+        middle.as_slice(),
+        id.units(),
+    ])
 }
 
 fn assistant_message(parsed: &ParsedTranscript, offset: usize) -> Option<&ParsedMessage> {
@@ -1213,16 +1303,16 @@ fn occ_event_id(session_part: &str, key: &OccurrenceKey, n: u64) -> String {
     )
 }
 
-fn last_match_event_id(path: &Path, key: &OccurrenceKey, session_hint: &str) -> Option<String> {
+fn last_match_event_id(path: &Path, key: &OccurrenceKey, session_hint: &str) -> Option<JsString> {
     let parsed = parse_transcript(path).ok()?;
     let session_part = if !session_hint.is_empty() {
-        session_hint.to_string()
+        JsString::from_text(session_hint)
     } else {
         parsed
-            .session_id
+            .session_id_units
             .clone()
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| "unknown".to_string())
+            .filter(|value| !value.to_utf8().is_empty())
+            .unwrap_or_else(|| JsString::from_text("unknown"))
     };
     let want = content_tuple_hash(key);
     let mut found = None;
@@ -1231,19 +1321,23 @@ fn last_match_event_id(path: &Path, key: &OccurrenceKey, session_hint: &str) -> 
             return;
         }
         found = Some(match slot {
-            CapturedSlot::Tool(index) => {
-                match tool_at(&parsed, index).and_then(|tool| tool.id.clone()) {
-                    Some(id) => format!("claude-code:{session_part}:tool:{id}"),
-                    None => occ_event_id(&session_part, row_key, n),
-                }
+            CapturedSlot::Tool(index) => native_event_id(
+                &session_part,
+                ":tool:",
+                tool_at(&parsed, index).and_then(|tool| tool.id_units.as_ref()),
+                row_key,
+                n,
+            ),
+            CapturedSlot::User(index) => native_event_id(
+                &session_part,
+                ":",
+                user_message(&parsed, index).and_then(|message| message.uuid_units.as_ref()),
+                row_key,
+                n,
+            ),
+            CapturedSlot::Assistant(_) => {
+                JsString::from_text(&occ_event_id(session_part.to_utf8(), row_key, n))
             }
-            CapturedSlot::User(index) => {
-                match user_message(&parsed, index).and_then(|message| message.uuid.clone()) {
-                    Some(uuid) => format!("claude-code:{session_part}:{uuid}"),
-                    None => occ_event_id(&session_part, row_key, n),
-                }
-            }
-            CapturedSlot::Assistant(_) => occ_event_id(&session_part, row_key, n),
         });
     });
     found
@@ -1253,7 +1347,7 @@ fn last_match_async(
     path: &Path,
     key: &OccurrenceKey,
     hint: &str,
-) -> Pin<Box<dyn std::future::Future<Output = Option<String>> + Send>> {
+) -> Pin<Box<dyn std::future::Future<Output = Option<JsString>> + Send>> {
     let path = path.to_path_buf();
     let key = key.clone();
     let hint = hint.to_string();
@@ -1265,24 +1359,22 @@ fn last_match_async(
     })
 }
 
-fn payload_tool_use_id(payload: &Value) -> Option<String> {
-    field_str(payload, "tool_use_id")
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-}
-
-fn hook_occurrence_key(payload: &Value) -> Option<OccurrenceKey> {
+fn hook_occurrence_key(payload: &JsValue) -> Option<OccurrenceKey> {
     match field_str(payload, "hook_event_name") {
         Some("UserPromptSubmit") => {
-            let prompt = field_str(payload, "prompt").unwrap_or("");
-            if prompt.trim().is_empty() {
+            let prompt = js_field(payload, "prompt")
+                .cloned()
+                .unwrap_or_else(|| JsString::from_text(""));
+            if protocol::js::js_trim(prompt.to_utf8()).is_empty() {
                 None
             } else {
-                Some(occurrence_key_user(prompt))
+                Some(occurrence_key_user(prompt.to_utf8()))
             }
         }
         Some("PostToolUse") => {
-            let name = field_str(payload, "tool_name").unwrap_or("unknown");
+            let name = js_field(payload, "tool_name")
+                .map(JsString::to_utf8)
+                .unwrap_or("unknown");
             let args = payload.get("tool_input").filter(|value| !value.is_null());
             Some(occurrence_key_tool(name, args))
         }
@@ -1295,9 +1387,9 @@ fn hook_fallback_id(
     idempotency_key: Option<&str>,
     session_key: &str,
     key: Option<&OccurrenceKey>,
-) -> String {
+) -> JsString {
     if let Some(key) = idempotency_key.filter(|value| !value.is_empty()) {
-        return format!("claude-code:{session_part}:hook:{key}");
+        return JsString::from_text(&format!("claude-code:{session_part}:hook:{key}"));
     }
     let (role, content, tool_name, tool_args) = match key {
         Some(key) => (
@@ -1308,68 +1400,193 @@ fn hook_fallback_id(
         ),
         None => ("user", "", None, None),
     };
-    event_id_from_content(&EventIdParts {
+    JsString::from_text(&event_id_from_content(&EventIdParts {
         session_key: session_key.to_string(),
         role: role.to_string(),
         content: content.to_string(),
         tool_name,
         tool_args,
         occurrence: None,
-    })
+    }))
 }
 
-fn field_str<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
-    value.get(key).and_then(Value::as_str)
+fn field_str<'a>(value: &'a JsValue, key: &str) -> Option<&'a str> {
+    value.get(key).and_then(JsValue::as_str)
 }
 
-fn insert_pointer(metadata: &mut Map<String, Value>, file: &Path, line: usize) {
-    metadata.insert(
-        "session_jsonl_path".to_string(),
-        Value::String(file.display().to_string()),
-    );
-    metadata.insert(
-        "session_jsonl_line".to_string(),
-        Value::from(u64::try_from(line).unwrap_or(u64::MAX)),
-    );
+fn js_field<'a>(value: &'a JsValue, key: &str) -> Option<&'a JsString> {
+    value.get(key).and_then(JsValue::as_js_string)
 }
 
-fn insert_herdr(metadata: &mut Map<String, Value>, herdr: Option<&HerdrPane>) {
+fn js_key(name: &str) -> JsString {
+    JsString::from_text(name)
+}
+
+fn insert_text(object: &mut JsObject, key: &str, text: &str) {
+    object.insert(js_key(key), JsValue::from_text(text));
+}
+
+fn insert_units(object: &mut JsObject, key: &str, text: &JsString) {
+    object.insert(js_key(key), JsValue::String(text.clone()));
+}
+
+fn insert_opt_units(object: &mut JsObject, key: &str, text: Option<&JsString>) {
+    match text {
+        Some(text) => insert_units(object, key, text),
+        None => {
+            object.insert(js_key(key), JsValue::Null);
+        }
+    }
+}
+
+fn insert_opt_text(object: &mut JsObject, key: &str, text: Option<&str>) {
+    match text {
+        Some(text) => insert_text(object, key, text),
+        None => {
+            object.insert(js_key(key), JsValue::Null);
+        }
+    }
+}
+
+fn insert_pointer(metadata: &mut JsObject, file: &Path, line: usize) {
+    insert_text(metadata, "session_jsonl_path", &file.display().to_string());
+    metadata.insert(js_key("session_jsonl_line"), JsValue::Number(line as f64));
+}
+
+fn insert_herdr(metadata: &mut JsObject, herdr: Option<&HerdrPane>) {
     let Some(herdr) = herdr else {
         return;
     };
     if herdr.pane_id.is_empty() {
         return;
     }
-    metadata.insert(
-        "herdr_pane_id".to_string(),
-        Value::String(herdr.pane_id.clone()),
-    );
-    if let Some(workspace) = herdr.workspace_id.clone().filter(|value| !value.is_empty()) {
-        metadata.insert("herdr_workspace_id".to_string(), Value::String(workspace));
+    insert_text(metadata, "herdr_pane_id", &herdr.pane_id);
+    if let Some(workspace) = herdr
+        .workspace_id
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    {
+        insert_text(metadata, "herdr_workspace_id", workspace);
     }
-    if let Some(host) = herdr.host.clone().filter(|value| !value.is_empty()) {
-        metadata.insert("herdr_host".to_string(), Value::String(host));
+    if let Some(host) = herdr.host.as_deref().filter(|value| !value.is_empty()) {
+        insert_text(metadata, "herdr_host", host);
     }
 }
 
-fn message_row(
-    event_id: String,
+fn message_js(
+    event_id: Option<&JsString>,
     role: CaptureRole,
-    content: String,
-    tool: (Option<String>, Option<Value>, Option<String>),
-    metadata: Map<String, Value>,
+    content: &JsString,
+    tool: (Option<&JsString>, Option<&JsValue>, Option<&JsString>),
+    metadata: JsObject,
     created_at: Option<String>,
-) -> CaptureMessage {
-    CaptureMessage {
-        event_id,
-        role,
-        content,
-        tool_name: tool.0.filter(|value| !value.is_empty()),
-        tool_args: tool.1,
-        tool_result: tool.2,
-        metadata: Some(metadata),
-        created_at,
+) -> JsValue {
+    let (tool_name, tool_args, tool_result) = tool;
+    let mut object = JsObject::new();
+    let empty_id = JsString::from_text("");
+    insert_units(&mut object, "event_id", event_id.unwrap_or(&empty_id));
+    insert_text(&mut object, "role", role.as_str());
+    insert_units(&mut object, "content", content);
+    if let Some(name) = tool_name.filter(|value| !value.to_utf8().is_empty()) {
+        insert_units(&mut object, "tool_name", name);
     }
+    if let Some(args) = tool_args {
+        object.insert(js_key("tool_args"), args.clone());
+    }
+    if let Some(result) = tool_result {
+        insert_units(&mut object, "tool_result", result);
+    }
+    object.insert(js_key("metadata"), JsValue::Object(metadata));
+    if let Some(created_at) = created_at {
+        insert_text(&mut object, "created_at", &created_at);
+    }
+    JsValue::Object(object)
+}
+
+fn concat_units(parts: &[&[u16]]) -> JsString {
+    let mut units = Vec::new();
+    for part in parts {
+        units.extend_from_slice(part);
+    }
+    JsString::from_units(units)
+}
+
+fn prefix_units(prefix: &str, id: &JsString) -> JsString {
+    let head: Vec<u16> = prefix.encode_utf16().collect();
+    concat_units(&[head.as_slice(), id.units()])
+}
+
+fn wire_session_key(
+    override_key: Option<&str>,
+    hook_session: Option<&JsString>,
+    transcript_session: Option<&JsString>,
+    fallback: &str,
+) -> JsString {
+    if let Some(value) = override_key.filter(|value| !value.is_empty()) {
+        return JsString::from_text(value);
+    }
+    if let Some(id) = hook_session.filter(|value| !value.to_utf8().is_empty()) {
+        return prefix_units("claude-code:", id);
+    }
+    if let Some(id) = transcript_session.filter(|value| !value.to_utf8().is_empty()) {
+        return prefix_units("claude-code:", id);
+    }
+    JsString::from_text(fallback)
+}
+
+fn tool_content(name: &JsString) -> JsString {
+    prefix_units("[tool call] ", name)
+}
+
+fn join_tool_names(tools: &[ToolUse]) -> JsString {
+    let mut units: Vec<u16> = "[tool call] ".encode_utf16().collect();
+    for (index, tool) in tools.iter().enumerate() {
+        if index > 0 {
+            units.extend(", ".encode_utf16());
+        }
+        units.extend_from_slice(tool.name_units.units());
+    }
+    JsString::from_units(units)
+}
+
+fn join_units(parts: &[JsString], separator: u16) -> JsString {
+    let mut units = Vec::new();
+    for (index, part) in parts.iter().enumerate() {
+        if index > 0 {
+            units.push(separator);
+        }
+        units.extend_from_slice(part.units());
+    }
+    JsString::from_units(units)
+}
+
+fn join_trimmed(parts: &[JsString]) -> JsString {
+    JsString::from_units(trim_units(join_units(parts, u16::from(b'\n')).units()))
+}
+
+fn trim_units(units: &[u16]) -> Vec<u16> {
+    let start = units
+        .iter()
+        .position(|unit| !unit_is_js_space(*unit))
+        .unwrap_or(units.len());
+    let end = units
+        .iter()
+        .rposition(|unit| !unit_is_js_space(*unit))
+        .map(|index| index + 1)
+        .unwrap_or(start);
+    units[start..end].to_vec()
+}
+
+fn unit_is_js_space(unit: u16) -> bool {
+    if (0xD800..=0xDFFF).contains(&unit) {
+        return false;
+    }
+    let Some(ch) = char::from_u32(u32::from(unit)) else {
+        return false;
+    };
+    let mut buf = [0u8; 4];
+    let text = ch.encode_utf8(&mut buf);
+    protocol::js::js_trim(text).is_empty()
 }
 
 fn skipped_hook(session_key: String, reason: &str) -> HookEventResult {
@@ -1382,15 +1599,15 @@ fn skipped_hook(session_key: String, reason: &str) -> HookEventResult {
     }
 }
 
-async fn post_batch(
-    batch: CaptureBatch,
+async fn post_js(
+    batch: JsValue,
+    count: u64,
     den_url: &str,
     user: Option<CaptureUser>,
     env: Option<Arc<dyn capture::EnvLookup>>,
     exchange: Option<HttpExchange>,
     spool_dir: Option<PathBuf>,
 ) -> Result<PostedCounts, String> {
-    let count = u64::try_from(batch.messages.len()).unwrap_or(u64::MAX);
     let injected = env.is_some();
     let env_arc: Arc<dyn capture::EnvLookup> = match env {
         Some(env) => env,
@@ -1412,7 +1629,7 @@ async fn post_batch(
             .ok()
             .flatten();
     let writer = create_capture_writer(options).map_err(|error| error.to_string())?;
-    match writer.write(batch).await {
+    match writer.write_value(batch).await {
         Ok(WriteOutcome::Delivered {
             conversation_id,
             inserted,

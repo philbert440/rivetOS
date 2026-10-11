@@ -30,17 +30,120 @@ pub async fn spool_files(dir: &Path) -> io::Result<Vec<String>> {
     }
 }
 
+fn node_error(error: io::Error, syscall: &str, path: &Path) -> io::Error {
+    let kind = error.kind();
+    let text = match node_errno(&error) {
+        Some((code, message)) => format!("{code}: {message}, {syscall} '{}'", path.display()),
+        None => format!("{error}, {syscall} '{}'", path.display()),
+    };
+    io::Error::new(kind, text)
+}
+
+fn node_rename(error: io::Error, from: &Path, to: &Path) -> io::Error {
+    let kind = error.kind();
+    let rendered = format!("rename '{}' -> '{}'", from.display(), to.display());
+    let text = match node_errno(&error) {
+        Some((code, message)) => format!("{code}: {message}, {rendered}"),
+        None => format!("{error}, {rendered}"),
+    };
+    io::Error::new(kind, text)
+}
+
+fn node_errno(error: &io::Error) -> Option<(&'static str, &'static str)> {
+    if let Some(code) = error.raw_os_error() {
+        return errno_pair(code);
+    }
+    kind_pair(error.kind())
+}
+
+fn errno_pair(code: i32) -> Option<(&'static str, &'static str)> {
+    Some(match code {
+        1 => ("EPERM", "operation not permitted"),
+        2 => ("ENOENT", "no such file or directory"),
+        4 => ("EINTR", "interrupted system call"),
+        5 => ("EIO", "i/o error"),
+        6 => ("ENXIO", "no such device or address"),
+        7 => ("E2BIG", "argument list too long"),
+        8 => ("ENOEXEC", "exec format error"),
+        9 => ("EBADF", "bad file descriptor"),
+        11 => ("EAGAIN", "resource temporarily unavailable"),
+        12 => ("ENOMEM", "not enough memory"),
+        13 => ("EACCES", "permission denied"),
+        14 => ("EFAULT", "bad address"),
+        16 => ("EBUSY", "resource busy or locked"),
+        17 => ("EEXIST", "file already exists"),
+        18 => ("EXDEV", "cross-device link not permitted"),
+        19 => ("ENODEV", "no such device"),
+        20 => ("ENOTDIR", "not a directory"),
+        21 => ("EISDIR", "illegal operation on a directory"),
+        22 => ("EINVAL", "invalid argument"),
+        23 => ("ENFILE", "file table overflow"),
+        24 => ("EMFILE", "too many open files"),
+        25 => ("ENOTTY", "inappropriate ioctl for device"),
+        26 => ("ETXTBSY", "text file is busy"),
+        27 => ("EFBIG", "file too large"),
+        28 => ("ENOSPC", "no space left on device"),
+        29 => ("ESPIPE", "invalid seek"),
+        30 => ("EROFS", "read-only file system"),
+        31 => ("EMLINK", "too many links"),
+        32 => ("EPIPE", "broken pipe"),
+        36 => ("ENAMETOOLONG", "name too long"),
+        39 => ("ENOTEMPTY", "directory not empty"),
+        40 => ("ELOOP", "too many symbolic links encountered"),
+        122 => ("EDQUOT", "quota exceeded"),
+        _ => return None,
+    })
+}
+
+fn kind_pair(kind: ErrorKind) -> Option<(&'static str, &'static str)> {
+    Some(match kind {
+        ErrorKind::NotFound => ("ENOENT", "no such file or directory"),
+        ErrorKind::PermissionDenied => ("EACCES", "permission denied"),
+        ErrorKind::AlreadyExists => ("EEXIST", "file already exists"),
+        ErrorKind::WouldBlock => ("EAGAIN", "resource temporarily unavailable"),
+        ErrorKind::InvalidInput => ("EINVAL", "invalid argument"),
+        ErrorKind::Interrupted => ("EINTR", "interrupted system call"),
+        ErrorKind::OutOfMemory => ("ENOMEM", "not enough memory"),
+        ErrorKind::IsADirectory => ("EISDIR", "illegal operation on a directory"),
+        ErrorKind::NotADirectory => ("ENOTDIR", "not a directory"),
+        ErrorKind::ReadOnlyFilesystem => ("EROFS", "read-only file system"),
+        ErrorKind::FileTooLarge => ("EFBIG", "file too large"),
+        ErrorKind::QuotaExceeded => ("EDQUOT", "quota exceeded"),
+        ErrorKind::CrossesDevices => ("EXDEV", "cross-device link not permitted"),
+        ErrorKind::TooManyLinks => ("EMLINK", "too many links"),
+        ErrorKind::InvalidFilename => ("ENAMETOOLONG", "name too long"),
+        ErrorKind::ResourceBusy => ("EBUSY", "resource busy or locked"),
+        ErrorKind::StorageFull => ("ENOSPC", "no space left on device"),
+        ErrorKind::NotSeekable => ("ESPIPE", "invalid seek"),
+        ErrorKind::ArgumentListTooLong => ("E2BIG", "argument list too long"),
+        ErrorKind::ExecutableFileBusy => ("ETXTBSY", "text file is busy"),
+        _ => return None,
+    })
+}
+
 async fn list_files(dir: &Path) -> io::Result<Vec<String>> {
     let mut names = Vec::new();
-    let mut entries = tokio::fs::read_dir(dir).await?;
-    while let Some(entry) = entries.next_entry().await? {
+    let mut entries = tokio::fs::read_dir(dir)
+        .await
+        .map_err(|error| node_error(error, "scandir", dir))?;
+    while let Some(entry) = entries
+        .next_entry()
+        .await
+        .map_err(|error| node_error(error, "scandir", dir))?
+    {
         let Some(name) = entry.file_name().to_str().map(str::to_string) else {
             continue;
         };
         if !is_spool_file_name(&name) {
             continue;
         }
-        if entry.file_type().await?.is_file() {
+        let path = entry.path();
+        if entry
+            .file_type()
+            .await
+            .map_err(|error| node_error(error, "stat", &path))?
+            .is_file()
+        {
             names.push(name);
         }
     }
@@ -78,7 +181,7 @@ async fn write_text(dir: &Path, body: &str, now_ms: i64) -> io::Result<PathBuf> 
     }
     if let Err(error) = tokio::fs::rename(&temp, &file).await {
         let _ = tokio::fs::remove_file(&temp).await;
-        return Err(error);
+        return Err(node_rename(error, &temp, &file));
     }
     sync_dir(dir).await?;
     Ok(file)
@@ -87,18 +190,35 @@ async fn write_text(dir: &Path, body: &str, now_ms: i64) -> io::Result<PathBuf> 
 async fn write_exclusive(path: &Path, body: &[u8]) -> io::Result<()> {
     let mut options = tokio::fs::OpenOptions::new();
     options.write(true).create_new(true).mode(0o600);
-    let mut file = options.open(path).await?;
-    file.write_all(body).await?;
-    let mut permissions = file.metadata().await?.permissions();
+    let mut file = options
+        .open(path)
+        .await
+        .map_err(|error| node_error(error, "open", path))?;
+    file.write_all(body)
+        .await
+        .map_err(|error| node_error(error, "write", path))?;
+    let mut permissions = file
+        .metadata()
+        .await
+        .map_err(|error| node_error(error, "stat", path))?
+        .permissions();
     permissions.set_mode(0o600);
-    file.set_permissions(permissions).await?;
-    file.sync_all().await?;
+    file.set_permissions(permissions)
+        .await
+        .map_err(|error| node_error(error, "fchmod", path))?;
+    file.sync_all()
+        .await
+        .map_err(|error| node_error(error, "fsync", path))?;
     Ok(())
 }
 
 async fn sync_dir(dir: &Path) -> io::Result<()> {
-    let file = tokio::fs::File::open(dir).await?;
-    file.sync_all().await
+    let file = tokio::fs::File::open(dir)
+        .await
+        .map_err(|error| node_error(error, "open", dir))?;
+    file.sync_all()
+        .await
+        .map_err(|error| node_error(error, "fsync", dir))
 }
 
 async fn ensure_dir(path: &Path, mode: u32) -> io::Result<()> {
@@ -129,7 +249,7 @@ async fn ensure_dir(path: &Path, mode: u32) -> io::Result<()> {
                     tokio::fs::set_permissions(dir, std::fs::Permissions::from_mode(mode)).await;
             }
             Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
-            Err(error) => return Err(error),
+            Err(error) => return Err(node_error(error, "mkdir", dir)),
         }
     }
     Ok(())
@@ -141,7 +261,11 @@ pub async fn dead_letter(dir: &Path, file: &str) -> io::Result<()> {
     with_timeout(async move {
         let dead = dir.join("dead");
         ensure_dir(&dead, 0o700).await?;
-        tokio::fs::rename(dir.join(&file), dead.join(&file)).await
+        let from = dir.join(&file);
+        let to = dead.join(&file);
+        tokio::fs::rename(&from, &to)
+            .await
+            .map_err(|error| node_rename(error, &from, &to))
     })
     .await
 }

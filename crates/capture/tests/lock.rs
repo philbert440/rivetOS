@@ -903,3 +903,63 @@ fn stalled_unlink_lets_the_runtime_progress() {
     });
     assert!(checker.join().unwrap());
 }
+
+#[test]
+fn cancelled_cleanup_still_unlinks_the_holder() {
+    let lock_dir = lock_path();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let gate = Arc::new((Mutex::new(false), Condvar::new()));
+    let calls_hook = calls.clone();
+    let gate_hook = gate.clone();
+    let mut options = opts(1_000, 20);
+    options.publish_fault = Some(Arc::new(AtomicBool::new(true)));
+    options.unlink_hook = Some(Arc::new(move || {
+        let seen = calls_hook.fetch_add(1, Ordering::SeqCst);
+        if seen == 0 {
+            let (lock, cv) = &*gate_hook;
+            let mut guard = lock.lock().unwrap();
+            let start = Instant::now();
+            while !*guard && start.elapsed() < Duration::from_secs(3) {
+                let (next, wait) = cv.wait_timeout(guard, Duration::from_secs(3)).unwrap();
+                guard = next;
+                if wait.timed_out() {
+                    break;
+                }
+            }
+        }
+    }));
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let calls_wait = calls.clone();
+    let gate_release = gate.clone();
+    runtime.block_on(async move {
+        let task = tokio::spawn(async move {
+            let _ = with_file_lock(lock_dir, options, || async {}).await;
+        });
+        let start = Instant::now();
+        while calls_wait.load(Ordering::SeqCst) == 0 {
+            if start.elapsed() > Duration::from_secs(2) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        task.abort();
+        let _ = task.await;
+        {
+            let (lock, cv) = &*gate_release;
+            let mut guard = lock.lock().unwrap();
+            *guard = true;
+            cv.notify_all();
+        }
+        let start = Instant::now();
+        while calls_wait.load(Ordering::SeqCst) < 2 {
+            if start.elapsed() > Duration::from_secs(2) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    });
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+}

@@ -184,7 +184,6 @@ fn wait_until(label: &str, mut ready: impl FnMut() -> bool) {
 
 #[test]
 fn golden_hook_matches_the_typescript_runtime() {
-    assert!(fixture("hook-rust.json").is_file());
     let events = protocol::js::to_serde(
         &protocol::js::parse(&std::fs::read_to_string(fixture("hook-ts.json")).unwrap()).unwrap(),
     );

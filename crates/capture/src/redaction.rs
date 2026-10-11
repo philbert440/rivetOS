@@ -75,7 +75,7 @@ fn truthy_env(value: Option<&str>) -> bool {
         return false;
     };
     matches!(
-        value.trim().to_ascii_lowercase().as_str(),
+        protocol::js::js_trim(value).to_ascii_lowercase().as_str(),
         "1" | "true" | "yes" | "on"
     )
 }

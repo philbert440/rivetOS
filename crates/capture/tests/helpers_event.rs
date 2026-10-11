@@ -19,7 +19,7 @@ fn parts(
         role: role.to_string(),
         content: content.to_string(),
         tool_name: tool_name.map(str::to_string),
-        tool_args,
+        tool_args: tool_args.as_ref().map(protocol::js::from_serde),
         occurrence: None,
     }
 }
@@ -126,7 +126,7 @@ fn event_id_changes_with_each_field() {
     other.tool_name = Some("Read".to_string());
     assert_ne!(event_id_from_content(&other), id);
     other = base();
-    other.tool_args = Some(json!({"command": "pwd"}));
+    other.tool_args = Some(protocol::js::from_serde(&json!({"command": "pwd"})));
     assert_ne!(event_id_from_content(&other), id);
     other = base();
     other.tool_name = None;
@@ -167,7 +167,7 @@ fn content_tuple_omits_session_and_occurrence() {
         role: "user".to_string(),
         content: "hello".to_string(),
         tool_name: Some("Bash".to_string()),
-        tool_args: Some(json!({"command": "ls"})),
+        tool_args: Some(protocol::js::from_serde(&json!({"command": "ls"}))),
     };
     let hash = content_tuple_hash(&key);
     assert!(hash.len() == 64 && hash.chars().all(|ch| ch.is_ascii_hexdigit()));
@@ -192,10 +192,10 @@ fn occurrence_index_counts_the_inclusive_prefix() {
         role: "tool".to_string(),
         content: "[tool call] Bash".to_string(),
         tool_name: Some("Bash".to_string()),
-        tool_args: Some(json!({"command": "ls"})),
+        tool_args: Some(protocol::js::from_serde(&json!({"command": "ls"}))),
     };
     let mut other_tool = tool.clone();
-    other_tool.tool_args = Some(json!({"command": "pwd"}));
+    other_tool.tool_args = Some(protocol::js::from_serde(&json!({"command": "pwd"})));
     assert_eq!(
         occurrence_index(&[tool.clone(), other_tool.clone()], &other_tool),
         0

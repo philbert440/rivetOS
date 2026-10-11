@@ -227,6 +227,7 @@ fn spawn_heartbeat(path: PathBuf, every_ms: u64, stop: Arc<AtomicBool>) -> JoinH
 struct AttemptGuard {
     paths: Vec<PathBuf>,
     armed: bool,
+    unlink_hook: Option<UnlinkHook>,
 }
 
 impl AttemptGuard {
@@ -238,10 +239,11 @@ impl AttemptGuard {
         if !self.armed {
             return;
         }
-        self.armed = false;
-        for path in std::mem::take(&mut self.paths) {
-            unlink_await(path, None).await;
+        while !self.paths.is_empty() {
+            let path = self.paths.remove(0);
+            unlink_await(path, self.unlink_hook.clone()).await;
         }
+        self.armed = false;
     }
 }
 
@@ -252,7 +254,7 @@ impl Drop for AttemptGuard {
         }
         self.armed = false;
         for path in std::mem::take(&mut self.paths) {
-            schedule_unlink(path, None);
+            schedule_unlink(path, self.unlink_hook.clone());
         }
     }
 }
@@ -276,6 +278,7 @@ async fn acquire(
         let mut attempt = AttemptGuard {
             paths: vec![temp_path.clone(), owner_path.clone()],
             armed: true,
+            unlink_hook: opts.unlink_hook.clone(),
         };
         let publish = {
             let temp_path = temp_path.clone();

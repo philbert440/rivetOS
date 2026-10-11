@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use capture::{EnvLookup, HttpExchange, iso_now, system_hostname, unix_ms_now};
+use protocol::js::{JsString, JsValue};
 use serde_json::{Map, Value};
 use sha2::Digest;
 use tokio::sync::Notify;
@@ -223,8 +224,12 @@ pub fn claim_spool(path: &Path) -> Option<PathBuf> {
 }
 
 pub fn write_spool_payload(payload: &Value, dir: &Path) -> std::io::Result<PathBuf> {
+    write_spool_js(&protocol::js::from_serde(payload), dir)
+}
+
+fn write_spool_js(payload: &JsValue, dir: &Path) -> std::io::Result<PathBuf> {
     ensure_private_dir(dir)?;
-    let body = protocol::js::stringify(&protocol::js::from_serde(payload));
+    let body = protocol::js::stringify(payload);
     let mut last = std::io::Error::other("spool name was not created");
     for _ in 0..8u32 {
         let token = base36_token();
@@ -253,9 +258,9 @@ pub async fn ingest_spool_file(spool_file: &Path, deps: &WorkerDeps) -> Result<(
     };
     lock_set(&deps.skip_files).insert(display_path(&claimed));
     let claimed_read = claimed.clone();
-    let payload = match spawn_io(move || std::fs::read_to_string(&claimed_read)).await? {
+    let mut payload = match spawn_io(move || std::fs::read_to_string(&claimed_read)).await? {
         Ok(text) => match protocol::js::parse(&text) {
-            Ok(value) => protocol::js::to_serde(&value),
+            Ok(value) => value,
             Err(error) => {
                 emit(
                     deps,
@@ -276,17 +281,11 @@ pub async fn ingest_spool_file(spool_file: &Path, deps: &WorkerDeps) -> Result<(
             return Ok(());
         }
     };
-    let mut payload = payload;
     let stem = spool_stem(&claimed);
     if let Err(error) = dispatch_claimed(&mut payload, &claimed, &stem, deps).await {
-        let event = payload
-            .get("hook_event_name")
-            .and_then(Value::as_str)
-            .unwrap_or("unknown");
-        let who = payload
-            .get("session_id")
-            .and_then(Value::as_str)
-            .or_else(|| payload.get("transcript_path").and_then(Value::as_str))
+        let event = js_str(&payload, "hook_event_name").unwrap_or("unknown");
+        let who = js_str(&payload, "session_id")
+            .or_else(|| js_str(&payload, "transcript_path"))
             .unwrap_or("?");
         emit(deps, &format!("{event} {who}: INGEST FAILED — {error}")).await;
         fail_spool(&claimed, deps).await;
@@ -340,20 +339,11 @@ pub async fn run_hook(harness: &str) -> Result<(), String> {
     }
     let raw = read_stdin().await;
     let mut payload = match protocol::js::parse(&raw) {
-        Ok(value) => match protocol::js::to_serde(&value) {
-            Value::Object(map) => Value::Object(map),
-            _ => return Ok(()),
-        },
+        Ok(value) if value.as_object().is_some() => value,
         _ => return Ok(()),
     };
-    let session = payload
-        .get("session_id")
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty());
-    let transcript = payload
-        .get("transcript_path")
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty());
+    let session = js_str(&payload, "session_id").filter(|value| !value.is_empty());
+    let transcript = js_str(&payload, "transcript_path").filter(|value| !value.is_empty());
     if session.is_none() && transcript.is_none() {
         return Ok(());
     }
@@ -379,24 +369,36 @@ pub async fn run_hook(harness: &str) -> Result<(), String> {
     };
     if let Some(object) = payload.as_object_mut() {
         if let Some(key) = task.session_key_override {
-            object.insert("rivetos_session_key".to_string(), Value::String(key));
+            object.insert(
+                JsString::from_text("rivetos_session_key"),
+                JsValue::from_text(&key),
+            );
         }
         if let Some(task_id) = task.task_id {
-            object.insert("rivetos_task_id".to_string(), Value::String(task_id));
+            object.insert(
+                JsString::from_text("rivetos_task_id"),
+                JsValue::from_text(&task_id),
+            );
         }
         if let Some(pane) = herdr_pane {
-            object.insert("herdr_pane_id".to_string(), Value::String(pane));
+            object.insert(
+                JsString::from_text("herdr_pane_id"),
+                JsValue::from_text(&pane),
+            );
             if let Some(workspace) = herdr_workspace {
-                object.insert("herdr_workspace_id".to_string(), Value::String(workspace));
+                object.insert(
+                    JsString::from_text("herdr_workspace_id"),
+                    JsValue::from_text(&workspace),
+                );
             }
             if let Some(host) = herdr_host {
-                object.insert("herdr_host".to_string(), Value::String(host));
+                object.insert(JsString::from_text("herdr_host"), JsValue::from_text(&host));
             }
         }
     }
     let dir = spool_dir(&capture::ProcessEnv);
     let payload_for_disk = payload.clone();
-    let spool_file = match spawn_io(move || write_spool_payload(&payload_for_disk, &dir)).await? {
+    let spool_file = match spawn_io(move || write_spool_js(&payload_for_disk, &dir)).await? {
         Ok(path) => path,
         Err(error) => {
             emit_process(&format!("hook spool failed: {error}")).await;
@@ -522,7 +524,7 @@ pub fn log_fatal(message: &str) {
 }
 
 async fn dispatch_claimed(
-    payload: &mut Value,
+    payload: &mut JsValue,
     claimed: &Path,
     stem: &str,
     deps: &WorkerDeps,
@@ -544,10 +546,7 @@ async fn dispatch_claimed(
             capture::CaptureTransport::Pg { .. } => {}
         }
     }
-    let event = payload
-        .get("hook_event_name")
-        .and_then(Value::as_str)
-        .unwrap_or("unknown");
+    let event = js_str(payload, "hook_event_name").unwrap_or("unknown");
     if PAYLOAD_EVENTS.contains(&event) {
         let result = call_hook(payload, stem, deps).await?;
         if let Some(skipped) = &result.skipped {
@@ -569,10 +568,7 @@ async fn dispatch_claimed(
         }
         return Ok(());
     }
-    let Some(transcript) = payload
-        .get("transcript_path")
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
+    let Some(transcript) = js_str(payload, "transcript_path").filter(|value| !value.is_empty())
     else {
         return Ok(());
     };
@@ -598,34 +594,27 @@ async fn dispatch_claimed(
 }
 
 async fn stamp_event_id(
-    payload: &mut Value,
+    payload: &mut JsValue,
     claimed: &Path,
     stem: &str,
     deps: &WorkerDeps,
 ) -> Result<(), String> {
-    let event = payload
-        .get("hook_event_name")
-        .and_then(Value::as_str)
-        .unwrap_or("");
+    let event = js_str(payload, "hook_event_name").unwrap_or("");
     if !PAYLOAD_EVENTS.contains(&event) {
         return Ok(());
     }
-    if payload
-        .get("rivetos_event_id")
-        .and_then(Value::as_str)
-        .is_some_and(|value| !value.is_empty())
-    {
+    if js_str(payload, "rivetos_event_id").is_some_and(|value| !value.is_empty()) {
         return Ok(());
     }
     let options = hook_options(payload, stem, deps);
     let resolved = resolve_hook_event_id(&options).await;
     if let Some(object) = payload.as_object_mut() {
         object.insert(
-            "rivetos_event_id".to_string(),
-            Value::String(resolved.event_id),
+            JsString::from_text("rivetos_event_id"),
+            JsValue::String(resolved.event_id),
         );
     }
-    let text = protocol::js::stringify(&protocol::js::from_serde(payload));
+    let text = protocol::js::stringify(payload);
     let path = claimed.to_path_buf();
     tokio::task::spawn_blocking(move || std::fs::write(path, text))
         .await
@@ -633,16 +622,12 @@ async fn stamp_event_id(
         .map_err(|error| error.to_string())
 }
 
-fn hook_options(payload: &Value, stem: &str, deps: &WorkerDeps) -> HookEventOptions {
-    let mut options = HookEventOptions::new(payload.clone());
-    options.session_key_override = payload
-        .get("rivetos_session_key")
-        .and_then(Value::as_str)
+fn hook_options(payload: &JsValue, stem: &str, deps: &WorkerDeps) -> HookEventOptions {
+    let mut options = HookEventOptions::from_js(payload.clone());
+    options.session_key_override = js_str(payload, "rivetos_session_key")
         .filter(|value| !value.is_empty())
         .map(str::to_string);
-    options.task_id = payload
-        .get("rivetos_task_id")
-        .and_then(Value::as_str)
+    options.task_id = js_str(payload, "rivetos_task_id")
         .filter(|value| !value.is_empty())
         .map(str::to_string);
     options.herdr = herdr_from(payload);
@@ -655,34 +640,29 @@ fn hook_options(payload: &Value, stem: &str, deps: &WorkerDeps) -> HookEventOpti
     options
 }
 
-fn herdr_from(payload: &Value) -> Option<crate::transcript::HerdrPane> {
-    let pane = payload
-        .get("herdr_pane_id")
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())?;
+fn herdr_from(payload: &JsValue) -> Option<crate::transcript::HerdrPane> {
+    let pane = js_str(payload, "herdr_pane_id").filter(|value| !value.is_empty())?;
     Some(crate::transcript::HerdrPane {
         pane_id: pane.to_string(),
-        workspace_id: payload
-            .get("herdr_workspace_id")
-            .and_then(Value::as_str)
+        workspace_id: js_str(payload, "herdr_workspace_id")
             .filter(|value| !value.is_empty())
             .map(str::to_string),
-        host: payload
-            .get("herdr_host")
-            .and_then(Value::as_str)
+        host: js_str(payload, "herdr_host")
             .filter(|value| !value.is_empty())
             .map(str::to_string),
     })
 }
 
+fn js_str<'a>(value: &'a JsValue, key: &str) -> Option<&'a str> {
+    value.get(key).and_then(JsValue::as_str)
+}
+
 async fn call_hook(
-    payload: &Value,
+    payload: &JsValue,
     stem: &str,
     deps: &WorkerDeps,
 ) -> Result<HookEventResult, String> {
-    let session_key = payload
-        .get("rivetos_session_key")
-        .and_then(Value::as_str)
+    let session_key = js_str(payload, "rivetos_session_key")
         .filter(|value| !value.is_empty())
         .map(str::to_string);
     if session_key
@@ -706,14 +686,12 @@ async fn call_hook(
 }
 
 async fn call_transcript(
-    payload: &Value,
+    payload: &JsValue,
     transcript: &str,
     event: &str,
     deps: &WorkerDeps,
 ) -> Result<IngestResult, String> {
-    let session_key = payload
-        .get("rivetos_session_key")
-        .and_then(Value::as_str)
+    let session_key = js_str(payload, "rivetos_session_key")
         .filter(|value| !value.is_empty())
         .map(str::to_string);
     if session_key
@@ -730,15 +708,11 @@ async fn call_transcript(
         .await;
     }
     let mut options = IngestOptions::new(PathBuf::from(transcript));
-    options.session_id = payload
-        .get("session_id")
-        .and_then(Value::as_str)
+    options.session_id = js_str(payload, "session_id")
         .filter(|value| !value.is_empty())
         .map(str::to_string);
     options.session_key_override = session_key;
-    options.task_id = payload
-        .get("rivetos_task_id")
-        .and_then(Value::as_str)
+    options.task_id = js_str(payload, "rivetos_task_id")
         .filter(|value| !value.is_empty())
         .map(str::to_string);
     options.mark_inactive = event == "SessionEnd";
@@ -849,7 +823,7 @@ fn positive_number(raw: Option<&str>, default: u64) -> u64 {
     let Some(raw) = raw.filter(|value| !value.is_empty()) else {
         return default;
     };
-    let Ok(value) = raw.trim().parse::<f64>() else {
+    let Ok(value) = protocol::js::js_trim(raw).parse::<f64>() else {
         return default;
     };
     if !value.is_finite() || value <= 0.0 {

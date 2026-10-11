@@ -14,8 +14,10 @@ use capture::{
 use serde_json::{Value, json};
 
 struct Hit {
+    method: String,
     path: String,
     token: Option<String>,
+    content_type: Option<String>,
     body: String,
 }
 
@@ -28,7 +30,16 @@ struct Server {
 }
 
 impl Server {
-    fn start(handler: impl FnMut(&Hit) -> (u16, String) + Send + 'static) -> Self {
+    fn start(mut handler: impl FnMut(&Hit) -> (u16, String) + Send + 'static) -> Self {
+        Self::start_full(move |hit| {
+            let (status, body) = handler(hit);
+            (status, body, None)
+        })
+    }
+
+    fn start_full(
+        handler: impl FnMut(&Hit) -> (u16, String, Option<String>) + Send + 'static,
+    ) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let hits = Arc::new(Mutex::new(Vec::new()));
@@ -52,20 +63,27 @@ impl Server {
                     continue;
                 };
                 hits_thread.lock().unwrap().push(Hit {
+                    method: hit.method.clone(),
                     path: hit.path.clone(),
                     token: hit.token.clone(),
+                    content_type: hit.content_type.clone(),
                     body: hit.body.clone(),
                 });
-                let (status, body) = handler(&hit);
+                let (status, body, location) = handler(&hit);
                 let reason = if (200..300).contains(&status) {
                     "OK"
                 } else {
                     "ERR"
                 };
-                let response = format!(
-                    "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                let mut response = format!(
+                    "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n",
                     body.len()
                 );
+                if let Some(location) = location {
+                    response.push_str(&format!("Location: {location}\r\n"));
+                }
+                response.push_str("\r\n");
+                response.push_str(&body);
                 let _ = stream.write_all(response.as_bytes());
             }
         });
@@ -120,8 +138,10 @@ fn read_hit(stream: &mut TcpStream) -> Option<Hit> {
     let header = String::from_utf8_lossy(&buf[..header_end.saturating_sub(4)]).to_string();
     let mut lines = header.lines();
     let request = lines.next().unwrap_or("");
+    let method = request.split_whitespace().next().unwrap_or("").to_string();
     let path = request.split_whitespace().nth(1).unwrap_or("").to_string();
     let mut token = None;
+    let mut content_type = None;
     for line in lines {
         let Some((name, value)) = line.split_once(':') else {
             continue;
@@ -129,9 +149,18 @@ fn read_hit(stream: &mut TcpStream) -> Option<Hit> {
         if name.eq_ignore_ascii_case("x-rivetos-user-token") {
             token = Some(value.trim().to_string());
         }
+        if name.eq_ignore_ascii_case("content-type") {
+            content_type = Some(value.trim().to_string());
+        }
     }
     let body = String::from_utf8_lossy(&buf[header_end..header_end + length]).into_owned();
-    Some(Hit { path, token, body })
+    Some(Hit {
+        method,
+        path,
+        token,
+        content_type,
+        body,
+    })
 }
 
 fn find_headers(buf: &[u8]) -> Option<usize> {
@@ -380,8 +409,10 @@ async fn reports_spool_failure_without_saving() {
     let WriteOutcome::NotSaved { error } = saved else {
         panic!("expected not saved");
     };
-    assert!(error.contains("capture spool failed; batch was not saved:"));
-    assert!(!error.contains(&blocked.display().to_string()));
+    assert!(error.contains(
+        "capture spool failed; batch was not saved: Error: ENOTDIR: not a directory, open '"
+    ));
+    assert!(error.contains(&blocked.display().to_string()));
     let logs = built.logs.lock().unwrap().clone();
     assert!(logs.iter().any(|line| line == &error));
     assert!(logs.iter().any(|line| line == "Error: capture HTTP 503"));
@@ -1757,4 +1788,159 @@ async fn extension_field_splits_like_the_posted_object() {
     assert_eq!(hits[1].body, second);
     assert!(hits[0].body.len() <= limit);
     assert!(hits[1].body.len() <= limit);
+}
+
+#[tokio::test]
+async fn redirect_307_and_308_keep_the_post_body() {
+    for status in [307u16, 308] {
+        let server = Server::start_full(move |hit| {
+            if hit.path == "/api/capture" {
+                (
+                    status,
+                    String::new(),
+                    Some("/api/capture/final#frag".to_string()),
+                )
+            } else {
+                (200, ok_body(1, 0), None)
+            }
+        });
+        let spool = tempfile::tempdir().unwrap().keep();
+        let built = open_writer(
+            &server.url,
+            spool,
+            1000,
+            None,
+            MapEnv::default(),
+            UserSource::Owner,
+            None,
+        );
+        let saved = built.writer.write(one()).await.unwrap();
+        assert!(matches!(saved, WriteOutcome::Delivered { inserted: 1, .. }));
+        let hits = server.hits.lock().unwrap();
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].method, "POST");
+        assert_eq!(hits[1].method, "POST");
+        assert_eq!(hits[1].path, "/api/capture/final");
+        assert_eq!(hits[0].body, hits[1].body);
+        assert!(!hits[1].body.is_empty());
+        assert_eq!(hits[1].content_type.as_deref(), Some("application/json"));
+    }
+}
+
+#[tokio::test]
+async fn redirect_301_302_and_303_post_become_get() {
+    for status in [301u16, 302, 303] {
+        let server = Server::start_full(move |hit| {
+            if hit.path == "/api/capture" {
+                (status, String::new(), Some("done".to_string()))
+            } else {
+                (200, ok_body(1, 0), None)
+            }
+        });
+        let spool = tempfile::tempdir().unwrap().keep();
+        let built = open_writer(
+            &server.url,
+            spool.clone(),
+            1000,
+            None,
+            MapEnv::default(),
+            UserSource::Owner,
+            None,
+        );
+        let saved = built.writer.write(one()).await.unwrap();
+        assert!(matches!(saved, WriteOutcome::Delivered { inserted: 1, .. }));
+        let hits = server.hits.lock().unwrap();
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].method, "POST");
+        assert_eq!(hits[1].method, "GET");
+        assert_eq!(hits[1].path, "/api/done");
+        assert!(hits[1].body.is_empty());
+        assert!(hits[1].content_type.is_none());
+        assert_eq!(std::fs::read_dir(&spool).unwrap().count(), 0);
+    }
+}
+
+#[tokio::test]
+async fn the_twenty_first_redirect_is_a_transport_error() {
+    let server = Server::start_full(|hit| {
+        let next = hit.path.rsplit('=').next().unwrap_or("0");
+        let step = next.parse::<u32>().unwrap_or(0);
+        (
+            302,
+            String::new(),
+            Some(format!("/api/capture?n={}", step + 1)),
+        )
+    });
+    let spool = tempfile::tempdir().unwrap().keep();
+    let built = open_writer(
+        &server.url,
+        spool.clone(),
+        1000,
+        None,
+        MapEnv::default(),
+        UserSource::Owner,
+        None,
+    );
+    let saved = built.writer.write(one()).await.unwrap();
+    assert!(matches!(saved, WriteOutcome::Spooled { .. }));
+    assert_eq!(server.hits.lock().unwrap().len(), 21);
+    assert_eq!(std::fs::read_dir(&spool).unwrap().count(), 1);
+}
+
+#[tokio::test]
+async fn twenty_redirects_then_ok_is_delivered() {
+    let server = Server::start_full(|hit| {
+        let next = hit.path.rsplit('=').next().unwrap_or("0");
+        let step = next.parse::<u32>().unwrap_or(0);
+        if step >= 20 {
+            (200, ok_body(1, 0), None)
+        } else {
+            (
+                307,
+                String::new(),
+                Some(format!("/api/capture?n={}", step + 1)),
+            )
+        }
+    });
+    let spool = tempfile::tempdir().unwrap().keep();
+    let built = open_writer(
+        &server.url,
+        spool,
+        1000,
+        None,
+        MapEnv::default(),
+        UserSource::Owner,
+        None,
+    );
+    let saved = built.writer.write(one()).await.unwrap();
+    assert!(matches!(saved, WriteOutcome::Delivered { inserted: 1, .. }));
+    let hits = server.hits.lock().unwrap();
+    assert_eq!(hits.len(), 21);
+    assert!(hits.iter().all(|hit| hit.method == "POST"));
+    assert!(!hits.last().unwrap().body.is_empty());
+}
+
+#[tokio::test]
+async fn a_non_http_redirect_is_a_transport_error() {
+    let server = Server::start_full(|_| {
+        (
+            308,
+            String::new(),
+            Some("file:///tmp/capture-body".to_string()),
+        )
+    });
+    let spool = tempfile::tempdir().unwrap().keep();
+    let built = open_writer(
+        &server.url,
+        spool.clone(),
+        1000,
+        None,
+        MapEnv::default(),
+        UserSource::Owner,
+        None,
+    );
+    let saved = built.writer.write(one()).await.unwrap();
+    assert!(matches!(saved, WriteOutcome::Spooled { .. }));
+    assert_eq!(server.hits.lock().unwrap().len(), 1);
+    assert_eq!(std::fs::read_dir(&spool).unwrap().count(), 1);
 }

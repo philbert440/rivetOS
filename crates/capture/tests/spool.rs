@@ -43,3 +43,15 @@ async fn creates_the_directory_and_ignores_temp_files_and_dead_letters() {
     let spooled = nested.join(&files[0]);
     assert_eq!(mode(&spooled), 0o600);
 }
+
+#[tokio::test]
+async fn a_file_spool_dir_reports_the_node_open_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let blocked = dir.path().join("not-a-directory");
+    std::fs::write(&blocked, "blocked").unwrap();
+    let error = spool_batch(&blocked, &batch(), 10).await.unwrap_err();
+    let text = error.to_string();
+    assert!(text.starts_with("ENOTDIR: not a directory, open '"));
+    assert!(text.contains(&blocked.display().to_string()));
+    assert!(text.contains(".json.tmp'"));
+}

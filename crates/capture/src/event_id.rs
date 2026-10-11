@@ -1,14 +1,12 @@
-use serde_json::Value;
+use protocol::js::JsValue;
 use sha2::{Digest, Sha256};
-
-use crate::helpers::safe_json;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct OccurrenceKey {
     pub role: String,
     pub content: String,
     pub tool_name: Option<String>,
-    pub tool_args: Option<Value>,
+    pub tool_args: Option<JsValue>,
 }
 
 #[derive(Debug, Clone)]
@@ -17,7 +15,7 @@ pub struct EventIdParts {
     pub role: String,
     pub content: String,
     pub tool_name: Option<String>,
-    pub tool_args: Option<Value>,
+    pub tool_args: Option<JsValue>,
     pub occurrence: Option<u64>,
 }
 
@@ -30,11 +28,11 @@ fn tuple_fields(
     role: &str,
     content: &str,
     tool_name: Option<&str>,
-    tool_args: Option<&Value>,
+    tool_args: Option<&JsValue>,
 ) -> [String; 4] {
     let args = match tool_args {
         None => String::new(),
-        Some(value) => safe_json(value),
+        Some(value) => protocol::js::stringify(value),
     };
     [
         role.to_string(),
