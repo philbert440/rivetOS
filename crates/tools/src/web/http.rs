@@ -182,63 +182,90 @@ pub fn request_header<'a>(request: &'a HttpRequest, name: &str) -> Option<&'a st
 }
 
 pub(crate) fn redact_transport_error(message: &str) -> String {
-    let bytes = message.as_bytes();
-    let mut out = String::with_capacity(message.len());
+    redact_js(&protocol::js::JsString::from_text(message))
+        .to_utf8()
+        .to_string()
+}
+
+pub(crate) fn redact_js(message: &protocol::js::JsString) -> protocol::js::JsString {
+    protocol::js::JsString::from_units(redact_units(message.units()))
+}
+
+fn redact_units(units: &[u16]) -> Vec<u16> {
+    let mut out = Vec::with_capacity(units.len());
     let mut index = 0;
-    while index < bytes.len() {
-        if has_prefix_ignore_ascii(&bytes[index..], b"https://")
-            || has_prefix_ignore_ascii(&bytes[index..], b"http://")
+    while index < units.len() {
+        if has_prefix_units(&units[index..], b"https://")
+            || has_prefix_units(&units[index..], b"http://")
         {
             let start = index;
             index += 1;
-            while index < bytes.len() && !url_terminator(bytes[index]) {
+            while index < units.len() && !url_terminator_unit(units[index]) {
                 index += 1;
             }
-            let url = &message[start..index];
-            out.push_str(&strip_url_credentials(url));
+            out.extend(strip_url_units(&units[start..index]));
         } else {
-            let Some(ch) = message[index..].chars().next() else {
-                break;
-            };
-            out.push(ch);
-            index += ch.len_utf8();
+            out.push(units[index]);
+            index += 1;
         }
     }
     out
 }
 
-fn has_prefix_ignore_ascii(bytes: &[u8], prefix: &[u8]) -> bool {
-    bytes.len() >= prefix.len()
-        && bytes
-            .iter()
-            .zip(prefix)
-            .all(|(byte, expected)| byte.eq_ignore_ascii_case(expected))
+fn has_prefix_units(units: &[u16], prefix: &[u8]) -> bool {
+    units.len() >= prefix.len()
+        && units.iter().zip(prefix).all(|(unit, expected)| {
+            u8::try_from(*unit)
+                .ok()
+                .is_some_and(|byte| byte.eq_ignore_ascii_case(expected))
+        })
 }
 
-fn url_terminator(byte: u8) -> bool {
+fn url_terminator_unit(unit: u16) -> bool {
+    let Ok(byte) = u8::try_from(unit) else {
+        return false;
+    };
     byte.is_ascii_whitespace() || matches!(byte, b'"' | b'\'' | b'<' | b'>' | b')' | b'`')
 }
 
-fn strip_url_credentials(url: &str) -> String {
-    let cut = url.find(['?', '#']).unwrap_or(url.len());
-    let url = &url[..cut];
-    let Some(scheme) = url.find("://") else {
-        return url.to_string();
+fn strip_url_units(units: &[u16]) -> Vec<u16> {
+    let cut = units
+        .iter()
+        .position(|unit| *unit == u16::from(b'?') || *unit == u16::from(b'#'))
+        .unwrap_or(units.len());
+    let url = &units[..cut];
+    let Some(scheme) = find_ascii(url, b"://") else {
+        return url.to_vec();
     };
     let auth_start = scheme + 3;
     let path_at = url[auth_start..]
-        .find(['/', '?', '#'])
+        .iter()
+        .position(|unit| {
+            *unit == u16::from(b'/') || *unit == u16::from(b'?') || *unit == u16::from(b'#')
+        })
         .map(|offset| auth_start + offset)
         .unwrap_or(url.len());
     let authority = &url[auth_start..path_at];
-    let Some(at) = authority.rfind('@') else {
-        return url.to_string();
+    let Some(at) = authority.iter().rposition(|unit| *unit == u16::from(b'@')) else {
+        return url.to_vec();
     };
-    let mut stripped = String::with_capacity(url.len());
-    stripped.push_str(&url[..auth_start]);
-    stripped.push_str(&authority[at + 1..]);
-    stripped.push_str(&url[path_at..]);
+    let mut stripped = Vec::with_capacity(url.len());
+    stripped.extend_from_slice(&url[..auth_start]);
+    stripped.extend_from_slice(&authority[at + 1..]);
+    stripped.extend_from_slice(&url[path_at..]);
     stripped
+}
+
+fn find_ascii(units: &[u16], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() {
+        return None;
+    }
+    units.windows(needle.len()).position(|window| {
+        window
+            .iter()
+            .zip(needle)
+            .all(|(unit, expected)| *unit == u16::from(*expected))
+    })
 }
 
 fn decode_http_body(bytes: &[u8]) -> String {

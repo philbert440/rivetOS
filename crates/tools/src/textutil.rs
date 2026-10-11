@@ -36,6 +36,19 @@ pub(crate) fn append_utf16(base: &protocol::js::JsString, extra: &str) -> protoc
     protocol::js::JsString::from_units(units)
 }
 
+pub(crate) fn concat_js(
+    left: &protocol::js::JsString,
+    right: &protocol::js::JsString,
+) -> protocol::js::JsString {
+    let mut units = left.units().to_vec();
+    units.extend_from_slice(right.units());
+    protocol::js::JsString::from_units(units)
+}
+
+pub(crate) fn prefix_utf16(prefix: &str, tail: &protocol::js::JsString) -> protocol::js::JsString {
+    concat_js(&protocol::js::JsString::from_text(prefix), tail)
+}
+
 pub fn js_split_ws(text: &str) -> Vec<&str> {
     let mut parts = Vec::new();
     let mut start = None;

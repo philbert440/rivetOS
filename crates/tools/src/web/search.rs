@@ -10,8 +10,8 @@ use serde_json::{Value, json};
 use crate::args::{self, string};
 use crate::context::{ToolContext, ToolSurface};
 use crate::schema::{schema_of, set_property_description};
-use crate::{Tool, text};
-use protocol::js::js_trim;
+use crate::{Tool, text, text_js};
+use protocol::js::{JsString, js_trim};
 
 use super::http::{HttpClient, HttpRequest, default_http};
 
@@ -86,12 +86,21 @@ impl Provider {
 }
 
 struct ProviderError {
-    message: String,
+    message: JsString,
     status: Option<u16>,
 }
 
 impl From<String> for ProviderError {
     fn from(message: String) -> Self {
+        Self {
+            message: message.into(),
+            status: None,
+        }
+    }
+}
+
+impl From<JsString> for ProviderError {
+    fn from(message: JsString) -> Self {
         Self {
             message,
             status: None,
@@ -226,7 +235,10 @@ impl Tool for WebSearchTool {
         for provider in &self.providers {
             match self.search_with_retry(provider, query, count).await {
                 Ok(results) if results.is_empty() => {
-                    errors.push(format!("{}: no results", provider.name()));
+                    errors.push(JsString::from_text(&format!(
+                        "{}: no results",
+                        provider.name()
+                    )));
                 }
                 Ok(results) => {
                     let output = format_results(&results);
@@ -235,16 +247,15 @@ impl Tool for WebSearchTool {
                 }
                 Err(err) => {
                     let message = scrub_message(&err.message, &provider_secrets(provider));
-                    errors.push(format!("{}: {message}", provider.name()));
+                    errors.push(prefix_utf16(&format!("{}: ", provider.name()), &message));
                 }
             }
         }
-        let listed = errors
-            .iter()
-            .map(|err| format!("  - {err}"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        text(format!("Search failed. All providers exhausted:\n{listed}"))
+        let mut listed = JsString::from_text("Search failed. All providers exhausted:");
+        for err in &errors {
+            listed = concat_js(&append_utf16(&listed, "\n  - "), err);
+        }
+        text_js(listed)
     }
 }
 
@@ -346,7 +357,7 @@ async fn xai_search(
         let snippet = protocol::js::js_substring(&body, Some(0.0), Some(160.0));
         return Err(status_error(
             response.status,
-            format!("web search {}: {}", response.status, snippet.to_utf8()),
+            prefix_utf16(&format!("web search {}: ", response.status), &snippet),
         ));
     }
     let body = response.text().await?;
@@ -473,10 +484,9 @@ async fn google_search(
         }
         let body = error_body(&mut response).await;
         let snippet = protocol::js::js_substring(&body, Some(0.0), Some(200.0));
-        return Err(format!(
-            "Google CSE failed ({}): {}",
-            response.status,
-            snippet.to_utf8()
+        return Err(prefix_utf16(
+            &format!("Google CSE failed ({}): ", response.status),
+            &snippet,
         )
         .into());
     }
@@ -665,16 +675,17 @@ fn js_slice_end(value: f64) -> usize {
 }
 
 fn is_transient(err: &ProviderError) -> bool {
-    if err.message.contains("fetch failed") || err.message.contains("ECONNREFUSED") {
+    let message = err.message.to_utf8();
+    if message.contains("fetch failed") || message.contains("ECONNREFUSED") {
         return true;
     }
     err.status
         .is_some_and(|status| status == 429 || status >= 500)
 }
 
-fn status_error(status: u16, message: String) -> ProviderError {
+fn status_error(status: u16, message: impl Into<JsString>) -> ProviderError {
     ProviderError {
-        message,
+        message: message.into(),
         status: Some(status),
     }
 }
@@ -686,14 +697,47 @@ fn provider_secrets(provider: &Provider) -> Vec<String> {
     }
 }
 
-fn scrub_message(message: &str, secrets: &[String]) -> String {
-    let mut out = super::http::redact_transport_error(message);
+fn scrub_message(message: &JsString, secrets: &[String]) -> JsString {
+    let redacted = super::http::redact_js(message);
+    let mut units = redacted.units().to_vec();
     for secret in secrets {
         if secret.len() >= 8 {
-            out = out.replace(secret.as_str(), "[redacted]");
+            replace_units(&mut units, secret, "[redacted]");
         }
     }
-    out
+    JsString::from_units(units)
+}
+
+fn prefix_utf16(prefix: &str, tail: &JsString) -> JsString {
+    crate::textutil::prefix_utf16(prefix, tail)
+}
+
+fn append_utf16(base: &JsString, extra: &str) -> JsString {
+    crate::textutil::append_utf16(base, extra)
+}
+
+fn concat_js(left: &JsString, right: &JsString) -> JsString {
+    crate::textutil::concat_js(left, right)
+}
+
+fn replace_units(units: &mut Vec<u16>, needle: &str, replacement: &str) {
+    let needle: Vec<u16> = needle.encode_utf16().collect();
+    if needle.is_empty() {
+        return;
+    }
+    let replacement: Vec<u16> = replacement.encode_utf16().collect();
+    let mut out = Vec::with_capacity(units.len());
+    let mut index = 0;
+    while index < units.len() {
+        if units[index..].starts_with(&needle) {
+            out.extend_from_slice(&replacement);
+            index += needle.len();
+        } else {
+            out.push(units[index]);
+            index += 1;
+        }
+    }
+    *units = out;
 }
 
 fn resolve_optional(

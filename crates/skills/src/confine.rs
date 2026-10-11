@@ -1,9 +1,8 @@
 use std::ffi::OsString;
-use std::fs::OpenOptions;
 use std::io::Write;
 use std::os::fd::{AsFd, AsRawFd, OwnedFd};
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use nix::errno::Errno;
 use nix::fcntl::{self, AtFlags, OFlag};
@@ -99,7 +98,7 @@ fn write_here(
     ) {
         Ok(stat) if is_symlink(&stat) => Ok(Some(link_target(&dir, final_name, roots, display)?)),
         Ok(_) | Err(Errno::ENOENT) => {
-            place_file(&dir, final_name, content)?;
+            place_file(&dir, final_name, content, display)?;
             Ok(None)
         }
         Err(err) => Err(node_errno("lstat", Some(display), err)),
@@ -291,8 +290,8 @@ fn link_target(
     let raw = fcntl::readlinkat(parent.0.as_fd(), name.as_os_str())
         .map_err(|err| node_errno("readlink", Some(display), err))?;
     let proc_fd = format!("/proc/self/fd/{}", parent.0.as_raw_fd());
-    let parent_real = std::fs::read_link(&proc_fd)
-        .map_err(|err| node_io("readlink", Some(Path::new(&proc_fd)), &err))?;
+    let parent_real =
+        std::fs::read_link(&proc_fd).map_err(|err| node_io("readlink", Some(display), &err))?;
     let joined = if Path::new(&raw).is_absolute() {
         absolute_lexical(Path::new(&raw))
     } else {
@@ -304,35 +303,56 @@ fn link_target(
     Ok(joined)
 }
 
-fn place_file(parent: &DirFd, name: &OsString, content: &str) -> Result<(), String> {
-    let mut tmp = name.clone();
-    tmp.push(".tmp");
-    let _ = unlinkat(
+fn place_file(
+    parent: &DirFd,
+    name: &OsString,
+    content: &str,
+    display: &Path,
+) -> Result<(), String> {
+    let tmp = unique_sibling(name);
+    let flags = OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_CLOEXEC;
+    let fd = match fcntl::openat(
         parent.0.as_fd(),
         tmp.as_os_str(),
-        UnlinkatFlags::NoRemoveDir,
-    );
-    let proc_path = format!(
-        "/proc/self/fd/{}/{}",
-        parent.0.as_raw_fd(),
-        tmp.to_string_lossy()
-    );
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o644)
-        .open(&proc_path)
-        .map_err(|err| node_io("open", Some(Path::new(&proc_path)), &err))?;
-    file.write_all(content.as_bytes())
-        .map_err(|err| node_io("write", None, &err))?;
+        flags,
+        Mode::from_bits_truncate(0o644),
+    ) {
+        Ok(fd) => fd,
+        Err(err) => return Err(node_errno("open", Some(display), err)),
+    };
+    let mut file = std::fs::File::from(fd);
+    if let Err(err) = file.write_all(content.as_bytes()) {
+        drop(file);
+        discard_created(parent, &tmp);
+        return Err(node_io("write", None, &err));
+    }
     drop(file);
-    fcntl::renameat(
+    if let Err(err) = fcntl::renameat(
         parent.0.as_fd(),
         tmp.as_os_str(),
         parent.0.as_fd(),
         name.as_os_str(),
-    )
-    .map_err(|err| node_errno("rename", None, err))
+    ) {
+        discard_created(parent, &tmp);
+        return Err(node_errno("rename", None, err));
+    }
+    Ok(())
+}
+
+fn unique_sibling(name: &OsString) -> OsString {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    let ticket = NEXT.fetch_add(1, Ordering::Relaxed);
+    let mut tmp = name.clone();
+    tmp.push(format!(".{}.{ticket}.tmp", std::process::id()));
+    tmp
+}
+
+fn discard_created(parent: &DirFd, name: &OsString) {
+    let _ = unlinkat(
+        parent.0.as_fd(),
+        name.as_os_str(),
+        UnlinkatFlags::NoRemoveDir,
+    );
 }
 
 fn open_root(path: &Path) -> Result<DirFd, String> {

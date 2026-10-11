@@ -1505,3 +1505,164 @@ async fn regular_file_destination_root_still_refuses() {
     assert_eq!(std::fs::read_to_string(&file_root).unwrap(), "keep");
     assert!(file_root.is_file());
 }
+
+#[tokio::test]
+async fn confined_writes_keep_an_existing_tmp_draft() {
+    let dir = TempDir::new("atomic-write");
+    write_skill(
+        dir.path(),
+        "drafts",
+        "---\nname: drafts\ndescription: Drafts\n---\n# Drafts\n",
+    );
+    let path = dir.path().display().to_string();
+    let manager = SkillManager::new();
+    manager.discover(vec![path.clone()]).await;
+    let tool = Arc::new(SkillManageTool::new(manager, vec![path]));
+    let references = dir.path().join("drafts").join("references");
+    std::fs::create_dir_all(&references).unwrap();
+    let draft = references.join("note.txt.tmp");
+    std::fs::write(&draft, "keep-this-draft").unwrap();
+    let left = Arc::clone(&tool);
+    let right = Arc::clone(&tool);
+    let first = tokio::spawn(async move {
+        run(
+            left.as_ref(),
+            json!({
+                "action": "write_file",
+                "name": "drafts",
+                "file_path": "references/note.txt",
+                "file_content": "writer-one"
+            }),
+        )
+        .await
+    });
+    let second = tokio::spawn(async move {
+        run(
+            right.as_ref(),
+            json!({
+                "action": "write_file",
+                "name": "drafts",
+                "file_path": "references/note.txt",
+                "file_content": "writer-two"
+            }),
+        )
+        .await
+    });
+    let first = first.await.unwrap();
+    let second = second.await.unwrap();
+    assert!(first.contains("File written"), "{first}");
+    assert!(second.contains("File written"), "{second}");
+    let body = std::fs::read_to_string(references.join("note.txt")).unwrap();
+    assert!(body == "writer-one" || body == "writer-two", "{body}");
+    assert_eq!(std::fs::read_to_string(&draft).unwrap(), "keep-this-draft");
+    let names = dir_names(&references);
+    assert_eq!(
+        names,
+        vec!["note.txt".to_string(), "note.txt.tmp".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn confined_write_failure_removes_only_its_temp() {
+    let dir = TempDir::new("atomic-fail");
+    write_skill(
+        dir.path(),
+        "drafts",
+        "---\nname: drafts\ndescription: Drafts\n---\n# Drafts\n",
+    );
+    let path = dir.path().display().to_string();
+    let manager = SkillManager::new();
+    manager.discover(vec![path.clone()]).await;
+    let tool = SkillManageTool::new(manager, vec![path]);
+    let references = dir.path().join("drafts").join("references");
+    std::fs::create_dir_all(references.join("note.txt")).unwrap();
+    let draft = references.join("note.txt.tmp");
+    std::fs::write(&draft, "keep-this-draft").unwrap();
+    let result = run(
+        &tool,
+        json!({
+            "action": "write_file",
+            "name": "drafts",
+            "file_path": "references/note.txt",
+            "file_content": "fresh"
+        }),
+    )
+    .await;
+    assert!(result.starts_with("Error:"), "{result}");
+    assert!(!result.contains("/proc/"), "{result}");
+    assert!(references.join("note.txt").is_dir());
+    assert_eq!(std::fs::read_to_string(&draft).unwrap(), "keep-this-draft");
+    assert_eq!(
+        dir_names(&references),
+        vec!["note.txt".to_string(), "note.txt.tmp".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn confined_write_error_names_the_user_path() {
+    let dir = TempDir::new("atomic-err");
+    write_skill(
+        dir.path(),
+        "drafts",
+        "---\nname: drafts\ndescription: Drafts\n---\n# Drafts\n",
+    );
+    let path = dir.path().display().to_string();
+    let manager = SkillManager::new();
+    manager.discover(vec![path.clone()]).await;
+    let tool = SkillManageTool::new(manager, vec![path]);
+    let references = dir.path().join("drafts").join("references");
+    std::fs::create_dir_all(&references).unwrap();
+    let len = longest_creatable_name(&references);
+    let long_name = "n".repeat(len);
+    let draft = references.join("keep.txt.tmp");
+    std::fs::write(&draft, "keep-this-draft").unwrap();
+    let file_path = format!("references/{long_name}");
+    let result = run(
+        &tool,
+        json!({
+            "action": "write_file",
+            "name": "drafts",
+            "file_path": file_path,
+            "file_content": "x"
+        }),
+    )
+    .await;
+    assert!(
+        result.contains("ENAMETOOLONG: name too long, open"),
+        "{result}"
+    );
+    assert!(
+        result.contains(&references.display().to_string()),
+        "{result}"
+    );
+    assert!(result.contains(&long_name), "{result}");
+    assert!(!result.contains("/proc/"), "{result}");
+    assert!(!result.contains(".tmp"), "{result}");
+    assert!(!references.join(&long_name).exists());
+    assert_eq!(std::fs::read_to_string(&draft).unwrap(), "keep-this-draft");
+}
+
+fn dir_names(dir: &Path) -> Vec<String> {
+    let mut names: Vec<_> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
+}
+
+fn longest_creatable_name(dir: &Path) -> usize {
+    let mut len = 255;
+    loop {
+        let name = "n".repeat(len);
+        let path = dir.join(&name);
+        match std::fs::File::create(&path) {
+            Ok(_) => {
+                std::fs::remove_file(&path).unwrap();
+                return len;
+            }
+            Err(err) if err.raw_os_error() == Some(36) && len > 1 => len -= 1,
+            Err(err) => panic!("probe {len}: {err}"),
+        }
+    }
+}

@@ -898,3 +898,68 @@ async fn malformed_provider_json_is_not_no_results() {
         "{empty_result}"
     );
 }
+
+#[tokio::test]
+async fn provider_error_truncation_keeps_a_split_surrogate() {
+    let xai_body = format!("{}😀XAI_TAIL", "a".repeat(159));
+    let google_body = format!("{}😀GOOGLE_TAIL", "b".repeat(199));
+    let client = RecordingClient::new(move |request: &HttpRequest| {
+        if request.url.contains("xai.test") {
+            Ok(response(
+                400,
+                "Bad Request",
+                "text/plain",
+                xai_body.as_str(),
+            ))
+        } else if request.url.contains("google.test") {
+            Ok(response(
+                400,
+                "Bad Request",
+                "text/plain",
+                google_body.as_str(),
+            ))
+        } else {
+            Err("ddg down".to_string())
+        }
+    });
+    let http: Arc<dyn tools::HttpClient> = client;
+    let tool = WebSearchTool::with_http(
+        WebSearchConfig {
+            xai_api_key: Some("test-key".to_string()),
+            xai_endpoint: Some("https://xai.test/v1/responses".to_string()),
+            google_api_key: Some("google-key".to_string()),
+            google_cse_id: Some("cse".to_string()),
+            google_endpoint: Some("https://google.test/search".to_string()),
+            ddg_endpoint: Some("https://ddg.test/html/".to_string()),
+            retry_base: Duration::from_millis(1),
+            ..WebSearchConfig::default()
+        },
+        http,
+    );
+    let result = tool
+        .execute(
+            json!({"query": "split surrogate"}),
+            &CancellationToken::new(),
+            &ToolContext::default(),
+        )
+        .await;
+    let json = serde_json::to_string(&result).unwrap();
+    assert!(json.contains("web search 400:"), "{json}");
+    assert!(json.contains("Google CSE failed (400):"), "{json}");
+    assert!(json.contains("DuckDuckGo: ddg down"), "{json}");
+    assert!(
+        json.contains(&format!("{}\\ud83d", "a".repeat(159))),
+        "{json}"
+    );
+    assert!(
+        json.contains(&format!("{}\\ud83d", "b".repeat(199))),
+        "{json}"
+    );
+    assert!(!json.contains(&"a".repeat(160)), "{json}");
+    assert!(!json.contains(&"b".repeat(200)), "{json}");
+    assert!(!json.contains(r"\ude00"), "{json}");
+    assert!(!json.contains('\u{FFFD}'), "{json}");
+    assert!(!json.contains('😀'), "{json}");
+    assert!(!json.contains("XAI_TAIL"), "{json}");
+    assert!(!json.contains("GOOGLE_TAIL"), "{json}");
+}
