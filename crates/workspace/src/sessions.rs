@@ -256,7 +256,7 @@ impl SessionManager {
                 &route.agent,
                 SessionOptions {
                     platform: Some(message.platform.clone()),
-                    user_id: Some(message.user_id.clone()),
+                    user_id: Some(message.user_id.to_utf8().to_string()),
                 },
             )
             .await;
@@ -412,7 +412,7 @@ impl SessionManager {
             return existing;
         }
         let mut prompt = loader
-            .build_system_prompt(Some(agent_id), Some(message.user_id.as_str()))
+            .build_system_prompt(Some(agent_id), Some(message.user_id.to_utf8()))
             .await;
         if message.chat_type == "voice" {
             prompt.push_str(VOICE_MODE_PROMPT);
