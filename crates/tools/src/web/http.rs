@@ -167,8 +167,7 @@ pub(crate) fn redact_transport_error(message: &str) -> String {
                 index += 1;
             }
             let url = &message[start..index];
-            let cut = url.find(['?', '#']).unwrap_or(url.len());
-            out.push_str(&url[..cut]);
+            out.push_str(&strip_url_credentials(url));
         } else {
             let Some(ch) = message[index..].chars().next() else {
                 break;
@@ -192,6 +191,28 @@ fn url_terminator(byte: u8) -> bool {
     byte.is_ascii_whitespace() || matches!(byte, b'"' | b'\'' | b'<' | b'>' | b')' | b'`')
 }
 
+fn strip_url_credentials(url: &str) -> String {
+    let cut = url.find(['?', '#']).unwrap_or(url.len());
+    let url = &url[..cut];
+    let Some(scheme) = url.find("://") else {
+        return url.to_string();
+    };
+    let auth_start = scheme + 3;
+    let path_at = url[auth_start..]
+        .find(['/', '?', '#'])
+        .map(|offset| auth_start + offset)
+        .unwrap_or(url.len());
+    let authority = &url[auth_start..path_at];
+    let Some(at) = authority.rfind('@') else {
+        return url.to_string();
+    };
+    let mut stripped = String::with_capacity(url.len());
+    stripped.push_str(&url[..auth_start]);
+    stripped.push_str(&authority[at + 1..]);
+    stripped.push_str(&url[path_at..]);
+    stripped
+}
+
 fn map_reqwest_error(err: reqwest::Error) -> String {
     let message = redact_transport_error(&err.to_string());
     let lower = message.to_ascii_lowercase();
@@ -199,5 +220,27 @@ fn map_reqwest_error(err: reqwest::Error) -> String {
         format!("fetch failed: ECONNREFUSED: {message}")
     } else {
         message
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::redact_transport_error;
+
+    #[test]
+    fn strips_userinfo_query_and_fragment() {
+        let message = "error sending request for url (https://x-access-token:ghp_example@github.com/org/repo?key=super-secret-google-key-value#frag) and http://user:password@127.0.0.1:9/path";
+        let redacted = redact_transport_error(message);
+        assert!(
+            redacted.contains("https://github.com/org/repo"),
+            "{redacted}"
+        );
+        assert!(redacted.contains("http://127.0.0.1:9/path"), "{redacted}");
+        assert!(!redacted.contains("ghp_example"), "{redacted}");
+        assert!(!redacted.contains("x-access-token"), "{redacted}");
+        assert!(!redacted.contains("password"), "{redacted}");
+        assert!(!redacted.contains("super-secret"), "{redacted}");
+        assert!(!redacted.contains("key="), "{redacted}");
+        assert!(!redacted.contains("#frag"), "{redacted}");
     }
 }

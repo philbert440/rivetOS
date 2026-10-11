@@ -112,6 +112,50 @@ async fn search_glob_cases() {
     assert!(!linked.contains("secret.txt"), "{linked}");
     let link_name = run(&tool, json!({"pattern": "*"}), &ctx).await;
     assert!(link_name.contains("link"), "{link_name}");
+    let started = std::time::Instant::now();
+    let dotfile = run(&tool, json!({"pattern": "**/.gitignore"}), &ctx).await;
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "{dotfile} elapsed {:?}",
+        started.elapsed()
+    );
+    assert_eq!(dotfile, "Found 1 files:\n.gitignore");
+    let missing_env = run(&tool, json!({"pattern": "**/.env"}), &ctx).await;
+    assert!(
+        missing_env.starts_with("No files matching"),
+        "{missing_env}"
+    );
+    assert!(!missing_env.contains(".."), "{missing_env}");
+    let dot_child = run(&tool, json!({"pattern": ".*/*"}), &ctx).await;
+    assert_eq!(dot_child, "Found 1 files:\n.hidden/file.ts");
+    let dotted_prefix = run(&tool, json!({"pattern": "./src/tools/*.ts"}), &ctx).await;
+    assert_eq!(
+        dotted_prefix,
+        "Found 2 files:\nsrc/tools/shell.test.ts\nsrc/tools/shell.ts"
+    );
+    let dotted_middle = run(&tool, json!({"pattern": "src/./tools/*.ts"}), &ctx).await;
+    assert_eq!(dotted_middle, dotted_prefix);
+    let collapsed = run(&tool, json!({"pattern": "src/../README.md"}), &ctx).await;
+    assert_eq!(collapsed, "Found 1 files:\nREADME.md");
+    let absolute = format!("{}/src/tools/*.ts", dir.display());
+    let absolute_found = run(&tool, json!({"pattern": absolute}), &ToolContext::default()).await;
+    let root = dir.display();
+    assert_eq!(
+        absolute_found,
+        format!("Found 2 files:\n{root}/src/tools/shell.test.ts\n{root}/src/tools/shell.ts")
+    );
+    let cancel = CancellationToken::new();
+    cancel.cancel();
+    let aborted = tool
+        .execute(json!({"pattern": "**/*"}), &cancel, &ctx)
+        .await;
+    assert_eq!(result_text(&aborted), "Error: glob walk aborted");
+    let expired = SearchGlobTool::new(SearchGlobConfig {
+        walk_timeout: Duration::ZERO,
+        ..SearchGlobConfig::default()
+    });
+    let timed = run(&expired, json!({"pattern": "**/*"}), &ctx).await;
+    assert_eq!(timed, "Error: glob walk timed out");
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_dir_all(&outside);
 }

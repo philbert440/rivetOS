@@ -345,16 +345,66 @@ async fn timeout_kills_background_process_group() {
     );
     assert!(!result.contains("Command timed out"), "{result}");
     let pid: u32 = result.trim().parse().expect("background pid");
-    let proc_path = format!("/proc/{pid}");
-    let mut gone = !std::path::Path::new(&proc_path).exists();
+    let mut running = process_is_running(pid);
     for _ in 0..20 {
-        if gone {
+        if !running {
             break;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
-        gone = !std::path::Path::new(&proc_path).exists();
+        running = process_is_running(pid);
     }
-    assert!(gone, "pid {pid} still alive after timeout: {result}");
+    assert!(
+        !running,
+        "pid {pid} still running after timeout: {result} {}",
+        process_state(pid)
+    );
+}
+
+fn process_state(pid: u32) -> String {
+    std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap_or_else(|_| "gone".to_string())
+}
+
+fn process_is_running(pid: u32) -> bool {
+    let Ok(status) = std::fs::read_to_string(format!("/proc/{pid}/status")) else {
+        return false;
+    };
+    for line in status.lines() {
+        let Some(state) = line.strip_prefix("State:") else {
+            continue;
+        };
+        let state = state.trim();
+        return !(state.starts_with('Z') || state.starts_with('X'));
+    }
+    true
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn abort_while_grandchild_holds_the_pipe() {
+    let tool = ShellTool::new(ShellConfig {
+        timeout: Duration::from_secs(20),
+        ..ShellConfig::default()
+    });
+    let cancel = CancellationToken::new();
+    let cancel_later = cancel.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        cancel_later.cancel();
+    });
+    let started = std::time::Instant::now();
+    let result = tool
+        .execute(
+            json!({"command": "sleep 30 & echo hi"}),
+            &cancel,
+            &ToolContext::default(),
+        )
+        .await;
+    let result = result_text(&result);
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "{result} elapsed {:?}",
+        started.elapsed()
+    );
+    assert_eq!(result, "Command aborted");
 }
 
 #[test]

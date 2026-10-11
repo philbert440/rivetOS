@@ -1,5 +1,7 @@
 use std::collections::HashSet;
-use std::path::Path;
+use std::ffi::OsStr;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use globset::{GlobBuilder, GlobMatcher};
 use schemars::JsonSchema;
@@ -13,6 +15,7 @@ use crate::schema::{schema_of, set_property_description};
 use crate::{Tool, text};
 
 const DEFAULT_MAX_RESULTS: usize = 200;
+const DEFAULT_WALK_TIMEOUT: Duration = Duration::from_secs(30);
 const DEFAULT_EXCLUDE: &[&str] = &["node_modules", ".git", "dist", "build", ".next", "coverage"];
 
 const AGENT_DESCRIPTION: &str =
@@ -24,6 +27,7 @@ pub struct SearchGlobConfig {
     pub max_results: usize,
     pub exclude_dirs: Option<Vec<String>>,
     pub surface: ToolSurface,
+    pub walk_timeout: Duration,
 }
 
 impl Default for SearchGlobConfig {
@@ -32,6 +36,7 @@ impl Default for SearchGlobConfig {
             max_results: DEFAULT_MAX_RESULTS,
             exclude_dirs: None,
             surface: ToolSurface::Agent,
+            walk_timeout: DEFAULT_WALK_TIMEOUT,
         }
     }
 }
@@ -40,6 +45,7 @@ pub struct SearchGlobTool {
     max_results: usize,
     exclude_dirs: HashSet<String>,
     surface: ToolSurface,
+    walk_timeout: Duration,
 }
 
 #[derive(JsonSchema)]
@@ -60,6 +66,7 @@ impl SearchGlobTool {
             max_results: config.max_results,
             exclude_dirs: exclude_dirs.into_iter().collect(),
             surface: config.surface,
+            walk_timeout: config.walk_timeout,
         }
     }
 
@@ -105,7 +112,7 @@ impl Tool for SearchGlobTool {
     async fn execute(
         &self,
         args: Value,
-        _cancellation: &CancellationToken,
+        cancellation: &CancellationToken,
         context: &ToolContext,
     ) -> protocol::ToolResult {
         let pattern = string(&args, "pattern").unwrap_or("");
@@ -116,7 +123,14 @@ impl Tool for SearchGlobTool {
             Some(cwd) => resolve_user_path(cwd, context),
             None => context.base_dir(),
         };
-        let segments = split_pattern(pattern);
+        let (absolute, segments) = normalize_segments(pattern);
+        let (start, prefix, segments) = anchor(&search_dir, absolute, segments);
+        if segments.is_empty() {
+            return text(format!(
+                "No files matching \"{pattern}\" in {}",
+                search_dir.display()
+            ));
+        }
         let mut matchers = Vec::with_capacity(segments.len());
         for segment in &segments {
             if segment == "**" {
@@ -128,15 +142,19 @@ impl Tool for SearchGlobTool {
                 Err(err) => return text(format!("Error: {err}")),
             }
         }
-        match collect(
-            &search_dir,
-            &segments,
-            &matchers,
-            &self.exclude_dirs,
-            self.max_results,
-        )
-        .await
-        {
+        let deadline = tokio::time::Instant::now() + self.walk_timeout;
+        let plan = Plan {
+            start: &start,
+            prefix: &prefix,
+            absolute,
+            segments: &segments,
+            matchers: &matchers,
+            exclude: &self.exclude_dirs,
+            max_results: self.max_results,
+            cancellation,
+            deadline,
+        };
+        match collect(&plan).await {
             Ok(mut results) => {
                 if results.is_empty() {
                     return text(format!(
@@ -159,17 +177,103 @@ impl Tool for SearchGlobTool {
 }
 
 struct Frame {
-    path: std::path::PathBuf,
+    path: PathBuf,
     rel: String,
     index: usize,
 }
 
-fn split_pattern(pattern: &str) -> Vec<String> {
-    pattern
-        .split('/')
-        .filter(|segment| !segment.is_empty())
-        .map(str::to_string)
-        .collect()
+struct Plan<'a> {
+    start: &'a Path,
+    prefix: &'a str,
+    absolute: bool,
+    segments: &'a [String],
+    matchers: &'a [Option<GlobMatcher>],
+    exclude: &'a HashSet<String>,
+    max_results: usize,
+    cancellation: &'a CancellationToken,
+    deadline: tokio::time::Instant,
+}
+
+struct Walk<'a> {
+    stack: &'a mut Vec<Frame>,
+    exclude: &'a HashSet<String>,
+    matched: &'a mut Vec<String>,
+    segments: &'a [String],
+    matchers: &'a [Option<GlobMatcher>],
+    max_results: usize,
+    cancellation: &'a CancellationToken,
+    deadline: tokio::time::Instant,
+    absolute: bool,
+}
+
+fn is_pattern_magic(segment: &str) -> bool {
+    segment.contains(['*', '?', '['])
+}
+
+fn normalize_segments(pattern: &str) -> (bool, Vec<String>) {
+    let absolute = pattern.starts_with('/');
+    let mut segments: Vec<String> = Vec::new();
+    for segment in pattern.split('/') {
+        if segment.is_empty() || segment == "." {
+            continue;
+        }
+        if segment == ".." {
+            let collapse = segments
+                .last()
+                .is_some_and(|prev| !is_pattern_magic(prev) && prev != "..");
+            if collapse {
+                segments.pop();
+                continue;
+            }
+            if absolute && segments.is_empty() {
+                continue;
+            }
+            segments.push("..".to_string());
+            continue;
+        }
+        segments.push(segment.to_string());
+    }
+    (absolute, segments)
+}
+
+fn anchor(cwd: &Path, absolute: bool, mut segments: Vec<String>) -> (PathBuf, String, Vec<String>) {
+    let mut ups = 0usize;
+    if !absolute {
+        while segments.first().is_some_and(|segment| segment == "..") {
+            segments.remove(0);
+            ups += 1;
+        }
+    }
+    let mut start = if absolute {
+        PathBuf::from("/")
+    } else {
+        cwd.to_path_buf()
+    };
+    let mut parts = Vec::new();
+    for _ in 0..ups {
+        start.pop();
+        parts.push("..".to_string());
+    }
+    if absolute {
+        let mut keep = 0usize;
+        while keep + 1 < segments.len() && !is_pattern_magic(&segments[keep]) {
+            keep += 1;
+        }
+        for segment in segments.drain(..keep) {
+            start.push(&segment);
+            parts.push(segment);
+        }
+    }
+    let prefix = if absolute {
+        if parts.is_empty() {
+            String::new()
+        } else {
+            format!("/{}", parts.join("/"))
+        }
+    } else {
+        parts.join("/")
+    };
+    (start, prefix, segments)
 }
 
 fn compile_segment(segment: &str) -> Result<GlobMatcher, String> {
@@ -181,66 +285,98 @@ fn compile_segment(segment: &str) -> Result<GlobMatcher, String> {
         .map_err(|err| err.to_string())
 }
 
-async fn collect(
-    root: &Path,
-    segments: &[String],
-    matchers: &[Option<GlobMatcher>],
-    exclude: &HashSet<String>,
-    max_results: usize,
-) -> Result<Vec<String>, std::io::Error> {
+async fn collect(plan: &Plan<'_>) -> Result<Vec<String>, std::io::Error> {
+    if plan.segments.is_empty() {
+        return Ok(Vec::new());
+    }
+    if plan.absolute {
+        match tokio::fs::metadata(plan.start).await {
+            Ok(_) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(err) => return Err(err),
+        }
+    }
     let mut matched = Vec::new();
     let mut stack = vec![Frame {
-        path: root.to_path_buf(),
-        rel: String::new(),
+        path: plan.start.to_path_buf(),
+        rel: plan.prefix.to_string(),
         index: 0,
     }];
     let mut walk = Walk {
         stack: &mut stack,
-        exclude,
+        exclude: plan.exclude,
         matched: &mut matched,
-        max_results,
+        segments: plan.segments,
+        matchers: plan.matchers,
+        max_results: plan.max_results,
+        cancellation: plan.cancellation,
+        deadline: plan.deadline,
+        absolute: plan.absolute,
     };
     while let Some(frame) = walk.stack.pop() {
+        check_limits(&walk)?;
         if walk.matched.len() >= walk.max_results {
             break;
         }
-        if frame.index >= segments.len() {
+        if frame.index >= walk.segments.len() {
             continue;
         }
-        let segment = &segments[frame.index];
-        if segment == "**" {
-            push_globstar(&mut walk, &frame, segments).await?;
-        } else if let Some(matcher) = matchers.get(frame.index).and_then(Option::as_ref) {
-            push_segment(&mut walk, &frame, matcher, segments).await?;
+        if walk.segments[frame.index] == "**" {
+            push_globstar(&mut walk, &frame).await?;
+        } else if walk
+            .matchers
+            .get(frame.index)
+            .and_then(Option::as_ref)
+            .is_some()
+        {
+            push_segment(&mut walk, &frame).await?;
         }
     }
     Ok(matched)
 }
 
-struct Walk<'a> {
-    stack: &'a mut Vec<Frame>,
-    exclude: &'a HashSet<String>,
-    matched: &'a mut Vec<String>,
-    max_results: usize,
+fn check_limits(walk: &Walk<'_>) -> Result<(), std::io::Error> {
+    if walk.cancellation.is_cancelled() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Interrupted,
+            "glob walk aborted",
+        ));
+    }
+    if tokio::time::Instant::now() >= walk.deadline {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "glob walk timed out",
+        ));
+    }
+    Ok(())
 }
 
-async fn push_globstar(
-    walk: &mut Walk<'_>,
-    frame: &Frame,
-    segments: &[String],
-) -> Result<(), std::io::Error> {
+fn remember(walk: &mut Walk<'_>, rel: String) {
+    if rel.is_empty() {
+        return;
+    }
+    if walk.absolute && !rel.starts_with('/') {
+        walk.matched.push(format!("/{rel}"));
+    } else {
+        walk.matched.push(rel);
+    }
+}
+
+async fn push_globstar(walk: &mut Walk<'_>, frame: &Frame) -> Result<(), std::io::Error> {
     let entries = read_entries(&frame.path).await?;
-    let last = frame.index + 1 == segments.len();
-    let later_dot = segments[frame.index + 1..]
+    check_limits(walk)?;
+    let last = frame.index + 1 == walk.segments.len();
+    let later_dot = walk.segments[frame.index + 1..]
         .iter()
         .any(|segment| segment.starts_with('.'));
     let mut descents = Vec::new();
     for entry in &entries {
+        check_limits(walk)?;
         if walk.matched.len() >= walk.max_results {
             break;
         }
         let name = entry_name(entry);
-        if walk.exclude.contains(&name) {
+        if is_dot_dir(&entry.file_name()) || walk.exclude.contains(&name) {
             continue;
         }
         if name.starts_with('.') && !later_dot {
@@ -249,7 +385,7 @@ async fn push_globstar(
         let file_type = entry.file_type().await?;
         let rel = join_rel(&frame.rel, &name);
         if last {
-            walk.matched.push(rel.clone());
+            remember(walk, rel.clone());
         }
         if file_type.is_dir() {
             descents.push(Frame {
@@ -272,25 +408,28 @@ async fn push_globstar(
     Ok(())
 }
 
-async fn push_segment(
-    walk: &mut Walk<'_>,
-    frame: &Frame,
-    matcher: &GlobMatcher,
-    segments: &[String],
-) -> Result<(), std::io::Error> {
+async fn push_segment(walk: &mut Walk<'_>, frame: &Frame) -> Result<(), std::io::Error> {
     let entries = read_entries(&frame.path).await?;
-    let last = frame.index + 1 == segments.len();
-    let segment = &segments[frame.index];
+    check_limits(walk)?;
+    let last = frame.index + 1 == walk.segments.len();
+    let allow_dot = walk
+        .segments
+        .get(frame.index)
+        .is_some_and(|segment| segment.starts_with('.'));
+    let Some(matcher) = walk.matchers.get(frame.index).cloned().flatten() else {
+        return Ok(());
+    };
     let mut descents = Vec::new();
     for entry in entries {
+        check_limits(walk)?;
         if walk.matched.len() >= walk.max_results {
             break;
         }
         let name = entry_name(&entry);
-        if walk.exclude.contains(&name) {
+        if is_dot_dir(&entry.file_name()) || walk.exclude.contains(&name) {
             continue;
         }
-        if name.starts_with('.') && !segment.starts_with('.') {
+        if name.starts_with('.') && !allow_dot {
             continue;
         }
         if !matcher.is_match(name.as_str()) {
@@ -299,7 +438,7 @@ async fn push_segment(
         let rel = join_rel(&frame.rel, &name);
         let file_type = entry.file_type().await?;
         if last {
-            walk.matched.push(rel);
+            remember(walk, rel);
         } else if file_type.is_dir() {
             descents.push(Frame {
                 path: entry.path(),
@@ -318,9 +457,16 @@ async fn read_entries(path: &Path) -> Result<Vec<tokio::fs::DirEntry>, std::io::
     let mut entries = Vec::new();
     let mut read = tokio::fs::read_dir(path).await?;
     while let Some(entry) = read.next_entry().await? {
+        if is_dot_dir(&entry.file_name()) {
+            continue;
+        }
         entries.push(entry);
     }
     Ok(entries)
+}
+
+fn is_dot_dir(name: &OsStr) -> bool {
+    name == OsStr::new(".") || name == OsStr::new("..")
 }
 
 fn entry_name(entry: &tokio::fs::DirEntry) -> String {

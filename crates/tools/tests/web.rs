@@ -480,12 +480,15 @@ async fn fetch_negative_max_chars_drops_last_unit() {
 }
 
 #[tokio::test]
-async fn fetch_invalid_url_returns_text() {
+async fn fetch_refused_port_redacts_userinfo() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    let secret = "ghp_example_token_value";
+    let url = format!("http://x-access-token:{secret}@127.0.0.1:{port}/org/repo");
     let tool = WebFetchTool::new(WebFetchConfig::default());
-    let result = run(
-        &tool,
-        json!({"url": "http://127.0.0.1:1/nope", "max_chars": 1000}),
-    )
-    .await;
+    let result = run(&tool, json!({"url": url, "max_chars": 1000})).await;
     assert!(result.contains("Fetch error"), "{result}");
+    assert!(!result.contains(secret), "{result}");
+    assert!(!result.contains("x-access-token"), "{result}");
 }

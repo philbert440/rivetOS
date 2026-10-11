@@ -104,8 +104,8 @@ pub async fn run_shell(
         timed_out,
         deadline,
     };
-    drain_readers(stdout_task, stderr_task, &mut drain).await;
-    let code = if aborted || buffer_exceeded || natural.is_none() {
+    drain_readers(stdout_task, stderr_task, &mut drain, cancellation).await;
+    let code = if drain.aborted || drain.buffer_exceeded || natural.is_none() {
         None
     } else {
         natural.and_then(|status| status.code())
@@ -114,8 +114,8 @@ pub async fn run_shell(
         stdout: bytes_to_string(&stdout_buf),
         stderr: bytes_to_string(&stderr_buf),
         code,
-        aborted,
-        buffer_exceeded,
+        aborted: drain.aborted,
+        buffer_exceeded: drain.buffer_exceeded,
         error: None,
     }
 }
@@ -133,6 +133,7 @@ async fn drain_readers(
     mut stdout_task: JoinHandle<()>,
     mut stderr_task: JoinHandle<()>,
     drain: &mut Drain,
+    cancellation: &CancellationToken,
 ) {
     let mut out_done = false;
     let mut err_done = false;
@@ -171,6 +172,11 @@ async fn drain_readers(
             result = &mut stderr_task, if !err_done => {
                 err_done = true;
                 let _ = result;
+            }
+            _ = cancellation.cancelled(), if !drain.aborted => {
+                kill_group(drain.pid, Signal::SIGTERM);
+                drain.aborted = true;
+                grace_deadline = tokio::time::Instant::now() + Duration::from_secs(2);
             }
             _ = tokio::time::sleep(left) => {}
         }

@@ -75,7 +75,7 @@ pub(crate) async fn rename_confined(
 }
 
 fn write_blocking(path: &Path, content: &str, roots: &[String]) -> Result<(), String> {
-    let prepared = prepare_roots(roots);
+    let prepared = prepare_roots(roots)?;
     let mut current = absolute_lexical(path);
     for _ in 0..MAX_LINKS {
         match write_here(&current, content, &prepared, path)? {
@@ -114,7 +114,7 @@ fn write_here(
 }
 
 fn mkdir_blocking(path: &Path, roots: &[String]) -> Result<(), String> {
-    let prepared = prepare_roots(roots);
+    let prepared = prepare_roots(roots)?;
     let (canonical, names) =
         locate_names(&absolute_lexical(path), &prepared).map_err(|()| refuse(path))?;
     let mut dir = open_root(Path::new(&canonical))?;
@@ -125,7 +125,7 @@ fn mkdir_blocking(path: &Path, roots: &[String]) -> Result<(), String> {
 }
 
 fn probe_blocking(path: &Path, roots: &[String]) -> Result<(), String> {
-    let prepared = prepare_roots(roots);
+    let prepared = prepare_roots(roots)?;
     let (canonical, names) =
         locate_names(&absolute_lexical(path), &prepared).map_err(|()| refuse(path))?;
     let mut dir = open_root(Path::new(&canonical))?;
@@ -143,7 +143,7 @@ fn probe_blocking(path: &Path, roots: &[String]) -> Result<(), String> {
 }
 
 fn rename_blocking(from: &Path, to: &Path, roots: &[String]) -> Result<(), String> {
-    let prepared = prepare_roots(roots);
+    let prepared = prepare_roots(roots)?;
     let (from_root, from_names) =
         locate_names(&absolute_lexical(from), &prepared).map_err(|()| refuse(from))?;
     let (to_root, to_names) =
@@ -337,13 +337,28 @@ fn open_child(parent: &DirFd, name: &OsString) -> Result<DirFd, Errno> {
     Ok(DirFd(fd))
 }
 
-fn prepare_roots(roots: &[String]) -> Vec<PreparedRoot> {
+fn prepare_roots(roots: &[String]) -> Result<Vec<PreparedRoot>, String> {
     let mut out = Vec::new();
     for root in roots {
         if root.is_empty() {
             continue;
         }
         let original = absolute_lexical(Path::new(root));
+        match std::fs::symlink_metadata(&original) {
+            Ok(meta) if meta.file_type().is_symlink() => continue,
+            Ok(meta) if !meta.is_dir() => return Err(refuse(Path::new(root))),
+            Ok(_) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                materialize_missing(&original)?;
+            }
+            Err(err) => return Err(format!("Error: {err}")),
+        }
+        let Ok(meta) = std::fs::symlink_metadata(&original) else {
+            continue;
+        };
+        if meta.file_type().is_symlink() || !meta.is_dir() {
+            continue;
+        }
         let Ok(canonical) = std::fs::canonicalize(&original) else {
             continue;
         };
@@ -352,7 +367,54 @@ fn prepare_roots(roots: &[String]) -> Vec<PreparedRoot> {
             canonical,
         });
     }
-    out
+    Ok(out)
+}
+
+fn materialize_missing(root: &Path) -> Result<(), String> {
+    let mut ancestor = root.to_path_buf();
+    let mut missing = Vec::new();
+    loop {
+        match std::fs::symlink_metadata(&ancestor) {
+            Ok(meta) if meta.file_type().is_symlink() => return Err(refuse(root)),
+            Ok(meta) if meta.is_dir() => break,
+            Ok(_) => return Err(refuse(root)),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                let Some(name) = ancestor.file_name().map(|name| name.to_os_string()) else {
+                    return Err(refuse(root));
+                };
+                missing.push(name);
+                if !ancestor.pop() {
+                    return Err(refuse(root));
+                }
+            }
+            Err(err) => return Err(format!("Error: {err}")),
+        }
+    }
+    if missing.is_empty() {
+        return Ok(());
+    }
+    missing.reverse();
+    let mut dir = open_root(&ancestor)?;
+    for name in &missing {
+        match mkdirat(
+            Some(dir.0),
+            name.as_os_str(),
+            Mode::from_bits_truncate(0o755),
+        ) {
+            Ok(()) | Err(Errno::EEXIST) => {}
+            Err(err) => return Err(format!("Error: {err}")),
+        }
+        dir = match open_child(&dir, name) {
+            Ok(next) => next,
+            Err(Errno::ELOOP | Errno::ENOTDIR) => return Err(refuse(root)),
+            Err(err) => return Err(format!("Error: {err}")),
+        };
+    }
+    let meta = std::fs::symlink_metadata(root).map_err(|err| format!("Error: {err}"))?;
+    if meta.file_type().is_symlink() || !meta.is_dir() {
+        return Err(refuse(root));
+    }
+    Ok(())
 }
 
 fn locate_names(path: &Path, roots: &[PreparedRoot]) -> Result<(PathBuf, Vec<OsString>), ()> {

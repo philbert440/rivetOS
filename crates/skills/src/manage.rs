@@ -125,6 +125,20 @@ impl SkillManageTool {
             Some(first.clone())
         }
     }
+
+    fn allowed_roots(&self) -> Vec<String> {
+        let mut roots = self.skill_dirs.clone();
+        if !self.pending_gate {
+            return roots;
+        }
+        let Some(pending) = self.target_dir() else {
+            return roots;
+        };
+        if !roots.iter().any(|root| root == &pending) {
+            roots.push(pending);
+        }
+        roots
+    }
 }
 
 #[async_trait::async_trait]
@@ -318,7 +332,7 @@ impl SkillManageTool {
             return format!("Security scan failed:\n{issues}");
         }
         let skill_dir = Path::new(&target_dir).join(name);
-        let roots = roots_for(&self.skill_dirs, &target_dir);
+        let roots = self.allowed_roots();
         if let Err(err) = mkdir_confined(&skill_dir, &roots).await {
             return err;
         }
@@ -370,7 +384,7 @@ impl SkillManageTool {
         if let Err(issues) = scan_issues(&updated) {
             return format!("Security scan failed:\n{issues}");
         }
-        let roots = roots_for(&self.skill_dirs, &skill_dir.to_string_lossy());
+        let roots = self.allowed_roots();
         if let Err(err) = write_confined(Path::new(&skill.location), &updated, &roots).await {
             return err;
         }
@@ -432,7 +446,7 @@ impl SkillManageTool {
         if let Err(issues) = scan_issues(&current) {
             return format!("Security scan failed after patching:\n{issues}");
         }
-        let roots = roots_for(&self.skill_dirs, &skill_dir.to_string_lossy());
+        let roots = self.allowed_roots();
         if let Err(err) = write_confined(Path::new(&skill.location), &current, &roots).await {
             return err;
         }
@@ -458,7 +472,7 @@ impl SkillManageTool {
         let trash_dir = parent.join(".trash");
         let trash_name = format!("{name}-{}", chrono::Utc::now().timestamp_millis());
         let trash_path = trash_dir.join(&trash_name);
-        let roots = roots_for(&self.skill_dirs, &parent.to_string_lossy());
+        let roots = self.allowed_roots();
         if let Err(err) = ensure_inside(&skill_dir, &roots).await {
             return err;
         }
@@ -487,7 +501,7 @@ impl SkillManageTool {
         let parent = node_dirname(&skill_dir);
         let retired_dir = Path::new(first).join("retired");
         let retired_path = retired_dir.join(name);
-        let roots = roots_for(&self.skill_dirs, first);
+        let roots = self.allowed_roots();
         if let Err(err) = ensure_inside(&skill_dir, &roots).await {
             return err;
         }
@@ -610,7 +624,7 @@ impl SkillManageTool {
         }
         let skill_dir = node_dirname(Path::new(&skill.location));
         let full_path = skill_dir.join(&normalized);
-        let roots = roots_for(&self.skill_dirs, &skill_dir.to_string_lossy());
+        let roots = self.allowed_roots();
         if let Err(err) = write_confined(&full_path, file_content, &roots).await {
             return err;
         }
@@ -686,14 +700,6 @@ fn name_ok(name: &str) -> bool {
         .ok()
         .and_then(|regex| regex.find(name).map(|item| item.as_str() == name))
         .unwrap_or(false)
-}
-
-fn roots_for(skill_dirs: &[String], extra: &str) -> Vec<String> {
-    let mut allowed = skill_dirs.to_vec();
-    if !extra.is_empty() {
-        allowed.push(extra.to_string());
-    }
-    allowed
 }
 
 fn arg_str<'a>(args: &'a Value, key: &str) -> Option<&'a str> {

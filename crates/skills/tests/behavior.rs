@@ -1106,3 +1106,99 @@ async fn skill_manage_confines_symlinks_and_dotdot_names() {
     assert!(agent.get("$schema").is_none());
     assert!(agent.get("title").is_none());
 }
+
+#[tokio::test]
+async fn discovered_skill_symlink_is_not_a_trusted_root() {
+    let dir = TempDir::new("swap-root");
+    let outside = TempDir::new("swap-out");
+    let path = dir.path().display().to_string();
+    let manager = SkillManager::new();
+    manager.discover(vec![path.clone()]).await;
+    let tool = SkillManageTool::new(manager, vec![path]);
+    let created = run(
+        &tool,
+        json!({"action": "create", "name": "demo", "description": "Demo skill"}),
+    )
+    .await;
+    assert!(created.contains("created"), "{created}");
+    let skill = dir.path().join("demo");
+    std::fs::remove_dir_all(&skill).unwrap();
+    std::os::unix::fs::symlink(outside.path(), &skill).unwrap();
+    let written = run(
+        &tool,
+        json!({
+            "action": "write_file",
+            "name": "demo",
+            "file_path": "references/config.json",
+            "file_content": "pwned"
+        }),
+    )
+    .await;
+    assert!(written.contains("Refusing to write outside"), "{written}");
+    assert!(!outside.path().join("references").exists());
+    assert!(!outside.path().join("config.json").exists());
+    let edited = run(
+        &tool,
+        json!({
+            "action": "edit",
+            "name": "demo",
+            "content": "---\nname: demo\ndescription: Demo skill\n---\n\n# Hacked\n"
+        }),
+    )
+    .await;
+    assert!(edited.contains("Refusing to write outside"), "{edited}");
+    assert!(!outside.path().join("SKILL.md").exists());
+    std::fs::write(
+        outside.path().join("SKILL.md"),
+        "---\nname: demo\ndescription: Demo skill\n---\n\n# Stay\n",
+    )
+    .unwrap();
+    let patched = run(
+        &tool,
+        json!({
+            "action": "patch",
+            "name": "demo",
+            "content": "FIND: Demo skill\nREPLACE: Hacked"
+        }),
+    )
+    .await;
+    assert!(patched.contains("Refusing to write outside"), "{patched}");
+    let outside_body = std::fs::read_to_string(outside.path().join("SKILL.md")).unwrap();
+    assert!(outside_body.contains("# Stay"), "{outside_body}");
+    assert!(!outside_body.contains("Hacked"), "{outside_body}");
+}
+
+#[tokio::test]
+async fn create_makes_a_missing_configured_root() {
+    let parent = TempDir::new("missing-parent");
+    let root = parent.path().join("not-created").join("skills");
+    assert!(!root.exists());
+    let tool = SkillManageTool::new(SkillManager::new(), vec![root.display().to_string()]);
+    let created = run(
+        &tool,
+        json!({"action": "create", "name": "first", "description": "First skill"}),
+    )
+    .await;
+    assert!(created.contains("created"), "{created}");
+    let body = std::fs::read_to_string(root.join("first").join("SKILL.md")).unwrap();
+    assert!(body.contains("name: first"), "{body}");
+}
+
+#[tokio::test]
+async fn create_refuses_a_missing_root_through_a_symlink() {
+    let parent = TempDir::new("link-parent");
+    let outside = TempDir::new("link-out");
+    let link = parent.path().join("link");
+    std::os::unix::fs::symlink(outside.path(), &link).unwrap();
+    let root = link.join("skills");
+    assert!(!root.exists());
+    let tool = SkillManageTool::new(SkillManager::new(), vec![root.display().to_string()]);
+    let created = run(
+        &tool,
+        json!({"action": "create", "name": "first", "description": "Nope"}),
+    )
+    .await;
+    assert!(created.contains("Refusing to write outside"), "{created}");
+    assert!(!outside.path().join("skills").exists());
+    assert!(!outside.path().join("first").exists());
+}
