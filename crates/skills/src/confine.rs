@@ -75,8 +75,9 @@ pub(crate) async fn rename_confined(
 }
 
 fn write_blocking(path: &Path, content: &str, roots: &[String]) -> Result<(), String> {
-    materialize_destination(path, roots)?;
-    let prepared = prepare_roots(roots)?;
+    let roots = scope_roots(&[path], roots);
+    materialize_destination(path, &roots)?;
+    let prepared = prepare_roots(&roots)?;
     let mut current = absolute_lexical(path);
     for _ in 0..MAX_LINKS {
         match write_here(&current, content, &prepared, path)? {
@@ -115,8 +116,9 @@ fn write_here(
 }
 
 fn mkdir_blocking(path: &Path, roots: &[String]) -> Result<(), String> {
-    materialize_destination(path, roots)?;
-    let prepared = prepare_roots(roots)?;
+    let roots = scope_roots(&[path], roots);
+    materialize_destination(path, &roots)?;
+    let prepared = prepare_roots(&roots)?;
     let (canonical, names) =
         locate_names(&absolute_lexical(path), &prepared).map_err(|()| refuse(path))?;
     let mut dir = open_root(Path::new(&canonical))?;
@@ -127,10 +129,11 @@ fn mkdir_blocking(path: &Path, roots: &[String]) -> Result<(), String> {
 }
 
 fn probe_blocking(path: &Path, roots: &[String]) -> Result<(), String> {
-    if destination_missing(path, roots)? {
+    let roots = scope_roots(&[path], roots);
+    if destination_missing(path, &roots)? {
         return Ok(());
     }
-    let prepared = prepare_roots(roots)?;
+    let prepared = prepare_roots(&roots)?;
     let (canonical, names) =
         locate_names(&absolute_lexical(path), &prepared).map_err(|()| refuse(path))?;
     let mut dir = open_root(Path::new(&canonical))?;
@@ -148,8 +151,9 @@ fn probe_blocking(path: &Path, roots: &[String]) -> Result<(), String> {
 }
 
 fn rename_blocking(from: &Path, to: &Path, roots: &[String]) -> Result<(), String> {
-    materialize_destination(to, roots)?;
-    let prepared = prepare_roots(roots)?;
+    let roots = scope_roots(&[from, to], roots);
+    materialize_destination(to, &roots)?;
+    let prepared = prepare_roots(&roots)?;
     let (from_root, from_names) =
         locate_names(&absolute_lexical(from), &prepared).map_err(|()| refuse(from))?;
     let (to_root, to_names) =
@@ -394,6 +398,21 @@ fn destination_missing(path: &Path, roots: &[String]) -> Result<bool, String> {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(true),
         Err(err) => Err(format!("Error: {err}")),
     }
+}
+
+fn scope_roots(paths: &[&Path], roots: &[String]) -> Vec<String> {
+    let mut chosen = Vec::new();
+    for path in paths {
+        let Some(root) = destination_root(path, roots) else {
+            continue;
+        };
+        let text = root.to_string_lossy().into_owned();
+        if chosen.iter().any(|item| item == &text) {
+            continue;
+        }
+        chosen.push(text);
+    }
+    chosen
 }
 
 fn destination_root(path: &Path, roots: &[String]) -> Option<PathBuf> {

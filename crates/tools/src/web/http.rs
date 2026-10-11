@@ -10,12 +10,16 @@ pub struct HttpRequest {
     pub timeout: Duration,
 }
 
-#[derive(Debug, Clone)]
 pub struct HttpResponse {
     pub status: u16,
     pub status_text: String,
     pub headers: Vec<(String, String)>,
-    pub body: String,
+    body: ResponseBody,
+}
+
+enum ResponseBody {
+    Ready(String),
+    Pending(Option<reqwest::Response>),
 }
 
 #[derive(Debug, Clone)]
@@ -81,13 +85,40 @@ impl HttpClient for ReqwestClient {
                 )
             })
             .collect();
-        let body = response.text().await.map_err(map_reqwest_error)?;
         Ok(HttpResponse {
             status: status.as_u16(),
             status_text,
             headers,
-            body,
+            body: ResponseBody::Pending(Some(response)),
         })
+    }
+}
+
+impl HttpResponse {
+    pub fn with_text(
+        status: u16,
+        status_text: impl Into<String>,
+        headers: Vec<(String, String)>,
+        body: impl Into<String>,
+    ) -> Self {
+        Self {
+            status,
+            status_text: status_text.into(),
+            headers,
+            body: ResponseBody::Ready(body.into()),
+        }
+    }
+
+    pub async fn text(&mut self) -> Result<String, String> {
+        match std::mem::replace(&mut self.body, ResponseBody::Ready(String::new())) {
+            ResponseBody::Ready(text) => Ok(text),
+            ResponseBody::Pending(slot) => {
+                let Some(response) = slot else {
+                    return Ok(String::new());
+                };
+                response.text().await.map_err(map_reqwest_error)
+            }
+        }
     }
 }
 

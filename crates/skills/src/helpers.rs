@@ -240,7 +240,7 @@ pub async fn embed_text(
     }
     let input = utf16_prefix(text, 8000);
     let body = serde_json::json!({ "input": input, "model": model }).to_string();
-    let response = http
+    let mut response = http
         .send(tools::HttpRequest {
             method: "POST".to_string(),
             url: format!("{endpoint}/v1/embeddings"),
@@ -253,7 +253,8 @@ pub async fn embed_text(
     if !(200..300).contains(&response.status) {
         return None;
     }
-    let data: serde_json::Value = serde_json::from_str(&response.body).ok()?;
+    let body = response.text().await.ok()?;
+    let data: serde_json::Value = serde_json::from_str(&body).ok()?;
     let mut vec = data
         .get("data")?
         .as_array()?

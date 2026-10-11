@@ -1,5 +1,8 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
+
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use serde_json::{Value, json};
 use tools::{
@@ -19,12 +22,12 @@ fn offline() -> WebSearchConfig {
 }
 
 fn response(status: u16, status_text: &str, content_type: &str, body: &str) -> HttpResponse {
-    HttpResponse {
+    HttpResponse::with_text(
         status,
-        status_text: status_text.to_string(),
-        headers: vec![("content-type".to_string(), content_type.to_string())],
-        body: body.to_string(),
-    }
+        status_text,
+        vec![("content-type".to_string(), content_type.to_string())],
+        body,
+    )
 }
 
 async fn run(tool: &impl Tool, args: Value) -> String {
@@ -491,4 +494,177 @@ async fn fetch_refused_port_redacts_userinfo() {
     assert!(result.contains("Fetch error"), "{result}");
     assert!(!result.contains(secret), "{result}");
     assert!(!result.contains("x-access-token"), "{result}");
+}
+
+fn http_message(status_line: &str, headers: &str, length: usize, body: &str) -> String {
+    format!(
+        "{status_line}\r\n{headers}\r\nContent-Length: {length}\r\nConnection: close\r\n\r\n{body}"
+    )
+}
+
+async fn spawn_local_http(response: String, stall: bool, hits: Option<Arc<AtomicUsize>>) -> u16 {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut socket, _)) = listener.accept().await else {
+                break;
+            };
+            if let Some(hits) = &hits {
+                hits.fetch_add(1, Ordering::SeqCst);
+            }
+            let response = response.clone();
+            tokio::spawn(async move {
+                let mut received = Vec::new();
+                let mut buf = [0u8; 1024];
+                loop {
+                    if received.windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                    let Ok(n) = socket.read(&mut buf).await else {
+                        return;
+                    };
+                    if n == 0 {
+                        return;
+                    }
+                    received.extend_from_slice(&buf[..n]);
+                    if received.len() > 65536 {
+                        return;
+                    }
+                }
+                if socket.write_all(response.as_bytes()).await.is_err() {
+                    return;
+                }
+                if stall {
+                    let _ = socket.read(&mut buf).await;
+                }
+            });
+        }
+    });
+    port
+}
+
+#[tokio::test]
+async fn fetch_local_http_reads_a_finished_body() {
+    let response = http_message(
+        "HTTP/1.1 200 OK",
+        "Content-Type: text/plain",
+        "hello".len(),
+        "hello",
+    );
+    let port = spawn_local_http(response, false, None).await;
+    let tool = WebFetchTool::new(WebFetchConfig::default());
+    let result = run(
+        &tool,
+        json!({"url": format!("http://127.0.0.1:{port}/hello")}),
+    )
+    .await;
+    assert_eq!(result, "hello");
+}
+
+#[tokio::test]
+async fn fetch_pdf_ignores_an_incomplete_body() {
+    let response = http_message(
+        "HTTP/1.1 200 OK",
+        "Content-Type: application/pdf",
+        1_000_000,
+        "",
+    );
+    let port = spawn_local_http(response, false, None).await;
+    let tool = WebFetchTool::new(WebFetchConfig::default());
+    let started = std::time::Instant::now();
+    let result = run(
+        &tool,
+        json!({"url": format!("http://127.0.0.1:{port}/file.pdf")}),
+    )
+    .await;
+    assert!(result.contains("PDF content detected"), "{result}");
+    assert!(!result.contains("Fetch error"), "{result}");
+    assert!(started.elapsed() < Duration::from_secs(5), "{result}");
+}
+
+#[tokio::test]
+async fn fetch_pdf_returns_before_a_stalled_body() {
+    let response = http_message(
+        "HTTP/1.1 200 OK",
+        "Content-Type: application/pdf",
+        1_000_000,
+        "",
+    );
+    let port = spawn_local_http(response, true, None).await;
+    let tool = WebFetchTool::new(WebFetchConfig::default());
+    let started = std::time::Instant::now();
+    let result = run(
+        &tool,
+        json!({"url": format!("http://127.0.0.1:{port}/file.pdf")}),
+    )
+    .await;
+    assert!(result.contains("PDF content detected"), "{result}");
+    assert!(!result.contains("Fetch error"), "{result}");
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+}
+
+#[tokio::test]
+async fn fetch_error_status_returns_before_a_stalled_body() {
+    let response = http_message(
+        "HTTP/1.1 404 Not Found",
+        "Content-Type: text/plain",
+        1_000_000,
+        "",
+    );
+    let port = spawn_local_http(response, true, None).await;
+    let tool = WebFetchTool::new(WebFetchConfig::default());
+    let started = std::time::Instant::now();
+    let result = run(
+        &tool,
+        json!({"url": format!("http://127.0.0.1:{port}/missing")}),
+    )
+    .await;
+    assert_eq!(result, "Fetch failed (404): Not Found");
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+}
+
+#[tokio::test]
+async fn google_status_retries_before_a_stalled_body() {
+    let stalled = http_message(
+        "HTTP/1.1 500 Internal Server Error",
+        "Content-Type: text/plain",
+        1_000_000,
+        "",
+    );
+    let hits = Arc::new(AtomicUsize::new(0));
+    let google_port = spawn_local_http(stalled, true, Some(hits.clone())).await;
+    let ddg = http_message(
+        "HTTP/1.1 200 OK",
+        "Content-Type: text/html",
+        DDG_HTML.len(),
+        DDG_HTML,
+    );
+    let ddg_port = spawn_local_http(ddg, false, None).await;
+    let tool = WebSearchTool::new(WebSearchConfig {
+        google_api_key: Some("test-key".to_string()),
+        google_cse_id: Some("test-cse".to_string()),
+        xai_api_key: Some(String::new()),
+        google_endpoint: Some(format!("http://127.0.0.1:{google_port}/search")),
+        ddg_endpoint: Some(format!("http://127.0.0.1:{ddg_port}/html/")),
+        retry_base: Duration::from_millis(1),
+        ..WebSearchConfig::default()
+    });
+    let started = std::time::Instant::now();
+    let result = run(&tool, json!({"query": "stalled status"})).await;
+    assert!(result.contains("DDG Title"), "{result}");
+    assert_eq!(hits.load(Ordering::SeqCst), 3);
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "{:?} {result}",
+        started.elapsed()
+    );
 }

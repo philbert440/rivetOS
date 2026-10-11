@@ -522,11 +522,11 @@ mod tests {
 
     use super::*;
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn bounded_io_times_out_while_the_read_is_pending() {
         let cancellation = CancellationToken::new();
-        let deadline = tokio::time::Instant::now() + Duration::from_millis(40);
-        let started = std::time::Instant::now();
+        let started = tokio::time::Instant::now();
+        let deadline = started + Duration::from_millis(40);
         let err = bounded(
             &cancellation,
             deadline,
@@ -536,31 +536,33 @@ mod tests {
         .unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
         assert_eq!(err.to_string(), "glob walk timed out");
-        assert!(started.elapsed() >= Duration::from_millis(20));
-        assert!(started.elapsed() < Duration::from_secs(2));
+        let elapsed = started.elapsed();
+        assert!(elapsed >= Duration::from_millis(20), "{elapsed:?}");
+        assert!(elapsed < Duration::from_secs(2), "{elapsed:?}");
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn bounded_io_aborts_while_the_read_is_pending() {
         let cancellation = CancellationToken::new();
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        let started = tokio::time::Instant::now();
+        let deadline = started + Duration::from_secs(30);
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let op = async move {
+            let _ = ready_tx.send(());
+            std::future::pending::<Result<(), std::io::Error>>().await
+        };
         let cancel = cancellation.clone();
         tokio::spawn(async move {
+            let _ = ready_rx.await;
             tokio::time::sleep(Duration::from_millis(40)).await;
             cancel.cancel();
         });
-        let started = std::time::Instant::now();
-        let err = bounded(
-            &cancellation,
-            deadline,
-            std::future::pending::<Result<(), std::io::Error>>(),
-        )
-        .await
-        .unwrap_err();
+        let err = bounded(&cancellation, deadline, op).await.unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::Interrupted);
         assert_eq!(err.to_string(), "glob walk aborted");
-        assert!(started.elapsed() >= Duration::from_millis(20));
-        assert!(started.elapsed() < Duration::from_secs(2));
+        let elapsed = started.elapsed();
+        assert!(elapsed >= Duration::from_millis(20), "{elapsed:?}");
+        assert!(elapsed < Duration::from_secs(2), "{elapsed:?}");
     }
 
     #[tokio::test]

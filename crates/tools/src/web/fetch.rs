@@ -134,7 +134,7 @@ impl Tool for WebFetchTool {
         {
             accept.1 = "text/plain".to_string();
         }
-        let response = match self
+        let mut response = match self
             .http
             .send(HttpRequest {
                 method: "GET".to_string(),
@@ -154,16 +154,22 @@ impl Tool for WebFetchTool {
                 response.status, response.status_text
             ));
         }
-        let content_type = header_value(&response, "content-type").unwrap_or("");
+        let content_type = header_value(&response, "content-type")
+            .unwrap_or("")
+            .to_string();
         if content_type.contains("application/pdf") {
             return text(PDF_MESSAGE);
         }
+        let body = match response.text().await {
+            Ok(body) => body,
+            Err(err) => return text(format!("Fetch error: {err}")),
+        };
         let mut result = if content_type.contains("application/json") {
-            render_json(&response.body)
+            render_json(&body)
         } else if content_type.contains("text/html") {
-            extract_markdown(&response.body)
+            extract_markdown(&body)
         } else {
-            response.body
+            body
         };
         if js_len_exceeds(utf16_len(&result), max_chars) {
             let end = js_end_index(utf16_len(&result), max_chars);

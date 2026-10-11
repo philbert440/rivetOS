@@ -1275,3 +1275,122 @@ async fn missing_unrelated_root_does_not_block_writes() {
     assert!(!blocked.exists());
     assert!(!locked.path().join("optional-skills").exists());
 }
+
+#[tokio::test]
+async fn inaccessible_secondary_root_does_not_block_writes() {
+    let parent = TempDir::new("dest-ok");
+    let root = parent.path().join("skills");
+    std::fs::create_dir_all(&root).unwrap();
+    let file_root = parent.path().join("notes.txt");
+    std::fs::write(&file_root, "keep").unwrap();
+    let missing = parent.path().join("not-there");
+    let locked = TempDir::new("locked-eacces");
+    let mut perms = std::fs::metadata(locked.path()).unwrap().permissions();
+    let original = perms.mode();
+    perms.set_mode(0o000);
+    std::fs::set_permissions(locked.path(), perms).unwrap();
+    let _restore = RestoreMode {
+        path: locked.path().to_path_buf(),
+        mode: original,
+    };
+    let blocked = locked.path().join("private").join("skills");
+    let err = std::fs::symlink_metadata(&blocked).unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+    let tool = SkillManageTool::new(
+        SkillManager::new(),
+        vec![
+            root.display().to_string(),
+            missing.display().to_string(),
+            blocked.display().to_string(),
+            file_root.display().to_string(),
+        ],
+    );
+    let created = run(
+        &tool,
+        json!({"action": "create", "name": "first", "description": "First skill"}),
+    )
+    .await;
+    assert!(created.contains("created"), "{created}");
+    assert!(!created.contains("Permission denied"), "{created}");
+    assert!(!created.contains("Refusing to write outside"), "{created}");
+    let body = std::fs::read_to_string(root.join("first").join("SKILL.md")).unwrap();
+    assert!(body.contains("name: first"), "{body}");
+    let written = run(
+        &tool,
+        json!({
+            "action": "write_file",
+            "name": "first",
+            "file_path": "references/note.txt",
+            "file_content": "hello"
+        }),
+    )
+    .await;
+    assert!(written.contains("File written"), "{written}");
+    assert!(!written.contains("Permission denied"), "{written}");
+    assert_eq!(
+        std::fs::read_to_string(root.join("first").join("references").join("note.txt")).unwrap(),
+        "hello"
+    );
+    let edited = run(
+        &tool,
+        json!({
+            "action": "edit",
+            "name": "first",
+            "content": "---\nname: first\ndescription: First skill\n---\n\n# Edited\n"
+        }),
+    )
+    .await;
+    assert!(edited.contains("updated"), "{edited}");
+    assert!(!edited.contains("Permission denied"), "{edited}");
+    std::fs::set_permissions(locked.path(), {
+        let mut restored = std::fs::metadata(locked.path()).unwrap().permissions();
+        restored.set_mode(original);
+        restored
+    })
+    .unwrap();
+    assert!(!blocked.exists());
+    assert!(!missing.exists());
+    assert_eq!(std::fs::read_to_string(&file_root).unwrap(), "keep");
+    assert!(file_root.is_file());
+}
+
+#[tokio::test]
+async fn inaccessible_destination_root_still_fails() {
+    let locked = TempDir::new("dest-locked");
+    let mut perms = std::fs::metadata(locked.path()).unwrap().permissions();
+    let original = perms.mode();
+    perms.set_mode(0o000);
+    std::fs::set_permissions(locked.path(), perms).unwrap();
+    let _restore = RestoreMode {
+        path: locked.path().to_path_buf(),
+        mode: original,
+    };
+    let root = locked.path().join("skills");
+    let tool = SkillManageTool::new(SkillManager::new(), vec![root.display().to_string()]);
+    let created = run(
+        &tool,
+        json!({"action": "create", "name": "first", "description": "Nope"}),
+    )
+    .await;
+    assert!(
+        created.contains("Permission denied") || created.contains("Refusing to write outside"),
+        "{created}"
+    );
+    assert!(!created.contains("created"), "{created}");
+}
+
+#[tokio::test]
+async fn regular_file_destination_root_still_refuses() {
+    let parent = TempDir::new("file-dest");
+    let file_root = parent.path().join("notes.txt");
+    std::fs::write(&file_root, "keep").unwrap();
+    let tool = SkillManageTool::new(SkillManager::new(), vec![file_root.display().to_string()]);
+    let created = run(
+        &tool,
+        json!({"action": "create", "name": "first", "description": "Nope"}),
+    )
+    .await;
+    assert!(created.contains("Refusing to write outside"), "{created}");
+    assert_eq!(std::fs::read_to_string(&file_root).unwrap(), "keep");
+    assert!(file_root.is_file());
+}

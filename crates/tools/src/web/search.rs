@@ -322,7 +322,7 @@ async fn xai_search(
         "tools": [{ "type": "web_search" }]
     })
     .to_string();
-    let response = http
+    let mut response = http
         .send(HttpRequest {
             method: "POST".to_string(),
             url: endpoint.to_string(),
@@ -335,13 +335,14 @@ async fn xai_search(
         })
         .await?;
     if response.status < 200 || response.status >= 300 {
-        let snippet = utf16_prefix(&response.body, 160);
+        let snippet = utf16_prefix(&error_body(&mut response).await, 160);
         return Err(status_error(
             response.status,
             format!("web search {}: {snippet}", response.status),
         ));
     }
-    let data: Value = serde_json::from_str(&response.body).unwrap_or(Value::Null);
+    let body = response.text().await?;
+    let data: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
     let output = data
         .get("output")
         .and_then(Value::as_array)
@@ -445,7 +446,7 @@ async fn google_search(
         ("num", &protocol::JsNumber::from(count).to_string()),
     ]);
     let url = format!("{endpoint}?{params}");
-    let response = http
+    let mut response = http
         .send(HttpRequest {
             method: "GET".to_string(),
             url,
@@ -461,10 +462,11 @@ async fn google_search(
                 format!("Google CSE {}", response.status),
             ));
         }
-        let snippet = utf16_prefix(&response.body, 200);
+        let snippet = utf16_prefix(&error_body(&mut response).await, 200);
         return Err(format!("Google CSE failed ({}): {snippet}", response.status).into());
     }
-    let data: Value = serde_json::from_str(&response.body).unwrap_or(Value::Null);
+    let body = response.text().await?;
+    let data: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
     let items = data
         .get("items")
         .and_then(Value::as_array)
@@ -501,7 +503,7 @@ async fn ddg_search(
 ) -> Result<Vec<SearchHit>, ProviderError> {
     let params = form_encode(&[("q", query)]);
     let url = format!("{endpoint}?{params}");
-    let response = http
+    let mut response = http
         .send(HttpRequest {
             method: "POST".to_string(),
             url,
@@ -525,7 +527,12 @@ async fn ddg_search(
             format!("DuckDuckGo {}", response.status),
         ));
     }
-    Ok(parse_ddg(&response.body, count))
+    let body = response.text().await?;
+    Ok(parse_ddg(&body, count))
+}
+
+async fn error_body(response: &mut super::http::HttpResponse) -> String {
+    response.text().await.unwrap_or_default()
 }
 
 fn parse_ddg(html: &str, max_results: f64) -> Vec<SearchHit> {
