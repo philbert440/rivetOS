@@ -46,8 +46,8 @@ mod tests {
         env.set("RIVETOS_DEN_STATE_DIR", "/tmp/den-state");
         assert_eq!(den_state_dir_in(&env), "/tmp/den-state");
         let mut home = MapEnv::new();
-        home.set("HOME", "/home/example");
-        assert_eq!(den_under_home(&home), "/home/example/.rivetos/den");
+        home.set("HOME", "/home/user");
+        assert_eq!(den_under_home(&home), "/home/user/.rivetos/den");
         let mut empty = MapEnv::new();
         empty.set("HOME", "");
         assert_eq!(den_under_home(&empty), ".rivetos/den");
@@ -56,11 +56,11 @@ mod tests {
             ".rivetos/den/agents.json"
         );
         let mut relative = MapEnv::new();
-        relative.set("HOME", "rel/home");
-        assert_eq!(den_under_home(&relative), "rel/home/.rivetos/den");
+        relative.set("HOME", "rel/user-home");
+        assert_eq!(den_under_home(&relative), "rel/user-home/.rivetos/den");
         assert_eq!(
             agents_json_file_in(&den_under_home(&relative)),
-            "rel/home/.rivetos/den/agents.json"
+            "rel/user-home/.rivetos/den/agents.json"
         );
         let joined = den_under_home(&MapEnv::new());
         assert!(joined.starts_with('/'), "{joined}");

@@ -46,7 +46,7 @@ fn args<'a>(
         file,
         store,
         node: "node-f",
-        directory_root: "/home/agents",
+        directory_root: "/home/user/agents",
         log,
     }
 }
@@ -77,7 +77,7 @@ async fn imports_rows_with_a_default_directory_and_renames_the_file() {
     );
     assert_eq!(
         row.directory.as_ref().map(agents::JsString::to_utf8),
-        Some("/home/agents/reviewer")
+        Some("/home/user/agents/reviewer")
     );
     assert_eq!(row.created_at, 10);
     assert_eq!(row.name.to_utf8(), "Reviewer");
@@ -87,7 +87,7 @@ async fn imports_rows_with_a_default_directory_and_renames_the_file() {
             .directory
             .as_ref()
             .map(agents::JsString::to_utf8),
-        Some("/home/agents/reviewer")
+        Some("/home/user/agents/reviewer")
     );
 }
 
@@ -118,7 +118,7 @@ async fn skips_a_conflicting_id_and_still_renames() {
         file: &file,
         store: &target,
         node: "node-f",
-        directory_root: "/home/agents",
+        directory_root: "/home/user/agents",
         log: Some(&|message| logs.lock().push(message.to_string())),
     })
     .await
@@ -145,7 +145,7 @@ async fn skips_a_conflicting_id_and_still_renames() {
             .directory
             .as_ref()
             .map(agents::JsString::to_utf8),
-        Some("/home/agents/newcomer")
+        Some("/home/user/agents/newcomer")
     );
 }
 
@@ -182,7 +182,7 @@ async fn renames_conflicting_names_with_node_suffixes() {
         file: &file,
         store: &target,
         node: "node-f",
-        directory_root: "/home/agents",
+        directory_root: "/home/user/agents",
         log: Some(&|message| logs.lock().push(message.to_string())),
     })
     .await
@@ -316,7 +316,7 @@ async fn skips_only_an_id_conflict_when_postgres_names_the_constraint() {
         file: &file,
         store: &store,
         node: "node-f",
-        directory_root: "/home/agents",
+        directory_root: "/home/user/agents",
         log: Some(&|message| logs.lock().push(message.to_string())),
     })
     .await
@@ -361,7 +361,7 @@ async fn keeps_a_valid_directory_and_falls_back_when_one_is_invalid() {
         file: &file,
         store: &target,
         node: "node-f",
-        directory_root: "/home/agents",
+        directory_root: "/home/user/agents",
         log: Some(&|message| logs.lock().push(message.to_string())),
     })
     .await
@@ -388,7 +388,7 @@ async fn keeps_a_valid_directory_and_falls_back_when_one_is_invalid() {
             .directory
             .as_ref()
             .map(agents::JsString::to_utf8),
-        Some("/home/agents/rel")
+        Some("/home/user/agents/rel")
     );
     assert_eq!(
         target
@@ -399,7 +399,7 @@ async fn keeps_a_valid_directory_and_falls_back_when_one_is_invalid() {
             .directory
             .as_ref()
             .map(agents::JsString::to_utf8),
-        Some("/home/agents/bad")
+        Some("/home/user/agents/bad")
     );
     let logged = logs.lock().join("\n");
     assert!(logged.to_lowercase().contains("rel"));
@@ -588,7 +588,7 @@ async fn uses_the_id_suffix_once_numbered_suffixes_are_exhausted() {
         file: &file,
         store: &target,
         node: "node-f",
-        directory_root: "/home/agents",
+        directory_root: "/home/user/agents",
         log: Some(&|message| logs.lock().push(message.to_string())),
     })
     .await
@@ -638,7 +638,7 @@ async fn leaves_the_source_when_the_id_suffix_still_collides() {
         file: &file,
         store: &target,
         node: "node-f",
-        directory_root: "/home/agents",
+        directory_root: "/home/user/agents",
         log: Some(&|message| logs.lock().push(message.to_string())),
     })
     .await
@@ -696,7 +696,7 @@ async fn file_import_keeps_a_surrogate_and_the_create_shape() {
     );
     assert_eq!(
         row.directory.as_ref().map(agents::JsString::to_utf8),
-        Some("/home/agents/old")
+        Some("/home/user/agents/old")
     );
     assert_eq!(row.created_at, 1);
     assert!(row.harness_id.is_none());

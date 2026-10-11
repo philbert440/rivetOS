@@ -11,9 +11,9 @@ fn context<'a>(
 ) -> ValidateCtx<'a> {
     ValidateCtx {
         node_name: "node-f",
-        directory_root: "/home/agents",
+        directory_root: "/home/user/agents",
         home: "/home/user",
-        shared_dir: Some("/home/shared"),
+        shared_dir: Some("/home/user/shared"),
         allow_harness: allow,
         model_list: models,
     }
@@ -33,7 +33,7 @@ fn existing() -> AgentPreset {
         effort: "medium".into(),
         system_prompt: "".into(),
         node: Some("node-f".into()),
-        directory: Some("/home/agents/legacy".into()),
+        directory: Some("/home/user/agents/legacy".into()),
         shared_link: Some(true),
         node_base_url: Some("".into()),
         sort_order: None,
@@ -78,7 +78,7 @@ fn create_stamps_this_node_and_rejects_a_foreign_one() {
             .map(|value| value.to_utf8()),
         Some("")
     );
-    assert_eq!(created.input.directory.to_utf8(), "/home/agents/bare");
+    assert_eq!(created.input.directory.to_utf8(), "/home/user/agents/bare");
     assert_eq!(
         created.input.effort.as_ref().map(|value| value.to_utf8()),
         Some("medium")
@@ -249,7 +249,7 @@ fn patch_node_sort_order_directory_and_foreign_placement() {
         Some("Renamed")
     );
     let same = validate_patch(
-        &js(json!({"directory": "/home/agents/legacy", "sharedLink": true})),
+        &js(json!({"directory": "/home/user/agents/legacy", "sharedLink": true})),
         &foreign,
         &ctx,
     )

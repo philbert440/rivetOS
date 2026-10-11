@@ -535,7 +535,7 @@ async fn imports_a_fallback_create_that_was_in_flight_when_the_primary_flipped()
                 file: &file,
                 store: primary.as_ref(),
                 node: "node-f",
-                directory_root: "/home/agents",
+                directory_root: "/home/user/agents",
                 log: None,
             })
             .await

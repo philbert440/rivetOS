@@ -32,8 +32,8 @@ fn slugify_matches_the_registry_cases() {
 #[test]
 fn default_directory_joins_the_root_and_the_slug() {
     assert_eq!(
-        default_directory_for("/home/agents", "Hello World"),
-        "/home/agents/hello-world"
+        default_directory_for("/home/user/agents", "Hello World"),
+        "/home/user/agents/hello-world"
     );
 }
 
@@ -82,7 +82,7 @@ fn validate_directory_rejects_paths_longer_than_512_and_the_root() {
 fn directory_warnings_only_when_inside_the_shared_directory() {
     assert!(
         directory_warnings(
-            "/home/agents/reviewer",
+            "/home/user/agents/reviewer",
             Some("/nonexistent-shared-root-for-tests")
         )
         .is_empty()

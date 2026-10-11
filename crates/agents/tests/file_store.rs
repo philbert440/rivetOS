@@ -356,7 +356,7 @@ async fn clash_keeps_submitted_casing_and_distinct_truncated_surrogates() {
 async fn handle_lookup_keeps_a_capped_surrogate_and_rejects_the_lookalike() {
     let ctx = ValidateCtx {
         node_name: "node-f",
-        directory_root: "/home/agents",
+        directory_root: "/home/user/agents",
         home: "/home/user",
         shared_dir: None,
         allow_harness: None,
