@@ -2,8 +2,6 @@ use protocol::js::JsObject;
 use protocol::{HookEventName, ToolResult};
 use serde_json::{Map, Value};
 
-use crate::time_format::epoch_ms;
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct PromptUsage {
     pub prompt_tokens: i64,
@@ -118,7 +116,7 @@ impl HookContext {
             event,
             agent_id: None,
             session_id: None,
-            timestamp: epoch_ms(),
+            timestamp: protocol::js::date_now() as i64,
             metadata: JsObject::new(),
             provider_id: None,
             model: None,
@@ -399,14 +397,8 @@ mod tests {
             Some("shell")
         );
         assert_eq!(
-            HookContext::tool_after(
-                "shell",
-                Map::new(),
-                ToolResult::Text("ok".to_string()),
-                4,
-                false
-            )
-            .duration_ms,
+            HookContext::tool_after("shell", Map::new(), ToolResult::Text("ok".into()), 4, false)
+                .duration_ms,
             Some(4)
         );
         assert_eq!(

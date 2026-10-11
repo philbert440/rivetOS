@@ -1,4 +1,4 @@
-use protocol::js::{en_us_hour24_hhmm, to_fixed};
+use protocol::js::to_fixed;
 
 #[test]
 fn to_fixed_follows_ecmascript() {
@@ -92,51 +92,24 @@ fn to_fixed_follows_ecmascript() {
         ),
     ];
     for (value, digits, expected, rule) in cases {
-        assert_eq!(to_fixed(value, digits).as_deref(), Ok(expected), "{rule}");
+        assert_eq!(
+            to_fixed(value, digits as f64).as_deref(),
+            Ok(expected),
+            "{rule}"
+        );
     }
     let ratio = (1.0 - 15.0 / 16.0) * 100.0;
     assert_eq!(
-        to_fixed(ratio, 1).as_deref(),
+        to_fixed(ratio, 1.0).as_deref(),
         Ok("6.3"),
         "compacting 16 messages to 15 is exactly 6.25 percent, and toFixed(1) rounds the tie to 6.3"
     );
-    assert!(to_fixed(1.0, -1).is_err(), "fractionDigits below 0 throws");
     assert!(
-        to_fixed(1.0, 101).is_err(),
+        to_fixed(1.0, -1.0).is_err(),
+        "fractionDigits below 0 throws"
+    );
+    assert!(
+        to_fixed(1.0, 101.0).is_err(),
         "fractionDigits above 100 throws"
     );
-}
-
-#[test]
-fn en_us_hour24_prints_midnight_as_24() {
-    let cases = [
-        (
-            0,
-            0,
-            "24:00",
-            "en-US hour12:false resolves to hour cycle h24, and hour 0 is displayed as 24",
-        ),
-        (
-            0,
-            30,
-            "24:30",
-            "h24 uses 24 for the whole hour 0, not only for minute 00",
-        ),
-        (
-            1,
-            5,
-            "01:05",
-            "hour and minute are both 2-digit fields with a colon and no day period",
-        ),
-        (12, 0, "12:00", "noon stays 12 in h24"),
-        (
-            23,
-            59,
-            "23:59",
-            "the last minute of the day stays in the 00-23 range except hour 0",
-        ),
-    ];
-    for (hour, minute, expected, rule) in cases {
-        assert_eq!(en_us_hour24_hhmm(hour, minute), expected, "{rule}");
-    }
 }

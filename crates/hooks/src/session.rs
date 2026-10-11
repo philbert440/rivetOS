@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use chrono::Timelike;
 use protocol::HookEventName;
 use protocol::js::{JsObject, JsValue};
 
@@ -9,7 +8,7 @@ use crate::files::FileWriter;
 use crate::handler::{BoxFuture, HookErrorMode, HookFailure, HookHandler, HookSignal};
 use crate::pipeline::HookRegistration;
 use crate::shell::{ShellError, ShellExecutor};
-use crate::time_format::{fixed_1, group_en_us, utc_date};
+use crate::time_format::{fixed_1, utc_date};
 
 const DAILY_NOTE_CAP: i64 = 2000;
 const AGENT_ENV: &str = "RIVET_AGENT_ID";
@@ -149,27 +148,31 @@ async fn session_start(
     hook_ctx: &mut HookContext,
     ctx: &SessionHooksContext,
 ) -> Result<HookSignal, HookFailure> {
-    hook_ctx.metadata.insert_key(
+    hook_ctx.metadata.insert(
         "sessionStartTime",
         JsValue::Number(hook_ctx.timestamp as f64),
     );
     if let Some(platform) = hook_ctx.platform.clone() {
         hook_ctx
             .metadata
-            .insert_key("platform", JsValue::from_text(&platform));
+            .insert("platform", JsValue::from_text(&platform));
     }
     if let Some(user_id) = hook_ctx.user_id.clone() {
         hook_ctx
             .metadata
-            .insert_key("userId", JsValue::from_text(&user_id));
+            .insert("userId", JsValue::from_text(&user_id));
     }
     if let (Some(writer), Some(workspace)) = (ctx.file_writer.clone(), ctx.workspace_dir.clone()) {
         let path = daily_note_path(&workspace, ctx.utc_day.as_deref());
         match writer.read(&path).await {
             Ok(Some(note)) if !note.is_empty() => {
-                hook_ctx.metadata.insert_key(
+                hook_ctx.metadata.insert(
                     "dailyContext",
-                    JsValue::String(protocol::js::slice_units(&note, 0, Some(DAILY_NOTE_CAP))),
+                    JsValue::String(protocol::js::js_slice(
+                        &note,
+                        Some(0.0),
+                        Some(DAILY_NOTE_CAP as f64),
+                    )),
                 );
             }
             Err(err) if err.is_read_timeout() => {
@@ -202,12 +205,12 @@ async fn session_summary(
         lines.push(format!("- Turns: {turns}"));
     }
     if let Some(totals) = hook_ctx.total_tokens.clone() {
-        let total = i128::from(totals.prompt) + i128::from(totals.completion);
+        let total = (totals.prompt as f64) + (totals.completion as f64);
         lines.push(format!(
             "- Tokens: {} ({} in / {} out)",
-            group_i128(total),
-            group_en_us(totals.prompt),
-            group_en_us(totals.completion)
+            protocol::js::number_to_locale_string_en_us(total),
+            protocol::js::number_to_locale_string_en_us(totals.prompt as f64),
+            protocol::js::number_to_locale_string_en_us(totals.completion as f64)
         ));
     }
     lines.push(String::new());
@@ -216,7 +219,7 @@ async fn session_summary(
     let written = writer.append(&path, &body).await.is_ok();
     hook_ctx
         .metadata
-        .insert_key("summaryWritten", JsValue::Bool(written));
+        .insert("summaryWritten", JsValue::Bool(written));
     Ok(HookSignal::Continue)
 }
 
@@ -229,15 +232,15 @@ async fn auto_commit(
     };
     match commit_workspace(hook_ctx, shell.as_ref(), &workspace).await {
         Ok(value) => {
-            hook_ctx.metadata.insert_key("autoCommit", value);
+            hook_ctx.metadata.insert("autoCommit", value);
         }
         Err(err) => {
-            hook_ctx.metadata.insert_json(
+            hook_ctx.metadata.insert(
                 "autoCommit",
-                &serde_json::json!({
+                protocol::js::from_serde(&serde_json::json!({
                     "status": "error",
                     "message": err.message,
-                }),
+                })),
             );
         }
     }
@@ -253,7 +256,7 @@ async fn commit_workspace(
         .exec("git status --porcelain", Some(workspace))
         .await?;
     if protocol::js::js_trim(&status.stdout).is_empty() {
-        return Ok(protocol::js::from_json(&serde_json::json!({
+        return Ok(protocol::js::from_serde(&serde_json::json!({
             "status": "clean",
             "message": "No uncommitted changes",
         })));
@@ -271,10 +274,14 @@ async fn commit_workspace(
         "failed"
     };
     let mut record = JsObject::new();
-    record.insert_key("status", JsValue::from_text(status_text));
-    record.insert_key(
+    record.insert("status", JsValue::from_text(status_text));
+    record.insert(
         "output",
-        JsValue::String(protocol::js::slice_units(&commit.stdout, 0, Some(200))),
+        JsValue::String(protocol::js::js_slice(
+            &commit.stdout,
+            Some(0.0),
+            Some(200.0),
+        )),
     );
     Ok(JsValue::Object(record))
 }
@@ -283,15 +290,15 @@ fn pre_compact(ctx: &mut HookContext) -> Result<HookSignal, HookFailure> {
     let mut snapshot = JsObject::new();
     match ctx.message_count {
         Some(count) => {
-            snapshot.insert_key("messageCount", JsValue::Number(count as f64));
+            snapshot.insert("messageCount", JsValue::Number(count as f64));
         }
         None => {
-            snapshot.insert_key("messageCount", JsValue::Null);
+            snapshot.insert("messageCount", JsValue::Null);
         }
     }
-    snapshot.insert_key("timestamp", JsValue::Number(ctx.timestamp as f64));
+    snapshot.insert("timestamp", JsValue::Number(ctx.timestamp as f64));
     ctx.metadata
-        .insert_key("preCompactSnapshot", JsValue::Object(snapshot));
+        .insert("preCompactSnapshot", JsValue::Object(snapshot));
     Ok(HookSignal::Continue)
 }
 
@@ -315,11 +322,11 @@ async fn post_compact(
         _ => "unknown".to_string(),
     };
     let mut result = JsObject::new();
-    result.insert_key("originalMessages", original);
+    result.insert("originalMessages", original);
     if let Some(remaining) = hook_ctx.remaining_messages {
-        result.insert_key("remainingMessages", JsValue::Number(remaining as f64));
+        result.insert("remainingMessages", JsValue::Number(remaining as f64));
     }
-    result.insert_key(
+    result.insert(
         "summaryGenerated",
         JsValue::Bool(
             hook_ctx
@@ -328,10 +335,10 @@ async fn post_compact(
                 .is_some_and(|text| !text.is_empty()),
         ),
     );
-    result.insert_key("compressionRatio", JsValue::from_text(&ratio));
+    result.insert("compressionRatio", JsValue::from_text(&ratio));
     hook_ctx
         .metadata
-        .insert_key("compactionResult", JsValue::Object(result));
+        .insert("compactionResult", JsValue::Object(result));
     if let (Some(writer), Some(workspace)) = (ctx.file_writer.clone(), ctx.workspace_dir.clone()) {
         let now = clock_hhmm().await;
         let count_text = match count {
@@ -379,25 +386,9 @@ async fn clock_hhmm() -> String {
     match tokio::task::spawn_blocking(crate::time_format::local_hhmm).await {
         Ok(text) => text,
         Err(_) => {
-            let now = chrono::Utc::now();
-            protocol::js::en_us_hour24_hhmm(now.hour(), now.minute())
+            let mut env = protocol::host::MapEnv::new();
+            env.set("TZ", "UTC");
+            protocol::js::to_locale_time_string_en_us_hour24(protocol::js::date_now(), &env)
         }
     }
-}
-
-fn group_i128(value: i128) -> String {
-    let negative = value < 0;
-    let digits = value.unsigned_abs().to_string();
-    let mut grouped = String::new();
-    for (index, ch) in digits.chars().rev().enumerate() {
-        if index > 0 && index % 3 == 0 {
-            grouped.push(',');
-        }
-        grouped.push(ch);
-    }
-    let mut text: String = grouped.chars().rev().collect();
-    if negative {
-        text.insert(0, '-');
-    }
-    text
 }

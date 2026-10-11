@@ -171,7 +171,7 @@ async fn audit_hooks_redact_truncate_and_continue_after_write_failure() {
     before.agent_id = Some("opus".to_string());
     pipeline.run(&mut before).await;
     {
-        let entries = writer.entries.lock().unwrap_or_else(|err| err.into_inner());
+        let entries = writer.entries.lock();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].event, HookEventName::ToolBefore);
         assert_eq!(entries[0].tool_name, "shell");
@@ -180,7 +180,7 @@ async fn audit_hooks_redact_truncate_and_continue_after_write_failure() {
     let mut after = tool_after_duration("file_read", json!({"path": "/test.ts"}), 42, false);
     pipeline.run(&mut after).await;
     {
-        let entries = writer.entries.lock().unwrap_or_else(|err| err.into_inner());
+        let entries = writer.entries.lock();
         assert_eq!(entries[1].event, HookEventName::ToolAfter);
         assert_eq!(entries[1].duration_ms, Some(hooks::JsNumber::from(42_i64)));
     }
@@ -191,7 +191,7 @@ async fn audit_hooks_redact_truncate_and_continue_after_write_failure() {
     );
     pipeline.run(&mut secret).await;
     {
-        let entries = writer.entries.lock().unwrap_or_else(|err| err.into_inner());
+        let entries = writer.entries.lock();
         assert_eq!(
             entries[2]
                 .args
@@ -229,7 +229,7 @@ async fn audit_hooks_redact_truncate_and_continue_after_write_failure() {
     );
     pipeline.run(&mut long).await;
     {
-        let entries = writer.entries.lock().unwrap_or_else(|err| err.into_inner());
+        let entries = writer.entries.lock();
         let content = entries[3]
             .args
             .get("content")
@@ -241,7 +241,7 @@ async fn audit_hooks_redact_truncate_and_continue_after_write_failure() {
     }
 
     let failing = Arc::new(MemAudit::new());
-    *failing.fail.lock().unwrap_or_else(|err| err.into_inner()) = Some("disk full".to_string());
+    *failing.fail.lock() = Some("disk full".to_string());
     let fail_pipeline = HookPipeline::new();
     for hook in create_audit_hooks(failing) {
         fail_pipeline.register(hook);

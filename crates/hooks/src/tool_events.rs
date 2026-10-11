@@ -10,7 +10,6 @@ use serde_json::{Map, Value};
 
 use crate::context::HookContext;
 use crate::pipeline::HookPipeline;
-use crate::time_format::epoch_ms;
 
 pub type ToolFuture = Pin<Box<dyn Future<Output = Result<ToolResult, ToolExecError>> + Send>>;
 pub type ToolFn =
@@ -268,7 +267,7 @@ pub async fn execute_tool(
             let reason = before
                 .block_reason
                 .unwrap_or_else(|| "Blocked by safety hook".to_string());
-            return ToolResult::Text(format!("Blocked: {reason}"));
+            return ToolResult::Text(format!("Blocked: {reason}").into());
         }
         args = before.args.unwrap_or_default();
     }
@@ -290,12 +289,12 @@ pub async fn execute_tool(
         signal: signal.clone(),
         session,
     };
-    let started = epoch_ms();
+    let started = protocol::js::date_now();
     let raw = match (tool.execute)(args.clone(), signal, call_ctx).await {
         Ok(result) => result,
-        Err(err) => ToolResult::Text(format!("Error: {}", err.message)),
+        Err(err) => ToolResult::Text(format!("Error: {}", err.message).into()),
     };
-    let elapsed = epoch_ms().saturating_sub(started);
+    let elapsed = (protocol::js::date_now() - started).max(0.0) as i64;
     let text = tool_result_text(&raw);
     let is_error = tool_result_is_error(&raw);
     if let Some(stream) = binding.stream.as_ref() {
@@ -322,44 +321,43 @@ pub fn summarize_args(args: &Map<String, Value>) -> JsValue {
         let stored = if let Value::String(text) = value {
             let units: Vec<u16> = text.encode_utf16().collect();
             if units.len() > 200 {
-                let mut cut = units[..200].to_vec();
+                let mut cut = protocol::js::js_slice_units(&units, Some(0.0), Some(200.0));
                 cut.extend("…".encode_utf16());
                 JsValue::String(JsString::from_units(cut))
             } else {
                 JsValue::String(JsString::from_units(units))
             }
         } else {
-            protocol::js::from_json(value)
+            protocol::js::from_serde(value)
         };
         summary.insert(JsString::from_text(key), stored);
     }
     JsValue::Object(summary)
 }
 
-fn metadata_object<const N: usize>(pairs: [(&str, JsValue); N]) -> JsValue {
+fn metadata_object<const N: usize>(pairs: [(&str, JsValue); N]) -> JsObject {
     let mut object = JsObject::new();
     for (key, value) in pairs {
         object.insert(JsString::from_text(key), value);
     }
-    JsValue::Object(object)
+    object
 }
 
 fn result_content(mark: &str, name: &str, text: &str) -> JsString {
     let prefix = format!("{mark} {name}: ");
     let mut units: Vec<u16> = prefix.encode_utf16().collect();
     let body: Vec<u16> = text.encode_utf16().collect();
-    let end = body.len().min(200);
-    units.extend_from_slice(&body[..end]);
+    units.extend(protocol::js::js_slice_units(&body, Some(0.0), Some(200.0)));
     JsString::from_units(units)
 }
 
 pub fn tool_result_text(result: &ToolResult) -> String {
     match result {
-        ToolResult::Text(text) => text.clone(),
+        ToolResult::Text(text) => text.to_utf8().to_string(),
         ToolResult::Parts(parts) => parts
             .iter()
             .filter_map(|part| match part {
-                ContentPart::Text { text } => Some(text.as_str()),
+                ContentPart::Text { text } => Some(text.to_utf8()),
                 _ => None,
             })
             .collect::<Vec<_>>()
@@ -404,7 +402,7 @@ pub fn tool_result_is_error(result: &ToolResult) -> bool {
 pub fn to_tool_result_output(result: &ToolResult) -> ToolResultOutput {
     if let ToolResult::Text(text) = result {
         return ToolResultOutput::Text {
-            value: text.clone(),
+            value: text.to_utf8().to_string(),
         };
     }
     if !tool_result_has_images(result) {
@@ -533,7 +531,7 @@ mod tests {
 
     #[test]
     fn tool_result_helpers_and_model_output() {
-        let text = ToolResult::Text("Error: boom".to_string());
+        let text = ToolResult::Text("Error: boom".into());
         assert!(tool_result_is_error(&text));
         assert!(!tool_result_has_images(&text));
         assert!(tool_result_images(&text).is_empty());
@@ -543,15 +541,13 @@ mod tests {
                 value: "Error: boom".to_string()
             }
         );
-        let plain = ToolResult::Text("Error".to_string());
+        let plain = ToolResult::Text("Error".into());
         assert!(tool_result_is_error(&plain));
-        assert!(!tool_result_is_error(&ToolResult::Text("ok".to_string())));
+        assert!(!tool_result_is_error(&ToolResult::Text("ok".into())));
         let parts = ToolResult::Parts(vec![
+            ContentPart::Text { text: "one".into() },
             ContentPart::Text {
-                text: "one".to_string(),
-            },
-            ContentPart::Text {
-                text: " two".to_string(),
+                text: " two".into(),
             },
             ContentPart::Video {
                 data: None,
@@ -569,7 +565,7 @@ mod tests {
         );
         let image = ToolResult::Parts(vec![
             ContentPart::Text {
-                text: "snap:".to_string(),
+                text: "snap:".into(),
             },
             ContentPart::Image {
                 data: Some("aGVsbG8=".to_string()),

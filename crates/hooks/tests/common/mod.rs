@@ -1,6 +1,8 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+
+use parking_lot::Mutex;
 
 use hooks::{
     AuditEntry, AuditError, AuditWriter, BoxFuture, FileError, FileWriter, HookContext,
@@ -18,10 +20,7 @@ pub fn push_call(calls: &Arc<Mutex<Vec<String>>>, label: &str) -> HookHandler {
     let calls = Arc::clone(calls);
     let label = label.to_string();
     HookHandler::from_sync(move |_| {
-        calls
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .push(label.clone());
+        calls.lock().push(label.clone());
         Ok(HookSignal::Continue)
     })
 }
@@ -47,7 +46,7 @@ pub fn tool_after_duration(
     HookContext::tool_after(
         name,
         object(args),
-        hooks::ToolResult::Text("ok".to_string()),
+        hooks::ToolResult::Text("ok".into()),
         duration_ms,
         is_error,
     )
@@ -74,7 +73,6 @@ impl CaptureLog {
     pub fn messages(&self, level: &str) -> Vec<String> {
         self.lines
             .lock()
-            .unwrap_or_else(|err| err.into_inner())
             .iter()
             .filter(|(kind, _)| kind == level)
             .map(|(_, message)| message.clone())
@@ -100,7 +98,6 @@ impl CaptureLog {
     fn push(&self, level: &str, message: &str) {
         self.lines
             .lock()
-            .unwrap_or_else(|err| err.into_inner())
             .push((level.to_string(), message.to_string()));
     }
 }
@@ -123,18 +120,10 @@ impl AuditWriter for MemAudit {
     fn write<'a>(&'a self, entry: &'a AuditEntry) -> BoxFuture<'a, Result<(), AuditError>> {
         let entry = entry.clone();
         Box::pin(async move {
-            if let Some(message) = self
-                .fail
-                .lock()
-                .unwrap_or_else(|err| err.into_inner())
-                .clone()
-            {
+            if let Some(message) = self.fail.lock().clone() {
                 return Err(AuditError::new(message));
             }
-            self.entries
-                .lock()
-                .unwrap_or_else(|err| err.into_inner())
-                .push(entry);
+            self.entries.lock().push(entry);
             Ok(())
         })
     }
@@ -173,10 +162,7 @@ impl ScriptShell {
     }
 
     pub fn calls(&self) -> Vec<ShellCall> {
-        self.calls
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .clone()
+        self.calls.lock().clone()
     }
 }
 
@@ -194,11 +180,8 @@ impl ShellExecutor for ScriptShell {
             .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
             .collect::<Vec<_>>();
         Box::pin(async move {
-            self.calls
-                .lock()
-                .unwrap_or_else(|err| err.into_inner())
-                .push(ShellCall { command, cwd, env });
-            let mut results = self.results.lock().unwrap_or_else(|err| err.into_inner());
+            self.calls.lock().push(ShellCall { command, cwd, env });
+            let mut results = self.results.lock();
             if results.is_empty() {
                 return Err(ShellError::new("script exhausted"));
             }
@@ -225,10 +208,7 @@ impl ScriptFiles {
     }
 
     pub fn appends(&self) -> Vec<(String, String)> {
-        self.appends
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .clone()
+        self.appends.lock().clone()
     }
 }
 
@@ -241,17 +221,14 @@ impl FileWriter for ScriptFiles {
         let path = path.to_string();
         let content = content.to_string();
         Box::pin(async move {
-            self.writes
-                .lock()
-                .unwrap_or_else(|err| err.into_inner())
-                .push((path, content));
+            self.writes.lock().push((path, content));
             Ok(())
         })
     }
 
     fn read<'a>(&'a self, _path: &'a str) -> BoxFuture<'a, Result<Option<String>, FileError>> {
         Box::pin(async move {
-            let mut reads = self.reads.lock().unwrap_or_else(|err| err.into_inner());
+            let mut reads = self.reads.lock();
             if reads.is_empty() {
                 Ok(None)
             } else {
@@ -268,18 +245,10 @@ impl FileWriter for ScriptFiles {
         let path = path.to_string();
         let content = content.to_string();
         Box::pin(async move {
-            if let Some(message) = self
-                .fail_append
-                .lock()
-                .unwrap_or_else(|err| err.into_inner())
-                .clone()
-            {
+            if let Some(message) = self.fail_append.lock().clone() {
                 return Err(FileError::new(message));
             }
-            self.appends
-                .lock()
-                .unwrap_or_else(|err| err.into_inner())
-                .push((path, content));
+            self.appends.lock().push((path, content));
             Ok(())
         })
     }

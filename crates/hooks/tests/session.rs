@@ -13,16 +13,12 @@ use protocol::js::JsValue;
 use serde_json::{Value, json};
 
 fn same_json(value: Option<&JsValue>, expected: Value) -> bool {
-    value.is_some_and(|got| *got == expected)
+    value.is_some_and(|got| *got == protocol::js::from_serde(&expected))
 }
 
 fn files_with_read(note: Result<Option<String>, hooks::FileError>) -> Arc<ScriptFiles> {
     let files = ScriptFiles::new();
-    files
-        .reads
-        .lock()
-        .unwrap_or_else(|err| err.into_inner())
-        .push(note);
+    files.reads.lock().push(note);
     files
 }
 
@@ -127,7 +123,7 @@ async fn session_start_records_metadata_and_daily_context() {
         .get("dailyContext")
         .and_then(|value| value.as_str())
         .expect("daily");
-    assert_eq!(hooks::utf16_len(daily), 2000);
+    assert_eq!(protocol::js::utf16_len(daily), 2000);
 
     let split = format!("{}😀", "a".repeat(1999));
     let files = files_with_read(Ok(Some(split)));
@@ -174,10 +170,7 @@ async fn session_summary_writes_the_daily_note_shape() {
     assert!(appended[0].1.contains("Tokens: 1,500 (1,000 in / 500 out)"));
 
     let files = ScriptFiles::new();
-    *files
-        .fail_append
-        .lock()
-        .unwrap_or_else(|err| err.into_inner()) = Some("disk full".to_string());
+    *files.fail_append.lock() = Some("disk full".to_string());
     let pipeline = HookPipeline::new();
     pipeline.register(create_session_summary_hook(context(
         None,
@@ -382,9 +375,9 @@ async fn compaction_hooks_carry_the_snapshot_and_ratio() {
     )));
     let mut ctx = HookContext::compact_after(10);
     ctx.summary = Some("Session discussed hooks and testing.".to_string());
-    ctx.metadata.insert_json(
+    ctx.metadata.insert(
         "preCompactSnapshot",
-        &json!({"messageCount": 100, "timestamp": 1}),
+        protocol::js::from_serde(&json!({"messageCount": 100, "timestamp": 1})),
     );
     pipeline.run(&mut ctx).await;
     assert!(same_json(
@@ -446,9 +439,9 @@ async fn compaction_hooks_carry_the_snapshot_and_ratio() {
     let pipeline = HookPipeline::new();
     pipeline.register(create_post_compact_hook(context(None, None, None)));
     let mut ctx = HookContext::compact_after(15);
-    ctx.metadata.insert_json(
+    ctx.metadata.insert(
         "preCompactSnapshot",
-        &json!({"messageCount": 16, "timestamp": 1}),
+        protocol::js::from_serde(&json!({"messageCount": 16, "timestamp": 1})),
     );
     pipeline.run(&mut ctx).await;
     assert!(

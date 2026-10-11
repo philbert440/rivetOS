@@ -1,4 +1,6 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
+use parking_lot::Mutex;
 use std::time::Duration;
 
 use super::common::{CaptureLog, calls, provider_before, push_call, tool_before};
@@ -10,7 +12,7 @@ use protocol::js::JsValue;
 use serde_json::{Value, json};
 
 fn same_json(value: Option<&JsValue>, expected: Value) -> bool {
-    value.is_some_and(|got| *got == expected)
+    value.is_some_and(|got| *got == protocol::js::from_serde(&expected))
 }
 
 #[tokio::test]
@@ -24,12 +26,7 @@ async fn runs_hooks_for_the_matching_event() {
     ));
     let mut ctx = provider_before();
     let result = pipeline.run(&mut ctx).await;
-    assert_eq!(
-        seen.lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .as_slice(),
-        ["a"]
-    );
+    assert_eq!(seen.lock().as_slice(), ["a"]);
     assert_eq!(result.ran, vec!["hook-a".to_string()]);
     assert!(!result.aborted);
     assert!(!result.skipped);
@@ -47,11 +44,7 @@ async fn skips_hooks_for_a_different_event() {
     ));
     let mut ctx = provider_before();
     let result = pipeline.run(&mut ctx).await;
-    assert!(
-        seen.lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .is_empty()
-    );
+    assert!(seen.lock().is_empty());
     assert!(result.ran.is_empty());
 }
 
@@ -71,12 +64,7 @@ async fn runs_multiple_hooks_for_the_same_event() {
     ));
     let mut ctx = provider_before();
     let result = pipeline.run(&mut ctx).await;
-    assert_eq!(
-        seen.lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .as_slice(),
-        ["a", "b"]
-    );
+    assert_eq!(seen.lock().as_slice(), ["a", "b"]);
     assert_eq!(result.ran, vec!["hook-a".to_string(), "hook-b".to_string()]);
 }
 
@@ -124,9 +112,7 @@ async fn runs_in_priority_order_and_keeps_equal_priorities_stable() {
     let mut ctx = provider_before();
     pipeline.run(&mut ctx).await;
     assert_eq!(
-        seen.lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .as_slice(),
+        seen.lock().as_slice(),
         ["a", "low", "explicit", "default", "c"]
     );
 }
@@ -139,7 +125,8 @@ async fn passes_mutated_context_through_the_pipeline() {
             "set-flag",
             HookEventName::ProviderBefore,
             HookHandler::from_sync(|ctx| {
-                ctx.metadata.insert_json("rateLimited", &json!(true));
+                ctx.metadata
+                    .insert("rateLimited", protocol::js::from_serde(&json!(true)));
                 Ok(HookSignal::Continue)
             }),
         )
@@ -210,9 +197,7 @@ async fn abort_and_skip_stop_the_pipeline() {
                 move |ctx| {
                     ctx.blocked = Some(true);
                     ctx.block_reason = Some("Dangerous command".to_string());
-                    seen.lock()
-                        .unwrap_or_else(|err| err.into_inner())
-                        .push("blocker".to_string());
+                    seen.lock().push("blocker".to_string());
                     Ok(HookSignal::Abort)
                 }
             }),
@@ -229,12 +214,7 @@ async fn abort_and_skip_stop_the_pipeline() {
     );
     let mut ctx = tool_before("shell", json!({"command": "rm -rf /"}));
     let result = pipeline.run(&mut ctx).await;
-    assert_eq!(
-        seen.lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .as_slice(),
-        ["blocker"]
-    );
+    assert_eq!(seen.lock().as_slice(), ["blocker"]);
     assert!(result.aborted);
     assert!(!result.skipped);
     assert_eq!(ctx.blocked, Some(true));
@@ -249,9 +229,7 @@ async fn abort_and_skip_stop_the_pipeline() {
             HookHandler::from_sync({
                 let seen = Arc::clone(&seen);
                 move |_| {
-                    seen.lock()
-                        .unwrap_or_else(|err| err.into_inner())
-                        .push("skipper".to_string());
+                    seen.lock().push("skipper".to_string());
                     Ok(HookSignal::Skip)
                 }
             }),
@@ -268,12 +246,7 @@ async fn abort_and_skip_stop_the_pipeline() {
     );
     let mut ctx = provider_before();
     let result = pipeline.run(&mut ctx).await;
-    assert_eq!(
-        seen.lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .as_slice(),
-        ["skipper"]
-    );
+    assert_eq!(seen.lock().as_slice(), ["skipper"]);
     assert!(!result.aborted);
     assert!(result.skipped);
 }
@@ -300,12 +273,7 @@ async fn error_modes_continue_abort_and_retry() {
     );
     let mut ctx = provider_before();
     let result = pipeline.run(&mut ctx).await;
-    assert_eq!(
-        seen.lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .as_slice(),
-        ["survives"]
-    );
+    assert_eq!(seen.lock().as_slice(), ["survives"]);
     assert_eq!(result.errors.len(), 1);
     assert_eq!(result.errors[0].hook_id, "throws");
     assert_eq!(result.errors[0].error.message, "boom");
@@ -333,11 +301,7 @@ async fn error_modes_continue_abort_and_retry() {
     );
     let mut ctx = provider_before();
     let result = pipeline.run(&mut ctx).await;
-    assert!(
-        seen.lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .is_empty()
-    );
+    assert!(seen.lock().is_empty());
     assert!(result.aborted);
     assert_eq!(result.errors[0].error.message, "critical failure");
     assert!(!result.ran.iter().any(|id| id == "critical"));
@@ -351,7 +315,7 @@ async fn error_modes_continue_abort_and_retry() {
             HookHandler::from_sync({
                 let attempts = Arc::clone(&attempts);
                 move |_| {
-                    let mut count = attempts.lock().unwrap_or_else(|err| err.into_inner());
+                    let mut count = attempts.lock();
                     *count += 1;
                     if *count == 1 {
                         Err(HookFailure::new("transient"))
@@ -365,7 +329,7 @@ async fn error_modes_continue_abort_and_retry() {
     );
     let mut ctx = provider_before();
     let result = pipeline.run(&mut ctx).await;
-    assert_eq!(*attempts.lock().unwrap_or_else(|err| err.into_inner()), 2);
+    assert_eq!(*attempts.lock(), 2);
     assert!(result.errors.is_empty());
     assert!(!result.aborted);
     assert!(result.ran.iter().any(|id| id == "flaky"));
@@ -391,12 +355,7 @@ async fn error_modes_continue_abort_and_retry() {
     );
     let mut ctx = provider_before();
     let result = pipeline.run(&mut ctx).await;
-    assert_eq!(
-        seen.lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .as_slice(),
-        ["after-retry"]
-    );
+    assert_eq!(seen.lock().as_slice(), ["after-retry"]);
     assert_eq!(result.errors.len(), 1);
     assert_eq!(result.errors[0].error.message, "permanent");
     assert!(!result.ran.iter().any(|id| id == "always-fails"));
@@ -422,30 +381,15 @@ async fn filters_agents_and_tools_and_skips_disabled_hooks() {
     ));
     let mut opus = provider_before().with_agent("opus");
     pipeline.run(&mut opus).await;
-    assert_eq!(
-        seen.lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .as_slice(),
-        ["opus-only", "all-agents"]
-    );
-    seen.lock().unwrap_or_else(|err| err.into_inner()).clear();
+    assert_eq!(seen.lock().as_slice(), ["opus-only", "all-agents"]);
+    seen.lock().clear();
     let mut grok = provider_before().with_agent("grok");
     pipeline.run(&mut grok).await;
-    assert_eq!(
-        seen.lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .as_slice(),
-        ["all-agents"]
-    );
-    seen.lock().unwrap_or_else(|err| err.into_inner()).clear();
+    assert_eq!(seen.lock().as_slice(), ["all-agents"]);
+    seen.lock().clear();
     let mut blank = provider_before().with_agent("");
     pipeline.run(&mut blank).await;
-    assert_eq!(
-        seen.lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .as_slice(),
-        ["opus-only", "all-agents"]
-    );
+    assert_eq!(seen.lock().as_slice(), ["opus-only", "all-agents"]);
 
     let pipeline = HookPipeline::new();
     let seen = calls();
@@ -459,20 +403,11 @@ async fn filters_agents_and_tools_and_skips_disabled_hooks() {
     );
     let mut shell = tool_before("shell", json!({"command": "echo hi"}));
     pipeline.run(&mut shell).await;
-    assert_eq!(
-        seen.lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .as_slice(),
-        ["shell-guard"]
-    );
-    seen.lock().unwrap_or_else(|err| err.into_inner()).clear();
+    assert_eq!(seen.lock().as_slice(), ["shell-guard"]);
+    seen.lock().clear();
     let mut file = tool_before("file_read", json!({"command": "echo hi"}));
     pipeline.run(&mut file).await;
-    assert!(
-        seen.lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .is_empty()
-    );
+    assert!(seen.lock().is_empty());
     let mut provider = provider_before();
     pipeline.register(
         HookRegistration::new(
@@ -483,12 +418,7 @@ async fn filters_agents_and_tools_and_skips_disabled_hooks() {
         .tool_filter(["shell"]),
     );
     pipeline.run(&mut provider).await;
-    assert_eq!(
-        seen.lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .as_slice(),
-        ["provider"]
-    );
+    assert_eq!(seen.lock().as_slice(), ["provider"]);
 
     let pipeline = HookPipeline::new();
     let seen = calls();
@@ -507,12 +437,7 @@ async fn filters_agents_and_tools_and_skips_disabled_hooks() {
     ));
     let mut ctx = provider_before();
     pipeline.run(&mut ctx).await;
-    assert_eq!(
-        seen.lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .as_slice(),
-        ["enabled"]
-    );
+    assert_eq!(seen.lock().as_slice(), ["enabled"]);
     assert_eq!(pipeline.get_hooks(None).len(), 2);
 }
 
@@ -548,32 +473,18 @@ async fn registration_replace_keeps_position_and_logs_the_warning() {
     assert_eq!(ids, vec!["dupe".to_string(), "kept".to_string()]);
     let mut ctx = provider_before();
     pipeline.run(&mut ctx).await;
-    assert_eq!(
-        seen.lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .as_slice(),
-        ["second", "kept"]
-    );
+    assert_eq!(seen.lock().as_slice(), ["second", "kept"]);
     assert!(pipeline.unregister("dupe"));
     assert!(!pipeline.unregister("missing"));
-    seen.lock().unwrap_or_else(|err| err.into_inner()).clear();
+    seen.lock().clear();
     let mut ctx = provider_before();
     pipeline.run(&mut ctx).await;
-    assert_eq!(
-        seen.lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .as_slice(),
-        ["kept"]
-    );
+    assert_eq!(seen.lock().as_slice(), ["kept"]);
     assert!(pipeline.unregister("kept"));
-    seen.lock().unwrap_or_else(|err| err.into_inner()).clear();
+    seen.lock().clear();
     let mut ctx = provider_before();
     pipeline.run(&mut ctx).await;
-    assert!(
-        seen.lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .is_empty()
-    );
+    assert!(seen.lock().is_empty());
     pipeline.clear();
     assert!(pipeline.get_hooks(None).is_empty());
     let _ = HookPipeline::default();
@@ -608,9 +519,7 @@ async fn lists_hooks_by_event_and_runs_async_work_in_series() {
                 let slow = Arc::clone(&slow);
                 Box::pin(async move {
                     tokio::time::sleep(Duration::from_millis(10)).await;
-                    slow.lock()
-                        .unwrap_or_else(|err| err.into_inner())
-                        .push("slow".to_string());
+                    slow.lock().push("slow".to_string());
                     Ok(HookSignal::Continue)
                 })
             }),
@@ -627,12 +536,7 @@ async fn lists_hooks_by_event_and_runs_async_work_in_series() {
     );
     let mut ctx = provider_before();
     pipeline.run(&mut ctx).await;
-    assert_eq!(
-        seen.lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .as_slice(),
-        ["slow", "fast"]
-    );
+    assert_eq!(seen.lock().as_slice(), ["slow", "fast"]);
 
     let pipeline = HookPipeline::new();
     let mut ctx = provider_before();
@@ -654,7 +558,6 @@ async fn provider_error_is_observational_and_safety_can_abort_before_audit() {
         HookHandler::from_sync(move |ctx| {
             seen_hook
                 .lock()
-                .unwrap_or_else(|err| err.into_inner())
                 .push((ctx.provider_id.clone(), ctx.status_code));
             Ok(HookSignal::Continue)
         }),
@@ -663,9 +566,7 @@ async fn provider_error_is_observational_and_safety_can_abort_before_audit() {
     ctx.status_code = Some(429);
     let result = pipeline.run(&mut ctx).await;
     assert_eq!(
-        seen.lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .as_slice(),
+        seen.lock().as_slice(),
         [(Some("google".to_string()), Some(429))]
     );
     assert!(!result.aborted);
@@ -706,12 +607,12 @@ async fn provider_error_is_observational_and_safety_can_abort_before_audit() {
     let mut safe = tool_before("shell", json!({"command": "ls -la"}));
     let safe_result = pipeline.run(&mut safe).await;
     assert!(!safe_result.aborted);
-    assert_eq!(audit.lock().unwrap_or_else(|err| err.into_inner()).len(), 1);
+    assert_eq!(audit.lock().len(), 1);
     let mut danger = tool_before("shell", json!({"command": "rm -rf /"}));
     let danger_result = pipeline.run(&mut danger).await;
     assert!(danger_result.aborted);
     assert_eq!(danger.blocked, Some(true));
-    assert_eq!(audit.lock().unwrap_or_else(|err| err.into_inner()).len(), 1);
+    assert_eq!(audit.lock().len(), 1);
 }
 
 #[tokio::test]

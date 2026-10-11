@@ -1,7 +1,9 @@
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::sync::Mutex;
+use std::sync::Arc;
 use std::time::Duration;
+
+use parking_lot::Mutex;
 
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt};
@@ -103,14 +105,14 @@ impl ProcessShell {
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
         let cap = self.output_cap;
-        let stdout_buf = std::sync::Arc::new(Mutex::new(CapBuf::default()));
-        let stderr_buf = std::sync::Arc::new(Mutex::new(CapBuf::default()));
-        let stdout_slot = std::sync::Arc::clone(&stdout_buf);
-        let stderr_slot = std::sync::Arc::clone(&stderr_buf);
+        let stdout_buf = Arc::new(Mutex::new(CapBuf::default()));
+        let stderr_buf = Arc::new(Mutex::new(CapBuf::default()));
+        let stdout_slot = Arc::clone(&stdout_buf);
+        let stderr_slot = Arc::clone(&stderr_buf);
         let run = async move {
             let mut guard = GroupGuard::arm(pid);
-            let out = read_capped(stdout, cap, stdout_slot, pid);
-            let err = read_capped(stderr, cap, stderr_slot, pid);
+            let out = capture_pipe(stdout, cap, stdout_slot, pid);
+            let err = capture_pipe(stderr, cap, stderr_slot, pid);
             let waited = child.wait();
             let joined = tokio::join!(waited, out, err);
             guard.disarm();
@@ -195,7 +197,7 @@ struct CapBuf {
 }
 
 fn take_text(slot: &Mutex<CapBuf>) -> (String, bool) {
-    let guard = slot.lock().unwrap_or_else(|err| err.into_inner());
+    let guard = slot.lock();
     (
         String::from_utf8_lossy(&guard.bytes).into_owned(),
         guard.overflow,
@@ -258,10 +260,10 @@ async fn kill_group(pid: u32) {
     .await;
 }
 
-async fn read_capped<R>(
+async fn capture_pipe<R>(
     pipe: Option<R>,
     cap: usize,
-    slot: std::sync::Arc<Mutex<CapBuf>>,
+    slot: Arc<Mutex<CapBuf>>,
     pid: Option<u32>,
 ) -> bool
 where
@@ -276,7 +278,7 @@ where
             Ok(0) | Err(_) => return overflowed(&slot),
             Ok(count) => {
                 let crossed = {
-                    let mut guard = slot.lock().unwrap_or_else(|err| err.into_inner());
+                    let mut guard = slot.lock();
                     if guard.bytes.len() >= cap {
                         guard.overflow = true;
                         true
@@ -304,5 +306,5 @@ where
 }
 
 fn overflowed(slot: &Mutex<CapBuf>) -> bool {
-    slot.lock().unwrap_or_else(|err| err.into_inner()).overflow
+    slot.lock().overflow
 }

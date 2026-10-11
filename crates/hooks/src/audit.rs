@@ -12,10 +12,13 @@ use tokio::io::AsyncWriteExt;
 use crate::context::HookContext;
 use crate::handler::{BoxFuture, HookErrorMode, HookFailure, HookHandler, HookSignal};
 use crate::pipeline::HookRegistration;
-use crate::time_format::iso_timestamp;
 
 const SECRET_KEYS: &[&str] = &["password", "token", "secret", "api_key", "apiKey", "key"];
 pub const AUDIT_STRING_CAP: usize = 500;
+
+fn now_iso() -> String {
+    protocol::js::to_iso_string(protocol::js::date_now()).unwrap_or_default()
+}
 
 #[derive(Debug, Clone, Error)]
 #[error("{message}")]
@@ -84,7 +87,7 @@ pub fn sanitize_args(args: &Map<String, Value>) -> JsValue {
                 JsValue::String(JsString::from_units(units))
             }
         } else {
-            protocol::js::from_json(value)
+            protocol::js::from_serde(value)
         };
         sanitized.insert(JsString::from_text(key), stored);
     }
@@ -136,7 +139,7 @@ async fn audit_before(
     writer: &dyn AuditWriter,
 ) -> Result<HookSignal, HookFailure> {
     let entry = AuditEntry {
-        timestamp: iso_timestamp(),
+        timestamp: now_iso(),
         event: HookEventName::ToolBefore,
         tool_name: ctx.tool_name.clone().unwrap_or_default(),
         args: sanitize_args(ctx.args.as_ref().unwrap_or(&Map::new())),
@@ -159,7 +162,7 @@ async fn audit_after(
     writer: &dyn AuditWriter,
 ) -> Result<HookSignal, HookFailure> {
     let entry = AuditEntry {
-        timestamp: iso_timestamp(),
+        timestamp: now_iso(),
         event: HookEventName::ToolAfter,
         tool_name: ctx.tool_name.clone().unwrap_or_default(),
         args: sanitize_args(ctx.args.as_ref().unwrap_or(&Map::new())),
@@ -241,7 +244,7 @@ async fn append_jsonl_inner(path: &Path, entry: &AuditEntry) -> Result<(), Audit
 #[cfg(test)]
 mod tests {
     use super::sanitize_args;
-    use protocol::js::{JsObject, JsValue, from_json, stringify};
+    use protocol::js::{JsObject, JsValue, from_serde, stringify};
     use serde_json::{Map, Number, Value, json};
 
     fn text_at(value: &JsValue, key: &str) -> Option<String> {
@@ -273,7 +276,7 @@ mod tests {
         );
         assert_eq!(
             sanitized.get("nested").map(stringify),
-            Some(stringify(&from_json(&json!({"token": "keep"}))))
+            Some(stringify(&from_serde(&json!({"token": "keep"}))))
         );
         let long = "x".repeat(1000);
         args.insert("content".to_string(), Value::String(long));

@@ -11,7 +11,7 @@ use protocol::js::JsValue;
 use serde_json::{Value, json};
 
 fn same_json(value: Option<&JsValue>, expected: Value) -> bool {
-    value.is_some_and(|got| *got == expected)
+    value.is_some_and(|got| *got == protocol::js::from_serde(&expected))
 }
 
 fn config(shell: Arc<ScriptShell>) -> AutoActionConfig {

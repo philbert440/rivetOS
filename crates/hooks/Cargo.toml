@@ -11,19 +11,20 @@ name = "parity"
 path = "tests/parity.rs"
 
 [dependencies]
-chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+parking_lot = { workspace = true }
 protocol = { path = "../protocol" }
-regress = { version = "0.12.0", features = ["utf16"] }
+regress = { workspace = true, features = ["utf16"] }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-tokio = { version = "1", features = ["fs", "io-util", "macros", "process", "rt", "time"] }
-tracing = "0.1"
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "process", "rt", "time"] }
+tracing = { workspace = true }
 
 [dev-dependencies]
+parking_lot = { workspace = true }
 protocol = { path = "../protocol" }
 serde_json.workspace = true
-tokio = { version = "1", features = ["fs", "io-util", "macros", "process", "rt", "time"] }
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "process", "rt", "time"] }
 
 [lints]
 workspace = true

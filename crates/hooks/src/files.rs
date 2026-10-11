@@ -54,7 +54,7 @@ impl FileWriter for FsFileWriter {
         content: &'a str,
     ) -> BoxFuture<'a, Result<(), FileError>> {
         Box::pin(async move {
-            within_deadline(write_text(path, content), || {
+            within_deadline(store_text(path, content), || {
                 FileError::new("file operation timed out")
             })
             .await
@@ -88,10 +88,19 @@ impl FileWriter for FsFileWriter {
     }
 }
 
-async fn write_text(path: &str, content: &str) -> Result<(), FileError> {
+async fn store_text(path: &str, content: &str) -> Result<(), FileError> {
     ensure_parent(path).await?;
-    tokio::fs::write(path, content).await?;
-    Ok(())
+    let owned_path = path.to_string();
+    let owned = content.to_string();
+    match tokio::task::spawn_blocking(move || {
+        protocol::host::write_text(Path::new(&owned_path), &owned)
+    })
+    .await
+    {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(err)) => Err(FileError::new(err.to_string())),
+        Err(_) => Err(FileError::new("file write failed")),
+    }
 }
 
 async fn append_text(path: &str, content: &str) -> Result<(), FileError> {

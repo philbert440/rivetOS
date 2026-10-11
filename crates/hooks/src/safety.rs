@@ -8,7 +8,6 @@ use serde_json::{Map, Value};
 use crate::audit::{AuditWriter, create_audit_hooks};
 use crate::context::HookContext;
 use crate::handler::{HookErrorMode, HookFailure, HookHandler, HookSignal};
-use crate::js_text::js_string;
 use crate::pipeline::HookRegistration;
 use crate::regex_util::{compile_static, is_match};
 
@@ -147,10 +146,10 @@ impl WorkspaceFenceConfig {
     }
 }
 
-pub fn home_dir() -> String {
-    match std::env::var("HOME") {
-        Ok(value) => value,
-        Err(_) => "/root".to_string(),
+fn fence_home() -> String {
+    match protocol::host::home_dir(&protocol::host::ProcessEnv) {
+        Some(value) => value,
+        None => "/root".to_string(),
     }
 }
 
@@ -206,7 +205,7 @@ fn shell_danger(ctx: &mut HookContext) -> Result<HookSignal, HookFailure> {
 
 fn shell_command_folded(args: &Map<String, Value>) -> String {
     let raw = match args.get("command") {
-        Some(value) if !value.is_null() => js_string(value),
+        Some(value) if !value.is_null() => protocol::js::js_to_string_json(value),
         _ => String::new(),
     };
     protocol::js::js_trim(&raw).to_lowercase()
@@ -223,13 +222,13 @@ pub fn push_warning(metadata: &mut JsObject, text: &str) -> Result<(), HookFailu
             _ => Err(HookFailure::new("warnings is not an array")),
         }
     } else {
-        metadata.insert_key("warnings", JsValue::Array(vec![warning]));
+        metadata.insert("warnings", JsValue::Array(vec![warning]));
         Ok(())
     }
 }
 
 pub fn create_workspace_fence_hook(config: WorkspaceFenceConfig) -> HookRegistration {
-    let home_at_create = config.home.clone().unwrap_or_else(home_dir);
+    let home_at_create = config.home.clone().unwrap_or_else(fence_home);
     let home = config.home;
     let extras = match &config.always_allow {
         Some(dirs) => dirs.clone(),
@@ -257,7 +256,7 @@ pub fn create_workspace_fence_hook(config: WorkspaceFenceConfig) -> HookRegistra
         id: "safety:workspace-fence".to_string(),
         event: HookEventName::ToolBefore,
         handler: HookHandler::from_sync(move |ctx| {
-            let resolved = home.clone().unwrap_or_else(home_dir);
+            let resolved = home.clone().unwrap_or_else(fence_home);
             fence(ctx, &allowed, &listed, &tools, &resolved)
         }),
         priority: 15,
@@ -303,7 +302,7 @@ fn fence_target(args: &Map<String, Value>) -> String {
         if let Some(value) = args.get(key)
             && !value.is_null()
         {
-            return js_string(value);
+            return protocol::js::js_to_string_json(value);
         }
     }
     String::new()
@@ -368,7 +367,7 @@ fn delete_git_regex() -> Option<&'static Regex> {
 
 fn raw_string_field(args: &Map<String, Value>, key: &str) -> String {
     match args.get(key) {
-        Some(value) if !value.is_null() => js_string(value),
+        Some(value) if !value.is_null() => protocol::js::js_to_string_json(value),
         _ => String::new(),
     }
 }
@@ -485,7 +484,7 @@ mod tests {
         });
         assert!(disabled.is_empty());
         let mut metadata = JsObject::new();
-        metadata.insert_key("warnings", JsValue::from_text("nope"));
+        metadata.insert("warnings", JsValue::from_text("nope"));
         assert!(super::push_warning(&mut metadata, "x").is_err());
     }
 }

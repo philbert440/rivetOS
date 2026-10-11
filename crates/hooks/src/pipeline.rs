@@ -1,5 +1,7 @@
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::Arc;
+
+use parking_lot::Mutex;
 
 use protocol::HookEventName;
 use tracing::{debug, error, warn};
@@ -123,7 +125,7 @@ impl HookPipeline {
     }
 
     pub fn register(&self, hook: HookRegistration) {
-        let mut inner = lock(&self.inner);
+        let mut inner = self.inner.lock();
         if inner.hooks.iter().any(|existing| existing.id == hook.id) {
             let message = format!("Hook \"{}\" already registered — replacing", hook.id);
             warn!("{message}");
@@ -144,7 +146,7 @@ impl HookPipeline {
     }
 
     pub fn unregister(&self, hook_id: &str) -> bool {
-        let mut inner = lock(&self.inner);
+        let mut inner = self.inner.lock();
         let before = inner.hooks.len();
         inner.hooks.retain(|hook| hook.id != hook_id);
         let deleted = inner.hooks.len() != before;
@@ -155,14 +157,14 @@ impl HookPipeline {
     }
 
     pub fn clear(&self) {
-        let mut inner = lock(&self.inner);
+        let mut inner = self.inner.lock();
         inner.hooks.clear();
         inner.sorted.clear();
         inner.dirty = false;
     }
 
     pub fn get_hooks(&self, event: Option<HookEventName>) -> Vec<HookRegistration> {
-        let mut inner = lock(&self.inner);
+        let mut inner = self.inner.lock();
         if let Some(event) = event {
             rebuild_if_dirty(&mut inner);
             return inner.sorted.get(&event).cloned().unwrap_or_default();
@@ -172,7 +174,7 @@ impl HookPipeline {
 
     pub async fn run(&self, ctx: &mut HookContext) -> HookPipelineResult {
         let hooks = {
-            let mut inner = lock(&self.inner);
+            let mut inner = self.inner.lock();
             rebuild_if_dirty(&mut inner);
             inner.sorted.get(&ctx.event).cloned().unwrap_or_default()
         };
@@ -317,8 +319,4 @@ fn rebuild_if_dirty(inner: &mut Inner) {
         list.sort_by_key(|hook| hook.priority);
     }
     inner.dirty = false;
-}
-
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|err| err.into_inner())
 }

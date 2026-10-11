@@ -1,4 +1,6 @@
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
+
+use parking_lot::Mutex;
 
 use protocol::HookEventName;
 use protocol::js::{JsObject, JsValue};
@@ -8,7 +10,6 @@ use thiserror::Error;
 
 use crate::context::HookContext;
 use crate::handler::{HookErrorMode, HookFailure, HookHandler, HookSignal};
-use crate::js_text::{js_string, js_truthy};
 use crate::pipeline::HookRegistration;
 use crate::regex_util::{JsRegExp, compile_static, compile_user_pattern, is_match};
 use crate::shell::{ShellError, ShellExecutor, ShellOutput};
@@ -130,7 +131,10 @@ pub fn create_custom_action_hook(
             if missed {
                 return Box::pin(async { Ok(HookSignal::Continue) });
             }
-            let replacement = selected.as_ref().map(js_string).unwrap_or_default();
+            let replacement = selected
+                .as_ref()
+                .map(protocol::js::js_to_string_json)
+                .unwrap_or_default();
             let command = substitute_file(&action.command);
             let action_id = action.id.clone();
             let soft_fail = action.soft_fail;
@@ -227,20 +231,22 @@ async fn run_format(
     let command = format!("npx prettier --write \"{FILE_EXPANSION}\" 2>/dev/null");
     match exec_shell(config, &command, Some(&file_path)).await {
         Ok(result) if result.exit_code == 0 => {
-            ctx.metadata.insert_json(
+            ctx.metadata.insert(
                 "autoFormat",
-                &serde_json::json!({ "file": file_path, "status": "formatted" }),
+                protocol::js::from_serde(
+                    &serde_json::json!({ "file": file_path, "status": "formatted" }),
+                ),
             );
         }
         Ok(_) => {}
         Err(_) => {
-            ctx.metadata.insert_json(
+            ctx.metadata.insert(
                 "autoFormat",
-                &serde_json::json!({
+                protocol::js::from_serde(&serde_json::json!({
                     "file": file_path,
                     "status": "skipped",
                     "reason": "prettier not available",
-                }),
+                })),
             );
         }
     }
@@ -263,32 +269,38 @@ async fn run_lint(
     let command = format!("npx eslint --fix \"{FILE_EXPANSION}\" 2>/dev/null");
     match exec_shell(config, &command, Some(&file_path)).await {
         Ok(result) if result.exit_code == 0 => {
-            ctx.metadata.insert_json(
+            ctx.metadata.insert(
                 "autoLint",
-                &serde_json::json!({ "file": file_path, "status": "linted" }),
+                protocol::js::from_serde(
+                    &serde_json::json!({ "file": file_path, "status": "linted" }),
+                ),
             );
         }
         Ok(result) => {
-            ctx.metadata.insert_key(
+            ctx.metadata.insert(
                 "autoLint",
                 record([
                     ("file", JsValue::from_text(&file_path)),
                     ("status", JsValue::from_text("issues")),
                     (
                         "output",
-                        JsValue::String(protocol::js::slice_units(&result.stderr, 0, Some(500))),
+                        JsValue::String(protocol::js::js_slice(
+                            &result.stderr,
+                            Some(0.0),
+                            Some(500.0),
+                        )),
                     ),
                 ]),
             );
         }
         Err(_) => {
-            ctx.metadata.insert_json(
+            ctx.metadata.insert(
                 "autoLint",
-                &serde_json::json!({
+                protocol::js::from_serde(&serde_json::json!({
                     "file": file_path,
                     "status": "skipped",
                     "reason": "eslint not available",
-                }),
+                })),
             );
         }
     }
@@ -319,26 +331,26 @@ async fn run_test(
             } else {
                 "failed"
             };
-            ctx.metadata.insert_key(
+            ctx.metadata.insert(
                 "autoTest",
                 record([
                     ("file", JsValue::from_text(&file_path)),
                     ("status", JsValue::from_text(status)),
                     (
                         "output",
-                        JsValue::String(protocol::js::slice_units(&result.stdout, -500, None)),
+                        JsValue::String(protocol::js::js_slice(&result.stdout, Some(-500.0), None)),
                     ),
                 ]),
             );
         }
         Err(_) => {
-            ctx.metadata.insert_json(
+            ctx.metadata.insert(
                 "autoTest",
-                &serde_json::json!({
+                protocol::js::from_serde(&serde_json::json!({
                     "file": file_path,
                     "status": "skipped",
                     "reason": "test runner not available",
-                }),
+                })),
             );
         }
     }
@@ -363,24 +375,24 @@ async fn run_git_check(
             } else {
                 "issues"
             };
-            ctx.metadata.insert_key(
+            ctx.metadata.insert(
                 "autoGitCheck",
                 record([
                     ("status", JsValue::from_text(status)),
                     (
                         "output",
-                        JsValue::String(protocol::js::slice_units(&result.stdout, -300, None)),
+                        JsValue::String(protocol::js::js_slice(&result.stdout, Some(-300.0), None)),
                     ),
                 ]),
             );
         }
         Err(_) => {
-            ctx.metadata.insert_json(
+            ctx.metadata.insert(
                 "autoGitCheck",
-                &serde_json::json!({
+                protocol::js::from_serde(&serde_json::json!({
                     "status": "skipped",
                     "reason": "tsc not available",
-                }),
+                })),
             );
         }
     }
@@ -403,13 +415,13 @@ async fn finish_custom(
             } else {
                 "failed"
             };
-            ctx.metadata.insert_key(
-                &key,
+            ctx.metadata.insert(
+                key.as_str(),
                 record([
                     ("status", JsValue::from_text(status)),
                     (
                         "output",
-                        JsValue::String(protocol::js::slice_units(&result.stdout, -300, None)),
+                        JsValue::String(protocol::js::js_slice(&result.stdout, Some(-300.0), None)),
                     ),
                 ]),
             );
@@ -417,12 +429,12 @@ async fn finish_custom(
         }
         Err(err) => {
             let message = err.message.clone();
-            ctx.metadata.insert_json(
-                &key,
-                &serde_json::json!({
+            ctx.metadata.insert(
+                key.as_str(),
+                protocol::js::from_serde(&serde_json::json!({
                     "status": "error",
                     "message": message,
-                }),
+                })),
             );
             if soft_fail {
                 Ok(HookSignal::Continue)
@@ -451,8 +463,8 @@ async fn exec_shell(
 
 fn truthy_file_path(args: Option<&Map<String, Value>>) -> Option<String> {
     let value = file_value(args)?;
-    if js_truthy(value) {
-        Some(js_string(value))
+    if protocol::js::js_boolean_json(value) {
+        Some(protocol::js::js_to_string_json(value))
     } else {
         None
     }
@@ -484,18 +496,18 @@ fn pattern_miss(pattern: Option<&Mutex<JsRegExp>>, value: Option<&Value>) -> boo
     let Some(value) = value else {
         return false;
     };
-    if !js_truthy(value) {
+    if !protocol::js::js_boolean_json(value) {
         return false;
     }
-    let text = js_string(value);
-    let mut state = regex.lock().unwrap_or_else(|err| err.into_inner());
+    let text = protocol::js::js_to_string_json(value);
+    let mut state = regex.lock();
     !state.test(&text)
 }
 
 fn record<const N: usize>(entries: [(&str, JsValue); N]) -> JsValue {
     let mut object = JsObject::new();
     for (key, value) in entries {
-        object.insert_key(key, value);
+        object.insert(key, value);
     }
     JsValue::Object(object)
 }

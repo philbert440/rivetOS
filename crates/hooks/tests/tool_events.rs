@@ -1,4 +1,6 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
+use parking_lot::Mutex;
 
 use hooks::{
     AbortSignal, HookContext, HookHandler, HookPipeline, HookRegistration, HookSignal,
@@ -22,7 +24,7 @@ fn text_tool(name: &str, text: &'static str) -> PreparedTool {
     tool(
         name,
         Arc::new(move |_args, _signal, _ctx| {
-            Box::pin(async move { Ok(ToolResult::Text(text.to_string())) })
+            Box::pin(async move { Ok(ToolResult::Text(text.into())) })
         }),
     )
 }
@@ -31,10 +33,7 @@ struct Collect(Mutex<Vec<StreamEvent>>);
 
 impl StreamSink for Collect {
     fn emit(&self, event: &StreamEvent) {
-        self.0
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .push(event.clone());
+        self.0.lock().push(event.clone());
     }
 }
 
@@ -46,7 +45,7 @@ async fn executes_tools_through_before_and_after_hooks() {
             Arc::new(|args, _signal, _ctx| {
                 Box::pin(async move {
                     let value = args.get("x").and_then(Value::as_str).unwrap_or("");
-                    Ok(ToolResult::Text(format!("got:{value}")))
+                    Ok(ToolResult::Text(format!("got:{value}").into()))
                 })
             }),
         )],
@@ -60,7 +59,7 @@ async fn executes_tools_through_before_and_after_hooks() {
     assert_eq!(echo.name(), "echo");
     assert!(echo.parameters().get("type").is_some());
     let result = echo.execute(&json!({"x": "hi"}), None).await;
-    assert_eq!(result, ToolResult::Text("got:hi".to_string()));
+    assert_eq!(result, ToolResult::Text("got:hi".into()));
 
     let received = Arc::new(Mutex::new(None));
     let slot = Arc::clone(&received);
@@ -70,8 +69,8 @@ async fn executes_tools_through_before_and_after_hooks() {
             Arc::new(move |args, _signal, _ctx| {
                 let slot = Arc::clone(&slot);
                 Box::pin(async move {
-                    *slot.lock().unwrap_or_else(|err| err.into_inner()) = Some(args);
-                    Ok(ToolResult::Text("ok".to_string()))
+                    *slot.lock() = Some(args);
+                    Ok(ToolResult::Text("ok".into()))
                 })
             }),
         )],
@@ -82,10 +81,7 @@ async fn executes_tools_through_before_and_after_hooks() {
         .execute(&json!({"x": "value"}), None)
         .await;
     assert_eq!(
-        received
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .clone(),
+        received.lock().clone(),
         Some(
             json!({"x": "value"})
                 .as_object()
@@ -104,11 +100,8 @@ async fn executes_tools_through_before_and_after_hooks() {
         "b",
         HookEventName::ToolBefore,
         HookHandler::from_sync(move |ctx: &mut HookContext| {
-            fired_before
-                .lock()
-                .unwrap_or_else(|err| err.into_inner())
-                .push("before");
-            *args_slot.lock().unwrap_or_else(|err| err.into_inner()) = ctx.args.clone();
+            fired_before.lock().push("before");
+            *args_slot.lock() = ctx.args.clone();
             Ok(HookSignal::Continue)
         }),
     ));
@@ -118,12 +111,8 @@ async fn executes_tools_through_before_and_after_hooks() {
         "a",
         HookEventName::ToolAfter,
         HookHandler::from_sync(move |ctx: &mut HookContext| {
-            fired_after
-                .lock()
-                .unwrap_or_else(|err| err.into_inner())
-                .push("after");
-            *after_slot.lock().unwrap_or_else(|err| err.into_inner()) =
-                Some((ctx.result.clone(), ctx.is_error, ctx.duration_ms));
+            fired_after.lock().push("after");
+            *after_slot.lock() = Some((ctx.result.clone(), ctx.is_error, ctx.duration_ms));
             Ok(HookSignal::Continue)
         }),
     ));
@@ -137,27 +126,15 @@ async fn executes_tools_through_before_and_after_hooks() {
         None,
     )
     .await;
-    assert_eq!(result, ToolResult::Text("done".to_string()));
+    assert_eq!(result, ToolResult::Text("done".into()));
+    assert_eq!(fired.lock().as_slice(), ["before", "after"]);
     assert_eq!(
-        fired
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .as_slice(),
-        ["before", "after"]
-    );
-    assert_eq!(
-        before_args
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .clone(),
+        before_args.lock().clone(),
         Some(json!({"x": "hi"}).as_object().cloned().unwrap_or_default())
     );
-    let after = after_state
-        .lock()
-        .unwrap_or_else(|err| err.into_inner())
-        .clone();
+    let after = after_state.lock().clone();
     let (after_result, is_error, duration) = after.expect("after");
-    assert_eq!(after_result, Some(ToolResult::Text("done".to_string())));
+    assert_eq!(after_result, Some(ToolResult::Text("done".into())));
     assert_eq!(is_error, Some(false));
     assert!(duration.unwrap_or(-1) >= 0);
 }
@@ -182,8 +159,8 @@ async fn blocked_hooks_stop_the_tool_without_stream_events() {
         Arc::new(move |_args, _signal, _ctx| {
             let flag = Arc::clone(&flag);
             Box::pin(async move {
-                *flag.lock().unwrap_or_else(|err| err.into_inner()) = true;
-                Ok(ToolResult::Text("should not run".to_string()))
+                *flag.lock() = true;
+                Ok(ToolResult::Text("should not run".into()))
             })
         }),
     );
@@ -198,18 +175,12 @@ async fn blocked_hooks_stop_the_tool_without_stream_events() {
         None,
     )
     .await;
-    assert!(!*ran.lock().unwrap_or_else(|err| err.into_inner()));
+    assert!(!*ran.lock());
     assert_eq!(
         result,
-        ToolResult::Text("Blocked: no shells in tests".to_string())
+        ToolResult::Text("Blocked: no shells in tests".into())
     );
-    assert!(
-        events
-            .0
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .is_empty()
-    );
+    assert!(events.0.lock().is_empty());
 
     let pipeline = Arc::new(HookPipeline::new());
     pipeline.register(HookRegistration::new(
@@ -232,7 +203,7 @@ async fn blocked_hooks_stop_the_tool_without_stream_events() {
     .await;
     assert_eq!(
         result,
-        ToolResult::Text("Blocked: Blocked by safety hook".to_string())
+        ToolResult::Text("Blocked: Blocked by safety hook".into())
     );
 
     let pipeline = Arc::new(HookPipeline::new());
@@ -255,7 +226,7 @@ async fn blocked_hooks_stop_the_tool_without_stream_events() {
         None,
     )
     .await;
-    assert_eq!(result, ToolResult::Text("Blocked: ".to_string()));
+    assert_eq!(result, ToolResult::Text("Blocked: ".into()));
 }
 
 #[tokio::test]
@@ -276,7 +247,7 @@ async fn abort_without_blocked_still_runs_and_rewrites_args() {
         None,
     )
     .await;
-    assert_eq!(result, ToolResult::Text("ran".to_string()));
+    assert_eq!(result, ToolResult::Text("ran".into()));
 
     let pipeline = Arc::new(HookPipeline::new());
     pipeline.register(HookRegistration::new(
@@ -300,8 +271,8 @@ async fn abort_without_blocked_still_runs_and_rewrites_args() {
             Arc::new(move |args, _signal, _ctx| {
                 let slot = Arc::clone(&slot);
                 Box::pin(async move {
-                    *slot.lock().unwrap_or_else(|err| err.into_inner()) = Some(args);
-                    Ok(ToolResult::Text("ok".to_string()))
+                    *slot.lock() = Some(args);
+                    Ok(ToolResult::Text("ok".into()))
                 })
             }),
         ),
@@ -313,12 +284,9 @@ async fn abort_without_blocked_still_runs_and_rewrites_args() {
         None,
     )
     .await;
-    assert_eq!(result, ToolResult::Text("ok".to_string()));
+    assert_eq!(result, ToolResult::Text("ok".into()));
     assert_eq!(
-        received
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .clone(),
+        received.lock().clone(),
         Some(
             json!({"x": "rewritten"})
                 .as_object()
@@ -334,7 +302,7 @@ async fn abort_without_blocked_still_runs_and_rewrites_args() {
         None,
     )
     .await;
-    assert_eq!(wrapped, ToolResult::Text("ok".to_string()));
+    assert_eq!(wrapped, ToolResult::Text("ok".into()));
     let seen = Arc::new(Mutex::new(None));
     let slot = Arc::clone(&seen);
     execute_tool(
@@ -343,8 +311,8 @@ async fn abort_without_blocked_still_runs_and_rewrites_args() {
             Arc::new(move |args, _signal, _ctx| {
                 let slot = Arc::clone(&slot);
                 Box::pin(async move {
-                    *slot.lock().unwrap_or_else(|err| err.into_inner()) = Some(args);
-                    Ok(ToolResult::Text("ok".to_string()))
+                    *slot.lock() = Some(args);
+                    Ok(ToolResult::Text("ok".into()))
                 })
             }),
         ),
@@ -354,7 +322,7 @@ async fn abort_without_blocked_still_runs_and_rewrites_args() {
     )
     .await;
     assert_eq!(
-        seen.lock().unwrap_or_else(|err| err.into_inner()).clone(),
+        seen.lock().clone(),
         Some(
             json!({"value": "hi"})
                 .as_object()
@@ -373,7 +341,7 @@ async fn thrown_errors_stream_events_and_session_identity() {
         "observe",
         HookEventName::ToolAfter,
         HookHandler::from_sync(move |ctx| {
-            *slot.lock().unwrap_or_else(|err| err.into_inner()) = ctx.is_error;
+            *slot.lock() = ctx.is_error;
             Ok(HookSignal::Continue)
         }),
     ));
@@ -392,16 +360,9 @@ async fn thrown_errors_stream_events_and_session_identity() {
         None,
     )
     .await;
-    assert_eq!(result, ToolResult::Text("Error: kaboom".to_string()));
-    assert_eq!(
-        *after_error.lock().unwrap_or_else(|err| err.into_inner()),
-        Some(true)
-    );
-    let streamed = events
-        .0
-        .lock()
-        .unwrap_or_else(|err| err.into_inner())
-        .clone();
+    assert_eq!(result, ToolResult::Text("Error: kaboom".into()));
+    assert_eq!(*after_error.lock(), Some(true));
+    let streamed = events.0.lock().clone();
     assert_eq!(streamed[0].r#type, StreamEventType::ToolStart);
     assert_eq!(streamed[0].content.to_utf8(), "🔧 boom");
     assert_eq!(streamed[1].r#type, StreamEventType::ToolResult);
@@ -419,10 +380,10 @@ async fn thrown_errors_stream_events_and_session_identity() {
                 let slot = Arc::clone(&slot);
                 let session_slot = Arc::clone(&session_slot);
                 Box::pin(async move {
-                    *slot.lock().unwrap_or_else(|err| err.into_inner()) = Some(signal);
-                    *session_slot.lock().unwrap_or_else(|err| err.into_inner()) =
+                    *slot.lock() = Some(signal);
+                    *session_slot.lock() =
                         Some((ctx.agent_id, ctx.working_dir, ctx.session.agent_id));
-                    Ok(ToolResult::Text("ok".to_string()))
+                    Ok(ToolResult::Text("ok".into()))
                 })
             }),
         ),
@@ -436,18 +397,9 @@ async fn thrown_errors_stream_events_and_session_identity() {
         Some(signal.clone()),
     )
     .await;
+    assert_eq!(seen_signal.lock().clone(), Some(signal));
     assert_eq!(
-        seen_signal
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .clone(),
-        Some(signal)
-    );
-    assert_eq!(
-        seen_session
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .clone(),
+        seen_session.lock().clone(),
         Some((
             Some("owner".to_string()),
             Some("/tmp/work".to_string()),
@@ -461,7 +413,7 @@ async fn thrown_errors_stream_events_and_session_identity() {
         "long",
         Arc::new(move |_args, _signal, _ctx| {
             let long = long.clone();
-            Box::pin(async move { Ok(ToolResult::Text(long)) })
+            Box::pin(async move { Ok(ToolResult::Text(long.into())) })
         }),
     );
     let mut args = serde_json::Map::new();
@@ -476,11 +428,7 @@ async fn thrown_errors_stream_events_and_session_identity() {
         None,
     )
     .await;
-    let streamed = events
-        .0
-        .lock()
-        .unwrap_or_else(|err| err.into_inner())
-        .clone();
+    let streamed = events.0.lock().clone();
     let metadata = streamed[0].metadata.clone().expect("metadata");
     let summary = metadata
         .get("args")
@@ -508,7 +456,7 @@ async fn thrown_errors_stream_events_and_session_identity() {
         "observe",
         HookEventName::ToolAfter,
         HookHandler::from_sync(move |ctx| {
-            *slot.lock().unwrap_or_else(|err| err.into_inner()) = ctx.is_error;
+            *slot.lock() = ctx.is_error;
             Ok(HookSignal::Continue)
         }),
     ));
@@ -522,26 +470,21 @@ async fn thrown_errors_stream_events_and_session_identity() {
         None,
     )
     .await;
-    assert_eq!(
-        *flagged.lock().unwrap_or_else(|err| err.into_inner()),
-        Some(true)
-    );
+    assert_eq!(*flagged.lock(), Some(true));
 }
 
 #[test]
 fn to_model_output_matches_the_typescript_cases() {
     assert_eq!(
-        to_tool_result_output(&ToolResult::Text("hello".to_string())),
+        to_tool_result_output(&ToolResult::Text("hello".into())),
         ToolResultOutput::Text {
             value: "hello".to_string()
         }
     );
     let parts = ToolResult::Parts(vec![
+        ContentPart::Text { text: "one".into() },
         ContentPart::Text {
-            text: "one".to_string(),
-        },
-        ContentPart::Text {
-            text: " two".to_string(),
+            text: " two".into(),
         },
     ]);
     assert_eq!(
@@ -552,7 +495,7 @@ fn to_model_output_matches_the_typescript_cases() {
     );
     let image = ToolResult::Parts(vec![
         ContentPart::Text {
-            text: "snap:".to_string(),
+            text: "snap:".into(),
         },
         ContentPart::Image {
             data: Some("aGVsbG8=".to_string()),
@@ -608,13 +551,13 @@ fn to_model_output_matches_the_typescript_cases() {
     assert_eq!(set.get("a").expect("a").description(), "a description");
     assert_eq!(
         set.get("t")
-            .map(|tool| tool.to_model_output(&ToolResult::Text("hello".to_string()))),
+            .map(|tool| tool.to_model_output(&ToolResult::Text("hello".into()))),
         None
     );
     assert_eq!(
         set.get("a")
             .expect("a")
-            .to_model_output(&ToolResult::Text("hello".to_string())),
+            .to_model_output(&ToolResult::Text("hello".into())),
         ToolResultOutput::Text {
             value: "hello".to_string()
         }
