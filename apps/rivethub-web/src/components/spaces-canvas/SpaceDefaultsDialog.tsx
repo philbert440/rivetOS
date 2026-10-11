@@ -118,9 +118,11 @@ export function SpaceDefaultsDialog(props: {
       }}
     >
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-50 bg-bg/70" />
+        <Dialog.Overlay className="fixed inset-0 z-50 bg-black/40 classic:bg-bg/70" />
         <Dialog.Content className="fixed top-1/2 left-1/2 z-50 w-[28rem] max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 border border-line bg-panel p-4 font-mono shadow-lg outline-none">
-          <Dialog.Title className="mb-3 text-sm text-ink">Edit space</Dialog.Title>
+          <Dialog.Title className="mb-5 text-sm leading-relaxed text-ink-dim classic:mb-3 classic:text-ink">
+            Edit space
+          </Dialog.Title>
           <Dialog.Description className="mb-3 text-xs text-ink-dim">
             New threads in this space start with these. Threads already running are not changed.
           </Dialog.Description>

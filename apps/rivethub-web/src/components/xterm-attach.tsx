@@ -870,7 +870,7 @@ export function XtermAttach(props: {
             }}
             placeholder="Find"
             aria-label="Find in terminal"
-            className="w-44 rounded border border-line bg-panel px-2 py-0.5 font-mono text-xs outline-none focus:border-em"
+            className="w-44 rounded-lg border border-line bg-panel px-2 py-0.5 font-mono text-xs outline-none focus:border-em"
           />
           <button
             onClick={findPrev}
@@ -906,7 +906,7 @@ export function XtermAttach(props: {
       {banner.show && (
         <div
           data-term-owner-banner
-          className="absolute inset-0 z-20 flex items-center justify-center bg-bg/70 p-4"
+          className="absolute inset-0 z-20 flex items-center justify-center bg-black/40 p-4 classic:bg-bg/70"
         >
           <div className="flex flex-col items-center gap-3 rounded-lg border border-line bg-panel px-6 py-5">
             <RhMark className="text-3xl" />

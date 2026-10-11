@@ -29,7 +29,7 @@ export function MemoryHubPage(): JSX.Element {
 
   if (needNode) return <NotConnected />
   if (pending) {
-    return <div className="p-8 font-mono text-sm text-ink-dim">resolving datahub…</div>
+    return <div className="p-8 text-sm text-ink-dim">resolving datahub…</div>
   }
   if (!endpoint) {
     return (
@@ -43,7 +43,7 @@ export function MemoryHubPage(): JSX.Element {
         <Link
           to="/settings/$tab"
           params={{ tab: 'node' }}
-          className="rounded bg-em-dim px-4 py-2 text-sm font-medium text-bg hover:bg-em"
+          className="rounded-pill bg-em px-4 py-2 text-sm font-medium text-on-em hover:bg-em-dim classic:bg-em-dim classic:hover:bg-em classic:text-bg"
         >
           Open Settings
         </Link>

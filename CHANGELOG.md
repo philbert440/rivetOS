@@ -9,7 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### RivetHub
 
+- Material style for an explicit Light or Dark theme: tonal surfaces from the emerald seed, rounded shapes, Roboto Flex for UI text (JetBrains Mono stays for code and the terminal), pill navigation, message bubbles and soft cards. System and Omarchy keep the classic square, monospace look unchanged. The style follows the preference through `html[data-style]`; see `apps/rivethub-web/AGENT.md` → Material style.
 - Spaces canvas (preview, still **off** by default): dark, light, and Omarchy all come from tokens; reduced motion snaps the camera and the canvas motion; tiles are a roving-tabindex grid with a spoken altitude; `?` opens a Keys panel built from the same shortcut table the handler uses; empty states for no conversations, no spaces, and an empty space. Moving the open thread to History no longer remounts it, and History's pick mode no longer takes Escape while a thread is open.
+
+### Grok Bot member kit
+
+- rivethub-grokbot mesh handoff uses the plugin MCP tools `list_agents` and `delegate_task` (den task API). The curl recipe is gone. Step 3 (den live stream) stays parked.
 
 ### Compaction worker
 

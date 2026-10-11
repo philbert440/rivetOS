@@ -85,7 +85,9 @@ export function TagsView(props: {
 
       <section>
         <div className="mb-2 flex items-center gap-2">
-          <h2 className="font-mono text-sm font-semibold text-em">Suggested tags</h2>
+          <h2 className="text-base font-semibold text-ink classic:text-em classic:text-sm">
+            Suggested tags
+          </h2>
           <span className="muted small">
             {pending.isLoading
               ? 'loading…'
@@ -107,7 +109,7 @@ export function TagsView(props: {
                 <div className="mb-2 flex flex-wrap items-center gap-2">
                   <button
                     type="button"
-                    className="min-w-0 truncate font-mono text-[12px] text-ink hover:text-em hover:underline disabled:no-underline"
+                    className="min-w-0 truncate text-[13px] text-ink hover:text-em hover:underline disabled:no-underline classic:text-[12px]"
                     disabled={!props.onOpenSession || !g.openable}
                     onClick={() => {
                       if (g.openable) props.onOpenSession?.(g.sessionKey)
@@ -165,7 +167,9 @@ export function TagsView(props: {
       </section>
 
       <section>
-        <h2 className="mb-2 font-mono text-sm font-semibold text-em">In use</h2>
+        <h2 className="mb-2 text-base font-semibold text-ink classic:text-em classic:text-sm">
+          In use
+        </h2>
         {counts.data && counts.data.counts.length === 0 && (
           <p className="muted small">No accepted tags yet.</p>
         )}
@@ -173,7 +177,7 @@ export function TagsView(props: {
           {counts.data?.counts.map((c) => (
             <span
               key={`${c.key}:${c.value}`}
-              className="inline-flex items-center gap-1 rounded border border-em/40 bg-em/10 px-2 py-0.5 font-mono text-[11px] text-em"
+              className="inline-flex items-center gap-1 rounded border border-em/40 bg-em/10 px-2 py-0.5 text-xs text-em classic:text-[11px]"
               title={`${String(c.conversations)} session${c.conversations === 1 ? '' : 's'}`}
             >
               {tagLabel({ key: c.key, value: c.value, display: c.display })}
@@ -185,7 +189,9 @@ export function TagsView(props: {
 
       <section>
         <div className="mb-2 flex items-center gap-2">
-          <h2 className="font-mono text-sm font-semibold text-em">Vocabulary</h2>
+          <h2 className="text-base font-semibold text-ink classic:text-em classic:text-sm">
+            Vocabulary
+          </h2>
           <span className="muted small">
             {acceptedVocab.length} accepted · {suggestedVocab.length} suggested
           </span>
@@ -227,7 +233,7 @@ export function TagsView(props: {
           {acceptedVocab.map((e) => (
             <span
               key={`${e.key}:${e.value}`}
-              className="inline-flex items-center gap-1 rounded border border-line bg-panel-2 px-2 py-0.5 font-mono text-[11px] text-ink"
+              className="inline-flex items-center gap-1 rounded border border-line bg-panel-2 px-2 py-0.5 text-xs text-ink classic:text-[11px]"
               title={e.aliases.length > 0 ? `aliases: ${e.aliases.join(', ')}` : undefined}
             >
               {tagLabel(e)}
@@ -256,14 +262,14 @@ export function TagsView(props: {
             value={mergeKey}
             onChange={(e) => setMergeKey(e.target.value)}
             aria-label="merge key"
-            className="w-20 rounded border border-line bg-panel px-1.5 py-0.5 font-mono text-[11px] text-ink"
+            className="w-20 rounded border border-line bg-panel px-1.5 py-0.5 text-xs text-ink classic:text-[11px]"
           />
           <input
             value={mergeFrom}
             onChange={(e) => setMergeFrom(e.target.value)}
             placeholder="from value"
             aria-label="merge from"
-            className="w-32 rounded border border-line bg-panel px-1.5 py-0.5 font-mono text-[11px] text-ink placeholder:text-ink-dim"
+            className="w-32 rounded border border-line bg-panel px-1.5 py-0.5 text-xs text-ink placeholder:text-ink-dim classic:text-[11px]"
           />
           <span className="small text-ink-dim">into</span>
           <input
@@ -271,7 +277,7 @@ export function TagsView(props: {
             onChange={(e) => setMergeInto(e.target.value)}
             placeholder="into value"
             aria-label="merge into"
-            className="w-32 rounded border border-line bg-panel px-1.5 py-0.5 font-mono text-[11px] text-ink placeholder:text-ink-dim"
+            className="w-32 rounded border border-line bg-panel px-1.5 py-0.5 text-xs text-ink placeholder:text-ink-dim classic:text-[11px]"
           />
           <Button
             type="submit"

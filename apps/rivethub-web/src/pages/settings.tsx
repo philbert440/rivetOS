@@ -85,24 +85,24 @@ function SavedNodesSection(): JSX.Element {
               value={draftName}
               onChange={(e) => setDraftName(e.target.value)}
               placeholder="Name"
-              className="mb-1 w-full rounded border border-line bg-panel-2 px-2 py-1 font-mono text-xs outline-none focus:border-em"
+              className="mb-1 w-full rounded-lg border border-line bg-panel-2 px-2 py-1 font-mono text-xs outline-none focus:border-em"
             />
             <input
               value={draftNodeUrl}
               onChange={(e) => setDraftNodeUrl(e.target.value)}
               placeholder="https://node-host:5174"
-              className="mb-2 w-full rounded border border-line bg-panel-2 px-2 py-1 font-mono text-xs outline-none focus:border-em"
+              className="mb-2 w-full rounded-lg border border-line bg-panel-2 px-2 py-1 font-mono text-xs outline-none focus:border-em"
             />
             <div className="flex gap-2">
               <button
                 onClick={commitEdit}
-                className="rounded bg-em-dim px-3 py-1 text-xs font-medium text-bg hover:bg-em"
+                className="rounded-pill bg-em px-3 py-1 text-xs font-medium text-on-em hover:bg-em-dim classic:bg-em-dim classic:hover:bg-em classic:text-bg"
               >
                 Save
               </button>
               <button
                 onClick={() => setEditing(null)}
-                className="rounded border border-line px-3 py-1 text-xs hover:border-em"
+                className="rounded-pill border border-line px-3 py-1 text-xs hover:bg-ink/6 classic:hover:bg-transparent classic:hover:border-em"
               >
                 Cancel
               </button>
@@ -117,14 +117,14 @@ function SavedNodesSection(): JSX.Element {
             </span>
             <button
               onClick={() => beginEdit(n.name, n.baseUrl)}
-              className="rounded border border-line px-2 py-0.5 text-xs text-ink-dim hover:border-em hover:text-ink"
+              className="rounded-pill border border-line px-2 py-0.5 text-xs text-ink-dim hover:bg-ink/6 hover:text-ink classic:hover:bg-transparent classic:hover:border-em"
               aria-label={`edit ${n.name}`}
             >
               Edit
             </button>
             <button
               onClick={() => removeNode(n.baseUrl)}
-              className="rounded border border-line px-2 py-0.5 text-xs text-ink-dim hover:border-em hover:text-red"
+              className="rounded-pill border border-line px-2 py-0.5 text-xs text-ink-dim hover:bg-ink/6 hover:text-red classic:hover:bg-transparent classic:hover:border-em"
               aria-label={`remove ${n.name}`}
             >
               Remove
@@ -132,7 +132,7 @@ function SavedNodesSection(): JSX.Element {
           </div>
         ),
       )}
-      {notice && <p className="mt-1 font-mono text-[10px] text-ink-dim">{notice}</p>}
+      {notice && <p className="mt-1 text-[11px] text-ink-dim classic:text-[10px]">{notice}</p>}
     </>
   )
 }
@@ -151,7 +151,7 @@ function AgentsSettingsBlock(): JSX.Element {
   const row = (label: string, value: string | undefined): JSX.Element => (
     <div className="mb-1 flex gap-2 text-xs">
       <span className="w-32 shrink-0 text-ink-dim">{label}</span>
-      <span className="min-w-0 break-all font-mono text-ink">{value || '—'}</span>
+      <span className="min-w-0 break-all text-ink">{value || '—'}</span>
     </div>
   )
   return (
@@ -309,7 +309,7 @@ function GatewaySection(): JSX.Element {
         value={draftUrl}
         onChange={(e) => setDraftUrl(e.target.value)}
         placeholder="https://node-host:5174"
-        className="mb-2 w-full rounded border border-line bg-panel px-3 py-2 font-mono text-sm outline-none focus:border-em"
+        className="mb-2 w-full rounded-lg border border-line bg-panel px-3 py-2 font-mono text-sm outline-none focus:border-em"
       />
       <p className="mb-6 pl-4 text-xs text-ink-dim">
         Auth is a Rivet CA <span className="font-mono">device:</span> client certificate installed
@@ -320,19 +320,19 @@ function GatewaySection(): JSX.Element {
       <div className="flex items-center gap-3">
         <button
           onClick={() => void test()}
-          className="rounded border border-line bg-panel-2 px-4 py-2 text-sm hover:border-em"
+          className="rounded-pill border border-line bg-panel-2 px-4 py-2 text-sm hover:bg-ink/6 classic:hover:border-em"
         >
           Test connection
         </button>
         <button
           onClick={save}
-          className="rounded bg-em-dim px-4 py-2 text-sm font-medium text-bg hover:bg-em"
+          className="rounded-pill bg-em px-4 py-2 text-sm font-medium text-on-em hover:bg-em-dim classic:bg-em-dim classic:hover:bg-em classic:text-bg"
         >
           Save
         </button>
       </div>
 
-      <div className="mt-4 min-h-6 font-mono text-sm">
+      <div className="mt-4 min-h-6 text-sm">
         {probe.kind === 'testing' && <span className="text-ink-dim">probing…</span>}
         {probe.kind === 'ok' && (
           <span className="text-em">
@@ -378,8 +378,8 @@ function AppearanceSection(): JSX.Element {
               }}
               className={
                 themePreference === value
-                  ? 'rounded bg-em-dim px-4 py-2 text-sm font-medium text-bg'
-                  : 'rounded border border-line bg-panel-2 px-4 py-2 text-sm hover:border-em'
+                  ? 'rounded-pill bg-em px-4 py-2 text-sm font-medium text-on-em classic:bg-em-dim classic:text-bg'
+                  : 'rounded-pill border border-line bg-panel-2 px-4 py-2 text-sm hover:bg-ink/6 classic:hover:border-em'
               }
             >
               {label}
@@ -473,7 +473,7 @@ function DatahubSection(): JSX.Element {
         value={draftWiki}
         onChange={(e) => setDraftWiki(e.target.value)}
         placeholder="https://datahub-host:5174"
-        className="mb-3 w-full rounded border border-line bg-panel px-3 py-2 font-mono text-sm outline-none focus:border-em"
+        className="mb-3 w-full rounded-lg border border-line bg-panel px-3 py-2 font-mono text-sm outline-none focus:border-em"
       />
       <div className="flex items-center gap-3">
         <button
@@ -490,13 +490,11 @@ function DatahubSection(): JSX.Element {
               saved ? '✓ saved datahub origin' : '✓ cleared — will discover datahub from mesh',
             )
           }}
-          className="rounded bg-em-dim px-4 py-2 text-sm font-medium text-bg hover:bg-em"
+          className="rounded-pill bg-em px-4 py-2 text-sm font-medium text-on-em hover:bg-em-dim classic:bg-em-dim classic:hover:bg-em classic:text-bg"
         >
           Save datahub URL
         </button>
-        <span
-          className={`font-mono text-sm ${wikiNotice.startsWith('✗') ? 'text-red' : 'text-em'}`}
-        >
+        <span className={`text-sm ${wikiNotice.startsWith('✗') ? 'text-red' : 'text-em'}`}>
           {wikiNotice}
         </span>
       </div>
@@ -529,8 +527,8 @@ function ConversationsSection(): JSX.Element {
               onClick={() => setDefaultView(value)}
               className={
                 defaultView === value
-                  ? 'rounded bg-em-dim px-4 py-2 text-sm font-medium text-bg'
-                  : 'rounded border border-line bg-panel-2 px-4 py-2 text-sm hover:border-em'
+                  ? 'rounded-pill bg-em px-4 py-2 text-sm font-medium text-on-em classic:bg-em-dim classic:text-bg'
+                  : 'rounded-pill border border-line bg-panel-2 px-4 py-2 text-sm hover:bg-ink/6 classic:hover:border-em'
               }
             >
               {label}

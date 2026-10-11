@@ -45,9 +45,11 @@ const SETTINGS = { to: '/settings', label: 'Settings', icon: Settings } as const
 
 function navClass(active: boolean, collapsed: boolean): string {
   return cn(
-    'flex w-full items-center rounded text-sm',
-    collapsed ? 'justify-center px-0 py-2' : 'px-3 py-2',
-    active ? 'bg-panel-2 text-em' : 'text-ink-dim hover:bg-panel-2 hover:text-ink',
+    'flex w-full items-center rounded-pill text-sm font-medium transition-colors classic:font-normal',
+    collapsed ? 'justify-center px-0 py-2' : 'px-4 py-2 classic:px-3',
+    active
+      ? 'bg-em-container text-on-em-container classic:bg-panel-2 classic:text-em'
+      : 'text-ink-dim hover:bg-ink/8 hover:text-ink classic:hover:bg-panel-2',
   )
 }
 
@@ -76,7 +78,13 @@ function NavLink(props: {
           }
         }}
       >
-        <Icon className={cn('size-4 shrink-0', !props.collapsed && 'mr-2')} aria-hidden />
+        <Icon
+          className={cn(
+            'size-[18px] shrink-0 classic:size-4',
+            !props.collapsed && 'mr-3 classic:mr-2',
+          )}
+          aria-hidden
+        />
         {!props.collapsed && props.label}
       </Link>
     </Tooltip>
@@ -120,7 +128,13 @@ function ConversationsNav(props: { collapsed: boolean }): JSX.Element {
           setConversationsCollapsed(!paneHidden)
         }}
       >
-        <MessageSquare className={cn('size-4 shrink-0', !props.collapsed && 'mr-2')} aria-hidden />
+        <MessageSquare
+          className={cn(
+            'size-[18px] shrink-0 classic:size-4',
+            !props.collapsed && 'mr-3 classic:mr-2',
+          )}
+          aria-hidden
+        />
         {!props.collapsed && <span className="min-w-0 truncate">Conversations</span>}
       </button>
     </Tooltip>
@@ -137,7 +151,7 @@ export function MobileTopBar(): JSX.Element {
   const setDrawerOpen = useSidebarPrefs((s) => s.setDrawerOpen)
 
   return (
-    <div className="flex h-12 shrink-0 items-center gap-2 border-b border-line bg-panel/80 px-3">
+    <div className="flex h-12 shrink-0 items-center gap-2 bg-surface px-3 classic:bg-panel/80 classic:border-b classic:border-line">
       <Button
         variant="ghost"
         size="icon"
@@ -151,7 +165,9 @@ export function MobileTopBar(): JSX.Element {
         <Menu className="size-5 shrink-0" aria-hidden />
       </Button>
       <RhMark className="text-lg" />
-      <span className="min-w-0 truncate font-mono text-sm text-em">{hubPageTitle(pathname)}</span>
+      <span className="min-w-0 truncate text-base font-medium text-ink classic:font-normal classic:text-em classic:text-sm">
+        {hubPageTitle(pathname)}
+      </span>
       {unread > 0 && (
         <span className="ml-auto">
           <button
@@ -163,7 +179,7 @@ export function MobileTopBar(): JSX.Element {
             aria-label={`${String(unread)} unread notifications`}
             className={cn(
               'relative flex items-center gap-1 rounded-full border border-red/50 bg-red/10 px-2 py-0.5',
-              "font-mono text-[11px] text-red hover:bg-red/20 after:absolute after:-inset-y-2 after:content-['']",
+              "text-[11px] font-medium text-red hover:bg-red/20 after:absolute after:-inset-y-2 after:content-['']",
             )}
           >
             <Bell className="size-3" />
@@ -244,12 +260,12 @@ export function Sidebar(): JSX.Element {
       className={
         narrow
           ? cn(
-              'fixed inset-y-0 left-0 z-40 flex w-64 shrink-0 flex-col border-r border-line bg-panel',
+              'fixed inset-y-0 left-0 z-40 flex w-72 shrink-0 flex-col rounded-r-3xl bg-bg shadow-pop classic:bg-panel classic:border-line classic:border-r classic:w-64',
               'transition-transform duration-150 motion-reduce:transition-none',
               drawerOpen ? 'translate-x-0' : '-translate-x-full',
             )
           : cn(
-              'relative z-20 flex shrink-0 flex-col border-2 border-line bg-panel transition-[width] duration-150',
+              'relative z-20 flex shrink-0 flex-col bg-bg transition-[width] duration-150 classic:bg-panel classic:border-2 classic:border-line',
               collapsed ? 'w-12' : 'w-56',
             )
       }
@@ -294,7 +310,7 @@ export function Sidebar(): JSX.Element {
                 aria-label={`${String(unread)} unread notifications`}
                 className={cn(
                   'relative flex items-center gap-1 rounded-full border border-red/50',
-                  'bg-red/10 font-mono text-[11px] text-red hover:bg-red/20',
+                  'bg-red/10 text-[11px] font-medium text-red hover:bg-red/20 classic:font-normal',
                   collapsed
                     ? 'size-4 justify-center px-0'
                     : "px-2 py-0.5 after:absolute after:-inset-y-2 after:content-['']",
@@ -316,7 +332,10 @@ export function Sidebar(): JSX.Element {
 
         {secondaryItems.length > 0 && (
           <>
-            <div className="my-2 border-t border-line" role="separator" />
+            <div
+              className="mx-4 my-2 border-t border-line/60 classic:border-line"
+              role="separator"
+            />
             {secondaryItems.map((item) => (
               <NavLink key={item.to} {...item} collapsed={collapsed} />
             ))}

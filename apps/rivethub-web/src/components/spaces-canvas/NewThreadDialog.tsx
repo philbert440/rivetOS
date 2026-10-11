@@ -173,7 +173,7 @@ export function NewThreadDialog(props: {
       }}
     >
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-50 bg-bg/70" />
+        <Dialog.Overlay className="fixed inset-0 z-50 bg-black/40 classic:bg-bg/70" />
         <Dialog.Content
           className="fixed top-1/2 left-1/2 z-50 w-[28rem] max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 border border-line bg-panel p-4 font-mono shadow-lg outline-none"
           title={startsIn}
@@ -183,7 +183,9 @@ export function NewThreadDialog(props: {
             if (field instanceof HTMLElement) field.focus()
           }}
         >
-          <Dialog.Title className="mb-3 text-sm text-ink">New thread</Dialog.Title>
+          <Dialog.Title className="mb-5 text-sm leading-relaxed text-ink-dim classic:mb-3 classic:text-ink">
+            New thread
+          </Dialog.Title>
           <Dialog.Description className="sr-only">
             Send a prompt, or add a thread from History.
             {startsIn ? ` ${startsIn}.` : ''}

@@ -439,7 +439,7 @@ export function FilesPage(): JSX.Element {
       {dialog.element}
       {discardDialog.element}
       {/* Breadcrumbs */}
-      <div className="flex flex-wrap items-center gap-1 border-b border-line bg-panel/40 px-4 py-2 font-mono text-xs">
+      <div className="flex flex-wrap items-center gap-1 border-b border-line bg-panel/40 px-4 py-2 text-xs">
         <button
           type="button"
           onClick={() => navigateGuarded('')}
@@ -470,7 +470,7 @@ export function FilesPage(): JSX.Element {
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
           placeholder="Filter…"
-          className="w-40 rounded border border-line bg-panel px-2 py-1 text-xs outline-none focus:border-em"
+          className="w-40 rounded-lg border border-line bg-panel px-2 py-1 text-xs outline-none focus:border-em"
         />
         <Select
           value={sort}
@@ -487,7 +487,7 @@ export function FilesPage(): JSX.Element {
           type="button"
           disabled={busy}
           onClick={() => void mkdir()}
-          className="rounded border border-line px-2 py-1 text-xs hover:border-em disabled:opacity-40"
+          className="rounded-pill border border-line px-2 py-1 text-xs hover:bg-ink/6 disabled:opacity-40 classic:hover:bg-transparent classic:hover:border-em"
         >
           New folder
         </button>
@@ -499,7 +499,7 @@ export function FilesPage(): JSX.Element {
             const entry = (listing.data?.entries ?? []).find((e) => e.name === name)
             if (entry) void renameOne(entry)
           }}
-          className="rounded border border-line px-2 py-1 text-xs hover:border-em disabled:opacity-40"
+          className="rounded-pill border border-line px-2 py-1 text-xs hover:bg-ink/6 disabled:opacity-40 classic:hover:bg-transparent classic:hover:border-em"
         >
           Rename
         </button>
@@ -507,7 +507,7 @@ export function FilesPage(): JSX.Element {
           type="button"
           disabled={busy || selected.size === 0}
           onClick={() => void deleteSelected()}
-          className="rounded border border-red/40 px-2 py-1 text-xs text-red hover:border-red disabled:opacity-40"
+          className="rounded-pill border border-red/40 px-2 py-1 text-xs text-red hover:bg-red/10 disabled:opacity-40 classic:hover:bg-transparent classic:hover:border-red"
         >
           Delete
         </button>
@@ -515,7 +515,7 @@ export function FilesPage(): JSX.Element {
           type="button"
           disabled={selected.size === 0}
           onClick={() => void copyPaths()}
-          className="rounded border border-line px-2 py-1 text-xs hover:border-em disabled:opacity-40"
+          className="rounded-pill border border-line px-2 py-1 text-xs hover:bg-ink/6 disabled:opacity-40 classic:hover:bg-transparent classic:hover:border-em"
         >
           Copy path
         </button>
@@ -523,11 +523,11 @@ export function FilesPage(): JSX.Element {
           type="button"
           disabled={selected.size === 0}
           onClick={() => void copyUrls()}
-          className="rounded border border-line px-2 py-1 text-xs hover:border-em disabled:opacity-40"
+          className="rounded-pill border border-line px-2 py-1 text-xs hover:bg-ink/6 disabled:opacity-40 classic:hover:bg-transparent classic:hover:border-em"
         >
           Copy URL
         </button>
-        <label className="cursor-pointer rounded border border-line px-2 py-1 text-xs hover:border-em">
+        <label className="cursor-pointer rounded-pill border border-line px-2 py-1 text-xs hover:bg-ink/6 classic:hover:bg-transparent classic:hover:border-em">
           Upload…
           <input
             type="file"
@@ -543,7 +543,7 @@ export function FilesPage(): JSX.Element {
 
       {notice && (
         <div
-          className={`border-b border-line px-4 py-1.5 font-mono text-xs ${notice.kind === 'ok' ? 'text-em' : 'text-red'}`}
+          className={`border-b border-line px-4 py-1.5 text-xs ${notice.kind === 'ok' ? 'text-em' : 'text-red'}`}
         >
           {notice.text}
           <button
@@ -560,7 +560,7 @@ export function FilesPage(): JSX.Element {
         {/* Listing */}
         <div className="min-w-0 flex-1 overflow-y-auto px-4 py-2">
           {listing.isError ? (
-            <div className="py-6 font-mono text-sm text-red">{listing.error.message}</div>
+            <div className="py-6 text-sm text-red">{listing.error.message}</div>
           ) : entries.length === 0 && !listing.isLoading ? (
             <div className="py-6 text-sm text-ink-dim">
               {filter ? 'No matches.' : 'Empty directory — drop files here or use Upload.'}
@@ -569,7 +569,7 @@ export function FilesPage(): JSX.Element {
             <div className="overflow-x-auto">
               <table className="w-full border-collapse text-sm">
                 <thead>
-                  <tr className="border-b border-line text-left font-mono text-[10px] text-ink-dim">
+                  <tr className="border-b border-line text-left text-[11px] text-ink-dim classic:text-[10px]">
                     <th className="w-8 py-1 pr-2">
                       <input
                         type="checkbox"
@@ -593,7 +593,7 @@ export function FilesPage(): JSX.Element {
                         <button
                           type="button"
                           onClick={() => navigateGuarded(parentRel(path))}
-                          className="font-mono text-ink-dim hover:text-ink"
+                          className="text-ink-dim hover:text-ink"
                         >
                           ../
                         </button>
@@ -713,7 +713,7 @@ export function FilesPage(): JSX.Element {
                               activateRow(ev)
                             }}
                           >
-                            <span className="w-4 text-center font-mono text-ink-dim">
+                            <span className="w-4 text-center text-ink-dim">
                               {e.type === 'dir' ? '▸' : '·'}
                             </span>
                             <span className={e.type === 'dir' ? 'text-em' : 'text-ink'}>
@@ -765,7 +765,7 @@ export function FilesPage(): JSX.Element {
 
       {dragging && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center border-2 border-dashed border-em bg-panel/80">
-          <span className="font-mono text-sm text-em">
+          <span className="text-sm text-em">
             drop to upload into /{path === '' ? '' : `${path}/`}
           </span>
         </div>
@@ -792,7 +792,7 @@ function PreviewPane(props: {
   return (
     <aside className="flex w-[min(36rem,50%)] shrink-0 flex-col border-l border-line bg-panel/60">
       <div className="flex items-center gap-2 border-b border-line px-3 py-2">
-        <span className="min-w-0 flex-1 truncate font-mono text-xs text-em">{props.path}</span>
+        <span className="min-w-0 flex-1 truncate text-xs text-em">{props.path}</span>
         <a
           href={props.downloadUrl}
           target="_blank"
@@ -815,7 +815,7 @@ function PreviewPane(props: {
                 }
               : undefined
           }
-          className="font-mono text-[11px] text-ink-dim hover:text-em"
+          className="text-xs text-ink-dim hover:text-em classic:text-[11px]"
         >
           {inShell ? 'download' : 'open'}
         </a>
@@ -841,7 +841,7 @@ function PreviewPane(props: {
           onDirtyChange={props.onDirtyChange}
         />
       ) : (
-        <div className="p-3 font-mono text-xs text-ink-dim">
+        <div className="p-3 text-xs text-ink-dim">
           No in-app preview for this type — use download / open.
         </div>
       )}

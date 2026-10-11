@@ -31,8 +31,8 @@ export function TagChip(props: {
   const plain = tagLabel(tag)
   const base =
     props.size === 'md'
-      ? 'inline-flex items-center gap-1 rounded border px-2 py-0.5 font-mono text-[11px]'
-      : 'inline-flex items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[10px]'
+      ? 'inline-flex items-center gap-1 rounded border px-2 py-0.5 text-xs classic:text-[11px]'
+      : 'inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] classic:text-[10px]'
   const tone = suggested
     ? 'border-dashed border-warn/50 bg-warn/5 text-warn'
     : 'border-em/40 bg-em/10 text-em'
@@ -127,7 +127,7 @@ export function TagChips(props: {
       ))}
       {rest > 0 && (
         <span
-          className="font-mono text-[10px] text-ink-dim"
+          className="text-[11px] text-ink-dim classic:text-[10px]"
           title={props.tags.slice(shown.length).map(tagLabel).join(', ')}
         >
           +{rest}
@@ -154,7 +154,7 @@ export function AddTagInline(props: {
     return (
       <button
         type="button"
-        className="inline-flex items-center gap-1 rounded border border-dashed border-line px-1.5 py-0.5 font-mono text-[10px] text-ink-dim hover:border-em hover:text-em"
+        className="inline-flex items-center gap-1 rounded-pill border border-dashed border-line px-1.5 py-0.5 text-[11px] text-ink-dim hover:bg-ink/6 hover:text-em classic:hover:bg-transparent classic:hover:border-em classic:text-[10px]"
         onClick={(e) => {
           e.stopPropagation()
           setOpen(true)
@@ -219,12 +219,12 @@ export function AddTagInline(props: {
       <button
         type="submit"
         disabled={props.busy || value.trim() === ''}
-        className="rounded border border-line px-1.5 py-0.5 font-mono text-[10px] text-ink-dim hover:border-em hover:text-em disabled:opacity-50"
+        className="rounded-pill border border-line px-1.5 py-0.5 text-[11px] text-ink-dim hover:bg-ink/6 hover:text-em disabled:opacity-50 classic:hover:bg-transparent classic:hover:border-em classic:text-[10px]"
       >
         add
       </button>
       {problem !== '' && (
-        <span className="font-mono text-[10px] text-red" role="alert">
+        <span className="text-[11px] text-red classic:text-[10px]" role="alert">
           {problem}
         </span>
       )}

@@ -260,15 +260,13 @@ export function FlowsAuthor(props: {
                 type="button"
                 disabled={saving || !loaded}
                 onClick={() => void onSave()}
-                className="rounded bg-em-dim px-3 py-1 font-mono text-xs font-medium text-bg hover:bg-em disabled:opacity-40"
+                className="rounded-pill bg-em px-3 py-1 text-xs font-medium text-on-em hover:bg-em-dim disabled:opacity-40 classic:bg-em-dim classic:hover:bg-em classic:text-bg"
               >
                 {saving ? 'Saving…' : dirty ? 'Save' : 'Saved'}
               </button>
             )}
             {saveMsg && (
-              <span className={`font-mono text-[11px] ${saveOk ? 'text-em' : 'text-red'}`}>
-                {saveMsg}
-              </span>
+              <span className={`text-xs ${saveOk ? 'text-em' : 'text-red'}`}>{saveMsg}</span>
             )}
             {props.toolbarRight}
           </>

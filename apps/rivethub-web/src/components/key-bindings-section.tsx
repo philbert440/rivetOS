@@ -152,7 +152,7 @@ export function KeyBindingsSection(): JSX.Element {
 
   return (
     <>
-      <h2 className="mt-10 mb-3 border-t border-line pt-6 font-mono text-sm font-semibold text-em">
+      <h2 className="mt-10 mb-3 border-t border-line/60 pt-6 text-base font-semibold text-ink classic:border-line classic:text-em classic:text-sm">
         Keyboard shortcuts
         {changedCount > 0 ? (
           <span className="font-normal text-ink-dim"> · {changedCount} changed</span>

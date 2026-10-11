@@ -1809,7 +1809,7 @@ export function SpacesCanvas(props: {
           }}
         >
           <Dialog.Portal>
-            <Dialog.Overlay className="fixed inset-0 z-50 bg-bg/70" />
+            <Dialog.Overlay className="fixed inset-0 z-50 bg-black/40 classic:bg-bg/70" />
             <Dialog.Content
               id="keys"
               data-keys-panel=""
@@ -1913,9 +1913,11 @@ function NameDialog(props: {
       }}
     >
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-50 bg-bg/70" />
+        <Dialog.Overlay className="fixed inset-0 z-50 bg-black/40 classic:bg-bg/70" />
         <Dialog.Content className="fixed top-1/2 left-1/2 z-50 w-80 max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 border border-line bg-panel p-4 font-mono shadow-lg outline-none">
-          <Dialog.Title className="mb-3 text-sm text-ink">{props.title}</Dialog.Title>
+          <Dialog.Title className="mb-5 text-sm leading-relaxed text-ink-dim classic:mb-3 classic:text-ink">
+            {props.title}
+          </Dialog.Title>
           <Dialog.Description className="sr-only">{props.title}</Dialog.Description>
           <form
             onSubmit={(event) => {
@@ -1969,9 +1971,11 @@ function RemoveDialog(props: {
       }}
     >
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-50 bg-bg/70" />
+        <Dialog.Overlay className="fixed inset-0 z-50 bg-black/40 classic:bg-bg/70" />
         <Dialog.Content className="fixed top-1/2 left-1/2 z-50 w-96 max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 border border-line bg-panel p-4 font-mono shadow-lg outline-none">
-          <Dialog.Title className="mb-3 text-sm text-ink">Remove space</Dialog.Title>
+          <Dialog.Title className="mb-5 text-sm leading-relaxed text-ink-dim classic:mb-3 classic:text-ink">
+            Remove space
+          </Dialog.Title>
           <Dialog.Description className="mb-4 text-sm text-ink-dim">
             {props.message}
           </Dialog.Description>
