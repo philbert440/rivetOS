@@ -4,7 +4,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
-    CancelNotification, ContentBlock, InitializeRequest, LoadSessionRequest, NewSessionRequest,
+    AuthCapabilities, AuthenticateRequest, CancelNotification, ClientCapabilities, ContentBlock,
+    FileSystemCapabilities, InitializeRequest, LoadSessionRequest, NewSessionRequest,
     PromptRequest, SessionNotification, StopReason, TextContent,
 };
 use agent_client_protocol::{Agent, Client, ConnectTo, ConnectionTo};
@@ -20,6 +21,7 @@ const UPDATE_CAP: usize = 1024;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InitializeInfo {
     pub load_session: bool,
+    pub auth_methods: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -49,6 +51,10 @@ enum Command {
         session_id: String,
         text: String,
         reply: oneshot::Sender<Result<PromptOutput, AcpError>>,
+    },
+    Authenticate {
+        method_id: String,
+        reply: oneshot::Sender<Result<(), AcpError>>,
     },
     Shutdown,
 }
@@ -87,12 +93,8 @@ impl AcpClient {
                         move |notification: SessionNotification, _cx| {
                             let updates_tx = updates_tx.clone();
                             async move {
-                                match updates_tx.try_send(event_of(&notification)) {
-                                    Ok(()) => {}
-                                    Err(mpsc::error::TrySendError::Full(_)) => {
-                                        tracing::warn!("acp session update dropped: channel full");
-                                    }
-                                    Err(mpsc::error::TrySendError::Closed(_)) => {}
+                                if updates_tx.send(event_of(&notification)).await.is_err() {
+                                    tracing::warn!("acp session update dropped: channel closed");
                                 }
                                 Ok(())
                             }
@@ -133,25 +135,46 @@ impl AcpClient {
                         match command {
                             Command::Shutdown => break,
                             Command::Initialize(reply) => {
-                                let result = cx
-                                    .send_request(InitializeRequest::new(ProtocolVersion::V1))
-                                    .block_task()
-                                    .await
-                                    .map(|response| InitializeInfo {
+                                discard_queued(&mut updates_rx);
+                                let pending = cx
+                                    .send_request(
+                                        InitializeRequest::new(ProtocolVersion::V1)
+                                            .client_capabilities(
+                                                ClientCapabilities::new()
+                                                    .fs(FileSystemCapabilities::new())
+                                                    .terminal(false)
+                                                    .auth(AuthCapabilities::new().terminal(false)),
+                                            ),
+                                    )
+                                    .block_task();
+                                let result = finish_request(&mut updates_rx, pending).await.map(
+                                    |(response, _)| InitializeInfo {
                                         load_session: response.agent_capabilities.load_session,
-                                    })
-                                    .map_err(AcpError::from);
+                                        auth_methods: response
+                                            .auth_methods
+                                            .iter()
+                                            .map(|method| method.id().to_string())
+                                            .collect(),
+                                    },
+                                );
+                                let _ = reply.send(result);
+                            }
+                            Command::Authenticate { method_id, reply } => {
+                                discard_queued(&mut updates_rx);
+                                let pending = cx
+                                    .send_request(AuthenticateRequest::new(method_id))
+                                    .block_task();
+                                let result =
+                                    finish_request(&mut updates_rx, pending).await.map(|_| ());
                                 let _ = reply.send(result);
                             }
                             Command::NewSession { cwd, reply } => {
-                                drain_updates(&mut updates_rx);
-                                let result = cx
-                                    .send_request(NewSessionRequest::new(cwd))
-                                    .block_task()
+                                discard_queued(&mut updates_rx);
+                                let pending =
+                                    cx.send_request(NewSessionRequest::new(cwd)).block_task();
+                                let result = finish_request(&mut updates_rx, pending)
                                     .await
-                                    .map(|response| response.session_id.to_string())
-                                    .map_err(AcpError::from);
-                                drain_updates(&mut updates_rx);
+                                    .map(|(response, _)| response.session_id.to_string());
                                 let _ = reply.send(result);
                             }
                             Command::LoadSession {
@@ -159,15 +182,13 @@ impl AcpClient {
                                 cwd,
                                 reply,
                             } => {
-                                drain_updates(&mut updates_rx);
-                                let result = cx
+                                discard_queued(&mut updates_rx);
+                                let pending = cx
                                     .send_request(LoadSessionRequest::new(session_id, cwd))
-                                    .block_task()
+                                    .block_task();
+                                let result = finish_request(&mut updates_rx, pending)
                                     .await
-                                    .map(|_| LoadOutput {
-                                        events: drain_updates(&mut updates_rx),
-                                    })
-                                    .map_err(AcpError::from);
+                                    .map(|(_, events)| LoadOutput { events });
                                 let _ = reply.send(result);
                             }
                             Command::Prompt {
@@ -176,23 +197,20 @@ impl AcpClient {
                                 reply,
                             } => {
                                 cancelled_for_handler.store(false, Ordering::SeqCst);
-                                drain_updates(&mut updates_rx);
-                                let sent = cx
+                                discard_queued(&mut updates_rx);
+                                let pending = cx
                                     .send_request(PromptRequest::new(
                                         session_id,
                                         vec![ContentBlock::Text(TextContent::new(text))],
                                     ))
-                                    .block_task()
-                                    .await;
-                                tokio::task::yield_now().await;
-                                let events = drain_updates(&mut updates_rx);
-                                let result = sent
-                                    .map(|response| PromptOutput {
+                                    .block_task();
+                                let result = finish_request(&mut updates_rx, pending).await.map(
+                                    |(response, events)| PromptOutput {
                                         stop_reason: stop_name(response.stop_reason),
                                         text: message_text(&events),
                                         events,
-                                    })
-                                    .map_err(AcpError::from);
+                                    },
+                                );
                                 let _ = reply.send(result);
                             }
                         }
@@ -248,6 +266,11 @@ impl AcpClient {
         .await
     }
 
+    pub async fn authenticate(&self, method_id: String) -> Result<(), AcpError> {
+        self.roundtrip(|reply| Command::Authenticate { method_id, reply })
+            .await
+    }
+
     pub async fn cancel_session(&self, session_id: &str) -> Result<(), AcpError> {
         self.cancelled.store(true, Ordering::SeqCst);
         let guard = self.connection.lock().await;
@@ -291,12 +314,41 @@ impl Drop for AcpClient {
     }
 }
 
-fn drain_updates(updates: &mut mpsc::Receiver<SessionEvent>) -> Vec<SessionEvent> {
+fn discard_queued(updates: &mut mpsc::Receiver<SessionEvent>) {
+    while updates.try_recv().is_ok() {}
+}
+
+async fn finish_request<T, F>(
+    updates: &mut mpsc::Receiver<SessionEvent>,
+    request: F,
+) -> Result<(T, Vec<SessionEvent>), AcpError>
+where
+    F: std::future::Future<Output = Result<T, agent_client_protocol::Error>>,
+{
     let mut events = Vec::new();
+    tokio::pin!(request);
+    let mut open = true;
+    let value = loop {
+        if !open {
+            break (&mut request).await.map_err(AcpError::from)?;
+        }
+        tokio::select! {
+            biased;
+            event = updates.recv() => {
+                match event {
+                    Some(event) => events.push(event),
+                    None => open = false,
+                }
+            }
+            result = &mut request => {
+                break result.map_err(AcpError::from)?;
+            }
+        }
+    };
     while let Ok(event) = updates.try_recv() {
         events.push(event);
     }
-    events
+    Ok((value, events))
 }
 
 fn message_text(events: &[SessionEvent]) -> String {

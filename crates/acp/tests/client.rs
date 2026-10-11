@@ -189,3 +189,113 @@ async fn exit_mid_turn_is_an_error() {
     drop(client);
     let _ = task.await;
 }
+
+#[tokio::test]
+async fn prompt_keeps_every_update_past_the_channel_cap() {
+    let (transport, task) = spawn_fake(FakeScript {
+        chunk_count: Some(1025),
+        usage_used: Some(3),
+        usage_size: Some(9),
+        usage_cost: Some(0.25),
+        ..FakeScript::default()
+    });
+    let client = AcpClient::connect(transport, Arc::new(AllowOncePolicy))
+        .await
+        .unwrap();
+    client.initialize().await.unwrap();
+    let id = client.new_session(PathBuf::from("/work")).await.unwrap();
+    let output = tokio::time::timeout(Duration::from_secs(10), client.prompt(id, "hi".into()))
+        .await
+        .expect("prompt flood")
+        .unwrap();
+    assert_eq!(output.text.len(), 1025);
+    assert!(output.text.chars().all(|ch| ch == 'x'));
+    assert!(output.events.iter().any(|event| matches!(
+        event,
+        SessionEvent::Usage {
+            cost_amount: Some(cost),
+            ..
+        } if *cost == 0.25
+    )));
+    client.shutdown().await.unwrap();
+    let _ = task.await;
+}
+
+#[tokio::test]
+async fn load_keeps_every_replayed_update_past_the_channel_cap() {
+    let (transport, task) = spawn_fake(FakeScript {
+        load_chunks: Some(1025),
+        ..FakeScript::default()
+    });
+    let client = AcpClient::connect(transport, Arc::new(AllowOncePolicy))
+        .await
+        .unwrap();
+    client.initialize().await.unwrap();
+    let loaded = tokio::time::timeout(
+        Duration::from_secs(10),
+        client.load_session("sess-1".into(), PathBuf::from("/work")),
+    )
+    .await
+    .expect("load flood")
+    .unwrap();
+    let texts: Vec<&str> = loaded
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            SessionEvent::AgentMessage { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(texts.len(), 1025);
+    assert!(texts.iter().all(|text| *text == "y"));
+    client.shutdown().await.unwrap();
+    let _ = task.await;
+}
+
+#[tokio::test]
+async fn permission_allow_always_is_chosen_after_reject() {
+    let policy = Arc::new(RecordPolicy {
+        kinds: Mutex::new(Vec::new()),
+        chosen: Mutex::new(None),
+    });
+    let (transport, task) = spawn_fake(FakeScript {
+        request_permission: true,
+        permission_allow_always: true,
+        ..FakeScript::default()
+    });
+    let client = AcpClient::connect(transport, policy.clone()).await.unwrap();
+    client.initialize().await.unwrap();
+    let id = client.new_session(PathBuf::from("/work")).await.unwrap();
+    let output = client.prompt(id, "hi".into()).await.unwrap();
+    assert_eq!(output.stop_reason, "end_turn");
+    assert_eq!(
+        policy.kinds.lock().unwrap().as_slice(),
+        ["reject_once", "allow_always"]
+    );
+    assert_eq!(policy.chosen.lock().unwrap().as_deref(), Some("keep"));
+    client.shutdown().await.unwrap();
+    let _ = task.await;
+}
+
+#[test]
+fn permission_without_an_allow_option_cancels() {
+    let decision = AllowOncePolicy.decide(&[PermissionChoice {
+        option_id: "no".into(),
+        name: "Reject".into(),
+        kind: "reject_once".into(),
+    }]);
+    assert_eq!(decision, PermissionDecision::Cancelled);
+    let decision = AllowOncePolicy.decide(&[
+        PermissionChoice {
+            option_id: "keep".into(),
+            name: "Allow always".into(),
+            kind: "allow_always".into(),
+        },
+        PermissionChoice {
+            option_id: "once".into(),
+            name: "Allow".into(),
+            kind: "allow_once".into(),
+        },
+    ]);
+    assert_eq!(decision, PermissionDecision::Selected("once".into()));
+}

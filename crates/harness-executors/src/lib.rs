@@ -19,8 +19,8 @@ pub use acp_exec::{
 pub use drive::{HistorySource, ScaffoldMode, SpawnOutcome};
 pub use error::ExecError;
 pub use install::{
-    HarnessBinaries, codex_missing_binary, cursor_missing_binary, grok_missing_binary,
-    hermes_missing_binary, install_headless_executors,
+    ArgvHarnessConfig, HarnessBinaries, HeadlessConfig, codex_missing_binary,
+    cursor_missing_binary, grok_missing_binary, hermes_missing_binary, install_headless_executors,
 };
 pub use kimi::{
     KIMI_HARNESS_ID, KimiCodeExecutor, KimiFlags, SessionIndexEntry, WireTurnEnd, WireTurnFacts,

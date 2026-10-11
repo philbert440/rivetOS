@@ -7,7 +7,7 @@ mod update;
 
 pub use client::{AcpClient, InitializeInfo, LoadOutput, PromptOutput};
 pub use error::AcpError;
-pub use fake::{FakeScript, spawn_fake};
+pub use fake::{FakeScript, FakeUsage, spawn_fake};
 pub use policy::{AllowOncePolicy, PermissionChoice, PermissionDecision, PermissionPolicy};
 pub use transport::child_lines;
-pub use update::SessionEvent;
+pub use update::{SessionEvent, ToolStatus};

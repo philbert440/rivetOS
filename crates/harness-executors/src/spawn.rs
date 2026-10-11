@@ -137,6 +137,7 @@ pub async fn spawn_child(request: SpawnRequest<'_>) -> Result<Spawned, std::io::
     }
     command.stdout(std::process::Stdio::piped());
     command.stderr(std::process::Stdio::piped());
+    let started_at_ms = now_ms();
     let mut child = command.spawn()?;
     if matches!(request.stdin, StdinMode::PipeEof) {
         drop(child.stdin.take());
@@ -175,7 +176,7 @@ pub async fn spawn_child(request: SpawnRequest<'_>) -> Result<Spawned, std::io::
     });
     Ok(Spawned {
         args: request.args.to_vec(),
-        started_at_ms: now_ms(),
+        started_at_ms,
         lines: line_rx,
         stderr: stderr_buf,
         stdout_cap,
@@ -204,8 +205,7 @@ async fn read_stdout(
                     let mut slot = cap.lock();
                     if slot.len() < STDOUT_CAP {
                         let room = STDOUT_CAP - slot.len();
-                        let take = buf.chars().take(room).collect::<String>();
-                        slot.push_str(&take);
+                        slot.push_str(byte_prefix(&buf, room));
                     }
                 }
                 let line = buf.trim_end_matches(['\n', '\r']).to_string();
@@ -215,6 +215,14 @@ async fn read_stdout(
             }
         }
     }
+}
+
+fn byte_prefix(buf: &str, room: usize) -> &str {
+    let mut end = room.min(buf.len());
+    while end > 0 && !buf.is_char_boundary(end) {
+        end -= 1;
+    }
+    &buf[..end]
 }
 
 async fn read_stderr(stderr: tokio::process::ChildStderr, slot: Arc<Mutex<String>>) {

@@ -268,7 +268,7 @@ async fn install_registers_probe_failures_and_a_live_binary() {
     bins.cursor = missing.to_string();
     let registry = create_executor_registry(None);
     let env = Arc::new(map_env(&[]));
-    install_headless_executors(&registry, env, &bins).await;
+    install_headless_executors(&registry, env, &bins, &HeadlessConfig::default()).await;
     let kimi_exec = registry
         .resolve("harness-session", Some("kimi-code"))
         .unwrap();
@@ -853,4 +853,119 @@ async fn spawn_wait_exit_survives_signal_and_early_close() {
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert_eq!(spawned.wait_exit().await, Some(7));
     assert_eq!(spawned.wait_exit().await, Some(7));
+}
+
+#[tokio::test]
+async fn stdout_capture_stops_on_a_utf8_boundary() {
+    let tmp = Tmp::new();
+    let binary = write_exe(
+        &tmp.dir,
+        "wide",
+        "#!/usr/bin/env bash\nline=$(printf '%.0s漢' {1..1000})\ni=0\nwhile [ \"$i\" -lt 30 ]; do\n  printf '%s\\n' \"$line\"\n  i=$((i+1))\ndone\n",
+    );
+    let env = path_env();
+    let mut spawned = spawn_child(SpawnRequest {
+        binary: binary.to_str().unwrap(),
+        args: &[],
+        cwd: None,
+        env: &env,
+        stdin: StdinMode::Ignore,
+        kill_grace: Duration::from_millis(50),
+        capture_stdout: true,
+    })
+    .await
+    .unwrap();
+    while spawned.next_line().await.is_some() {}
+    let text = spawned.stdout_text();
+    assert!(text.len() <= STDOUT_CAP);
+    assert!(text.len() + 3 > STDOUT_CAP);
+    assert!(text.chars().all(|ch| ch == '漢' || ch == '\n'));
+}
+
+#[tokio::test]
+async fn spawn_records_the_clock_before_the_child_starts() {
+    let tmp = Tmp::new();
+    let binary = write_exe(
+        &tmp.dir,
+        "stamp",
+        "#!/usr/bin/env bash\nprintf '%s\\n' \"$(date +%s%3N)\"\n",
+    );
+    let env = path_env();
+    let mut spawned = spawn_child(SpawnRequest {
+        binary: binary.to_str().unwrap(),
+        args: &[],
+        cwd: None,
+        env: &env,
+        stdin: StdinMode::Ignore,
+        kill_grace: Duration::from_millis(50),
+        capture_stdout: false,
+    })
+    .await
+    .unwrap();
+    let started = spawned.started_at_ms;
+    let line = spawned.next_line().await.unwrap();
+    let child_ms: i64 = line.trim().parse().unwrap();
+    assert!(started <= child_ms);
+}
+
+#[tokio::test]
+async fn install_applies_non_default_config_to_a_resolved_kimi() {
+    let tmp = Tmp::new();
+    let kimi = write_exe(
+        &tmp.dir,
+        "kimi",
+        "#!/usr/bin/env bash\nif [ \"$1\" = \"--version\" ]; then\n  exit 0\nfi\nout=\"$(dirname \"$0\")/recorded.txt\"\n{\n  printf 'pwd=%s\\n' \"$(pwd)\"\n  printf 'effort=%s\\n' \"${KIMI_MODEL_THINKING_EFFORT-}\"\n  printf '%s\\n' \"$@\"\n} > \"$out\"\nprintf '%s\\n' '{\"role\":\"assistant\",\"content\":\"ok\"}'\nprintf '%s\\n' '{\"role\":\"meta\",\"type\":\"session.resume_hint\",\"session_id\":\"sess-installed\",\"command\":\"kimi -r sess-installed\"}'\n",
+    );
+    let cwd = tmp.path("work");
+    let home = tmp.path("home");
+    std::fs::create_dir_all(&cwd).unwrap();
+    std::fs::create_dir_all(&home).unwrap();
+    let mut bins = HarnessBinaries::default();
+    let missing = "/nonexistent/rr4d-missing";
+    bins.claude = missing.to_string();
+    bins.kimi = kimi.display().to_string();
+    bins.opencode = missing.to_string();
+    bins.pi = missing.to_string();
+    bins.qwen = missing.to_string();
+    bins.grok = missing.to_string();
+    bins.hermes = missing.to_string();
+    bins.codex_acp = missing.to_string();
+    bins.cursor = missing.to_string();
+    let history = Arc::new(HistorySource {
+        get_task_history: Some(Arc::new(|_task, _limit| {
+            Ok(vec![HistoryMessage {
+                role: "assistant".into(),
+                content: Some("earlier-turn-marker".into()),
+            }])
+        })),
+        get_session_history: None,
+    });
+    let registry = create_executor_registry(None);
+    install_headless_executors(
+        &registry,
+        Arc::new(map_env(&[])),
+        &bins,
+        &HeadlessConfig {
+            model: Some("kimi-k2".into()),
+            effort: Some("high".into()),
+            cwd: Some(cwd.display().to_string()),
+            home: Some(home.display().to_string()),
+            history: Some(history),
+        },
+    )
+    .await;
+    let executor = registry
+        .resolve("harness-session", Some("kimi-code"))
+        .unwrap();
+    let mut spec = TaskSpec::conformance("Say hello");
+    spec.resume_message = Some("continue please".into());
+    let result = executor.start(spec, AbortFlag::new()).result().await;
+    assert_eq!(result.verdict, TaskVerdict::Completed);
+    let recorded = std::fs::read_to_string(tmp.path("recorded.txt")).unwrap();
+    assert!(recorded.contains("pwd="));
+    assert!(recorded.contains(&cwd.display().to_string()));
+    assert!(recorded.contains("effort=high"));
+    assert!(recorded.contains("-m\nkimi-k2\n") || recorded.contains("-m"));
+    assert!(recorded.contains("kimi-k2"));
+    assert!(recorded.contains("earlier-turn-marker"));
 }

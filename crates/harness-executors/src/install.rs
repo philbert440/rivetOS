@@ -3,6 +3,7 @@ use std::sync::Arc;
 use protocol::HARNESS_IDS;
 
 use crate::acp_exec::{codex_executor, cursor_executor, grok_build_executor, hermes_executor};
+use crate::drive::HistorySource;
 use crate::kimi::KimiCodeExecutor;
 use crate::opencode::OpencodeExecutor;
 use crate::pi::PiExecutor;
@@ -68,10 +69,35 @@ pub fn cursor_missing_binary(binary: &str) -> String {
     )
 }
 
+#[derive(Clone, Default)]
+pub struct HeadlessConfig {
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub cwd: Option<String>,
+    pub home: Option<String>,
+    pub history: Option<Arc<HistorySource>>,
+}
+
+impl std::fmt::Debug for HeadlessConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("HeadlessConfig")
+            .field("model", &self.model)
+            .field("effort", &self.effort)
+            .field("cwd", &self.cwd)
+            .field("home", &self.home)
+            .field("history", &self.history.is_some())
+            .finish()
+    }
+}
+
+pub type ArgvHarnessConfig = HeadlessConfig;
+
 pub async fn install_headless_executors(
     registry: &ExecutorRegistry,
     env: Arc<dyn Env>,
     bins: &HarnessBinaries,
+    config: &HeadlessConfig,
 ) {
     register_claude(registry, env.as_ref(), &bins.claude).await;
     register_probed(
@@ -84,9 +110,15 @@ pub async fn install_headless_executors(
         {
             let env = Arc::clone(&env);
             let binary = bins.kimi.clone();
+            let config = config.clone();
             move || {
                 let mut executor = KimiCodeExecutor::new(binary);
-                executor.env = Arc::clone(&env);
+                executor.env = env;
+                executor.model_id = config.model.clone();
+                executor.effort = config.effort.clone();
+                executor.cwd = config.cwd.clone();
+                executor.kimi_home = config.home.clone();
+                executor.history = config.history.clone();
                 Arc::new(executor) as Arc<dyn crate::registry::HarnessExecutor>
             }
         },
@@ -102,9 +134,15 @@ pub async fn install_headless_executors(
         {
             let env = Arc::clone(&env);
             let binary = bins.opencode.clone();
+            let config = config.clone();
             move || {
                 let mut executor = OpencodeExecutor::new(binary);
-                executor.env = Arc::clone(&env);
+                executor.env = env;
+                executor.model_id = config.model.clone();
+                executor.effort = config.effort.clone();
+                executor.cwd = config.cwd.clone();
+                executor.opencode_home = config.home.clone();
+                executor.history = config.history.clone();
                 Arc::new(executor) as Arc<dyn crate::registry::HarnessExecutor>
             }
         },
@@ -120,9 +158,15 @@ pub async fn install_headless_executors(
         {
             let env = Arc::clone(&env);
             let binary = bins.pi.clone();
+            let config = config.clone();
             move || {
                 let mut executor = PiExecutor::new(binary);
-                executor.env = Arc::clone(&env);
+                executor.env = env;
+                executor.model_id = config.model.clone();
+                executor.effort = config.effort.clone();
+                executor.cwd = config.cwd.clone();
+                executor.pi_home = config.home.clone();
+                executor.history = config.history.clone();
                 Arc::new(executor) as Arc<dyn crate::registry::HarnessExecutor>
             }
         },
@@ -138,9 +182,14 @@ pub async fn install_headless_executors(
         {
             let env = Arc::clone(&env);
             let binary = bins.qwen.clone();
+            let config = config.clone();
             move || {
                 let mut executor = QwenCodeExecutor::new(binary);
-                executor.env = Arc::clone(&env);
+                executor.env = env;
+                executor.model_id = config.model.clone();
+                executor.cwd = config.cwd.clone();
+                executor.qwen_home = config.home.clone();
+                executor.history = config.history.clone();
                 Arc::new(executor) as Arc<dyn crate::registry::HarnessExecutor>
             }
         },

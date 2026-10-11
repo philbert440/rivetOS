@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
-use protocol::{JsNumber, TaskArtifact, TaskBudget, TaskResult, TaskUsage, TaskVerdict};
+use protocol::{JsNumber, TaskBudget, TaskResult, TaskUsage, TaskVerdict};
 use serde_json::{Map, Value};
 use tokio::sync::{Notify, watch};
 
@@ -226,29 +226,6 @@ pub fn result_with_output(mut result: TaskResult, text: &str) -> TaskResult {
         result.output = Some(text.to_string());
     }
     result
-}
-
-pub fn artifacts_of(parsed: &[protocol::ParsedArtifact]) -> Vec<TaskArtifact> {
-    let mut out = Vec::new();
-    for artifact in parsed {
-        let Some(kind) = artifact.kind() else {
-            continue;
-        };
-        let Some(r#ref) = artifact.r#ref() else {
-            continue;
-        };
-        let note = match artifact.note() {
-            Some(Value::String(text)) => Some(text.clone()),
-            Some(other) => Some(other.to_string()),
-            None => None,
-        };
-        out.push(TaskArtifact {
-            kind,
-            r#ref: r#ref.to_string(),
-            note,
-        });
-    }
-    out
 }
 
 struct QueueInner {

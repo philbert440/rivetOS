@@ -25,11 +25,10 @@ pub struct AllowOncePolicy;
 
 impl PermissionPolicy for AllowOncePolicy {
     fn decide(&self, options: &[PermissionChoice]) -> PermissionDecision {
-        if let Some(option) = options.iter().find(|option| option.kind == "allow_once") {
-            return PermissionDecision::Selected(option.option_id.clone());
-        }
-        if let Some(option) = options.first() {
-            return PermissionDecision::Selected(option.option_id.clone());
+        for kind in ["allow_once", "allow_always"] {
+            if let Some(option) = options.iter().find(|option| option.kind == kind) {
+                return PermissionDecision::Selected(option.option_id.clone());
+            }
         }
         PermissionDecision::Cancelled
     }

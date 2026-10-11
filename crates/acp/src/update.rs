@@ -1,6 +1,21 @@
 use agent_client_protocol::schema::v1::{
-    ContentBlock, PlanEntry, SessionNotification, SessionUpdate, ToolCall, ToolCallUpdate,
+    ContentBlock, PlanEntry, SessionNotification, SessionUpdate, ToolCall, ToolCallStatus,
+    ToolCallUpdate,
 };
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ToolStatus {
+    Pending,
+    InProgress,
+    Completed,
+    Failed,
+}
+
+impl ToolStatus {
+    pub fn is_terminal(self) -> bool {
+        matches!(self, Self::Completed | Self::Failed)
+    }
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum SessionEvent {
@@ -17,11 +32,13 @@ pub enum SessionEvent {
         id: String,
         title: String,
         name: Option<String>,
+        status: ToolStatus,
     },
     ToolCallUpdate {
         id: String,
         title: Option<String>,
         name: Option<String>,
+        status: Option<ToolStatus>,
     },
     Plan {
         entries: Vec<String>,
@@ -66,6 +83,7 @@ fn tool_call(call: &ToolCall) -> SessionEvent {
         id: call.tool_call_id.to_string(),
         title: call.title.clone(),
         name: call.name.clone(),
+        status: status_of(call.status),
     }
 }
 
@@ -74,6 +92,17 @@ fn tool_update(update: &ToolCallUpdate) -> SessionEvent {
         id: update.tool_call_id.to_string(),
         title: update.fields.title.clone(),
         name: update.fields.name.clone(),
+        status: update.fields.status.map(status_of),
+    }
+}
+
+fn status_of(status: ToolCallStatus) -> ToolStatus {
+    match status {
+        ToolCallStatus::Pending => ToolStatus::Pending,
+        ToolCallStatus::InProgress => ToolStatus::InProgress,
+        ToolCallStatus::Completed => ToolStatus::Completed,
+        ToolCallStatus::Failed => ToolStatus::Failed,
+        _ => ToolStatus::Pending,
     }
 }
 

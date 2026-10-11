@@ -1,12 +1,13 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
+use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use acp::{
-    AcpClient, AcpError, AllowOncePolicy, FakeScript, PermissionPolicy, SessionEvent, child_lines,
-    spawn_fake,
+    AcpClient, AcpError, AllowOncePolicy, FakeScript, InitializeInfo, PermissionPolicy,
+    SessionEvent, ToolStatus, child_lines, spawn_fake,
 };
 use parking_lot::Mutex;
 use tokio::task::JoinHandle;
@@ -32,7 +33,7 @@ type AgentTask = Arc<Mutex<Option<AgentJoin>>>;
 #[derive(Clone)]
 enum Launch {
     Command { program: String, args: Vec<String> },
-    Fake(FakeScript),
+    Fake(Box<FakeScript>),
 }
 
 #[derive(Clone)]
@@ -63,7 +64,7 @@ impl AcpHarnessExecutor {
     }
 
     pub fn fake(harness_id: impl Into<String>, script: FakeScript) -> Self {
-        Self::new(harness_id, Launch::Fake(script))
+        Self::new(harness_id, Launch::Fake(Box::new(script)))
     }
 
     fn new(harness_id: impl Into<String>, launch: Launch) -> Self {
@@ -107,6 +108,7 @@ struct Shared {
     child_exited: Mutex<Option<Arc<AtomicBool>>>,
     load_session: AtomicBool,
     initial_used: AtomicBool,
+    usage_usd: Mutex<Option<f64>>,
 }
 
 impl Shared {
@@ -118,8 +120,15 @@ impl Shared {
             child_exited: Mutex::new(None),
             load_session: AtomicBool::new(false),
             initial_used: AtomicBool::new(false),
+            usage_usd: Mutex::new(None),
         }
     }
+}
+
+#[derive(Default)]
+struct ToolLive {
+    label: Option<String>,
+    terminal: bool,
 }
 
 impl HarnessExecutor for AcpHarnessExecutor {
@@ -218,17 +227,9 @@ async fn run_acp_turn(
     events: crate::model::EventQueue,
     fake_task: AgentTask,
 ) -> SpawnOutcome {
-    if let Err(error) = ensure_client(&cfg, &call, &cwd, &shared, &fake_task).await {
+    if let Err(error) = ensure_client(&cfg, &call, &cwd, &shared, &fake_task, &killed).await {
         if killed.load(Ordering::SeqCst) {
-            return SpawnOutcome {
-                text: String::new(),
-                native_id: shared.session.lock().clone(),
-                error: None,
-                resume_rejected: false,
-                input_tokens: 0.0,
-                output_tokens: 0.0,
-                cost_usd: None,
-            };
+            return stopped_turn(shared.session.lock().clone());
         }
         return SpawnOutcome::failure(error);
     }
@@ -250,36 +251,39 @@ async fn run_acp_turn(
         } else if !shared.load_session.load(Ordering::SeqCst) {
             return SpawnOutcome::rejected("acp agent does not advertise loadSession");
         } else {
-            match client
-                .load_session(native.clone(), PathBuf::from(&cwd))
-                .await
+            match until_stopped(
+                client.load_session(native.clone(), PathBuf::from(&cwd)),
+                &killed,
+                || signal_child(&shared),
+            )
+            .await
             {
-                Ok(_) => {
+                Ok(loaded) => {
+                    note_usd(&mut shared.usage_usd.lock(), &loaded.events);
                     *shared.session.lock() = Some(native.clone());
                     native
                 }
                 Err(error) => {
+                    if killed.load(Ordering::SeqCst) {
+                        return stopped_turn(shared.session.lock().clone());
+                    }
                     return SpawnOutcome::rejected(format!("acp session load failed: {error}"));
                 }
             }
         }
     } else {
-        match client.new_session(PathBuf::from(&cwd)).await {
+        match until_stopped(client.new_session(PathBuf::from(&cwd)), &killed, || {
+            signal_child(&shared)
+        })
+        .await
+        {
             Ok(id) => {
                 *shared.session.lock() = Some(id.clone());
                 id
             }
             Err(error) => {
                 if killed.load(Ordering::SeqCst) {
-                    return SpawnOutcome {
-                        text: String::new(),
-                        native_id: None,
-                        error: None,
-                        resume_rejected: false,
-                        input_tokens: 0.0,
-                        output_tokens: 0.0,
-                        cost_usd: None,
-                    };
+                    return stopped_turn(None);
                 }
                 return SpawnOutcome::failure(format!("acp session ended: {error}"));
             }
@@ -287,6 +291,8 @@ async fn run_acp_turn(
     };
     if killed.load(Ordering::SeqCst) {
         let _ = client.cancel_session(&session).await;
+        signal_child(&shared);
+        return stopped_turn(Some(session));
     }
     let mut prompt = call.prompt;
     if !call.append_system_prompt.is_empty() {
@@ -298,21 +304,12 @@ async fn run_acp_turn(
         Ok(output) => output,
         Err(error) => {
             if killed.load(Ordering::SeqCst) {
-                return SpawnOutcome {
-                    text: String::new(),
-                    native_id: Some(session),
-                    error: None,
-                    resume_rejected: false,
-                    input_tokens: 0.0,
-                    output_tokens: 0.0,
-                    cost_usd: None,
-                };
+                return stopped_turn(Some(session));
             }
             return SpawnOutcome::failure(format!("acp session ended: {error}"));
         }
     };
-    let mut input_tokens = 0.0;
-    let mut cost_usd = None;
+    let mut tools = HashMap::<String, ToolLive>::new();
     for event in &output.events {
         match event {
             SessionEvent::AgentMessage { text } if !text.is_empty() => {
@@ -321,34 +318,35 @@ async fn run_acp_turn(
             SessionEvent::AgentThought { text } if !text.is_empty() => {
                 events.push(den_thinking(text.clone()));
             }
-            SessionEvent::ToolCall { name, title, .. } => {
-                let tool = name
-                    .clone()
-                    .filter(|name| !name.is_empty())
-                    .unwrap_or_else(|| title.clone());
-                if !tool.is_empty() {
-                    events.push(den_tool_start(tool));
+            SessionEvent::ToolCall {
+                id,
+                name,
+                title,
+                status,
+            } => {
+                remember_tool(&mut tools, id, name, Some(title.as_str()));
+                if let Some(label) = tools.get(id).and_then(|slot| slot.label.clone()) {
+                    events.push(den_tool_start(label));
                 }
+                end_if_terminal(&mut tools, id, Some(*status), &events);
             }
-            SessionEvent::ToolCallUpdate { name, title, .. } => {
-                let tool = name
-                    .clone()
-                    .filter(|name| !name.is_empty())
-                    .or_else(|| title.clone().filter(|title| !title.is_empty()));
-                events.push(den_tool_end(tool));
+            SessionEvent::ToolCallUpdate {
+                id,
+                name,
+                title,
+                status,
+            } => {
+                remember_tool(&mut tools, id, name, title.as_deref());
+                end_if_terminal(&mut tools, id, *status, &events);
             }
             SessionEvent::Plan { entries } if !entries.is_empty() => {
                 events.push(log_event("info", entries.join("\n")));
             }
-            SessionEvent::Usage {
-                used, cost_amount, ..
-            } => {
-                input_tokens = *used as f64;
-                cost_usd = *cost_amount;
-            }
+            SessionEvent::Usage { .. } => {}
             _ => {}
         }
     }
+    let cost_usd = charge_usd(&mut shared.usage_usd.lock(), &output.events);
     let error = if killed.load(Ordering::SeqCst) || output.stop_reason == "end_turn" {
         None
     } else {
@@ -359,7 +357,7 @@ async fn run_acp_turn(
         native_id: Some(session),
         error,
         resume_rejected: false,
-        input_tokens,
+        input_tokens: 0.0,
         output_tokens: 0.0,
         cost_usd,
     }
@@ -391,29 +389,34 @@ async fn ensure_client(
     cwd: &str,
     shared: &Shared,
     fake_task: &AgentTask,
+    killed: &AtomicBool,
 ) -> Result<(), String> {
     if shared.client.lock().is_some() {
         return Ok(());
     }
     let client = match &cfg.launch {
         Launch::Fake(script) => {
-            let (transport, task) = spawn_fake(script.clone());
+            let (transport, task) = spawn_fake(script.as_ref().clone());
             *fake_task.lock() = Some(task);
-            AcpClient::connect(transport, Arc::clone(&cfg.policy))
-                .await
-                .map_err(|error| format!("acp session ended: {error}"))?
+            until_stopped(
+                AcpClient::connect(transport, Arc::clone(&cfg.policy)),
+                killed,
+                || signal_child(shared),
+            )
+            .await
+            .map_err(|error| format!("acp session ended: {error}"))?
         }
         Launch::Command { program, args } => {
-            spawn_command(cfg, call, cwd, program, args, shared).await?
+            spawn_command(cfg, call, cwd, program, args, shared, killed).await?
         }
     };
-    let info = client
-        .initialize()
+    let info = until_stopped(client.initialize(), killed, || signal_child(shared))
         .await
         .map_err(|error| format!("acp session ended: {error}"))?;
     shared
         .load_session
         .store(info.load_session, Ordering::SeqCst);
+    authenticate_if_needed(cfg, &client, &info, killed, shared).await?;
     *shared.client.lock() = Some(Arc::new(client));
     Ok(())
 }
@@ -425,6 +428,7 @@ async fn spawn_command(
     program: &str,
     args: &[String],
     shared: &Shared,
+    killed: &AtomicBool,
 ) -> Result<AcpClient, String> {
     let env = acp_child_env(cfg.env.as_ref(), &call.task_id);
     let mut command = tokio::process::Command::new(program);
@@ -468,12 +472,19 @@ async fn spawn_command(
             grace,
         );
     }) as Arc<dyn Fn() + Send + Sync>;
-    *shared.child_kill.lock() = Some(kill);
+    *shared.child_kill.lock() = Some(Arc::clone(&kill));
     *shared.child_exited.lock() = Some(exited);
+    if killed.load(Ordering::SeqCst) {
+        kill();
+    }
     let lines = child_lines(stdin, stdout);
-    AcpClient::connect(lines, Arc::clone(&cfg.policy))
-        .await
-        .map_err(|error| format!("acp session ended: {error}"))
+    until_stopped(
+        AcpClient::connect(lines, Arc::clone(&cfg.policy)),
+        killed,
+        || kill(),
+    )
+    .await
+    .map_err(|error| format!("acp session ended: {error}"))
 }
 
 fn acp_child_env(base: &dyn Env, task_id: &str) -> BTreeMap<String, String> {
@@ -486,8 +497,157 @@ fn acp_child_env(base: &dyn Env, task_id: &str) -> BTreeMap<String, String> {
         ),
     ];
     let mut env = child_env(base, &overrides, &[], &[]);
-    env.retain(|key, _| !key.starts_with("XAI_"));
+    env.retain(|key, _| key == "XAI_API_KEY" || !key.starts_with("XAI_"));
     env
+}
+
+async fn authenticate_if_needed(
+    cfg: &AcpHarnessExecutor,
+    client: &AcpClient,
+    info: &InitializeInfo,
+    killed: &AtomicBool,
+    shared: &Shared,
+) -> Result<(), String> {
+    if cfg.harness_id != GROK_BUILD_HARNESS_ID {
+        return Ok(());
+    }
+    let key = cfg.env.get("XAI_API_KEY").unwrap_or_default();
+    let method = if !key.is_empty() && info.auth_methods.iter().any(|id| id == "xai.api_key") {
+        Some("xai.api_key")
+    } else if info.auth_methods.iter().any(|id| id == "cached_token") {
+        Some("cached_token")
+    } else {
+        None
+    };
+    let Some(method) = method else {
+        return Ok(());
+    };
+    until_stopped(client.authenticate(method.to_string()), killed, || {
+        signal_child(shared)
+    })
+    .await
+    .map(|_| ())
+    .map_err(|error| format!("acp session ended: {error}"))
+}
+
+async fn until_stopped<T, F, K>(
+    pending: F,
+    killed: &AtomicBool,
+    on_killed: K,
+) -> Result<T, AcpError>
+where
+    F: Future<Output = Result<T, AcpError>>,
+    K: Fn(),
+{
+    tokio::pin!(pending);
+    loop {
+        tokio::select! {
+            biased;
+            result = &mut pending => return result,
+            _ = tokio::time::sleep(Duration::from_millis(15)) => {
+                if killed.load(Ordering::SeqCst) {
+                    on_killed();
+                    return Err(AcpError::message("cancelled"));
+                }
+            }
+        }
+    }
+}
+
+fn signal_child(shared: &Shared) {
+    if let Some(kill) = shared.child_kill.lock().clone() {
+        kill();
+    }
+}
+
+fn stopped_turn(native_id: Option<String>) -> SpawnOutcome {
+    SpawnOutcome {
+        text: String::new(),
+        native_id,
+        error: None,
+        resume_rejected: false,
+        input_tokens: 0.0,
+        output_tokens: 0.0,
+        cost_usd: None,
+    }
+}
+
+fn prefer_label(name: &Option<String>, title: Option<&str>) -> Option<String> {
+    if let Some(name) = name.as_ref().filter(|name| !name.is_empty()) {
+        return Some(name.clone());
+    }
+    title
+        .filter(|title| !title.is_empty())
+        .map(ToString::to_string)
+}
+
+fn remember_tool(
+    tools: &mut HashMap<String, ToolLive>,
+    id: &str,
+    name: &Option<String>,
+    title: Option<&str>,
+) {
+    let incoming = prefer_label(name, title);
+    let slot = tools.entry(id.to_string()).or_default();
+    if incoming.is_some() {
+        slot.label = incoming;
+    }
+}
+
+fn end_if_terminal(
+    tools: &mut HashMap<String, ToolLive>,
+    id: &str,
+    status: Option<ToolStatus>,
+    events: &crate::model::EventQueue,
+) {
+    if !status.is_some_and(ToolStatus::is_terminal) {
+        return;
+    }
+    let Some(slot) = tools.get_mut(id) else {
+        return;
+    };
+    if slot.terminal {
+        return;
+    }
+    slot.terminal = true;
+    events.push(den_tool_end(slot.label.clone()));
+}
+
+fn note_usd(baseline: &mut Option<f64>, events: &[SessionEvent]) {
+    for event in events {
+        if let SessionEvent::Usage {
+            cost_amount: Some(amount),
+            cost_currency,
+            ..
+        } = event
+            && cost_currency.as_deref() == Some("USD")
+        {
+            *baseline = Some(*amount);
+        }
+    }
+}
+
+fn charge_usd(baseline: &mut Option<f64>, events: &[SessionEvent]) -> Option<f64> {
+    let mut latest = None;
+    for event in events {
+        if let SessionEvent::Usage {
+            cost_amount: Some(amount),
+            cost_currency,
+            ..
+        } = event
+            && cost_currency.as_deref() == Some("USD")
+        {
+            latest = Some(*amount);
+        }
+    }
+    let latest = latest?;
+    let start = baseline.unwrap_or(0.0);
+    *baseline = Some(latest);
+    if latest > start {
+        Some(latest - start)
+    } else {
+        None
+    }
 }
 
 fn current_dir() -> String {

@@ -1,9 +1,15 @@
+#[path = "support.rs"]
+mod support;
+
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use acp::{AllowOncePolicy, FakeScript, PermissionChoice, PermissionDecision, PermissionPolicy};
+use acp::{
+    AllowOncePolicy, FakeScript, FakeUsage, PermissionChoice, PermissionDecision, PermissionPolicy,
+};
 use harness_executors::*;
 use protocol::TaskVerdict;
+use support::{Tmp, map_env, write_exe};
 
 struct RecordPolicy {
     kinds: Mutex<Vec<String>>,
@@ -69,7 +75,7 @@ async fn fake_agent_emits_text_usage_and_session() {
     let events = handle.events.drain().await;
     assert_eq!(result.verdict, TaskVerdict::Completed);
     assert_eq!(result.summary, "hello from the agent");
-    assert_eq!(result.usage.input_tokens, 40.0);
+    assert_eq!(result.usage.input_tokens, 0.0);
     assert_eq!(result.usage.output_tokens, 0.0);
     assert_eq!(result.usage.turns, 1);
     assert_eq!(result.usage.cost_usd, Some(protocol::JsNumber::from(1.25)));
@@ -258,4 +264,254 @@ async fn permission_allow_once_finishes_the_turn() {
         ["reject_once", "allow_once"]
     );
     assert_eq!(policy.chosen.lock().unwrap().as_deref(), Some("yes"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn permission_allow_always_beats_a_leading_reject() {
+    let policy = Arc::new(RecordPolicy {
+        kinds: Mutex::new(Vec::new()),
+        chosen: Mutex::new(None),
+    });
+    let mut executor = AcpHarnessExecutor::fake(
+        "cursor",
+        FakeScript {
+            request_permission: true,
+            permission_allow_always: true,
+            ..FakeScript::default()
+        },
+    );
+    executor.policy = policy.clone();
+    let result = executor
+        .start(TaskSpec::conformance("Say hello"), AbortFlag::new())
+        .result()
+        .await;
+    assert_eq!(result.verdict, TaskVerdict::Completed);
+    assert_eq!(
+        policy.kinds.lock().unwrap().as_slice(),
+        ["reject_once", "allow_always"]
+    );
+    assert_eq!(policy.chosen.lock().unwrap().as_deref(), Some("keep"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn permission_reject_only_cancels() {
+    let policy = Arc::new(RecordPolicy {
+        kinds: Mutex::new(Vec::new()),
+        chosen: Mutex::new(None),
+    });
+    let mut executor = AcpHarnessExecutor::fake(
+        "cursor",
+        FakeScript {
+            request_permission: true,
+            permission_reject_only: true,
+            ..FakeScript::default()
+        },
+    );
+    executor.policy = policy.clone();
+    let result = executor
+        .start(TaskSpec::conformance("Say hello"), AbortFlag::new())
+        .result()
+        .await;
+    assert_eq!(result.verdict, TaskVerdict::Completed);
+    assert_eq!(policy.kinds.lock().unwrap().as_slice(), ["reject_once"]);
+    assert!(policy.chosen.lock().unwrap().is_none());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn tool_end_waits_for_a_terminal_status() {
+    let executor = AcpHarnessExecutor::fake(
+        "cursor",
+        FakeScript {
+            tool_id: Some("t1".into()),
+            tool_name: Some("bash".into()),
+            tool_statuses: vec!["pending".into(), "in_progress".into(), "completed".into()],
+            message: "done".into(),
+            ..FakeScript::default()
+        },
+    );
+    let handle = executor.start(TaskSpec::conformance("Say hello"), AbortFlag::new());
+    let result = handle.result().await;
+    let events = handle.events.drain().await;
+    assert_eq!(result.verdict, TaskVerdict::Completed);
+    let tools: Vec<String> = events
+        .iter()
+        .filter_map(|event| {
+            event.den_body().map(|body| match body {
+                DenBody::ToolStart { tool } => {
+                    format!("start:{}", tool.clone().unwrap_or_default())
+                }
+                DenBody::ToolEnd { tool } => format!("end:{}", tool.clone().unwrap_or_default()),
+                _ => String::new(),
+            })
+        })
+        .filter(|text| !text.is_empty())
+        .collect();
+    assert_eq!(
+        tools,
+        vec!["start:bash".to_string(), "end:bash".to_string()]
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn usage_deltas_sum_across_turns_and_skip_occupancy() {
+    let executor = AcpHarnessExecutor::fake(
+        "hermes",
+        FakeScript {
+            usage_by_prompt: vec![
+                FakeUsage {
+                    used: 10,
+                    size: 100,
+                    amount: Some(1.0),
+                    currency: Some("USD".into()),
+                },
+                FakeUsage {
+                    used: 40,
+                    size: 100,
+                    amount: Some(1.5),
+                    currency: Some("USD".into()),
+                },
+            ],
+            ..FakeScript::default()
+        },
+    );
+    let handle = executor.start(TaskSpec::conformance("Say hello"), AbortFlag::new());
+    handle.push_steer_for_test("again");
+    let result = handle.result().await;
+    assert_eq!(result.verdict, TaskVerdict::Completed);
+    assert_eq!(result.usage.turns, 2);
+    assert_eq!(result.usage.input_tokens, 0.0);
+    assert_eq!(result.usage.output_tokens, 0.0);
+    assert_eq!(result.usage.cost_usd, Some(protocol::JsNumber::from(1.5)));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn load_replay_sets_the_usd_baseline_without_charging_it() {
+    let mut executor = AcpHarnessExecutor::fake(
+        "hermes",
+        FakeScript {
+            session_id: "sess-9".into(),
+            load_usage: Some(FakeUsage {
+                used: 80,
+                size: 100,
+                amount: Some(1.0),
+                currency: Some("USD".into()),
+            }),
+            usage_used: Some(90),
+            usage_size: Some(100),
+            usage_cost: Some(1.5),
+            usage_currency: Some("USD".into()),
+            ..FakeScript::default()
+        },
+    );
+    executor.resume_session_id = Some("sess-9".into());
+    let result = executor
+        .start(TaskSpec::conformance("Say hello"), AbortFlag::new())
+        .result()
+        .await;
+    assert_eq!(result.verdict, TaskVerdict::Completed);
+    assert_eq!(result.usage.input_tokens, 0.0);
+    assert_eq!(result.usage.cost_usd, Some(protocol::JsNumber::from(0.5)));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn non_usd_cost_is_omitted() {
+    let executor = AcpHarnessExecutor::fake(
+        "hermes",
+        FakeScript {
+            usage_used: Some(12),
+            usage_size: Some(40),
+            usage_cost: Some(3.0),
+            usage_currency: Some("EUR".into()),
+            ..FakeScript::default()
+        },
+    );
+    let result = executor
+        .start(TaskSpec::conformance("Say hello"), AbortFlag::new())
+        .result()
+        .await;
+    assert_eq!(result.verdict, TaskVerdict::Completed);
+    assert_eq!(result.usage.input_tokens, 0.0);
+    assert_eq!(result.usage.cost_usd, None);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn grok_authenticates_with_an_api_key_when_advertised() {
+    let seen = Arc::new(Mutex::new(None));
+    let mut executor = AcpHarnessExecutor::fake(
+        "grok-build",
+        FakeScript {
+            auth_methods: vec!["xai.api_key".into(), "cached_token".into()],
+            seen_auth: Arc::clone(&seen),
+            ..FakeScript::default()
+        },
+    );
+    executor.env = Arc::new(map_env(&[("XAI_API_KEY", "test-key")]));
+    let result = executor
+        .start(TaskSpec::conformance("Say hello"), AbortFlag::new())
+        .result()
+        .await;
+    assert_eq!(result.verdict, TaskVerdict::Completed);
+    assert_eq!(seen.lock().unwrap().as_deref(), Some("xai.api_key"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn grok_uses_cached_login_without_an_api_key() {
+    let seen = Arc::new(Mutex::new(None));
+    let executor = AcpHarnessExecutor::fake(
+        "grok-build",
+        FakeScript {
+            auth_methods: vec!["cached_token".into(), "xai.api_key".into()],
+            seen_auth: Arc::clone(&seen),
+            ..FakeScript::default()
+        },
+    );
+    let result = executor
+        .start(TaskSpec::conformance("Say hello"), AbortFlag::new())
+        .result()
+        .await;
+    assert_eq!(result.verdict, TaskVerdict::Completed);
+    assert_eq!(seen.lock().unwrap().as_deref(), Some("cached_token"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn grok_skips_auth_when_neither_method_is_advertised() {
+    let seen = Arc::new(Mutex::new(None));
+    let mut executor = AcpHarnessExecutor::fake(
+        "grok-build",
+        FakeScript {
+            auth_methods: vec!["other".into()],
+            seen_auth: Arc::clone(&seen),
+            ..FakeScript::default()
+        },
+    );
+    executor.env = Arc::new(map_env(&[("XAI_API_KEY", "test-key")]));
+    let result = executor
+        .start(TaskSpec::conformance("Say hello"), AbortFlag::new())
+        .result()
+        .await;
+    assert_eq!(result.verdict, TaskVerdict::Completed);
+    assert!(seen.lock().unwrap().is_none());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn cancel_during_startup_kills_a_silent_child() {
+    let tmp = Tmp::new();
+    let binary = write_exe(
+        &tmp.dir,
+        "hang-acp",
+        "#!/usr/bin/env bash\ntrap '' TERM\nsleep 60\n",
+    );
+    assert_eq!(binary, tmp.path("hang-acp"));
+    let mut executor =
+        AcpHarnessExecutor::command("grok-build", binary.display().to_string(), Vec::new());
+    executor.kill_grace = Duration::from_millis(200);
+    executor.env = Arc::new(map_env(&[]));
+    let handle = executor.start(TaskSpec::conformance("Say hello"), AbortFlag::new());
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    handle.kill("startup").await;
+    let result = tokio::time::timeout(Duration::from_secs(5), handle.result())
+        .await
+        .expect("startup cancel");
+    assert_eq!(result.verdict, TaskVerdict::Killed);
+    tokio::time::sleep(Duration::from_millis(500)).await;
 }

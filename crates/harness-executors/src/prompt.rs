@@ -2,7 +2,7 @@ use protocol::js::js_trim;
 use protocol::{TaskResult, TaskVerdict, parse_session_id_str, parse_task_result};
 use transcripts::value::{js_len, js_slice};
 
-use crate::model::{AcceptanceCriterion, TaskSpec, UsageAcc, artifacts_of, result_with_output};
+use crate::model::{AcceptanceCriterion, TaskSpec, UsageAcc, result_with_output};
 
 pub const PROMPT_MAX_BYTES: usize = 96_000;
 pub const EMPTY_PROMPT_PLACEHOLDER: &str = "(no instruction was provided for this turn)";
@@ -193,8 +193,8 @@ pub fn finish_from_text(text: &str, usage: &UsageAcc) -> TaskResult {
                 verdict: parsed.verdict,
                 summary: parsed.summary,
                 output: parsed.output.clone(),
-                artifacts: artifacts_of(&parsed.artifacts),
-                criteria_self_report: None,
+                artifacts: parsed.artifacts,
+                criteria_self_report: parsed.criteria_self_report,
                 usage: usage.to_usage(),
                 error: None,
             },

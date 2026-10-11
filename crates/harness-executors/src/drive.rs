@@ -71,6 +71,7 @@ pub enum ScaffoldMode {
 pub type HistoryLoader =
     Arc<dyn Fn(&str, usize) -> Result<Vec<HistoryMessage>, String> + Send + Sync>;
 
+#[derive(Clone)]
 pub struct HistorySource {
     pub get_task_history: Option<HistoryLoader>,
     pub get_session_history: Option<HistoryLoader>,
