@@ -4,8 +4,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use serde_json::{Map, Value, json};
 use workflows::{
     CacheSource, CachedStep, JournalEntry, StartedBy, StartedByType, StepKind, WireJson,
-    WorkflowError, append_journal, find_cached_step_result, is_open_gate, journal_path,
-    max_seq_for_label, parse_journal, read_journal,
+    WorkflowError, append_journal, ensure_journal, find_cached_step_result, is_open_gate,
+    journal_path, max_seq_for_label, parse_journal, read_journal,
 };
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -69,6 +69,39 @@ async fn appends_and_reads_jsonl_entries() {
     assert_eq!(raw, expected);
     let parsed = parse_journal(expected).unwrap();
     assert_eq!(parsed, all);
+}
+
+#[tokio::test]
+async fn ensure_journal_does_not_truncate_existing_lines() {
+    let dir = temp_root("ensure-keep");
+    let (started, finished) = sample_entries();
+    append_journal(&dir, &started).await.unwrap();
+    append_journal(&dir, &finished).await.unwrap();
+    let before = std::fs::read(journal_path(&dir)).unwrap();
+    assert!(before.len() > 1, "{}", before.len());
+    ensure_journal(&dir).await.unwrap();
+    assert_eq!(std::fs::read(journal_path(&dir)).unwrap(), before);
+    let empty = temp_root("ensure-empty");
+    ensure_journal(&empty).await.unwrap();
+    assert_eq!(std::fs::read(journal_path(&empty)).unwrap(), b"");
+    ensure_journal(&empty).await.unwrap();
+    assert_eq!(std::fs::read(journal_path(&empty)).unwrap(), b"");
+    let raced = temp_root("ensure-race");
+    let mut tasks = Vec::new();
+    for _ in 0..8 {
+        let raced = raced.clone();
+        let started = started.clone();
+        tasks.push(tokio::spawn(async move {
+            ensure_journal(&raced).await.unwrap();
+            append_journal(&raced, &started).await.unwrap();
+        }));
+    }
+    for task in tasks {
+        task.await.unwrap();
+    }
+    let raw = std::fs::read(journal_path(&raced)).unwrap();
+    let text = String::from_utf8(raw).unwrap();
+    assert_eq!(parse_journal(&text).unwrap().len(), 8, "{text}");
 }
 
 #[test]

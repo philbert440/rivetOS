@@ -6,13 +6,14 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value};
 use workflows::{
-    DEFAULT_MAX_RUN_RUNTIME_MS, DEFAULT_STEP_TIMEOUT_MS, EngineConfig, ExecutorRegistry,
-    HumanStepOpts, JournalEntry, MockExecutorRegistry, RunFinishedStatus, RunStatus,
-    StartRunOptions, StartedBy, StartedByType, WorkflowEngine, WorkflowError,
-    check_run_script_determinism, default_case_dir_root, default_workflows_defs_root,
-    edit_path_for_def_dir, is_workflow_allowed, load_workflow_dir, materialize_detached_failure,
-    read_case, read_journal, resolve_defs_roots, resolve_max_run_runtime_ms, resolve_runs_dir,
-    resolve_step_timeout_ms, run_script, validate_workflow_dir, workflows_enabled,
+    ContractReason, DEFAULT_MAX_RUN_RUNTIME_MS, DEFAULT_STEP_TIMEOUT_MS, EngineConfig,
+    ExecutorRegistry, Field, FieldType, HumanStepOpts, JournalEntry, MockExecutorRegistry,
+    RunFinishedStatus, RunStatus, StartRunOptions, StartedBy, StartedByType, WorkflowEngine,
+    WorkflowError, check_run_script_determinism, default_case_dir_root,
+    default_workflows_defs_root, edit_path_for_def_dir, is_workflow_allowed, load_workflow_dir,
+    materialize_detached_failure, read_case, read_journal, resolve_defs_roots,
+    resolve_max_run_runtime_ms, resolve_runs_dir, resolve_step_timeout_ms, resolve_workflow_dir,
+    run_script, validate_input_contract, validate_workflow_dir, workflows_enabled,
 };
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -324,24 +325,85 @@ async fn unreadable_run_script_reports_the_node_error() {
     let original = permissions.mode();
     permissions.set_mode(0o0);
     std::fs::set_permissions(&run, permissions.clone()).unwrap();
-    let denied = validate_workflow_dir(&dir).await;
-    permissions.set_mode(original);
-    std::fs::set_permissions(&run, permissions).unwrap();
-    let message = denied
-        .diagnostics
-        .first()
-        .map(|item| item.message.as_str())
-        .unwrap_or("");
-    if message.contains("EACCES") {
-        assert_eq!(
-            message,
-            format!(
+    match std::fs::File::open(&run) {
+        Ok(_) => {
+            eprintln!(
+                "skipping unreadable run script permission assertion: process can still read mode 0o0 {}",
+                run.display()
+            );
+        }
+        Err(err) => {
+            assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied, "{err}");
+            let denied = validate_workflow_dir(&dir).await;
+            let expected = format!(
                 "could not read run script: EACCES: permission denied, open '{}'",
                 run.display()
-            )
-        );
+            );
+            assert_eq!(
+                denied.diagnostics.first().map(|item| item.message.as_str()),
+                Some(expected.as_str())
+            );
+        }
     }
+    permissions.set_mode(original);
+    std::fs::set_permissions(&run, permissions).unwrap();
     std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[tokio::test]
+async fn resolve_skips_a_file_named_like_a_workflow_and_uses_the_next_root() {
+    let root = temp_root("enotdir-roots");
+    let first = root.join("first");
+    let second = root.join("second");
+    tokio::fs::create_dir_all(&first).await.unwrap();
+    tokio::fs::write(first.join("hello-world"), b"not a directory")
+        .await
+        .unwrap();
+    let real = second.join("hello-world");
+    write_minimal(&real).await;
+    let resolved = resolve_workflow_dir("hello-world", &[], &[first, second])
+        .await
+        .unwrap();
+    assert_eq!(resolved, real);
+    let loaded = load_workflow_dir(&resolved).await.unwrap();
+    assert_eq!(loaded.manifest.id, "test-wf");
+}
+
+#[tokio::test]
+async fn file_field_beneath_a_regular_file_is_file_missing() {
+    let root = temp_root("enotdir-file");
+    let case_dir = root.join("case");
+    tokio::fs::create_dir_all(&case_dir).await.unwrap();
+    tokio::fs::write(case_dir.join("notes"), b"plain")
+        .await
+        .unwrap();
+    let fields = vec![Field {
+        name: "doc".to_string(),
+        field_type: FieldType::File,
+        required: Some(true),
+        description: None,
+    }];
+    let mut input = Map::new();
+    input.insert(
+        "doc".to_string(),
+        Value::String("notes/missing.txt".to_string()),
+    );
+    let err = validate_input_contract(&fields, &input, Some(&case_dir), true)
+        .await
+        .unwrap_err();
+    let text = err.to_string();
+    assert!(!text.contains("ENOTDIR"), "{text}");
+    match err {
+        WorkflowError::Contract { issues, .. } => {
+            assert_eq!(issues.len(), 1);
+            assert_eq!(issues[0].reason, ContractReason::FileMissing);
+            assert_eq!(
+                issues[0].message,
+                "file field \"doc\" path \"notes/missing.txt\" does not exist under caseDir"
+            );
+        }
+        other => panic!("expected a contract error, got {other}"),
+    }
 }
 
 #[tokio::test]

@@ -87,7 +87,12 @@ pub fn parse_frontmatter(text: &str, path: &str) -> Result<(AgentConfig, String)
             "Unterminated frontmatter (missing closing ---) in {path}"
         )));
     };
-    let raw_yaml = &src[newline + 1..close_index];
+    let yaml_start = newline + 1;
+    let raw_yaml = if close_index >= yaml_start {
+        &src[yaml_start..close_index]
+    } else {
+        ""
+    };
     let body = src[close_index + close_len..].to_string();
     let config = if js_trim(raw_yaml).is_empty() {
         AgentConfig::default()
@@ -222,4 +227,106 @@ pub async fn resolve_workflow_dir(
             "Could not resolve workflow ref \"{reference}\" (checked workflowDirs + workflowsRoots)"
         )),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_frontmatter;
+    use crate::types::AgentConfig;
+
+    #[test]
+    fn empty_frontmatter_block_is_empty_yaml_and_keeps_the_body() {
+        let cases = [
+            ("---\n---\nReview the changes.\n", "Review the changes.\n"),
+            (
+                "---\r\n---\r\nReview the changes.\r\n",
+                "Review the changes.\r\n",
+            ),
+            (
+                "---\n---\r\nReview the changes.\r\n",
+                "Review the changes.\r\n",
+            ),
+            ("--- \n---\nReview the changes.\n", "Review the changes.\n"),
+            ("---\n--- \nReview the changes.\n", "Review the changes.\n"),
+            (
+                "\u{feff}---\n---\nReview the changes.\n",
+                "Review the changes.\n",
+            ),
+            (
+                "\n\n---\n---\nReview the changes.\n",
+                "Review the changes.\n",
+            ),
+            ("---\n---\n", ""),
+            ("---\n---", ""),
+        ];
+        for (text, body) in cases {
+            let (config, got) =
+                parse_frontmatter(text, "agents/reviewer.md").unwrap_or_else(|err| {
+                    panic!("empty frontmatter panicked or failed for {text:?}: {err}")
+                });
+            assert_eq!(got, body, "{text:?}");
+            assert_eq!(config, AgentConfig::default(), "{text:?}");
+        }
+        let (config, body) = parse_frontmatter(
+            "---\nmodel: reviewer\n---\n\nReview the changes.\n",
+            "agents/reviewer.md",
+        )
+        .unwrap();
+        assert_eq!(config.model.as_deref(), Some("reviewer"));
+        assert!(body.contains("Review the changes."), "{body:?}");
+        let err = parse_frontmatter("---\nmodel: broken\n\nNo closing fence.\n", "agents/x.md")
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("Unterminated frontmatter"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn frontmatter_slicing_is_total_over_fence_positions() {
+        let payload = "Review the changes.\nmodel: kept\n";
+        for split in 0..=payload.len() {
+            if !payload.is_char_boundary(split) {
+                continue;
+            }
+            let head = &payload[..split];
+            let tail = &payload[split..];
+            let lf = format!("---\n{head}---\n{tail}");
+            let crlf = format!("---\r\n{head}---\r\n{tail}");
+            let _ = parse_frontmatter(&lf, "agents/reviewer.md");
+            let _ = parse_frontmatter(&crlf, "agents/reviewer.md");
+            if split == 0 {
+                let (config, body) = parse_frontmatter(&lf, "agents/reviewer.md").unwrap();
+                assert_eq!(body, payload);
+                assert_eq!(config, AgentConfig::default());
+                let (config, body) = parse_frontmatter(&crlf, "agents/reviewer.md").unwrap();
+                assert_eq!(body, payload);
+                assert_eq!(config, AgentConfig::default());
+            }
+        }
+        let leads = ["", "\u{feff}", "\n\n", " \t"];
+        let spaces = ["", " ", "\t"];
+        let open_endings = ["\n", "\r\n"];
+        let fills = ["", "x", "model: m\n", "\n"];
+        let close_endings = ["\n", "\r\n", ""];
+        let tails = ["", "Review the changes.\n", "\r\n"];
+        for lead in leads {
+            for open_space in spaces {
+                for open_end in open_endings {
+                    for fill in fills {
+                        for close_space in spaces {
+                            for close_end in close_endings {
+                                for tail in tails {
+                                    let text = format!(
+                                        "{lead}---{open_space}{open_end}{fill}---{close_space}{close_end}{tail}"
+                                    );
+                                    let _ = parse_frontmatter(&text, "agents/reviewer.md");
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }

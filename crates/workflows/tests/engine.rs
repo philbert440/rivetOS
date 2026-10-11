@@ -2600,6 +2600,36 @@ async fn frontmatter_crlf_bom_and_unterminated_and_padding() {
     );
 }
 
+#[tokio::test]
+async fn empty_frontmatter_block_loads_through_the_public_loader() {
+    let bodies = [
+        (
+            "lf",
+            "---\n---\nReview the changes.\n",
+            "Review the changes.\n",
+        ),
+        (
+            "crlf",
+            "---\r\n---\r\nReview the changes.\r\n",
+            "Review the changes.\r\n",
+        ),
+    ];
+    for (label, text, prompt) in bodies {
+        let root = temp_root(label);
+        let (dir, _) = load_min(&root, "wf", None).await;
+        tokio::fs::write(dir.join("agents").join("reviewer.md"), text)
+            .await
+            .unwrap();
+        let loaded = load_workflow_dir(&dir).await.unwrap();
+        let agent = loaded.agents.get("reviewer").unwrap();
+        assert!(agent.config.model.is_none(), "{label}");
+        assert!(agent.config.tools.is_none(), "{label}");
+        assert!(agent.config.max_turns.is_none(), "{label}");
+        assert!(agent.config.extra.is_empty(), "{label}");
+        assert_eq!(agent.prompt, prompt, "{label}");
+    }
+}
+
 fn gate_script() -> RunScript {
     run_script(|step, _ctx| async move {
         let agent = step

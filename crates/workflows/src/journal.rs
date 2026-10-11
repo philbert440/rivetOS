@@ -34,10 +34,27 @@ fn path_lock(path: &Path) -> Arc<Mutex<()>> {
 pub async fn ensure_journal(case_dir: &Path) -> Result<(), WorkflowError> {
     crate::io_fs::create_dir_all(case_dir).await?;
     let path = journal_path(case_dir);
-    if !io_fs::try_exists(&path).await? {
-        io_fs::write_bytes(&path, b"").await?;
+    let owned = path.clone();
+    let task = tokio::task::spawn_blocking(move || {
+        let lock = path_lock(&owned);
+        let _guard = lock.lock();
+        if let Some(parent) = owned.parent() {
+            io_fs::mkdir_all(parent)?;
+        }
+        io_fs::create_empty_exclusive(&owned)
+    });
+    match tokio::time::timeout(io_fs::IO_TIMEOUT, task).await {
+        Ok(Ok(result)) => result,
+        Ok(Err(_)) => Err(WorkflowError::message(format!(
+            "journal create task failed: {}",
+            path.display()
+        ))),
+        Err(_) => Err(WorkflowError::message(format!(
+            "write timed out after {}ms: {}",
+            io_fs::IO_TIMEOUT.as_millis(),
+            path.display()
+        ))),
     }
-    Ok(())
 }
 
 pub async fn append_journal(case_dir: &Path, entry: &JournalEntry) -> Result<(), WorkflowError> {
@@ -51,7 +68,7 @@ pub async fn append_journal(case_dir: &Path, entry: &JournalEntry) -> Result<(),
             io_fs::mkdir_all(parent)?;
         }
         if !path.exists() {
-            io_fs::write_file(&path, b"")?;
+            io_fs::create_empty_exclusive(&path)?;
         }
         io_fs::repair_torn_tail(&path, |tail| {
             let trimmed = js_trim(tail);

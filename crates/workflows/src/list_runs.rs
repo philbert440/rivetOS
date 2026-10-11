@@ -183,11 +183,65 @@ fn locale_ordering(left: &str, right: &str) -> Result<Ordering, WorkflowError> {
 }
 
 fn sort_with_locale<T>(
-    items: &mut [T],
+    items: &mut Vec<T>,
     compare: impl Fn(&T, &T) -> Result<Ordering, WorkflowError>,
 ) -> Result<(), WorkflowError> {
     locale_ordering("a", "b")?;
-    items.sort_by(|left, right| compare(left, right).unwrap_or(Ordering::Equal));
+    fallible_sort(items, &compare)
+}
+
+fn fallible_sort<T>(
+    items: &mut Vec<T>,
+    compare: &impl Fn(&T, &T) -> Result<Ordering, WorkflowError>,
+) -> Result<(), WorkflowError> {
+    if items.len() < 2 {
+        return Ok(());
+    }
+    let mid = items.len() / 2;
+    let mut right = items.split_off(mid);
+    fallible_sort(items, compare)?;
+    fallible_sort(&mut right, compare)?;
+    let left = std::mem::take(items);
+    merge_into(items, left, right, compare)
+}
+
+fn merge_into<T>(
+    out: &mut Vec<T>,
+    left: Vec<T>,
+    right: Vec<T>,
+    compare: &impl Fn(&T, &T) -> Result<Ordering, WorkflowError>,
+) -> Result<(), WorkflowError> {
+    let mut left = left.into_iter();
+    let mut right = right.into_iter();
+    let mut hold_left = left.next();
+    let mut hold_right = right.next();
+    loop {
+        match (hold_left.take(), hold_right.take()) {
+            (Some(left_item), Some(right_item)) => match compare(&left_item, &right_item)? {
+                Ordering::Greater => {
+                    out.push(right_item);
+                    hold_left = Some(left_item);
+                    hold_right = right.next();
+                }
+                Ordering::Less | Ordering::Equal => {
+                    out.push(left_item);
+                    hold_right = Some(right_item);
+                    hold_left = left.next();
+                }
+            },
+            (Some(left_item), None) => {
+                out.push(left_item);
+                out.extend(left);
+                break;
+            }
+            (None, Some(right_item)) => {
+                out.push(right_item);
+                out.extend(right);
+                break;
+            }
+            (None, None) => break,
+        }
+    }
     Ok(())
 }
 
@@ -320,7 +374,8 @@ async fn read_run_summary(
 
 #[cfg(test)]
 mod tests {
-    use super::locale_ordering;
+    use super::{locale_ordering, sort_with_locale};
+    use crate::error::WorkflowError;
 
     #[test]
     fn locale_ordering_matches_the_node_golden() {
@@ -357,5 +412,32 @@ mod tests {
             locale_ordering("Zebra", "apple").unwrap(),
             std::cmp::Ordering::Greater
         );
+    }
+
+    #[test]
+    fn sort_with_locale_is_stable_and_returns_compare_errors() {
+        let mut items = vec![
+            "b2".to_string(),
+            "a".to_string(),
+            "b1".to_string(),
+            "c".to_string(),
+            "a2".to_string(),
+        ];
+        sort_with_locale(&mut items, |left, right| {
+            locale_ordering(&left[..1], &right[..1])
+        })
+        .unwrap();
+        assert_eq!(items, vec!["a", "a2", "b2", "b1", "c"]);
+        let mut broken = vec!["a".to_string(), "c".to_string(), "b".to_string()];
+        let err = sort_with_locale(&mut broken, |left, right| {
+            if left == "c" || right == "c" {
+                Err(WorkflowError::message("compare broke"))
+            } else {
+                locale_ordering(left, right)
+            }
+        })
+        .unwrap_err();
+        assert!(err.to_string().contains("compare broke"), "{err}");
+        assert!(!err.to_string().contains("localeCompare failed"), "{err}");
     }
 }

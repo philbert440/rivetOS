@@ -35,6 +35,23 @@ fn case_lock(case_dir: &Path) -> Arc<Mutex<()>> {
         .clone()
 }
 
+#[cfg(test)]
+fn case_waiters_map() -> &'static Mutex<HashMap<PathBuf, usize>> {
+    static CASE_WAITERS: OnceLock<Mutex<HashMap<PathBuf, usize>>> = OnceLock::new();
+    CASE_WAITERS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[cfg(test)]
+fn note_case_wait(dir: &Path) {
+    let mut map = case_waiters_map().lock();
+    *map.entry(dir.to_path_buf()).or_insert(0) += 1;
+}
+
+#[cfg(test)]
+fn case_waiters(dir: &Path) -> usize {
+    case_waiters_map().lock().get(dir).copied().unwrap_or(0)
+}
+
 async fn with_case_lock<T, F>(case_dir: PathBuf, work: F) -> Result<T, WorkflowError>
 where
     T: Send + 'static,
@@ -43,6 +60,8 @@ where
     let lock = case_lock(&case_dir);
     let label = path_text(&case_dir);
     let task = tokio::task::spawn_blocking(move || {
+        #[cfg(test)]
+        note_case_wait(&case_dir);
         let _guard = lock.lock();
         work()
     });
@@ -328,6 +347,104 @@ mod tests {
         assert!(!text.contains("STALE-SNAPSHOT"), "{text}");
         let stored = read_case(&dir).await.unwrap();
         assert_eq!(stored.run.status, RunStatus::Failed);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancelled_writer_serializes_before_a_queued_terminal_update() {
+        let dir = std::env::temp_dir().join(format!(
+            "wf-case-cancel-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let run = Run {
+            id: "run-1".to_string(),
+            workflow_id: "wf".to_string(),
+            version: "1.0.0".to_string(),
+            started_by: StartedBy::new(StartedByType::Human),
+            parent: None,
+            case_dir: dir.display().to_string(),
+            status: RunStatus::Running,
+            current: None,
+            workflow_dir: None,
+            error: None,
+            output: None,
+            started_at: Some("2026-01-01T00:00:00.000Z".to_string()),
+            finished_at: None,
+        };
+        let state = case_state(run, Map::new()).unwrap();
+        write_case(&dir, &state).await.unwrap();
+        let stale = std::fs::read(case_path(&dir)).unwrap();
+        assert!(!String::from_utf8_lossy(&stale).contains("stopped"));
+        let (hold_tx, hold_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let stalled_dir = dir.clone();
+        let stalled = tokio::spawn(async move {
+            super::with_case_lock(stalled_dir.clone(), move || {
+                let _ = hold_tx.send(());
+                let _ = release_rx.recv();
+                super::write_case_locked(&stalled_dir, &stale)
+            })
+            .await
+        });
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if hold_rx.try_recv().is_ok() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("cancelled writer did not acquire the case lock");
+        stalled.abort();
+        let aborted = stalled.await.expect_err("caller was not cancelled");
+        assert!(aborted.is_cancelled());
+        let seen = super::case_waiters(&dir);
+        let update_dir = dir.clone();
+        let update = tokio::spawn(async move {
+            update_run(
+                &update_dir,
+                RunPatch {
+                    status: Some(RunStatus::Failed),
+                    error: Some("stopped".to_string()),
+                    finished_at: Some("2026-01-01T00:00:01.000Z".to_string()),
+                    ..RunPatch::default()
+                },
+            )
+            .await
+        });
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if super::case_waiters(&dir) > seen {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("terminal update did not reach the case lock");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !update.is_finished(),
+            "terminal update finished while the cancelled writer still held the case lock"
+        );
+        release_tx.send(()).unwrap();
+        let updated = tokio::time::timeout(Duration::from_secs(5), update)
+            .await
+            .expect("terminal update timed out")
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.run.status, RunStatus::Failed);
+        let text = String::from_utf8(std::fs::read(case_path(&dir)).unwrap()).unwrap();
+        assert!(text.contains("\"failed\""), "{text}");
+        assert!(text.contains("stopped"), "{text}");
+        assert_eq!(read_case(&dir).await.unwrap().run.status, RunStatus::Failed);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

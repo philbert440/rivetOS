@@ -8,7 +8,7 @@ use tokio::fs;
 
 use crate::error::WorkflowError;
 
-const IO_TIMEOUT: Duration = Duration::from_secs(30);
+pub(crate) const IO_TIMEOUT: Duration = Duration::from_secs(30);
 
 async fn bound<T>(
     operation: &'static str,
@@ -234,8 +234,20 @@ pub async fn try_exists(path: &Path) -> Result<bool, WorkflowError> {
 fn stat_exists(path: &Path) -> Result<bool, WorkflowError> {
     match protocol::host::stat(path) {
         Ok(_) => Ok(true),
-        Err(err) if err.code == "ENOENT" => Ok(false),
+        Err(err) if err.code == "ENOENT" || err.code == "ENOTDIR" => Ok(false),
         Err(err) => Err(WorkflowError::from_fs(err)),
+    }
+}
+
+pub(crate) fn create_empty_exclusive(path: &Path) -> Result<(), WorkflowError> {
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+    {
+        Ok(_) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Err(err) => Err(WorkflowError::io("open", Some(path), &err)),
     }
 }
 
@@ -421,6 +433,33 @@ mod tests {
         let err = replace_bytes(&dest, b"ours").unwrap_err();
         assert!(dest.is_dir(), "{err}");
         assert!(names(&dir).iter().all(|name| !name.contains(".tmp")));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn exclusive_create_leaves_existing_bytes() {
+        let dir = temp_dir("exclusive");
+        let path = dir.join("journal.jsonl");
+        std::fs::write(&path, b"line\n").unwrap();
+        super::create_empty_exclusive(&path).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"line\n");
+        let fresh = dir.join("new.jsonl");
+        super::create_empty_exclusive(&fresh).unwrap();
+        assert_eq!(std::fs::read(&fresh).unwrap(), b"");
+        super::create_empty_exclusive(&fresh).unwrap();
+        assert_eq!(std::fs::read(&fresh).unwrap(), b"");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn stat_treats_enotdir_like_enoent() {
+        let dir = temp_dir("enotdir");
+        let file = dir.join("hello-world");
+        std::fs::write(&file, b"x").unwrap();
+        let nested = file.join("workflow.yaml");
+        assert!(!super::stat_exists(&nested).unwrap());
+        assert!(super::stat_exists(&file).unwrap());
+        assert!(!super::stat_exists(&dir.join("missing")).unwrap());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
