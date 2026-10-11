@@ -230,7 +230,15 @@ async fn golden_capture_batch_body(pool: PgPool) -> Result<(), String> {
     let raw = std::fs::read_to_string(fixture("tests/golden/capture-batch.json"))
         .map_err(|err| err.to_string())?;
     let golden: Value = serde_json::from_str(&raw).map_err(|err| err.to_string())?;
-    let store = PostgresMemory::from_pool(pool.clone(), false);
+    let store = PostgresMemory::from_pool_with(
+        pool.clone(),
+        false,
+        &memory::MemoryEmbedConfig {
+            embed_endpoint: Some(String::new()),
+            ..memory::MemoryEmbedConfig::default()
+        },
+    )
+    .map_err(|err| err.to_string())?;
     let calls = golden["results"].as_array().ok_or("golden results")?;
     let mut seen = Vec::new();
     let mut actual_results = Vec::new();
@@ -500,7 +508,15 @@ async fn fixture_capture_batches_body(pool: PgPool) -> Result<(), String> {
         .map_err(|err| err.to_string())?;
     let parsed: Value = serde_json::from_str(&raw).map_err(|err| err.to_string())?;
     let cases = parsed["cases"].as_array().ok_or("cases")?;
-    let store = PostgresMemory::from_pool(pool.clone(), false);
+    let store = PostgresMemory::from_pool_with(
+        pool.clone(),
+        false,
+        &memory::MemoryEmbedConfig {
+            embed_endpoint: Some(String::new()),
+            ..memory::MemoryEmbedConfig::default()
+        },
+    )
+    .map_err(|err| err.to_string())?;
     for case in cases {
         let name = case["name"].as_str().unwrap_or("");
         match name {
@@ -699,7 +715,15 @@ fn axis_literal(axis: usize) -> String {
 }
 
 async fn ranking_orders_body(pool: PgPool) -> Result<(), String> {
-    let store = PostgresMemory::from_pool(pool.clone(), false);
+    let store = PostgresMemory::from_pool_with(
+        pool.clone(),
+        false,
+        &memory::MemoryEmbedConfig {
+            embed_endpoint: Some(String::new()),
+            ..memory::MemoryEmbedConfig::default()
+        },
+    )
+    .map_err(|err| err.to_string())?;
     let options = capture_options();
     let assistant = format!("calpha{}", "c".repeat(994));
     let user = format!("ualpha{}", "a".repeat(994));
@@ -881,4 +905,289 @@ async fn ranking_orders_body(pool: PgPool) -> Result<(), String> {
 #[tokio::test]
 async fn ranking_orders() {
     with_schema("ranking_orders", "rr2b_rank", ranking_orders_body).await;
+}
+
+async fn database_parity_paths_body(pool: PgPool) -> Result<(), String> {
+    let store = PostgresMemory::from_pool_with(
+        pool.clone(),
+        false,
+        &memory::MemoryEmbedConfig {
+            embed_endpoint: Some(String::new()),
+            ..memory::MemoryEmbedConfig::default()
+        },
+    )
+    .map_err(|err| err.to_string())?;
+    let options = capture_options();
+    MemoryStore::capture(
+        &store,
+        &captured("win-new", "user", "windowtoken recent"),
+        &options,
+    )
+    .await
+    .map_err(|err| format!("capture recent: {err}"))?;
+    MemoryStore::capture(
+        &store,
+        &captured("win-old", "user", "windowtoken stale"),
+        &options,
+    )
+    .await
+    .map_err(|err| format!("capture stale: {err}"))?;
+    sqlx::query(
+        "UPDATE ros_messages SET created_at = NOW() - interval '2 days' WHERE content = 'windowtoken stale'",
+    )
+    .execute(&pool)
+    .await
+    .map_err(|err| format!("age stale: {err}"))?;
+    let windowed = store
+        .search_with(
+            "windowtoken",
+            &EngineOptions {
+                mode: Some("regex".to_string()),
+                scope: Some("messages".to_string()),
+                window: Some("last_24h".to_string()),
+                limit: Some(10),
+                ..EngineOptions::default()
+            },
+        )
+        .await
+        .map_err(|err| format!("window search: {err}"))?;
+    let window_hits: Vec<String> = windowed
+        .hits
+        .iter()
+        .map(|hit| hit.content.clone())
+        .collect();
+    if window_hits != ["windowtoken recent"] {
+        return Err(format!("window hits {window_hits:?}"));
+    }
+    let marked = MemoryStore::capture(
+        &store,
+        &captured("tag-yes", "user", "tagtoken marked"),
+        &options,
+    )
+    .await
+    .map_err(|err| format!("capture marked: {err}"))?;
+    MemoryStore::capture(
+        &store,
+        &captured("tag-no", "user", "tagtoken other"),
+        &options,
+    )
+    .await
+    .map_err(|err| format!("capture other: {err}"))?;
+    memory::tags::add_tag(
+        &store.tag_conn(),
+        &memory::tags::AddTagInput {
+            entity_type: "conversation".to_string(),
+            entity_id: Some(marked.conversation_id.clone()),
+            session_key: None,
+            agent: None,
+            tag: Some("project:AcmeApp".to_string()),
+            key: None,
+            value: None,
+            display: None,
+            reason: None,
+        },
+        "alice",
+    )
+    .await
+    .map_err(|err| format!("add tag: {err}"))?;
+    let tagged = store
+        .search_with(
+            "tagtoken",
+            &EngineOptions {
+                mode: Some("regex".to_string()),
+                scope: Some("messages".to_string()),
+                tag: Some("project:acmeapp".to_string()),
+                limit: Some(10),
+                ..EngineOptions::default()
+            },
+        )
+        .await
+        .map_err(|err| format!("tag search: {err}"))?;
+    let tag_hits: Vec<String> = tagged.hits.iter().map(|hit| hit.content.clone()).collect();
+    if tag_hits != ["tagtoken marked"] {
+        return Err(format!("tag hits {tag_hits:?}"));
+    }
+    let source = "substantive source message for the expanded summary view";
+    let summary_capture =
+        MemoryStore::capture(&store, &captured("expand-src", "user", source), &options)
+            .await
+            .map_err(|err| format!("capture source: {err}"))?;
+    let message_id: String =
+        sqlx::query_scalar("SELECT id::text FROM ros_messages WHERE content = $1")
+            .bind(source)
+            .fetch_one(&pool)
+            .await
+            .map_err(|err| format!("message id: {err}"))?;
+    let summary_id: String = sqlx::query_scalar(
+        "INSERT INTO ros_summaries (conversation_id, kind, depth, content, message_count)
+         VALUES ($1::uuid, 'leaf', 0, 'parent summary body', 1)
+         RETURNING id::text",
+    )
+    .bind(&summary_capture.conversation_id)
+    .fetch_one(&pool)
+    .await
+    .map_err(|err| format!("insert summary: {err}"))?;
+    sqlx::query(
+        "INSERT INTO ros_summaries (conversation_id, parent_id, kind, depth, content, message_count)
+         VALUES ($1::uuid, $2::uuid, 'leaf', 1, 'child body', 0)",
+    )
+    .bind(&summary_capture.conversation_id)
+    .bind(&summary_id)
+    .execute(&pool)
+    .await
+    .map_err(|err| format!("insert child: {err}"))?;
+    sqlx::query(
+        "INSERT INTO ros_summary_sources (summary_id, message_id, ordinal) VALUES ($1::uuid, $2::uuid, 0)",
+    )
+    .bind(&summary_id)
+    .bind(&message_id)
+    .execute(&pool)
+    .await
+    .map_err(|err| format!("insert source: {err}"))?;
+    let expanded = store
+        .expander()
+        .expand(&summary_id)
+        .await
+        .map_err(|err| format!("expand: {err}"))?
+        .ok_or_else(|| "summary expand returned none".to_string())?;
+    if expanded.summary.content != "parent summary body" {
+        return Err(format!("summary content {}", expanded.summary.content));
+    }
+    if expanded
+        .children
+        .first()
+        .map(|child| child.content.as_str())
+        != Some("child body")
+    {
+        return Err(format!("children {:?}", expanded.children));
+    }
+    if !expanded
+        .source_messages
+        .iter()
+        .any(|message| message.content == source)
+    {
+        return Err(format!("sources {:?}", expanded.source_messages));
+    }
+    let rendered = memory::search_tool_output(
+        &store.expander(),
+        "deploy",
+        &[memory::SearchHit {
+            id: summary_id.clone(),
+            hit_type: "summary".to_string(),
+            content: "parent summary body".to_string(),
+            role: "summary".to_string(),
+            agent: "summary".to_string(),
+            conversation_id: summary_capture.conversation_id.clone(),
+            score: 0.8,
+            created_at: chrono::Utc::now(),
+            truncated: false,
+            full_length: None,
+            tool_name: None,
+            tool_result: None,
+            kind: Some("leaf".to_string()),
+            earliest_at: None,
+            latest_at: None,
+            fallback: None,
+            degraded: None,
+            chunk_arm: None,
+            snippet: None,
+        }],
+        &memory::SearchToolView {
+            expand: true,
+            ..memory::SearchToolView::default()
+        },
+    )
+    .await;
+    if !rendered.contains("### Summaries (expanded)")
+        || !rendered.contains("child body")
+        || !rendered.contains(source)
+        || rendered.contains("### Summaries\n")
+    {
+        return Err(format!("expanded tool text:\n{rendered}"));
+    }
+    let entity: String = sqlx::query_scalar("SELECT gen_random_uuid()::text")
+        .fetch_one(&pool)
+        .await
+        .map_err(|err| format!("entity id: {err}"))?;
+    let rows = [
+        ("user", Some("alice"), "user-kept"),
+        ("model", None, "model-open"),
+        ("model", Some("someone"), "model-decided"),
+        ("model", Some("cwd-git-root"), "model-rule"),
+        ("model", Some(""), "model-blank"),
+    ];
+    for (source_name, decided_by, value) in rows {
+        sqlx::query(
+            "INSERT INTO ros_tags (entity_type, entity_id, key, value, display, source, state, decided_by)
+             VALUES ('conversation', $1::uuid, 'project', $2, $2, $3, 'accepted', $4)",
+        )
+        .bind(&entity)
+        .bind(value)
+        .bind(source_name)
+        .bind(decided_by)
+        .execute(&pool)
+        .await
+        .map_err(|err| format!("insert tag {value}: {err}"))?;
+    }
+    let proposals = [
+        "user-kept",
+        "model-open",
+        "model-decided",
+        "model-rule",
+        "model-blank",
+    ]
+    .into_iter()
+    .map(|value| memory::tags::RemovalProposal {
+        action: "remove".to_string(),
+        key: "project".to_string(),
+        value: value.to_string(),
+        reason: "stale".to_string(),
+    })
+    .chain(std::iter::once(memory::tags::RemovalProposal {
+        action: "keep".to_string(),
+        key: "project".to_string(),
+        value: "user-kept".to_string(),
+        reason: "ignored".to_string(),
+    }))
+    .collect::<Vec<_>>();
+    let updated = memory::tags::propose_tag_removals(
+        &store.tag_conn(),
+        "conversation",
+        &entity,
+        &proposals,
+        false,
+    )
+    .await
+    .map_err(|err| format!("propose: {err}"))?;
+    if updated != 3 {
+        return Err(format!("protected removal updated {updated}"));
+    }
+    let states: Vec<(String, Option<String>)> = sqlx::query_as(
+        "SELECT value, removal_state FROM ros_tags WHERE entity_id = $1::uuid ORDER BY value",
+    )
+    .bind(&entity)
+    .fetch_all(&pool)
+    .await
+    .map_err(|err| format!("removal states: {err}"))?;
+    let expected = [
+        ("model-blank".to_string(), Some("suggested".to_string())),
+        ("model-decided".to_string(), None),
+        ("model-open".to_string(), Some("suggested".to_string())),
+        ("model-rule".to_string(), Some("suggested".to_string())),
+        ("user-kept".to_string(), None),
+    ];
+    if states != expected {
+        return Err(format!("removal states {states:?}"));
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn database_parity_paths() {
+    with_schema(
+        "database_parity_paths",
+        "rr2b_paths",
+        database_parity_paths_body,
+    )
+    .await;
 }

@@ -2,6 +2,10 @@ use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
 
+use crate::banners::{
+    SnippetView, ToolChild, ToolExpansion, ToolHit, ToolResults, ToolSource,
+    format_search_tool_output,
+};
 use crate::rows::{Bind, Cell, DbFail, cell, text_cell};
 use crate::search::{SearchDb, SearchHit};
 use crate::text::utf16_len;
@@ -9,18 +13,18 @@ use crate::text::utf16_len;
 const DESCRIBE_SQL: &str = "SELECT id, conversation_id, kind, depth, content, message_count,
               earliest_at, latest_at, created_at, model, access_count
        FROM ros_summaries
-       WHERE id = $1";
+       WHERE id = $1::uuid";
 
 const CHILDREN_SQL: &str = "SELECT id, conversation_id, kind, depth, content, message_count,
               earliest_at, latest_at, created_at, model, access_count
        FROM ros_summaries
-       WHERE parent_id = $1
+       WHERE parent_id = $1::uuid
        ORDER BY created_at";
 
 const SOURCES_SQL: &str = "SELECT m.id, m.role, m.content, m.created_at
        FROM ros_messages m
        JOIN ros_summary_sources ss ON ss.message_id = m.id
-       WHERE ss.summary_id = $1
+       WHERE ss.summary_id = $1::uuid
        ORDER BY ss.ordinal";
 
 #[derive(Debug, Clone, PartialEq)]
@@ -129,6 +133,109 @@ impl<D: SearchDb> Expander<D> {
     }
 }
 
+pub struct SearchToolView {
+    pub since: Option<String>,
+    pub before: Option<String>,
+    pub window: Option<String>,
+    pub expand: bool,
+    pub mode: String,
+    pub degraded_reason: Option<String>,
+    pub chunk_reason: Option<String>,
+    pub now_ms: i64,
+}
+
+impl Default for SearchToolView {
+    fn default() -> Self {
+        Self {
+            since: None,
+            before: None,
+            window: None,
+            expand: true,
+            mode: "hybrid".to_string(),
+            degraded_reason: None,
+            chunk_reason: None,
+            now_ms: 0,
+        }
+    }
+}
+
+pub async fn search_tool_output<D: SearchDb>(
+    expander: &Expander<D>,
+    query: &str,
+    hits: &[SearchHit],
+    view: &SearchToolView,
+) -> String {
+    let expanded = if view.expand {
+        auto_expand_summaries(expander, hits)
+            .await
+            .into_iter()
+            .map(|item| ToolExpansion {
+                hit_id: item.hit_id,
+                children: item
+                    .children
+                    .into_iter()
+                    .map(|child| ToolChild {
+                        kind: child.kind,
+                        content: child.content,
+                    })
+                    .collect(),
+                source_messages: item
+                    .source_messages
+                    .into_iter()
+                    .map(|message| ToolSource {
+                        role: message.role,
+                        content: message.content,
+                    })
+                    .collect(),
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    format_search_tool_output(
+        query,
+        &ToolResults {
+            hits: hits.iter().map(tool_hit_from_search).collect(),
+            degraded_reason: view.degraded_reason.clone(),
+            chunk_reason: view.chunk_reason.clone(),
+            mode: view.mode.clone(),
+            since: view.since.clone(),
+            before: view.before.clone(),
+            window: view.window.clone(),
+            expand: view.expand,
+            expanded,
+        },
+        view.now_ms,
+    )
+}
+
+fn tool_hit_from_search(hit: &SearchHit) -> ToolHit {
+    ToolHit {
+        id: hit.id.clone(),
+        hit_type: hit.hit_type.clone(),
+        content: hit.content.clone(),
+        role: hit.role.clone(),
+        agent: hit.agent.clone(),
+        score: hit.score,
+        created_at: hit.created_at,
+        kind: hit.kind.clone(),
+        tool_name: hit.tool_name.clone(),
+        tool_result: hit.tool_result.clone(),
+        tags: Vec::new(),
+        snippet: hit.snippet.as_ref().map(|snippet| SnippetView {
+            text: snippet.text.clone(),
+            char_start: snippet.char_start,
+            char_end: snippet.char_end,
+            chunk_idx: snippet.chunk_idx,
+            chunk_count: snippet.chunk_count,
+        }),
+        truncated: hit.truncated,
+        full_length: hit.full_length.map(|len| len as f64),
+        earliest_at: hit.earliest_at,
+        latest_at: hit.latest_at,
+    }
+}
+
 pub fn expand_depth(score: f64) -> i64 {
     if score > 0.5 { 3 } else { 2 }
 }
@@ -151,13 +258,14 @@ pub async fn auto_expand_summaries<D: SearchDb>(
     for hit in hits.iter().filter(|hit| hit.hit_type == "summary").take(3) {
         let depth = expand_depth(hit.score);
         match expander.expand_deep(&hit.id, depth).await {
+            Ok(None) => continue,
             Ok(Some(expanded)) => out.push(ExpandedSummary {
                 hit_id: hit.id.clone(),
                 depth,
                 children: expanded.children,
                 source_messages: expanded.source_messages,
             }),
-            _ => out.push(ExpandedSummary {
+            Err(_) => out.push(ExpandedSummary {
                 hit_id: hit.id.clone(),
                 depth,
                 children: Vec::new(),

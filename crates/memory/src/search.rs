@@ -436,7 +436,7 @@ impl DropState {
         let mut total = 0u64;
         for index in 0..60 {
             let epoch = self.epochs[index];
-            if epoch >= 0 && minute >= epoch && minute - epoch < DROP_BUCKET_MINUTES {
+            if epoch >= 0 && minute - epoch < DROP_BUCKET_MINUTES {
                 total += self.counts[index];
             }
         }
@@ -503,14 +503,18 @@ pub struct SearchEngine<D: SearchDb> {
 }
 
 impl<D: SearchDb> SearchEngine<D> {
-    pub fn new(db: D, config: EngineConfig) -> Self {
+    pub fn new(db: D, config: EngineConfig) -> Result<Self, String> {
+        let resolved = resolve_config(&config);
+        if resolved.embed_endpoint.is_some() && resolved.embed_model.is_empty() {
+            return Err(MODEL_REQUIRED.to_string());
+        }
         let clock = config.clock.clone().unwrap_or_else(|| Arc::new(now_ms));
         let fetch = config.fetch.clone().unwrap_or_else(default_fetch);
         let warn = config.warn.clone().unwrap_or_else(|| Arc::new(|_line| {}));
-        Self {
+        Ok(Self {
             db,
             shared: Arc::new(EngineShared {
-                cfg: Mutex::new(resolve_config(&config)),
+                cfg: Mutex::new(resolved),
                 cache: Mutex::new(QueryCache::new()),
                 drops: Mutex::new(DropState::new()),
                 chunk: Mutex::new(ChunkState::new()),
@@ -524,9 +528,10 @@ impl<D: SearchDb> SearchEngine<D> {
                 cached: None,
                 inflight: None,
             })),
-        }
+        })
     }
 
+    #[cfg(test)]
     pub(crate) fn edit_config(&self, edit: impl FnOnce(&mut ResolvedConfig)) {
         edit(&mut self.shared.cfg.lock());
     }

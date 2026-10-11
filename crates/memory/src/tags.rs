@@ -6,10 +6,16 @@ use std::pin::Pin;
 
 use parking_lot::Mutex;
 use protocol::js::js_trim;
-use serde_json::Value;
+use serde_json::{Map, Value};
+use sqlx::PgPool;
 
-use crate::rows::{Bind, Cell, QueryResult, cell, text_cell};
-use crate::slug::{normalize_tag_key, normalize_tag_value, parse_tag_literal, split_tag_literal};
+use crate::rows::{Bind, Cell, DbFail, QueryResult, cell, exec_query, text_cell};
+use crate::slug::{
+    PROJECT_RULE_NAME, format_tag, normalize_tag_key, normalize_tag_value, parse_tag_literal,
+    split_tag_literal,
+};
+use crate::standard_helpers::js_to_fixed;
+use crate::text::utf16_prefix;
 
 pub const REVIEWED_TAG_SOURCES: [&str; 3] = ["user", "model", "import"];
 const TAXONOMY_MAX_DEPTH: usize = 32;
@@ -111,10 +117,28 @@ pub struct AddTagInput {
 
 pub type Handler = Arc<dyn Fn(&str, &[Bind]) -> Result<QueryResult, String> + Send + Sync>;
 pub type TagCalls = Arc<Mutex<Vec<(String, Vec<Bind>)>>>;
+type TagSession = Arc<tokio::sync::Mutex<sqlx::pool::PoolConnection<sqlx::Postgres>>>;
+
+enum TagBackend {
+    Handler(Handler),
+    Pool(PgPool),
+    Session(TagSession),
+}
+
+impl Clone for TagBackend {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Handler(handler) => Self::Handler(handler.clone()),
+            Self::Pool(pool) => Self::Pool(pool.clone()),
+            Self::Session(session) => Self::Session(session.clone()),
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct TagConn {
-    handler: Handler,
+    backend: TagBackend,
+    record: bool,
     pub calls: TagCalls,
     connect_to: Option<Arc<TagConn>>,
     total_count: Option<i64>,
@@ -124,7 +148,19 @@ pub struct TagConn {
 impl TagConn {
     pub fn from_handler(handler: Handler) -> Self {
         Self {
-            handler,
+            backend: TagBackend::Handler(handler),
+            record: true,
+            calls: Arc::new(Mutex::new(Vec::new())),
+            connect_to: None,
+            total_count: None,
+            releases: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    pub fn from_pool(pool: PgPool) -> Self {
+        Self {
+            backend: TagBackend::Pool(pool),
+            record: false,
             calls: Arc::new(Mutex::new(Vec::new())),
             connect_to: None,
             total_count: None,
@@ -141,8 +177,27 @@ impl TagConn {
     }
 
     pub async fn query(&self, sql: &str, params: &[Bind]) -> Result<QueryResult, String> {
-        self.calls.lock().push((sql.to_string(), params.to_vec()));
-        (self.handler)(sql, params)
+        if self.record {
+            self.calls.lock().push((sql.to_string(), params.to_vec()));
+        }
+        match &self.backend {
+            TagBackend::Handler(handler) => (handler)(sql, params),
+            TagBackend::Pool(pool) => {
+                let mut conn = pool
+                    .acquire()
+                    .await
+                    .map_err(|err| DbFail::from_sqlx(err).message)?;
+                exec_query(&mut conn, sql, params)
+                    .await
+                    .map_err(|err| err.message)
+            }
+            TagBackend::Session(slot) => {
+                let mut guard = slot.lock().await;
+                exec_query(&mut guard, sql, params)
+                    .await
+                    .map_err(|err| err.message)
+            }
+        }
     }
 }
 
@@ -151,6 +206,39 @@ where
     T: Send,
     F: for<'a> FnOnce(&'a TagConn) -> Pin<Box<dyn Future<Output = Result<T, String>> + Send + 'a>>,
 {
+    if let TagBackend::Pool(pool) = &db.backend {
+        let conn = pool
+            .acquire()
+            .await
+            .map_err(|err| DbFail::from_sqlx(err).message)?;
+        let session = TagConn {
+            backend: TagBackend::Session(Arc::new(tokio::sync::Mutex::new(conn))),
+            record: false,
+            calls: db.calls.clone(),
+            connect_to: None,
+            total_count: None,
+            releases: db.releases.clone(),
+        };
+        let out = async {
+            session.query("BEGIN", &[]).await?;
+            if let Some(name) = lock_name {
+                session
+                    .query(
+                        "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+                        &[Bind::Text(name.to_string())],
+                    )
+                    .await?;
+            }
+            let value = f(&session).await?;
+            session.query("COMMIT", &[]).await?;
+            Ok(value)
+        }
+        .await;
+        if out.is_err() {
+            let _ = session.query("ROLLBACK", &[]).await;
+        }
+        return out;
+    }
     let Some(client) = db.connect_to.clone().filter(|_| db.total_count.is_some()) else {
         return f(db).await;
     };
@@ -340,7 +428,7 @@ pub async fn list_tags(db: &TagConn, opts: &ListTagsOptions) -> Result<Vec<Tag>,
     }
     if let Some(entity_id) = &opts.entity_id {
         let slot = bind(&mut params, Bind::Text(entity_id.clone()));
-        conds.push(format!("entity_id = {slot}"));
+        conds.push(format!("entity_id = {slot}::uuid"));
     }
     if let Some(key) = &opts.key {
         let slot = bind(&mut params, Bind::Text(normalize_tag_key(key)));
@@ -578,7 +666,7 @@ pub async fn add_tag(db: &TagConn, input: &AddTagInput, decided_by: &str) -> Res
             &format!(
                 "INSERT INTO ros_tags
        (entity_type, entity_id, key, value, display, source, state, proposed_by, reason, decided_by, decided_at)
-     VALUES ($1, $2, $3, $4, $5, 'user', 'accepted', $6, $7, $6, now())
+     VALUES ($1, $2::uuid, $3, $4, $5, 'user', 'accepted', $6, $7, $6, now())
      ON CONFLICT (entity_type, entity_id, key, value) DO UPDATE
        SET state = 'accepted', decided_by = EXCLUDED.decided_by, decided_at = now(),
            updated_at = now(),
@@ -1125,6 +1213,574 @@ pub async fn merge_taxonomy_value(
     .await
 }
 
+pub async fn list_taxonomy(
+    db: &TagConn,
+    key: Option<&str>,
+    states: Option<Vec<String>>,
+    limit: Option<i64>,
+) -> Result<Vec<TaxonomyEntry>, String> {
+    let mut conds = Vec::new();
+    let mut params = Vec::new();
+    if let Some(key) = key.filter(|value| !value.is_empty()) {
+        params.push(Bind::Text(normalize_tag_key(key)));
+        conds.push(format!("key = ${}", params.len()));
+    }
+    let states = states
+        .filter(|items| !items.is_empty())
+        .unwrap_or_else(|| vec!["suggested".to_string(), "accepted".to_string()]);
+    params.push(Bind::Texts(states));
+    conds.push(format!("state = ANY(${}::text[])", params.len()));
+    let limit = limit.unwrap_or(500).clamp(1, 5000);
+    params.push(Bind::I64(limit));
+    let sql = format!(
+        "SELECT key, value, display, parent_value, aliases, state, source, reason, decided_at, created_at, updated_at
+       FROM ros_tag_taxonomy
+      WHERE {}
+      ORDER BY key, parent_value NULLS FIRST, value
+      LIMIT ${}",
+        conds.join(" AND "),
+        params.len()
+    );
+    let result = db.query(&sql, &params).await?;
+    Ok(result.rows.iter().map(row_to_taxonomy).collect())
+}
+
+#[derive(Debug, Clone)]
+pub struct RemovalProposal {
+    pub action: String,
+    pub key: String,
+    pub value: String,
+    pub reason: String,
+}
+
+const PROPOSE_REMOVAL_SQL: &str = "UPDATE ros_tags
+          SET removal_state = 'suggested',
+              removal_reason = $1,
+              updated_at = now()
+        WHERE entity_type = $2 AND entity_id = $3::uuid AND key = $4 AND value = $5
+          AND state = 'accepted'
+          AND removal_state IS NULL
+          AND (
+            $6::boolean
+            OR (
+              source <> 'user'
+              AND (decided_by IS NULL OR btrim(decided_by) = '' OR decided_by = $7)
+            )
+          )";
+
+pub async fn propose_tag_removals(
+    db: &TagConn,
+    entity_type: &str,
+    entity_id: &str,
+    proposals: &[RemovalProposal],
+    allow_protected: bool,
+) -> Result<i64, String> {
+    let mut updated = 0i64;
+    for proposal in proposals {
+        if proposal.action != "remove" {
+            continue;
+        }
+        let result = db
+            .query(
+                PROPOSE_REMOVAL_SQL,
+                &[
+                    Bind::Text(proposal.reason.clone()),
+                    Bind::Text(entity_type.to_string()),
+                    Bind::Text(entity_id.to_string()),
+                    Bind::Text(proposal.key.clone()),
+                    Bind::Text(proposal.value.clone()),
+                    Bind::Bool(allow_protected),
+                    Bind::Text(PROJECT_RULE_NAME.to_string()),
+                ],
+            )
+            .await?;
+        updated += result.row_count;
+    }
+    Ok(updated)
+}
+
+const TAGS_ACTIONS: &[&str] = &[
+    "list",
+    "pending",
+    "counts",
+    "decide",
+    "add",
+    "lookup",
+    "taxonomy",
+    "taxonomy_upsert",
+    "taxonomy_decide",
+    "taxonomy_merge",
+];
+
+const TAGS_WRITE_ACTIONS: &[&str] = &[
+    "decide",
+    "add",
+    "taxonomy_upsert",
+    "taxonomy_decide",
+    "taxonomy_merge",
+];
+
+#[derive(Debug, Clone, Default)]
+pub struct TagsToolOptions {
+    pub decided_by: Option<String>,
+    pub allow_write: bool,
+    pub fixed_decider: Option<String>,
+}
+
+pub fn memory_tags_description(allow_write: bool) -> String {
+    let mut description = String::from(
+        "Read and decide key:value tags on sessions and summaries (session tagging). Actions: list (tags on an entity / by key+value), pending (suggestions awaiting review), counts (accepted usage per tag), decide (accept/reject suggestion ids), add (tag a session yourself; born accepted), lookup (tags for session_keys), taxonomy (vocabulary), taxonomy_upsert / taxonomy_decide / taxonomy_merge (edit the vocabulary). ",
+    );
+    if !allow_write {
+        description.push_str(
+            "This surface is READ-ONLY: decide, add and the taxonomy_* edits are refused here. ",
+        );
+    }
+    description.push_str(
+        "Rejecting keeps the row so the tagger never re-proposes it. Use tag=key:value on memory_search / memory_browse to filter by an accepted tag.",
+    );
+    description
+}
+
+pub fn tags_read_only_refusal(action: &str) -> String {
+    format!(
+        "memory_tags: \"{action}\" is not available here (read-only surface). Review and edit tags in the hub under Memory → Tags."
+    )
+}
+
+fn missing_tag_table(message: &str) -> bool {
+    static RE: std::sync::OnceLock<Option<regress::Regex>> = std::sync::OnceLock::new();
+    RE.get_or_init(|| {
+        regress::Regex::with_flags(r#"relation "?ros_tag[a-z_]*"? does not exist"#, "i").ok()
+    })
+    .as_ref()
+    .is_some_and(|re| re.find(message).is_some())
+}
+
+fn arg_map(args: &Value) -> &Map<String, Value> {
+    static EMPTY: std::sync::OnceLock<Map<String, Value>> = std::sync::OnceLock::new();
+    args.as_object()
+        .unwrap_or_else(|| EMPTY.get_or_init(Map::new))
+}
+
+fn arg_str(args: &Map<String, Value>, key: &str) -> Option<String> {
+    match args.get(key) {
+        Some(Value::String(text)) if !js_trim(text).is_empty() => Some(text.clone()),
+        _ => None,
+    }
+}
+
+fn arg_strs(value: Option<&Value>) -> Vec<String> {
+    value
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .filter(|text| !text.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn arg_limit(args: &Map<String, Value>) -> Option<i64> {
+    match args.get("limit") {
+        Some(Value::Number(number)) => number
+            .as_i64()
+            .or_else(|| number.as_f64().map(|value| value.trunc() as i64)),
+        _ => None,
+    }
+}
+
+fn is_tag_state_value(value: &Value) -> bool {
+    matches!(
+        value.as_str(),
+        Some("suggested") | Some("accepted") | Some("rejected")
+    )
+}
+
+fn is_entity_type_value(value: &Value) -> bool {
+    matches!(value.as_str(), Some("conversation") | Some("summary"))
+}
+
+fn tool_failure(action: &str, err: String) -> String {
+    if missing_tag_table(&err) {
+        if TAGS_WRITE_ACTIONS.contains(&action) {
+            "memory_tags: session tagging is not installed on this database yet (migration 0019)."
+                .to_string()
+        } else {
+            "No tags (session tagging is not installed on this database yet).".to_string()
+        }
+    } else {
+        format!("memory_tags failed: {err}")
+    }
+}
+
+fn format_pending(tags: &[PendingTag]) -> String {
+    let lines = tags
+        .iter()
+        .map(|item| {
+            let tag = &item.tag;
+            let where_text = if tag.entity_type == "conversation" {
+                let session = item
+                    .session_key
+                    .clone()
+                    .unwrap_or_else(|| tag.entity_id.clone());
+                let title = item
+                    .title
+                    .as_ref()
+                    .filter(|title| !title.is_empty())
+                    .map(|title| format!(" \"{title}\""))
+                    .unwrap_or_default();
+                format!("session {session}{title}")
+            } else {
+                let short = utf16_prefix(&tag.entity_id, 8);
+                let of = item
+                    .session_key
+                    .clone()
+                    .or_else(|| item.conversation_id.clone())
+                    .unwrap_or_else(|| "?".to_string());
+                format!("summary {short} of {of}")
+            };
+            let conf = match tag.confidence {
+                Some(confidence) => {
+                    format!(" ({})", js_to_fixed(confidence, 2).unwrap_or_default())
+                }
+                None => String::new(),
+            };
+            let reason = if tag.reason.is_empty() {
+                String::new()
+            } else {
+                format!("\n    {}", tag.reason)
+            };
+            format!(
+                "{}  {}{conf}  ← {where_text}{reason}",
+                tag.id,
+                format_tag(&tag.key, &tag.value, &tag.display)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "{} pending (decide with action=decide, ids=[…], state=accepted|rejected):\n{lines}",
+        tags.len()
+    )
+}
+
+pub async fn execute_tags_tool(db: &TagConn, args: &Value, opts: &TagsToolOptions) -> String {
+    let args = arg_map(args);
+    let action = arg_str(args, "action").unwrap_or_else(|| "pending".to_string());
+    let limit = arg_limit(args);
+    let decided_default = opts
+        .fixed_decider
+        .clone()
+        .or_else(|| opts.decided_by.clone())
+        .unwrap_or_else(|| "mcp".to_string());
+    let who = opts
+        .fixed_decider
+        .clone()
+        .or_else(|| arg_str(args, "decided_by"))
+        .unwrap_or(decided_default);
+    if !opts.allow_write && TAGS_WRITE_ACTIONS.contains(&action.as_str()) {
+        return tags_read_only_refusal(&action);
+    }
+    if let Some(state) = args.get("state")
+        && !state.is_null()
+        && !is_tag_state_value(state)
+    {
+        return "bad state (suggested, accepted or rejected)".to_string();
+    }
+    let outcome = async {
+        match action.as_str() {
+            "list" => {
+                if let Some(entity_type) = args.get("entity_type")
+                    && !is_entity_type_value(entity_type)
+                {
+                    return Ok("bad entity_type".to_string());
+                }
+                let tags = list_tags(
+                    db,
+                    &ListTagsOptions {
+                        entity_type: args
+                            .get("entity_type")
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
+                        entity_id: arg_str(args, "entity_id"),
+                        key: arg_str(args, "key"),
+                        value: arg_str(args, "value"),
+                        states: args
+                            .get("state")
+                            .filter(|state| is_tag_state_value(state))
+                            .and_then(Value::as_str)
+                            .map(|state| vec![state.to_string()]),
+                        limit,
+                    },
+                )
+                .await?;
+                if tags.is_empty() {
+                    return Ok("No tags.".to_string());
+                }
+                Ok(tags
+                    .iter()
+                    .map(|tag| {
+                        format!(
+                            "{}  {}  [{}/{}] {}:{}",
+                            tag.id,
+                            format_tag(&tag.key, &tag.value, &tag.display),
+                            tag.state,
+                            tag.source,
+                            tag.entity_type,
+                            tag.entity_id
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n"))
+            }
+            "pending" => {
+                let tags = pending_tags(db, limit.unwrap_or(50)).await?;
+                if tags.is_empty() {
+                    Ok("No pending tag suggestions.".to_string())
+                } else {
+                    Ok(format_pending(&tags))
+                }
+            }
+            "counts" => {
+                let counts = tag_counts(db, arg_str(args, "key").as_deref(), limit.unwrap_or(200))
+                    .await?;
+                if counts.is_empty() {
+                    Ok("No accepted tags yet.".to_string())
+                } else {
+                    Ok(counts
+                        .iter()
+                        .map(|count| {
+                            format!(
+                                "{}  {}",
+                                format_tag(&count.key, &count.value, &count.display),
+                                count.conversations
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n"))
+                }
+            }
+            "decide" => {
+                let ids = arg_strs(args.get("ids"));
+                let state = args.get("state").and_then(Value::as_str).unwrap_or("");
+                if ids.is_empty() {
+                    return Ok("ids required".to_string());
+                }
+                if ids.len() > 1000 {
+                    return Ok("at most 1000 ids".to_string());
+                }
+                if state != "accepted" && state != "rejected" {
+                    return Ok("state must be accepted or rejected".to_string());
+                }
+                let changed = decide_tags(db, &ids, state, &who).await?;
+                Ok(format!("{} tag(s) {state}.", changed.len()))
+            }
+            "add" => {
+                let entity_type = args.get("entity_type").and_then(Value::as_str);
+                if !matches!(entity_type, Some("conversation") | Some("summary"))
+                    || (arg_str(args, "entity_id").is_none() && arg_str(args, "session_key").is_none())
+                {
+                    return Ok(
+                        "entity_type and entity_id (or session_key) required".to_string()
+                    );
+                }
+                let tag = add_tag(
+                    db,
+                    &AddTagInput {
+                        entity_type: entity_type.unwrap_or_default().to_string(),
+                        entity_id: arg_str(args, "entity_id"),
+                        session_key: arg_str(args, "session_key"),
+                        agent: arg_str(args, "agent"),
+                        tag: arg_str(args, "tag"),
+                        key: arg_str(args, "key"),
+                        value: arg_str(args, "value"),
+                        display: arg_str(args, "display"),
+                        reason: arg_str(args, "reason"),
+                    },
+                    &who,
+                )
+                .await?;
+                Ok(format!(
+                    "Added {} to {} {} ({}).",
+                    format_tag(&tag.key, &tag.value, &tag.display),
+                    tag.entity_type,
+                    tag.entity_id,
+                    tag.id
+                ))
+            }
+            "lookup" => {
+                let keys = arg_strs(args.get("session_keys"));
+                if keys.is_empty() {
+                    return Ok("session_keys required".to_string());
+                }
+                if keys.len() > 500 {
+                    return Ok("at most 500 session_keys".to_string());
+                }
+                let grouped = tags_for_session_keys(db, &keys, None).await?;
+                Ok(keys
+                    .iter()
+                    .map(|key| {
+                        let tags = grouped
+                            .iter()
+                            .find(|(id, _)| id == key)
+                            .map(|(_, tags)| tags.as_slice())
+                            .unwrap_or(&[]);
+                        if tags.is_empty() {
+                            format!("{key}: (none)")
+                        } else {
+                            let rendered = tags
+                                .iter()
+                                .map(|tag| {
+                                    let mark = if tag.state == "suggested" { "?" } else { "" };
+                                    format!(
+                                        "{}{mark}",
+                                        format_tag(&tag.key, &tag.value, &tag.display)
+                                    )
+                                })
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            format!("{key}: {rendered}")
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n"))
+            }
+            "taxonomy" => {
+                let entries = list_taxonomy(
+                    db,
+                    arg_str(args, "key").as_deref(),
+                    args.get("state")
+                        .filter(|state| is_tag_state_value(state))
+                        .and_then(Value::as_str)
+                        .map(|state| vec![state.to_string()]),
+                    limit,
+                )
+                .await?;
+                if entries.is_empty() {
+                    return Ok("Empty vocabulary.".to_string());
+                }
+                Ok(entries
+                    .iter()
+                    .map(|entry| {
+                        let parent = entry
+                            .parent_value
+                            .as_ref()
+                            .filter(|parent| !parent.is_empty())
+                            .map(|parent| format!(" ⊂ {}:{}", entry.key, parent))
+                            .unwrap_or_default();
+                        let aliases = if entry.aliases.is_empty() {
+                            String::new()
+                        } else {
+                            format!("  aliases: {}", entry.aliases.join(", "))
+                        };
+                        format!(
+                            "{}{parent}  [{}]{aliases}",
+                            format_tag(&entry.key, &entry.value, &entry.display),
+                            entry.state
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n"))
+            }
+            "taxonomy_upsert" => {
+                if arg_str(args, "key").is_none() || arg_str(args, "value").is_none() {
+                    return Ok("key and value required".to_string());
+                }
+                let parent = match args.get("parent_value") {
+                    Some(Value::Null) => ParentSet::Clear,
+                    Some(Value::String(text)) if !js_trim(text).is_empty() => {
+                        ParentSet::Value(text.clone())
+                    }
+                    _ => ParentSet::Omitted,
+                };
+                let aliases = if args.get("aliases").and_then(Value::as_array).is_some() {
+                    Some(arg_strs(args.get("aliases")))
+                } else {
+                    None
+                };
+                let entry = upsert_taxonomy(
+                    db,
+                    &UpsertTaxonomy {
+                        key: arg_str(args, "key").unwrap_or_default(),
+                        value: arg_str(args, "value").unwrap_or_default(),
+                        display: arg_str(args, "display"),
+                        parent,
+                        aliases,
+                        state: args
+                            .get("state")
+                            .filter(|state| is_tag_state_value(state))
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
+                        reason: arg_str(args, "reason"),
+                    },
+                    Some("user"),
+                )
+                .await?;
+                Ok(format!(
+                    "Vocabulary: {} [{}]",
+                    format_tag(&entry.key, &entry.value, &entry.display),
+                    entry.state
+                ))
+            }
+            "taxonomy_decide" => {
+                let entries = args
+                    .get("entries")
+                    .and_then(Value::as_array)
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(|item| {
+                                let object = item.as_object()?;
+                                let key = object.get("key")?.as_str()?;
+                                let value = object.get("value")?.as_str()?;
+                                Some((key.to_string(), value.to_string()))
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                if entries.is_empty() {
+                    return Ok("entries required".to_string());
+                }
+                let state = args.get("state").and_then(Value::as_str).unwrap_or("");
+                if state != "accepted" && state != "rejected" {
+                    return Ok("state must be accepted or rejected".to_string());
+                }
+                let changed = decide_taxonomy(db, &entries, state).await?;
+                Ok(format!("{changed} vocabulary entr(y|ies) {state}."))
+            }
+            "taxonomy_merge" => {
+                let key = arg_str(args, "key");
+                let from = arg_str(args, "from");
+                let into = arg_str(args, "into");
+                if key.is_none() || from.is_none() || into.is_none() {
+                    return Ok("key, from and into required".to_string());
+                }
+                let key = key.unwrap_or_default();
+                let from = from.unwrap_or_default();
+                let into = into.unwrap_or_default();
+                let (moved, dropped, _) =
+                    merge_taxonomy_value(db, &key, &from, &into).await?;
+                Ok(format!(
+                    "Merged {key}:{from} into {key}:{into}: {moved} tag(s) moved, {dropped} duplicate(s) dropped."
+                ))
+            }
+            _ => Ok(format!(
+                "Unknown action \"{action}\". One of: {}",
+                TAGS_ACTIONS.join(", ")
+            )),
+        }
+    }
+    .await;
+    match outcome {
+        Ok(text) => text,
+        Err(err) => tool_failure(&action, err),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1195,7 +1851,7 @@ mod tests {
         let _ = list_tags(&pool, &opts).await.unwrap();
         let (sql, params) = pool.calls.lock()[0].clone();
         let flat = crate::rows::collapse_ws(&sql);
-        assert!(flat.contains("entity_type = $1 AND entity_id = $2 AND key = $3 AND value = $4 AND state = ANY($5::text[])"));
+        assert!(flat.contains("entity_type = $1 AND entity_id = $2::uuid AND key = $3 AND value = $4 AND state = ANY($5::text[])"));
         assert!(matches!(&params[0], Bind::Text(v) if v == "conversation"));
         assert!(matches!(&params[2], Bind::Text(v) if v == "project"));
         assert!(matches!(&params[3], Bind::Text(v) if v == "acmeapp"));
@@ -1962,5 +2618,323 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.contains("invalid merge"));
+    }
+
+    fn tool_row() -> HashMap<String, Cell> {
+        let mut row = sample_row();
+        row.insert(
+            "id".into(),
+            cell_text("11111111-1111-4111-8111-111111111111"),
+        );
+        row.insert("key".into(), cell_text("topic"));
+        row.insert("value".into(), cell_text("memory-compaction"));
+        row.insert("display".into(), cell_text("Memory Compaction"));
+        row.insert("confidence".into(), Cell::F64(0.91));
+        row.insert(
+            "reason".into(),
+            cell_text("the summary is about compaction"),
+        );
+        row.insert("session_key".into(), cell_text("claude:abc"));
+        row.insert("title".into(), cell_text("Compaction fixes"));
+        row.insert("conversation_id".into(), cell_text("c1"));
+        row
+    }
+
+    #[tokio::test]
+    async fn tags_tool_sentences_match_the_typescript_tool() {
+        let pending = TagConn::from_handler(Arc::new(|sql, _params| {
+            if sql.contains("t.state = 'suggested'") {
+                Ok(QueryResult {
+                    rows: vec![tool_row()],
+                    row_count: 1,
+                })
+            } else {
+                Ok(QueryResult::empty())
+            }
+        }));
+        let out = execute_tags_tool(
+            &pending,
+            &serde_json::json!({}),
+            &TagsToolOptions::default(),
+        )
+        .await;
+        assert!(out.contains("1 pending"));
+        assert!(out.contains(
+            "11111111-1111-4111-8111-111111111111  topic:Memory Compaction (0.91)  ← session claude:abc \"Compaction fixes\""
+        ));
+        assert!(out.contains("the summary is about compaction"));
+
+        let decide = TagConn::from_handler(Arc::new(|sql, _params| {
+            if sql.contains("UPDATE ros_tags") {
+                let mut a = HashMap::new();
+                a.insert("id".into(), cell_text("a"));
+                let mut b = HashMap::new();
+                b.insert("id".into(), cell_text("b"));
+                Ok(QueryResult {
+                    rows: vec![a, b],
+                    row_count: 2,
+                })
+            } else {
+                Ok(QueryResult::empty())
+            }
+        }));
+        let write = TagsToolOptions {
+            decided_by: Some("rivet".into()),
+            allow_write: true,
+            fixed_decider: None,
+        };
+        assert_eq!(
+            execute_tags_tool(
+                &decide,
+                &serde_json::json!({"action": "decide", "ids": []}),
+                &write
+            )
+            .await,
+            "ids required"
+        );
+        assert!(
+            execute_tags_tool(
+                &decide,
+                &serde_json::json!({"action": "decide", "ids": ["a"], "state": "maybe"}),
+                &write
+            )
+            .await
+            .starts_with("bad state")
+        );
+        assert_eq!(
+            execute_tags_tool(
+                &decide,
+                &serde_json::json!({"action": "decide", "ids": ["a"], "state": "suggested"}),
+                &write
+            )
+            .await,
+            "state must be accepted or rejected"
+        );
+        let too_many: Vec<String> = (0..1001).map(|n| format!("id-{n}")).collect();
+        assert_eq!(
+            execute_tags_tool(
+                &decide,
+                &serde_json::json!({"action": "decide", "ids": too_many, "state": "accepted"}),
+                &write
+            )
+            .await,
+            "at most 1000 ids"
+        );
+        assert!(decide.calls.lock().is_empty());
+        assert_eq!(
+            execute_tags_tool(
+                &decide,
+                &serde_json::json!({"action": "decide", "ids": ["a", "b"], "state": "accepted"}),
+                &write
+            )
+            .await,
+            "2 tag(s) accepted."
+        );
+        let update = decide
+            .calls
+            .lock()
+            .iter()
+            .find(|(sql, _)| sql.contains("UPDATE ros_tags"))
+            .cloned()
+            .unwrap();
+        assert!(
+            matches!(&update.1[0], Bind::Texts(ids) if ids == &vec!["a".to_string(), "b".to_string()])
+        );
+        assert!(matches!(&update.1[1], Bind::Text(state) if state == "accepted"));
+        assert!(matches!(&update.1[2], Bind::Text(who) if who == "rivet"));
+
+        let added = TagConn::from_handler(Arc::new(|sql, _params| {
+            if sql.contains("INSERT INTO ros_tags") {
+                let mut row = tool_row();
+                row.insert("source".into(), cell_text("user"));
+                row.insert("state".into(), cell_text("accepted"));
+                row.insert("key".into(), cell_text("project"));
+                row.insert("value".into(), cell_text("acmeapp"));
+                row.insert("display".into(), cell_text("AcmeApp"));
+                Ok(QueryResult {
+                    rows: vec![row],
+                    row_count: 1,
+                })
+            } else {
+                Ok(QueryResult::empty())
+            }
+        }));
+        let allow = TagsToolOptions {
+            allow_write: true,
+            ..TagsToolOptions::default()
+        };
+        assert_eq!(
+            execute_tags_tool(
+                &added,
+                &serde_json::json!({
+                    "action": "add",
+                    "entity_type": "conversation",
+                    "entity_id": "c1",
+                    "tag": "project:AcmeApp"
+                }),
+                &allow
+            )
+            .await,
+            "Added project:AcmeApp to conversation c1 (11111111-1111-4111-8111-111111111111)."
+        );
+        assert_eq!(
+            execute_tags_tool(
+                &added,
+                &serde_json::json!({"action": "add", "tag": "project:x"}),
+                &allow
+            )
+            .await,
+            "entity_type and entity_id (or session_key) required"
+        );
+
+        let lookup = TagConn::from_handler(Arc::new(|sql, _params| {
+            if sql.contains("c.session_key = ANY") {
+                let mut suggested = tool_row();
+                suggested.insert("session_key".into(), cell_text("claude:abc"));
+                let mut accepted = tool_row();
+                accepted.insert("id".into(), cell_text("x"));
+                accepted.insert("key".into(), cell_text("project"));
+                accepted.insert("value".into(), cell_text("acmeapp"));
+                accepted.insert("display".into(), cell_text("AcmeApp"));
+                accepted.insert("state".into(), cell_text("accepted"));
+                accepted.insert("session_key".into(), cell_text("claude:abc"));
+                Ok(QueryResult {
+                    rows: vec![suggested, accepted],
+                    row_count: 2,
+                })
+            } else {
+                Ok(QueryResult::empty())
+            }
+        }));
+        assert_eq!(
+            execute_tags_tool(
+                &lookup,
+                &serde_json::json!({"action": "lookup", "session_keys": ["claude:abc", "codex:none"]}),
+                &TagsToolOptions::default()
+            )
+            .await,
+            "claude:abc: topic:Memory Compaction?, project:AcmeApp\ncodex:none: (none)"
+        );
+
+        let refused = TagConn::from_handler(Arc::new(|_sql, _params| {
+            Err("connection refused".to_string())
+        }));
+        assert_eq!(
+            execute_tags_tool(
+                &refused,
+                &serde_json::json!({"action": "counts"}),
+                &TagsToolOptions::default()
+            )
+            .await,
+            "memory_tags failed: connection refused"
+        );
+        let missing = TagConn::from_handler(Arc::new(|_sql, _params| {
+            Err("relation \"ros_tags\" does not exist".to_string())
+        }));
+        assert!(
+            execute_tags_tool(&missing, &serde_json::json!({"action": "counts"}), &allow)
+                .await
+                .starts_with("No tags (session tagging is not installed")
+        );
+        assert!(
+            execute_tags_tool(
+                &missing,
+                &serde_json::json!({"action": "decide", "ids": ["a"], "state": "accepted"}),
+                &allow
+            )
+            .await
+            .contains("not installed on this database yet (migration 0019)")
+        );
+
+        let quiet = TagConn::from_handler(Arc::new(|_sql, _params| Ok(QueryResult::empty())));
+        for action in ["list", "taxonomy"] {
+            assert!(
+                execute_tags_tool(
+                    &quiet,
+                    &serde_json::json!({"action": action, "state": "acepted"}),
+                    &TagsToolOptions::default()
+                )
+                .await
+                .starts_with("bad state")
+            );
+        }
+        assert!(quiet.calls.lock().is_empty());
+
+        let readonly = TagConn::from_handler(Arc::new(|_sql, _params| Ok(QueryResult::empty())));
+        for action in [
+            "decide",
+            "add",
+            "taxonomy_upsert",
+            "taxonomy_decide",
+            "taxonomy_merge",
+        ] {
+            assert!(
+                execute_tags_tool(
+                    &readonly,
+                    &serde_json::json!({"action": action, "ids": ["a"], "state": "accepted"}),
+                    &TagsToolOptions::default()
+                )
+                .await
+                .contains("read-only surface")
+            );
+        }
+        assert!(readonly.calls.lock().is_empty());
+        assert_eq!(
+            execute_tags_tool(
+                &readonly,
+                &serde_json::json!({"action": "counts"}),
+                &TagsToolOptions::default()
+            )
+            .await,
+            "No accepted tags yet."
+        );
+
+        let fixed_db = TagConn::from_handler(Arc::new(|sql, _params| {
+            if sql.contains("UPDATE ros_tags") {
+                let mut row = HashMap::new();
+                row.insert("id".into(), cell_text("a"));
+                Ok(QueryResult {
+                    rows: vec![row],
+                    row_count: 1,
+                })
+            } else {
+                Ok(QueryResult::empty())
+            }
+        }));
+        let fixed_opts = TagsToolOptions {
+            allow_write: true,
+            fixed_decider: Some("alice".into()),
+            decided_by: None,
+        };
+        execute_tags_tool(
+            &fixed_db,
+            &serde_json::json!({
+                "action": "decide",
+                "ids": ["a"],
+                "state": "accepted",
+                "decided_by": "someone-else"
+            }),
+            &fixed_opts,
+        )
+        .await;
+        let update = fixed_db
+            .calls
+            .lock()
+            .iter()
+            .find(|(sql, _)| sql.contains("UPDATE ros_tags"))
+            .cloned()
+            .unwrap();
+        assert!(matches!(&update.1[2], Bind::Text(who) if who == "alice"));
+        assert!(memory_tags_description(false).contains("READ-ONLY"));
+        assert!(!memory_tags_description(true).contains("READ-ONLY"));
+        assert!(
+            execute_tags_tool(
+                &quiet,
+                &serde_json::json!({"action": "nope"}),
+                &TagsToolOptions::default()
+            )
+            .await
+            .contains("Unknown action \"nope\"")
+        );
     }
 }

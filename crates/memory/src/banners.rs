@@ -97,6 +97,12 @@ pub fn format_empty_search_result(
     )
 }
 
+pub fn fmt_local_date(dt: DateTime<Utc>) -> String {
+    dt.with_timezone(&chrono::Local)
+        .format("%Y-%m-%d")
+        .to_string()
+}
+
 pub fn fmt_local_ts(dt: DateTime<Utc>) -> String {
     let local = dt.with_timezone(&chrono::Local);
     let tz = local.format("%Z").to_string();
@@ -199,11 +205,35 @@ pub struct ToolHit {
 }
 
 #[derive(Debug, Clone)]
+pub struct ToolChild {
+    pub kind: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ToolSource {
+    pub role: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ToolExpansion {
+    pub hit_id: String,
+    pub children: Vec<ToolChild>,
+    pub source_messages: Vec<ToolSource>,
+}
+
+#[derive(Debug, Clone)]
 pub struct ToolResults {
     pub hits: Vec<ToolHit>,
     pub degraded_reason: Option<String>,
     pub chunk_reason: Option<String>,
     pub mode: String,
+    pub since: Option<String>,
+    pub before: Option<String>,
+    pub window: Option<String>,
+    pub expand: bool,
+    pub expanded: Vec<ToolExpansion>,
 }
 
 pub fn format_search_tool_output(query: &str, results: &ToolResults, now_ms: i64) -> String {
@@ -226,7 +256,12 @@ pub fn format_search_tool_output(query: &str, results: &ToolResults, now_ms: i64
     if results.hits.is_empty() {
         return format!(
             "{prefix}{}",
-            format_empty_search_result(query, None, None, None)
+            format_empty_search_result(
+                query,
+                results.since.as_deref(),
+                results.before.as_deref(),
+                results.window.as_deref(),
+            )
         );
     }
     let summaries: Vec<&ToolHit> = results
@@ -247,7 +282,9 @@ pub fn format_search_tool_output(query: &str, results: &ToolResults, now_ms: i64
         summaries.len(),
         messages.len()
     ));
-    if !summaries.is_empty() {
+    if results.expand && !results.expanded.is_empty() {
+        format_expanded_summaries(&mut sections, results, &summaries, now_ms);
+    } else if !summaries.is_empty() {
         sections.push("### Summaries\n".to_string());
         for hit in summaries {
             let when = fmt_hit_when(hit.created_at, now_ms);
@@ -290,6 +327,83 @@ pub fn format_search_tool_output(query: &str, results: &ToolResults, now_ms: i64
         }
     }
     format!("{prefix}{}", sections.join("\n"))
+}
+
+fn format_expanded_summaries(
+    sections: &mut Vec<String>,
+    results: &ToolResults,
+    summaries: &[&ToolHit],
+    now_ms: i64,
+) {
+    sections.push("### Summaries (expanded)\n".to_string());
+    for expanded in &results.expanded {
+        let Some(hit) = summaries.iter().find(|hit| hit.id == expanded.hit_id) else {
+            continue;
+        };
+        let when = fmt_hit_when(hit.created_at, now_ms);
+        let period = match (hit.earliest_at, hit.latest_at) {
+            (Some(earliest), Some(latest)) => {
+                format!("{} → {}", fmt_local_date(earliest), fmt_local_date(latest))
+            }
+            _ => fmt_local_date(hit.created_at),
+        };
+        let score = fixed(hit.score);
+        let kind = hit.kind.as_deref().unwrap_or("summary");
+        sections.push(format!(
+            "**[{kind}]** ({when}, score: {score}, period: {period}){}",
+            tag_suffix(hit)
+        ));
+        sections.push(hit.content.clone());
+        if !expanded.children.is_empty() {
+            sections.push(format!("\n  **Children ({}):**", expanded.children.len()));
+            for child in expanded.children.iter().take(5) {
+                sections.push(format!(
+                    "  - [{}] {}",
+                    child.kind,
+                    clip(&child.content, 200)
+                ));
+            }
+            if expanded.children.len() > 5 {
+                sections.push(format!("  - ... and {} more", expanded.children.len() - 5));
+            }
+        }
+        let substantive: Vec<&ToolSource> = expanded
+            .source_messages
+            .iter()
+            .filter(|message| {
+                message.role != "tool" && utf16_len(protocol::js::js_trim(&message.content)) >= 40
+            })
+            .collect();
+        if !substantive.is_empty() {
+            sections.push(format!("\n  **Source messages ({}):**", substantive.len()));
+            for message in substantive.iter().take(4) {
+                sections.push(format!(
+                    "  > [{}] {}",
+                    message.role,
+                    clip(&message.content, 300)
+                ));
+            }
+            if substantive.len() > 4 {
+                sections.push(format!(
+                    "  > ... and {} more messages",
+                    substantive.len() - 4
+                ));
+            }
+        }
+        sections.push(String::new());
+    }
+    let remaining: Vec<&&ToolHit> = summaries.iter().skip(3).collect();
+    if !remaining.is_empty() {
+        sections.push("### Additional summaries (not expanded)\n".to_string());
+        for hit in remaining {
+            let when = fmt_hit_when(hit.created_at, now_ms);
+            let preview = clip(&hit.content, 300);
+            let score = fixed(hit.score);
+            let kind = hit.kind.as_deref().unwrap_or("summary");
+            sections.push(format!("- [{kind}] ({when}, score: {score}) {preview}"));
+        }
+        sections.push(String::new());
+    }
 }
 
 fn tag_suffix(hit: &ToolHit) -> String {
@@ -358,7 +472,24 @@ mod tests {
             degraded_reason: reason.map(str::to_string),
             chunk_reason: None,
             mode: mode.into(),
+            since: None,
+            before: None,
+            window: None,
+            expand: true,
+            expanded: Vec::new(),
         }
+    }
+
+    fn summary_hit(id: &str, content: &str, score: f64) -> ToolHit {
+        let mut hit = hit();
+        hit.id = id.into();
+        hit.hit_type = "summary".into();
+        hit.content = content.into();
+        hit.score = score;
+        hit.kind = Some("leaf".into());
+        hit.role = "summary".into();
+        hit.agent = "summary".into();
+        hit
     }
 
     #[test]
@@ -499,5 +630,64 @@ mod tests {
             format_empty_search_result("q", Some("2026-01-01T00:00:00.000Z"), None, Some("today"));
         assert!(msg.contains("window=\"today\""));
         assert!(msg.contains("memory_browse"));
+        let mut empty = results(vec![], None, "hybrid");
+        empty.since = Some("2026-10-11T00:00:00.000Z".into());
+        empty.window = Some("today".into());
+        assert_eq!(
+            format_search_tool_output("deploy", &empty, 0),
+            "No results found for query \"deploy\" with window=\"today\".\n\nFor chronological browsing of a date window without a topic filter, call `memory_browse(window=\"today\")` instead — that returns every message in the window, no FTS match required."
+        );
+        let created = DateTime::parse_from_rfc3339("2026-08-12T18:00:00.000Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let mut top = summary_hit("s1", "parent summary body", 0.8);
+        top.created_at = created;
+        top.earliest_at = Some(created);
+        top.latest_at = Some(created);
+        top.tags = vec!["project:acmeapp".into()];
+        let hidden = summary_hit("s2", "hidden-two", 0.4);
+        let extra = summary_hit("s4", "later summary", 0.2);
+        let mut expanded_results = results(
+            vec![
+                top.clone(),
+                hidden,
+                summary_hit("s3", "hidden-three", 0.3),
+                extra.clone(),
+            ],
+            None,
+            "hybrid",
+        );
+        expanded_results.expanded = vec![ToolExpansion {
+            hit_id: "s1".into(),
+            children: vec![ToolChild {
+                kind: "leaf".into(),
+                content: "child body".into(),
+            }],
+            source_messages: vec![
+                ToolSource {
+                    role: "tool".into(),
+                    content: "substantive source message for the expanded summary view".into(),
+                },
+                ToolSource {
+                    role: "user".into(),
+                    content: "substantive source message for the expanded summary view".into(),
+                },
+            ],
+        }];
+        let when = fmt_hit_when(created, 0);
+        let day = fmt_local_date(created);
+        let extra_when = fmt_hit_when(extra.created_at, 0);
+        let expected = format!(
+            "## Memory Search: \"deploy\"\nFound 4 results (4 summaries, 0 messages)\n\n### Summaries (expanded)\n\n**[leaf]** ({when}, score: 0.800, period: {day} → {day}) tags: project:acmeapp\nparent summary body\n\n  **Children (1):**\n  - [leaf] child body\n\n  **Source messages (1):**\n  > [user] substantive source message for the expanded summary view\n\n### Additional summaries (not expanded)\n\n- [leaf] ({extra_when}, score: 0.200) later summary\n"
+        );
+        let rendered = format_search_tool_output("deploy", &expanded_results, 0);
+        assert_eq!(rendered, expected);
+        assert!(!rendered.contains("hidden-two"));
+        assert!(!rendered.contains("### Summaries\n"));
+        expanded_results.expand = false;
+        let closed = format_search_tool_output("deploy", &expanded_results, 0);
+        assert!(closed.contains("### Summaries\n"));
+        assert!(!closed.contains("### Summaries (expanded)"));
+        assert!(closed.contains("[leaf/s1]"));
     }
 }

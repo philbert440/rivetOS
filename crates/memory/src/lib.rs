@@ -36,8 +36,8 @@ pub use capture_client::{
 };
 pub use error::{StoreError, now_ms};
 pub use expand::{
-    ExpandResult, ExpandedSummary, Expander, SourceMessage, SummaryNode, auto_expand_summaries,
-    expand_depth, substantive_source_messages,
+    ExpandResult, ExpandedSummary, Expander, SearchToolView, SourceMessage, SummaryNode,
+    auto_expand_summaries, expand_depth, search_tool_output, substantive_source_messages,
 };
 pub use migrate::{
     MIGRATION_LOCK_BACKOFF_MS, MIGRATION_LOCK_TIMEOUT, MigrateClient, MigrateFault, MigrateRows,
@@ -48,7 +48,10 @@ pub use pgmigrate::{
     AppliedMigration, MigrationStatus, format_applied_at, migrate_connection, migrate_database,
     migration_status,
 };
-pub use postgres::{PostgresMemory, capture_conversation_upsert_sql, capture_message_insert_sql};
+pub use postgres::{
+    EmbedEnv, MemoryEmbedConfig, PostgresMemory, capture_conversation_upsert_sql,
+    capture_message_insert_sql,
+};
 pub use routing::{RoutingMemory, StoreHandle, user_from_session_key};
 pub use search::{
     EmbedCall, EmbedFetch, EmbedResponse, EngineOptions, FetchFail, SearchHit, SearchResults,

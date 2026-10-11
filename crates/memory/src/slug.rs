@@ -68,6 +68,16 @@ pub fn split_tag_literal(literal: &str) -> Option<(&str, &str)> {
     ))
 }
 
+pub fn format_tag(key: &str, value: &str, display: &str) -> String {
+    let display = js_trim(display);
+    let shown = if !display.is_empty() && normalize_tag_value(display) == value {
+        display
+    } else {
+        value
+    };
+    format!("{}:{shown}", normalize_tag_key(key))
+}
+
 pub fn parse_tag_literal(literal: &str) -> Option<(String, String)> {
     let (key, value) = split_tag_literal(literal)?;
     let key = normalize_tag_key(key);

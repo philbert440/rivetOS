@@ -653,7 +653,15 @@ async fn deferred_methods_do_not_open_a_database() {
         .acquire_timeout(std::time::Duration::from_millis(300))
         .connect_lazy("postgres://127.0.0.1:1/rivetos_rr2b")
         .expect("lazy");
-    let store = PostgresMemory::from_pool(pool, true);
+    let store = PostgresMemory::from_pool_with(
+        pool,
+        true,
+        &memory::MemoryEmbedConfig {
+            embed_endpoint: Some(String::new()),
+            ..memory::MemoryEmbedConfig::default()
+        },
+    )
+    .expect("memory");
     let err = store
         .search("q", &SearchOptions::default())
         .await
@@ -666,14 +674,7 @@ async fn deferred_methods_do_not_open_a_database() {
         .expect_err("context");
     assert!(err.to_string().contains("Failed"), "{err}");
     assert!(err.to_string().contains("connect"), "{err}");
-    assert!(
-        store
-            .tags()
-            .await
-            .expect_err("tags")
-            .to_string()
-            .contains("tags")
-    );
+    store.tags().await.expect("tags backend");
     assert!(store.wiki().is_none());
     let names: Vec<_> = store.tools().into_iter().map(|tool| tool.name).collect();
     assert_eq!(
@@ -683,7 +684,14 @@ async fn deferred_methods_do_not_open_a_database() {
             "memory_stats",
             "memory_get_full",
             "memory_append",
-            "memory_ingest_session"
+            "memory_ingest_session",
+            "memory_tags"
         ]
+    );
+    assert!(
+        store
+            .tools()
+            .iter()
+            .any(|tool| tool.name == "memory_tags" && tool.description.contains("READ-ONLY"))
     );
 }

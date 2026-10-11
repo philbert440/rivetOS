@@ -12,7 +12,6 @@ use sqlx::{PgConnection, PgPool, Row};
 use crate::banners::memory_search_limit;
 use crate::context::get_context_for_turn;
 use crate::cowork::{CoworkHookRow, pick_cowork_hook_rewrite};
-use crate::embed_prep::clamp_embed_timeout_ms;
 use crate::embed_wire::parse_embed_wire_shape;
 use crate::error::{StoreError, now_ms};
 use crate::get_full::{
@@ -28,7 +27,7 @@ use crate::report::{
     format_queue_health, format_unsummarized, health_cached, history_limit, is_missing_schema_code,
     time_since,
 };
-use crate::scoring::{LooseNumber, clamp_hnsw_ef_search};
+use crate::scoring::LooseNumber;
 use crate::search::{
     EngineConfig, EngineOptions, PoolDb, SearchEngine, SearchResults, store_error,
 };
@@ -44,6 +43,130 @@ use crate::window::apply_window_args;
 use crate::writers::{append_result_value, prepare_append};
 
 const POOL_MAX: u32 = 5;
+const EMBED_MODEL_REQUIRED: &str = "RIVETOS_EMBED_MODEL (or memory.postgres.embed_model) is required when an embedding URL is set. OpenAI-compatible embedding model id (example: text-embedding-3-small)";
+
+#[derive(Clone, Default)]
+pub struct MemoryEmbedConfig {
+    pub embed_endpoint: Option<String>,
+    pub embed_model: Option<String>,
+    pub embed_query_instruction: Option<String>,
+    pub embed_timeout_ms: Option<LooseNumber>,
+    pub hnsw_ef_search: Option<LooseNumber>,
+    pub embed_api_key: Option<String>,
+    pub embed_token_command: Option<Value>,
+    pub embed_token_ttl_ms: Option<i64>,
+    pub embed_token_command_timeout_ms: Option<i64>,
+    pub embed_wire_shape: Option<String>,
+    pub embed_expected_dims: Option<usize>,
+}
+
+#[derive(Clone, Default)]
+pub struct EmbedEnv {
+    pub embed_url: Option<String>,
+    pub embed_model: Option<String>,
+    pub embed_query_instruction: Option<String>,
+    pub embed_timeout_ms: Option<String>,
+    pub hnsw_ef_search: Option<String>,
+    pub embed_api_key: Option<String>,
+    pub embed_wire_shape: Option<String>,
+}
+
+impl EmbedEnv {
+    pub fn process() -> Self {
+        Self {
+            embed_url: std::env::var("RIVETOS_EMBED_URL").ok(),
+            embed_model: std::env::var("RIVETOS_EMBED_MODEL").ok(),
+            embed_query_instruction: std::env::var("RIVETOS_EMBED_QUERY_INSTRUCTION").ok(),
+            embed_timeout_ms: std::env::var("RIVETOS_EMBED_TIMEOUT_MS").ok(),
+            hnsw_ef_search: std::env::var("RIVETOS_HNSW_EF_SEARCH").ok(),
+            embed_api_key: std::env::var("RIVETOS_EMBED_API_KEY").ok(),
+            embed_wire_shape: std::env::var("RIVETOS_EMBED_WIRE_SHAPE").ok(),
+        }
+    }
+}
+
+struct ResolvedEmbed {
+    endpoint: Option<String>,
+    model: String,
+    instruction: Option<String>,
+    timeout: LooseNumber,
+    hnsw: LooseNumber,
+    api_key: String,
+    wire: crate::embed_wire::EmbedWireShape,
+    dims: Option<usize>,
+    token_argv: Option<Vec<String>>,
+    token_ttl: Option<i64>,
+    token_timeout: Option<i64>,
+    warnings: Vec<String>,
+}
+
+fn coalesce_opt<'a>(cfg: Option<&'a str>, env: Option<&'a str>) -> Option<&'a str> {
+    cfg.or(env)
+}
+
+fn resolve_memory_embed(cfg: &MemoryEmbedConfig, env: &EmbedEnv) -> Result<ResolvedEmbed, String> {
+    let endpoint_raw =
+        coalesce_opt(cfg.embed_endpoint.as_deref(), env.embed_url.as_deref()).unwrap_or("");
+    let model = cfg.embed_model.clone().or_else(|| env.embed_model.clone());
+    if !endpoint_raw.is_empty() && model.as_deref().unwrap_or("").is_empty() {
+        return Err(EMBED_MODEL_REQUIRED.to_string());
+    }
+    let mut warnings = Vec::new();
+    let wire_raw = cfg
+        .embed_wire_shape
+        .as_deref()
+        .or(env.embed_wire_shape.as_deref());
+    let wire = match parse_embed_wire_shape(wire_raw) {
+        Ok(shape) => shape,
+        Err(err) => {
+            warnings.push(format!("memory.postgres.embed_wire_shape: {err}"));
+            crate::embed_wire::EmbedWireShape::Openai
+        }
+    };
+    let mut token_argv = None;
+    if let Some(raw) = &cfg.embed_token_command {
+        match parse_token_command_argv(Some(raw)) {
+            Ok(Some(argv)) => token_argv = Some(argv),
+            Ok(None) => {}
+            Err(err) => warnings.push(format!("memory.postgres.embed_token_command: {err}")),
+        }
+    }
+    Ok(ResolvedEmbed {
+        endpoint: if endpoint_raw.is_empty() {
+            None
+        } else {
+            Some(endpoint_raw.to_string())
+        },
+        model: model.unwrap_or_default(),
+        instruction: cfg
+            .embed_query_instruction
+            .clone()
+            .or_else(|| env.embed_query_instruction.clone()),
+        timeout: match &cfg.embed_timeout_ms {
+            Some(value) => value.clone(),
+            None => match &env.embed_timeout_ms {
+                Some(text) => LooseNumber::Text(text.clone()),
+                None => LooseNumber::Absent,
+            },
+        },
+        hnsw: match &cfg.hnsw_ef_search {
+            Some(value) => value.clone(),
+            None => match &env.hnsw_ef_search {
+                Some(text) => LooseNumber::Text(text.clone()),
+                None => LooseNumber::Absent,
+            },
+        },
+        api_key: coalesce_opt(cfg.embed_api_key.as_deref(), env.embed_api_key.as_deref())
+            .unwrap_or("")
+            .to_string(),
+        wire,
+        dims: cfg.embed_expected_dims,
+        token_argv,
+        token_ttl: cfg.embed_token_ttl_ms,
+        token_timeout: cfg.embed_token_command_timeout_ms,
+        warnings,
+    })
+}
 
 fn db_message(err: &sqlx::Error) -> String {
     err.as_database_error()
@@ -258,6 +381,10 @@ pub struct PostgresMemory {
 
 impl PostgresMemory {
     pub async fn connect(url: &str) -> Result<Self, StoreError> {
+        Self::connect_with(url, &MemoryEmbedConfig::default()).await
+    }
+
+    pub async fn connect_with(url: &str, cfg: &MemoryEmbedConfig) -> Result<Self, StoreError> {
         let pool = PgPoolOptions::new()
             .max_connections(POOL_MAX)
             .acquire_timeout(Duration::from_secs(10))
@@ -265,14 +392,55 @@ impl PostgresMemory {
             .connect(url)
             .await
             .map_err(connect_failed)?;
-        let mut memory = Self::from_pool(pool, true);
-        memory.apply_embed_env();
-        Ok(memory)
+        Self::from_pool_with(pool, true, cfg)
     }
 
-    pub fn from_pool(pool: PgPool, owns_pool: bool) -> Self {
-        let engine = SearchEngine::new(PoolDb::new(pool.clone()), EngineConfig::default());
-        Self {
+    pub fn from_pool(pool: PgPool, owns_pool: bool) -> Result<Self, StoreError> {
+        Self::from_pool_with(pool, owns_pool, &MemoryEmbedConfig::default())
+    }
+
+    pub fn from_pool_with(
+        pool: PgPool,
+        owns_pool: bool,
+        cfg: &MemoryEmbedConfig,
+    ) -> Result<Self, StoreError> {
+        let resolved =
+            resolve_memory_embed(cfg, &EmbedEnv::process()).map_err(StoreError::Request)?;
+        for warning in &resolved.warnings {
+            tracing::warn!("{warning}");
+        }
+        let mut engine_cfg = EngineConfig {
+            embed_endpoint: resolved.endpoint,
+            embed_model: resolved.model,
+            embed_query_instruction: resolved.instruction,
+            embed_timeout_ms: resolved.timeout,
+            hnsw_ef_search: resolved.hnsw,
+            embed_api_key: resolved.api_key,
+            embed_wire_shape: resolved.wire,
+            embed_expected_dims: resolved.dims,
+            ..EngineConfig::default()
+        };
+        if let Some(argv) = resolved.token_argv {
+            match TokenSource::new(argv, resolved.token_ttl, resolved.token_timeout, None, None) {
+                Ok(source) => {
+                    let warmup = source.clone();
+                    tokio::spawn(async move {
+                        if let Err(err) = warmup.get_token().await {
+                            tracing::warn!(
+                                "memory.postgres embed_token_command mint failed: {err}"
+                            );
+                        }
+                    });
+                    engine_cfg.embed_token_source = Some(source);
+                }
+                Err(err) => {
+                    tracing::warn!("memory.postgres.embed_token_command: {err}");
+                }
+            }
+        }
+        let engine = SearchEngine::new(PoolDb::new(pool.clone()), engine_cfg)
+            .map_err(StoreError::Request)?;
+        Ok(Self {
             pool,
             owns_pool,
             user_id: None,
@@ -285,7 +453,7 @@ impl PostgresMemory {
             last_probe_ms: AtomicI64::new(0),
             last_connected: AtomicBool::new(false),
             last_bump_log_ms: AtomicI64::new(0),
-        }
+        })
     }
 
     pub fn with_user_id(mut self, user_id: impl Into<String>) -> Self {
@@ -322,77 +490,12 @@ impl PostgresMemory {
         crate::expand::Expander::new(self.engine.database().clone())
     }
 
-    fn apply_embed_env(&mut self) {
-        if let Ok(endpoint) = std::env::var("RIVETOS_EMBED_URL") {
-            self.engine.set_embed_endpoint(Some(endpoint));
-        }
-        if let Ok(model) = std::env::var("RIVETOS_EMBED_MODEL") {
-            self.engine.set_embed_model(model);
-        }
-        if let Ok(instruction) = std::env::var("RIVETOS_EMBED_QUERY_INSTRUCTION") {
-            self.engine
-                .edit_config(|cfg| cfg.embed_query_instruction = instruction);
-        }
-        if let Ok(raw) = std::env::var("RIVETOS_EMBED_TIMEOUT_MS") {
-            let timeout = clamp_embed_timeout_ms(&LooseNumber::Text(raw));
-            self.engine
-                .edit_config(|cfg| cfg.embed_timeout_ms = timeout);
-        }
-        if let Ok(raw) = std::env::var("RIVETOS_HNSW_EF_SEARCH") {
-            let ef = clamp_hnsw_ef_search(&LooseNumber::Text(raw));
-            self.engine.edit_config(|cfg| cfg.hnsw_ef_search = ef);
-        }
-        if let Ok(key) = std::env::var("RIVETOS_EMBED_API_KEY") {
-            self.engine.edit_config(|cfg| cfg.embed_api_key = key);
-        }
-        if let Ok(raw) = std::env::var("RIVETOS_EMBED_EXPECTED_DIMS")
-            && let Ok(dims) = raw.trim().parse::<usize>()
-        {
-            self.engine
-                .edit_config(|cfg| cfg.embed_expected_dims = Some(dims));
-        }
-        if let Ok(raw) = std::env::var("RIVETOS_EMBED_WIRE_SHAPE") {
-            match parse_embed_wire_shape(Some(&raw)) {
-                Ok(shape) => self.engine.edit_config(|cfg| cfg.embed_wire_shape = shape),
-                Err(err) => tracing::warn!("memory.postgres.embed_wire_shape: {err}"),
-            }
-        }
-        if let Ok(raw) = std::env::var("RIVETOS_EMBED_TOKEN_COMMAND") {
-            self.install_token_command(&raw);
-        }
+    pub fn tag_conn(&self) -> crate::tags::TagConn {
+        crate::tags::TagConn::from_pool(self.pool.clone())
     }
 
-    fn install_token_command(&self, raw: &str) {
-        let parsed = match serde_json::from_str::<Value>(raw) {
-            Ok(value) => parse_token_command_argv(Some(&value)),
-            Err(err) => {
-                tracing::warn!("memory.postgres embed_token_command: {err}");
-                return;
-            }
-        };
-        let argv = match parsed {
-            Ok(Some(argv)) => argv,
-            Ok(None) => return,
-            Err(err) => {
-                tracing::warn!("memory.postgres embed_token_command: {err}");
-                return;
-            }
-        };
-        let source = match TokenSource::new(argv, None, None, None, None) {
-            Ok(source) => source,
-            Err(err) => {
-                tracing::warn!("memory.postgres embed_token_command: {err}");
-                return;
-            }
-        };
-        let warmup = source.clone();
-        tokio::spawn(async move {
-            if let Err(err) = warmup.get_token().await {
-                tracing::warn!("memory.postgres embed_token_command mint failed: {err}");
-            }
-        });
-        self.engine
-            .edit_config(|cfg| cfg.embed_token_source = Some(source));
+    pub async fn memory_tags(&self, args: &Value, opts: &crate::tags::TagsToolOptions) -> String {
+        crate::tags::execute_tags_tool(&self.tag_conn(), args, opts).await
     }
 
     pub fn pool(&self) -> &PgPool {
@@ -1904,11 +2007,15 @@ impl MemoryStore for PostgresMemory {
                 name: "memory_ingest_session".to_string(),
                 description: "Ingest a session into RivetOS memory. Skips ordinals and event_ids already stored for that session. Content is capped at 16,000 chars; the elided tail is unrecoverable. Returns truncated+full_content_length when truncation occurs.".to_string(),
             },
+            ToolDescriptor {
+                name: "memory_tags".to_string(),
+                description: crate::tags::memory_tags_description(false),
+            },
         ]
     }
 
     async fn tags(&self) -> Result<(), StoreError> {
-        Err(StoreError::NotYetImplemented("tags"))
+        Ok(())
     }
 
     fn wiki(&self) -> Option<String> {
@@ -2580,4 +2687,121 @@ fn format_capture_spool(waiting: i64, oldest_ms: Option<i64>, dead: i64, now_ms:
         "\n  Dead-lettered batches exhausted replay; inspect ~/.rivetos/capture-spool/dead."
     };
     format!("\n**Capture spool:** ⚠️ {}{hint}", parts.join(", "))
+}
+
+#[cfg(test)]
+mod embed_resolve_tests {
+    use super::*;
+    use crate::embed_wire::EmbedWireShape;
+    use serde_json::json;
+
+    fn env_url(url: &str, model: Option<&str>) -> EmbedEnv {
+        EmbedEnv {
+            embed_url: Some(url.to_string()),
+            embed_model: model.map(str::to_string),
+            ..EmbedEnv::default()
+        }
+    }
+
+    #[test]
+    fn config_beats_env_and_empty_strings_do_not_fall_through() {
+        let cfg = MemoryEmbedConfig {
+            embed_endpoint: Some("http://cfg".into()),
+            embed_model: Some("cfg-model".into()),
+            embed_query_instruction: Some(String::new()),
+            embed_timeout_ms: Some(LooseNumber::Number(1500.0)),
+            hnsw_ef_search: Some(LooseNumber::Text("40".into())),
+            embed_api_key: Some("cfg-key".into()),
+            embed_token_command: Some(json!(["/bin/echo", "tok"])),
+            embed_token_ttl_ms: Some(10),
+            embed_token_command_timeout_ms: Some(20),
+            embed_wire_shape: Some("native".into()),
+            embed_expected_dims: Some(64),
+        };
+        let env = EmbedEnv {
+            embed_url: Some("http://env".into()),
+            embed_model: Some("env-model".into()),
+            embed_query_instruction: Some("env instruction".into()),
+            embed_timeout_ms: Some("9000".into()),
+            hnsw_ef_search: Some("80".into()),
+            embed_api_key: Some("env-key".into()),
+            embed_wire_shape: Some("openai".into()),
+        };
+        let resolved = resolve_memory_embed(&cfg, &env).expect("resolved");
+        assert_eq!(resolved.endpoint.as_deref(), Some("http://cfg"));
+        assert_eq!(resolved.model, "cfg-model");
+        assert_eq!(resolved.instruction.as_deref(), Some(""));
+        assert!(matches!(resolved.timeout, LooseNumber::Number(n) if n == 1500.0));
+        assert!(matches!(resolved.hnsw, LooseNumber::Text(text) if text == "40"));
+        assert_eq!(resolved.api_key, "cfg-key");
+        assert_eq!(
+            resolved.token_argv,
+            Some(vec!["/bin/echo".to_string(), "tok".to_string()])
+        );
+        assert_eq!(resolved.token_ttl, Some(10));
+        assert_eq!(resolved.token_timeout, Some(20));
+        assert!(matches!(resolved.wire, EmbedWireShape::Native));
+        assert_eq!(resolved.dims, Some(64));
+        assert!(resolved.warnings.is_empty());
+    }
+
+    #[test]
+    fn empty_model_blocks_env_and_empty_endpoint_does_not_throw() {
+        let blocked = MemoryEmbedConfig {
+            embed_endpoint: Some("http://cfg".into()),
+            embed_model: Some(String::new()),
+            ..MemoryEmbedConfig::default()
+        };
+        let err = resolve_memory_embed(&blocked, &env_url("http://env", Some("env-model")))
+            .err()
+            .expect("model");
+        assert_eq!(err, EMBED_MODEL_REQUIRED);
+        let quiet = MemoryEmbedConfig {
+            embed_endpoint: Some(String::new()),
+            ..MemoryEmbedConfig::default()
+        };
+        let resolved = resolve_memory_embed(&quiet, &env_url("http://env", None)).expect("quiet");
+        assert!(resolved.endpoint.is_none());
+        assert!(resolved.model.is_empty());
+    }
+
+    #[test]
+    fn absent_config_uses_env_and_a_missing_model_fails_closed() {
+        let err = resolve_memory_embed(&MemoryEmbedConfig::default(), &env_url("http://env", None))
+            .err()
+            .expect("env model");
+        assert_eq!(err, EMBED_MODEL_REQUIRED);
+        let resolved = resolve_memory_embed(
+            &MemoryEmbedConfig::default(),
+            &env_url("http://env", Some("env-model")),
+        )
+        .expect("env");
+        assert_eq!(resolved.endpoint.as_deref(), Some("http://env"));
+        assert_eq!(resolved.model, "env-model");
+        let bad_wire = EmbedEnv {
+            embed_wire_shape: Some("nope".into()),
+            ..EmbedEnv::default()
+        };
+        let resolved =
+            resolve_memory_embed(&MemoryEmbedConfig::default(), &bad_wire).expect("wire");
+        assert!(matches!(resolved.wire, EmbedWireShape::Openai));
+        assert!(
+            resolved
+                .warnings
+                .iter()
+                .any(|line| line.starts_with("memory.postgres.embed_wire_shape:"))
+        );
+        let bad_token = MemoryEmbedConfig {
+            embed_token_command: Some(json!("echo tok")),
+            ..MemoryEmbedConfig::default()
+        };
+        let resolved = resolve_memory_embed(&bad_token, &EmbedEnv::default()).expect("token");
+        assert!(resolved.token_argv.is_none());
+        assert!(
+            resolved
+                .warnings
+                .iter()
+                .any(|line| line.starts_with("memory.postgres.embed_token_command:"))
+        );
+    }
 }

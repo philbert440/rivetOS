@@ -221,6 +221,7 @@ fn engine(db: FakeDb, endpoint: Option<&str>, model: &str) -> SearchEngine<FakeD
             ..EngineConfig::default()
         },
     )
+    .expect("engine")
 }
 
 fn opts(mode: &str) -> EngineOptions {
@@ -407,9 +408,20 @@ async fn literal_hybrid_runs_trigram_and_hyphen_falls_back() {
 }
 
 #[tokio::test]
-async fn model_is_required_only_when_searching_and_health_says_not_configured() {
-    let db = FakeDb::new();
-    let engine = engine(db, Some("http://embed.test"), "");
+async fn missing_embed_model_fails_at_construction_and_after_a_later_clear() {
+    let err = SearchEngine::new(
+        FakeDb::new(),
+        EngineConfig {
+            embed_endpoint: Some("http://embed.test".to_string()),
+            embed_model: String::new(),
+            ..EngineConfig::default()
+        },
+    )
+    .err()
+    .expect("model");
+    assert!(err.contains("embedModel is required when embedEndpoint is set"));
+    let engine = engine(FakeDb::new(), Some("http://embed.test"), "m");
+    engine.set_embed_model("");
     let err = engine
         .search("q", &opts("fts"))
         .await
@@ -443,7 +455,8 @@ async fn query_cache_is_separate_from_the_health_probe() {
             clock: Some(Arc::new(move || *clock_now.lock())),
             ..EngineConfig::default()
         },
-    );
+    )
+    .expect("engine");
     let (calls, fetch) = counting_fetch(200, "{\"data\":[{\"embedding\":[0.25,0.5],\"index\":0}]}");
     engine.set_fetch(fetch);
     let first = engine.check_embedding_health().await;
@@ -481,7 +494,8 @@ async fn vector_arm_drop_buckets_decay_and_warn_is_throttled() {
             warn: Some(Arc::new(move |line| warn_log.lock().push(line.to_string()))),
             ..EngineConfig::default()
         },
-    );
+    )
+    .expect("engine");
     let (_calls, fetch) = counting_fetch(500, "");
     engine.set_fetch(fetch);
     for _ in 0..3 {
@@ -489,6 +503,9 @@ async fn vector_arm_drop_buckets_decay_and_warn_is_throttled() {
     }
     assert_eq!(engine.runtime_stats().vector_arm_dropped, 3);
     assert_eq!(engine.runtime_stats().vector_arm_dropped_last_hour, 3);
+    *now.lock() -= 30 * 60_000;
+    assert_eq!(engine.runtime_stats().vector_arm_dropped_last_hour, 3);
+    *now.lock() += 30 * 60_000;
     *now.lock() += 60_000;
     let _ = engine.search("hello", &opts("vector")).await.expect("drop");
     assert!(warns.lock().len() >= 2);
@@ -564,7 +581,8 @@ async fn chunk_probe_failure_is_sticky_and_bump_errors_do_not_fail_search() {
             warn: Some(Arc::new(move |line| warn_log.lock().push(line.to_string()))),
             ..EngineConfig::default()
         },
-    );
+    )
+    .expect("engine");
     let (_calls, fetch) = counting_fetch(200, "{\"data\":[{\"embedding\":[0.2],\"index\":0}]}");
     engine.set_fetch(fetch);
     let result = engine
@@ -695,7 +713,8 @@ async fn local_embed_server_accepts_openai_and_times_out() {
             embed_timeout_ms: LooseNumber::Number(500.0),
             ..EngineConfig::default()
         },
-    );
+    )
+    .expect("engine");
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(3),
         engine.search("hello", &opts("fts")),

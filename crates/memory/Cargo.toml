@@ -19,7 +19,7 @@ serde_json.workspace = true
 sha2 = "0.10"
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json"] }
 thiserror.workspace = true
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync", "net", "io-util"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync", "net", "io-util", "process"] }
 tracing = "0.1"
 unicode-normalization = "0.1"
 uuid = { version = "1", features = ["serde"] }

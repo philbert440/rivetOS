@@ -1,7 +1,6 @@
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
-use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -194,38 +193,105 @@ impl TokenSource {
 }
 
 fn default_runner() -> CommandRunner {
-    Arc::new(|argv, timeout_ms| {
-        Box::pin(async move {
-            let timeout = Duration::from_millis(timeout_ms.max(0) as u64);
-            let joined =
-                tokio::time::timeout(timeout, tokio::task::spawn_blocking(move || run_argv(argv)))
-                    .await;
-            match joined {
-                Err(_) => Err(format!("timed out after {timeout_ms} ms")),
-                Ok(Ok(result)) => result,
-                Ok(Err(err)) => Err(err.to_string()),
-            }
-        })
-    })
+    Arc::new(|argv, timeout_ms| Box::pin(run_token_command(argv, timeout_ms)))
 }
 
-fn run_argv(argv: Vec<String>) -> Result<String, String> {
-    let Some(bin) = argv.first() else {
+fn spawn_fail(err: std::io::Error) -> String {
+    let code = match err.kind() {
+        std::io::ErrorKind::NotFound => "ENOENT",
+        std::io::ErrorKind::PermissionDenied => "EACCES",
+        _ => "error",
+    };
+    format!("token_command failed (exit {code})")
+}
+
+async fn run_token_command(argv: Vec<String>, timeout_ms: i64) -> Result<String, String> {
+    let Some(bin) = argv.first().filter(|bin| !bin.is_empty()) else {
         return Err("token_command argv is empty".to_string());
     };
-    let output = Command::new(bin)
-        .args(argv.iter().skip(1))
-        .output()
-        .map_err(|err| err.to_string())?;
-    if !output.status.success() {
-        return Err(format!("token_command exited {}", output.status));
-    }
-    let bytes = if output.stdout.len() > TOKEN_COMMAND_MAX_BUFFER {
-        &output.stdout[..TOKEN_COMMAND_MAX_BUFFER]
-    } else {
-        &output.stdout
+    let budget = Duration::from_millis(timeout_ms.max(0) as u64);
+    let deadline = tokio::time::Instant::now() + budget;
+    let bin = bin.clone();
+    let args: Vec<String> = argv.iter().skip(1).cloned().collect();
+    let spawned = tokio::time::timeout_at(deadline, async move {
+        tokio::process::Command::new(bin)
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+    })
+    .await;
+    let mut child = match spawned {
+        Err(_) => return Err(format!("token_command timed out after {timeout_ms} ms")),
+        Ok(Err(err)) => return Err(spawn_fail(err)),
+        Ok(Ok(child)) => child,
     };
-    String::from_utf8(bytes.to_vec()).map_err(|err| err.to_string())
+    let mut stdout = match child.stdout.take() {
+        Some(stdout) => stdout,
+        None => {
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+            return Err("token_command failed (exit error)".to_string());
+        }
+    };
+    let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+    let read_result = tokio::select! {
+        biased;
+        result = read_capped(&mut stdout, TOKEN_COMMAND_MAX_BUFFER) => Some(result),
+        _ = tokio::time::sleep(remaining) => None,
+    };
+    drop(stdout);
+    match read_result {
+        None => {
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+            Err(format!("token_command timed out after {timeout_ms} ms"))
+        }
+        Some(Err(())) => {
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+            Err("token_command failed (exit ERR_CHILD_PROCESS_STDIO_MAXBUFFER)".to_string())
+        }
+        Some(Ok(bytes)) => {
+            let status = match child.wait().await {
+                Ok(status) => status,
+                Err(_) => return Err("token_command failed (exit error)".to_string()),
+            };
+            finish_token(bytes, status)
+        }
+    }
+}
+
+async fn read_capped(
+    stdout: &mut tokio::process::ChildStdout,
+    limit: usize,
+) -> Result<Vec<u8>, ()> {
+    use tokio::io::AsyncReadExt;
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 8192];
+    loop {
+        let n = stdout.read(&mut chunk).await.map_err(|_| ())?;
+        if n == 0 {
+            return Ok(buf);
+        }
+        if n > limit.saturating_sub(buf.len()) {
+            return Err(());
+        }
+        buf.extend_from_slice(&chunk[..n]);
+    }
+}
+
+fn finish_token(bytes: Vec<u8>, status: std::process::ExitStatus) -> Result<String, String> {
+    if !status.success() {
+        let code = status
+            .code()
+            .map(|code| code.to_string())
+            .unwrap_or_else(|| "error".to_string());
+        return Err(format!("token_command failed (exit {code})"));
+    }
+    String::from_utf8(bytes).map_err(|err| err.to_string())
 }
 
 pub struct AuthorizedFetch {
@@ -510,5 +576,70 @@ mod tests {
         assert_eq!(status, 200);
         assert_eq!(src.get_cached_token().as_deref(), Some("tok-2"));
         assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn default_runner_trims_kills_and_bounds() {
+        let minted = TokenSource::new(
+            vec!["/bin/echo".into(), "sekret".into()],
+            None,
+            Some(2_000),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(minted.get_token().await.unwrap(), "sekret");
+        let failed =
+            TokenSource::new(vec!["/bin/false".into()], None, Some(2_000), None, None).unwrap();
+        assert_eq!(
+            failed.get_token().await.unwrap_err(),
+            "token_command failed (exit 1)"
+        );
+        let missing = TokenSource::new(
+            vec!["/bin/no-such-token-helper".into()],
+            None,
+            Some(2_000),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            missing.get_token().await.unwrap_err(),
+            "token_command failed (exit ENOENT)"
+        );
+        let slow = TokenSource::new(
+            vec!["/bin/sleep".into(), "30".into()],
+            None,
+            Some(300),
+            None,
+            None,
+        )
+        .unwrap();
+        let err = tokio::time::timeout(Duration::from_secs(3), slow.get_token())
+            .await
+            .expect("runner returned")
+            .expect_err("timeout");
+        assert_eq!(err, "token_command timed out after 300 ms");
+        let huge = TokenSource::new(
+            vec![
+                "/bin/dd".into(),
+                "if=/dev/zero".into(),
+                "bs=1024".into(),
+                "count=128".into(),
+            ],
+            None,
+            Some(2_000),
+            None,
+            None,
+        )
+        .unwrap();
+        let err = tokio::time::timeout(Duration::from_secs(3), huge.get_token())
+            .await
+            .expect("runner returned")
+            .expect_err("overflow");
+        assert_eq!(
+            err,
+            "token_command failed (exit ERR_CHILD_PROCESS_STDIO_MAXBUFFER)"
+        );
     }
 }

@@ -321,7 +321,6 @@ fn fuse_wiki(lists: [Vec<WikiRow>; 3]) -> Vec<WikiRow> {
             .0
             .partial_cmp(&left.0)
             .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| left.1.slug.cmp(&right.1.slug))
     });
     fused.into_iter().map(|(_, row)| row).collect()
 }
@@ -422,5 +421,22 @@ mod tests {
             0,
         );
         assert_eq!(wiki_only, "\n## Wiki (curated state)");
+    }
+
+    #[test]
+    fn wiki_ties_keep_insertion_order() {
+        let row = |slug: &str| WikiRow {
+            slug: slug.to_string(),
+            title: slug.to_string(),
+            current_state: String::new(),
+            article: String::new(),
+        };
+        let fused = fuse_wiki([
+            vec![row("zeta"), row("yankee")],
+            vec![row("alpha"), row("bravo")],
+            vec![],
+        ]);
+        let slugs: Vec<&str> = fused.iter().map(|item| item.slug.as_str()).collect();
+        assert_eq!(slugs, ["zeta", "alpha", "yankee", "bravo"]);
     }
 }
