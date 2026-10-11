@@ -21,8 +21,8 @@ pub use den_url::{
 pub use env::{EnvLookup, MapEnv, ProcessEnv, trimmed};
 pub use error::{CaptureError, ReplayReport, WriteOutcome};
 pub use event_id::{
-    EventIdParts, OccurrenceKey, content_tuple_hash, event_id_from_content, occurrence_index,
-    sha256_hex,
+    EventIdParts, OccurrenceCounts, OccurrenceKey, content_tuple_hash, event_id_from_content,
+    occurrence_index, sha256_hex,
 };
 pub use helpers::{
     CONTENT_LIMIT, CappedText, as_string, cap_field, cap_for_storage, is_record, json_utf8_len,

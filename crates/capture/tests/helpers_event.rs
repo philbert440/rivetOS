@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 
 use capture::{
-    CONTENT_LIMIT, EventIdParts, OccurrenceKey, as_string, cap_for_storage, content_tuple_hash,
-    event_id_from_content, is_record, iso_from_unix_ms, load_env_file, occurrence_index, safe_json,
-    sha256_hex,
+    CONTENT_LIMIT, EventIdParts, OccurrenceCounts, OccurrenceKey, as_string, cap_for_storage,
+    content_tuple_hash, event_id_from_content, is_record, iso_from_unix_ms, load_env_file,
+    occurrence_index, safe_json, sha256_hex,
 };
 use serde_json::{Value, json};
 
@@ -201,4 +201,32 @@ fn occurrence_index_counts_the_inclusive_prefix() {
         0
     );
     assert_eq!(occurrence_index(&[tool.clone(), tool.clone()], &tool), 1);
+}
+
+#[test]
+fn occurrence_counts_match_each_inclusive_prefix() {
+    let tool = OccurrenceKey {
+        role: "tool".to_string(),
+        content: "[tool call] Bash".to_string(),
+        tool_name: Some("Bash".to_string()),
+        tool_args: Some(protocol::js::from_serde(
+            &json!({"command": "ls", "timeout": 1}),
+        )),
+    };
+    let mut other = tool.clone();
+    other.tool_args = Some(protocol::js::from_serde(&json!({"command": "pwd"})));
+    let rows = [
+        row("assistant", "same"),
+        row("assistant", "same"),
+        tool.clone(),
+        other,
+        tool.clone(),
+        row("user", "go"),
+    ];
+    let mut counts = OccurrenceCounts::default();
+    for (index, key) in rows.iter().enumerate() {
+        let (n, tuple) = counts.next(key);
+        assert_eq!(n, occurrence_index(&rows[..=index], key));
+        assert_eq!(sha256_hex(&tuple), content_tuple_hash(key));
+    }
 }

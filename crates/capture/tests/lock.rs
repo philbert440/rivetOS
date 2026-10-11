@@ -908,23 +908,21 @@ fn stalled_unlink_lets_the_runtime_progress() {
 fn cancelled_cleanup_still_unlinks_the_holder() {
     let lock_dir = lock_path();
     let calls = Arc::new(AtomicUsize::new(0));
+    let entered = Arc::new(AtomicBool::new(false));
     let gate = Arc::new((Mutex::new(false), Condvar::new()));
     let calls_hook = calls.clone();
+    let entered_hook = entered.clone();
     let gate_hook = gate.clone();
     let mut options = opts(1_000, 20);
     options.publish_fault = Some(Arc::new(AtomicBool::new(true)));
     options.unlink_hook = Some(Arc::new(move || {
         let seen = calls_hook.fetch_add(1, Ordering::SeqCst);
         if seen == 0 {
+            entered_hook.store(true, Ordering::SeqCst);
             let (lock, cv) = &*gate_hook;
             let mut guard = lock.lock().unwrap();
-            let start = Instant::now();
-            while !*guard && start.elapsed() < Duration::from_secs(3) {
-                let (next, wait) = cv.wait_timeout(guard, Duration::from_secs(3)).unwrap();
-                guard = next;
-                if wait.timed_out() {
-                    break;
-                }
+            while !*guard {
+                guard = cv.wait(guard).unwrap();
             }
         }
     }));
@@ -933,26 +931,35 @@ fn cancelled_cleanup_still_unlinks_the_holder() {
         .build()
         .unwrap();
     let calls_wait = calls.clone();
+    let entered_wait = entered.clone();
     let gate_release = gate.clone();
+    let lock_probe = lock_dir.clone();
     runtime.block_on(async move {
         let task = tokio::spawn(async move {
             let _ = with_file_lock(lock_dir, options, || async {}).await;
         });
         let start = Instant::now();
-        while calls_wait.load(Ordering::SeqCst) == 0 {
+        while !entered_wait.load(Ordering::SeqCst) {
             if start.elapsed() > Duration::from_secs(2) {
                 break;
             }
             tokio::task::yield_now().await;
         }
+        let stalled = entered_wait.load(Ordering::SeqCst);
         task.abort();
-        let _ = task.await;
+        let joined = task.await;
         {
             let (lock, cv) = &*gate_release;
             let mut guard = lock.lock().unwrap();
             *guard = true;
             cv.notify_all();
         }
+        assert!(stalled);
+        assert!(
+            joined
+                .expect_err("lock task finished before abort")
+                .is_cancelled()
+        );
         let start = Instant::now();
         while calls_wait.load(Ordering::SeqCst) < 2 {
             if start.elapsed() > Duration::from_secs(2) {
@@ -960,6 +967,13 @@ fn cancelled_cleanup_still_unlinks_the_holder() {
             }
             tokio::task::yield_now().await;
         }
+        assert_eq!(calls_wait.load(Ordering::SeqCst), 2);
+        let names = std::fs::read_dir(&lock_probe)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with("holder.") || name.starts_with(".holderpub."))
+            .collect::<Vec<_>>();
+        assert!(names.is_empty(), "{names:?}");
     });
-    assert_eq!(calls.load(Ordering::SeqCst), 2);
 }

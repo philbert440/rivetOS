@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use protocol::js::JsValue;
 use sha2::{Digest, Sha256};
 
@@ -62,34 +64,41 @@ pub fn event_id_from_content(parts: &EventIdParts) -> String {
     sha256_hex(&join_fields(&fields))
 }
 
-pub fn content_tuple_hash(parts: &OccurrenceKey) -> String {
-    let fields = tuple_fields(
+fn content_tuple(parts: &OccurrenceKey) -> String {
+    join_fields(&tuple_fields(
         &parts.role,
         &parts.content,
         parts.tool_name.as_deref(),
         parts.tool_args.as_ref(),
-    );
-    sha256_hex(&join_fields(&fields))
+    ))
+}
+
+pub fn content_tuple_hash(parts: &OccurrenceKey) -> String {
+    sha256_hex(&content_tuple(parts))
 }
 
 pub fn occurrence_index(rows: &[OccurrenceKey], key: &OccurrenceKey) -> u64 {
-    let want = join_fields(&tuple_fields(
-        &key.role,
-        &key.content,
-        key.tool_name.as_deref(),
-        key.tool_args.as_ref(),
-    ));
+    let want = content_tuple(key);
     let mut count = 0u64;
     for row in rows {
-        let have = join_fields(&tuple_fields(
-            &row.role,
-            &row.content,
-            row.tool_name.as_deref(),
-            row.tool_args.as_ref(),
-        ));
-        if have == want {
+        if content_tuple(row) == want {
             count += 1;
         }
     }
     if count == 0 { 0 } else { count - 1 }
+}
+
+#[derive(Debug, Default)]
+pub struct OccurrenceCounts {
+    seen: HashMap<String, u64>,
+}
+
+impl OccurrenceCounts {
+    pub fn next(&mut self, key: &OccurrenceKey) -> (u64, String) {
+        let tuple = content_tuple(key);
+        let seen = self.seen.entry(tuple.clone()).or_insert(0);
+        let index = *seen;
+        *seen += 1;
+        (index, tuple)
+    }
 }

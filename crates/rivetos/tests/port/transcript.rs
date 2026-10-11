@@ -1205,3 +1205,221 @@ fn jsonl_trim_matches_javascript_whitespace() {
     .unwrap();
     assert!(parse_transcript(&skipped).unwrap().msgs.is_empty());
 }
+
+#[tokio::test]
+async fn post_tool_use_keeps_an_array_response() {
+    let harness = common::DenHarness::new();
+    let mut opts = HookEventOptions::new(serde_json::json!({
+        "hook_event_name": "PostToolUse",
+        "session_id": "sess-1",
+        "tool_name": "Bash",
+        "tool_input": {"command": "ls"},
+        "tool_response": [{"type": "text", "text": "hello"}, "x"]
+    }));
+    opts.idempotency_key = Some("array-response".to_string());
+    opts.poll_for_ms = Some(0);
+    ingest_hook_event(attach_hook(&harness, opts))
+        .await
+        .unwrap();
+    let posted = harness.body(0);
+    assert_eq!(
+        posted["messages"][0]["tool_result"],
+        "[{\"type\":\"text\",\"text\":\"hello\"},\"x\"]"
+    );
+
+    let mut empty = HookEventOptions::new(serde_json::json!({
+        "hook_event_name": "PostToolUse",
+        "session_id": "sess-1",
+        "tool_name": "Bash",
+        "tool_response": []
+    }));
+    empty.idempotency_key = Some("empty-array".to_string());
+    empty.poll_for_ms = Some(0);
+    ingest_hook_event(attach_hook(&harness, empty))
+        .await
+        .unwrap();
+    assert_eq!(harness.body(1)["messages"][0]["tool_result"], "[]");
+}
+
+#[tokio::test]
+async fn tool_result_without_content_is_omitted() {
+    let harness = common::DenHarness::new();
+    let file = common::write_jsonl(
+        harness.dir.path(),
+        "sess.jsonl",
+        &[
+            serde_json::json!({
+                "type": "assistant",
+                "sessionId": "sess-1",
+                "uuid": "a1",
+                "message": {
+                    "role": "assistant",
+                    "content": [{
+                        "type": "tool_use",
+                        "id": "toolu_1",
+                        "name": "Bash",
+                        "input": {"command": "ls"}
+                    }]
+                }
+            }),
+            serde_json::json!({
+                "type": "user",
+                "sessionId": "sess-1",
+                "uuid": "u1",
+                "message": {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "prompt-should-stay"},
+                        {"type": "tool_result", "tool_use_id": "toolu_1"}
+                    ]
+                }
+            }),
+            serde_json::json!({
+                "type": "assistant",
+                "sessionId": "sess-1",
+                "uuid": "a2",
+                "message": {
+                    "role": "assistant",
+                    "content": [{
+                        "type": "tool_use",
+                        "id": "toolu_2",
+                        "name": "Bash",
+                        "input": {"command": "pwd"}
+                    }]
+                }
+            }),
+            serde_json::json!({
+                "type": "user",
+                "sessionId": "sess-1",
+                "uuid": "u2",
+                "message": {
+                    "role": "user",
+                    "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_2",
+                        "content": null
+                    }]
+                }
+            }),
+            serde_json::json!({
+                "type": "assistant",
+                "sessionId": "sess-1",
+                "uuid": "a3",
+                "message": {
+                    "role": "assistant",
+                    "content": [{
+                        "type": "tool_use",
+                        "id": "toolu_3",
+                        "name": "Read",
+                        "input": {"file_path": "a"}
+                    }]
+                }
+            }),
+            serde_json::json!({
+                "type": "user",
+                "sessionId": "sess-1",
+                "uuid": "u3",
+                "message": {
+                    "role": "user",
+                    "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_3",
+                        "content": [{"type": "text", "text": "hello"}, "x"]
+                    }]
+                }
+            }),
+            serde_json::json!({
+                "type": "assistant",
+                "sessionId": "sess-1",
+                "uuid": "a4",
+                "message": {
+                    "role": "assistant",
+                    "content": [{
+                        "type": "tool_use",
+                        "id": "toolu_4",
+                        "name": "Bash",
+                        "input": {"command": "true"}
+                    }]
+                }
+            }),
+            serde_json::json!({
+                "type": "user",
+                "sessionId": "sess-1",
+                "uuid": "u4",
+                "message": {
+                    "role": "user",
+                    "content": [
+                        {"type": "tool_result", "tool_use_id": "toolu_4", "content": "first"},
+                        {"type": "tool_result", "tool_use_id": "toolu_4"}
+                    ]
+                }
+            }),
+        ],
+    );
+    ingest_transcript(attach(&harness, IngestOptions::new(&file)))
+        .await
+        .unwrap();
+    let body = harness.body(0);
+    let messages = common::msgs(&body);
+    let tool = |id: &str| {
+        messages
+            .iter()
+            .find(|message| message["event_id"] == format!("claude-code:sess-1:tool:{id}"))
+            .unwrap()
+    };
+    assert!(tool("toolu_1").get("tool_result").is_none());
+    assert_eq!(tool("toolu_2")["tool_result"], "null");
+    assert_eq!(tool("toolu_3")["tool_result"], "hello\nx");
+    assert!(tool("toolu_4").get("tool_result").is_none());
+    assert!(
+        messages
+            .iter()
+            .all(|message| message["content"] != "prompt-should-stay")
+    );
+}
+
+#[tokio::test]
+async fn missing_session_id_is_omitted() {
+    let harness = common::DenHarness::new();
+    let mut missing = HookEventOptions::new(serde_json::json!({
+        "hook_event_name": "UserPromptSubmit",
+        "prompt": "hello",
+        "transcript_path": "/tmp/claude/projects/demo/sess-1.jsonl"
+    }));
+    missing.session_key_override = Some("override-key".to_string());
+    missing.idempotency_key = Some("no-session".to_string());
+    missing.poll_for_ms = Some(0);
+    ingest_hook_event(attach_hook(&harness, missing))
+        .await
+        .unwrap();
+    let posted = harness.body(0);
+    assert_eq!(posted["session_key"], "override-key");
+    assert!(posted["settings"].get("session_id").is_none());
+
+    let mut null_id = HookEventOptions::new(serde_json::json!({
+        "hook_event_name": "UserPromptSubmit",
+        "session_id": null,
+        "prompt": "hello"
+    }));
+    null_id.session_key_override = Some("override-key".to_string());
+    null_id.idempotency_key = Some("null-session".to_string());
+    null_id.poll_for_ms = Some(0);
+    ingest_hook_event(attach_hook(&harness, null_id))
+        .await
+        .unwrap();
+    assert!(harness.body(1)["settings"]["session_id"].is_null());
+
+    let mut number_id = HookEventOptions::new(serde_json::json!({
+        "hook_event_name": "UserPromptSubmit",
+        "session_id": 7,
+        "prompt": "hello"
+    }));
+    number_id.session_key_override = Some("override-key".to_string());
+    number_id.idempotency_key = Some("number-session".to_string());
+    number_id.poll_for_ms = Some(0);
+    ingest_hook_event(attach_hook(&harness, number_id))
+        .await
+        .unwrap();
+    let raw = harness.bodies.lock().unwrap()[2].clone();
+    assert!(raw.contains("\"session_id\":7"), "{raw}");
+}

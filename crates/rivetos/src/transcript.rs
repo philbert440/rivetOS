@@ -6,9 +6,9 @@ use std::time::{Duration, Instant};
 
 use capture::{
     CaptureError, CaptureRole, CaptureTransport, CaptureUser, CaptureWriterOptions, EventIdParts,
-    HttpExchange, OccurrenceKey, ProcessEnv, UserSource, WriteOutcome, content_tuple_hash,
-    create_capture_writer, event_id_from_content, occurrence_index, resolve_capture_transport,
-    resolve_den_url,
+    HttpExchange, OccurrenceCounts, OccurrenceKey, ProcessEnv, UserSource, WriteOutcome,
+    content_tuple_hash, create_capture_writer, event_id_from_content, resolve_capture_transport,
+    resolve_den_url, sha256_hex,
 };
 use protocol::js::{JsObject, JsString, JsValue};
 use serde_json::Value;
@@ -221,10 +221,10 @@ struct ToolCall {
     line_index: usize,
 }
 
-enum CapturedSlot {
-    Assistant(usize),
-    Tool(usize),
-    User(usize),
+enum CapturedSlot<'a> {
+    Assistant(&'a ParsedMessage),
+    Tool(&'a ToolUse),
+    User(&'a ParsedMessage),
 }
 
 pub fn session_key_from_id(session_id: &str) -> String {
@@ -410,7 +410,11 @@ pub async fn resolve_hook_event_id(opts: &HookEventOptions) -> ResolvedHookId {
         && let Some(key) = &key
     {
         return ResolvedHookId {
-            event_id: JsString::from_text(&occ_event_id(session_part.to_utf8(), key, 0)),
+            event_id: JsString::from_text(&occ_event_id(
+                session_part.to_utf8(),
+                &content_tuple_hash(key),
+                0,
+            )),
             hook_only: false,
         };
     }
@@ -700,10 +704,12 @@ pub async fn ingest_hook_event(opts: HookEventOptions) -> Result<HookEventResult
             insert_herdr(&mut metadata, opts.herdr.as_ref());
             let mut settings = JsObject::new();
             insert_text(&mut settings, "source", "claude-code-hook");
-            match js_field(&opts.payload, "session_id") {
-                Some(text) => insert_units(&mut settings, "session_id", text),
-                None => {
-                    settings.insert(js_key("session_id"), JsValue::Null);
+            if let Some(value) = opts.payload.get("session_id") {
+                match value {
+                    JsValue::String(text) => insert_units(&mut settings, "session_id", text),
+                    other => {
+                        settings.insert(js_key("session_id"), other.clone());
+                    }
                 }
             }
             if let Some(cwd) = js_field(&opts.payload, "cwd")
@@ -773,7 +779,7 @@ pub async fn ingest_hook_event(opts: HookEventOptions) -> Result<HookEventResult
 
 fn parse_transcript_text(file: &Path, text: &str) -> ParsedTranscript {
     let lines: Vec<&str> = text.split('\n').collect();
-    let mut result_by_id = HashMap::<Vec<u16>, JsString>::new();
+    let mut result_by_id = HashMap::<Vec<u16>, Option<JsString>>::new();
     let mut result_line_by_id = HashMap::<Vec<u16>, usize>::new();
     for (index, line) in lines.iter().enumerate() {
         let Some(object) = parse_object(line) else {
@@ -800,10 +806,7 @@ fn parse_transcript_text(file: &Path, text: &str) -> ParsedTranscript {
             if id.units().is_empty() {
                 continue;
             }
-            let rendered = block
-                .get("content")
-                .map(stringify_result_units)
-                .unwrap_or_else(|| JsString::from_text("null"));
+            let rendered = render_block_content(block.get("content"));
             let key = id.units().to_vec();
             result_by_id.insert(key.clone(), rendered);
             result_line_by_id.entry(key).or_insert(index);
@@ -905,10 +908,11 @@ fn parse_transcript_text(file: &Path, text: &str) -> ParsedTranscript {
                         tools.push(ToolUse {
                             name: name.to_utf8().to_string(),
                             input: block.get("input").filter(|value| !value.is_null()).cloned(),
-                            result: id_key
-                                .as_ref()
-                                .and_then(|id| result_by_id.get(id))
-                                .map(|value| value.to_utf8().to_string()),
+                            result: id_key.as_ref().and_then(|id| {
+                                result_by_id.get(id).and_then(|value| {
+                                    value.as_ref().map(|text| text.to_utf8().to_string())
+                                })
+                            }),
                             result_line: id_key
                                 .as_ref()
                                 .and_then(|id| result_line_by_id.get(id).copied()),
@@ -917,15 +921,13 @@ fn parse_transcript_text(file: &Path, text: &str) -> ParsedTranscript {
                             id_units: id,
                             result_units: id_key
                                 .as_ref()
-                                .and_then(|id| result_by_id.get(id).cloned()),
+                                .and_then(|id| result_by_id.get(id).cloned().flatten()),
                         });
                     }
                     Some("tool_result") => {
                         result_parts.push(
-                            block
-                                .get("content")
-                                .map(stringify_result_units)
-                                .unwrap_or_else(|| JsString::from_text("null")),
+                            render_block_content(block.get("content"))
+                                .unwrap_or_else(|| JsString::from_text("")),
                         );
                     }
                     _ => {}
@@ -951,11 +953,17 @@ fn parse_transcript_text(file: &Path, text: &str) -> ParsedTranscript {
         } else {
             (None, None)
         };
-        if text_units.to_utf8().is_empty() && tool_result_units.is_none() {
+        let tool_result_blank = match &tool_result_units {
+            None => true,
+            Some(value) => value.to_utf8().is_empty(),
+        };
+        if text_units.to_utf8().is_empty() && tool_result_blank {
             continue;
         }
         if text_units.to_utf8().is_empty()
-            && let Some(result) = &tool_result_units
+            && let Some(result) = tool_result_units
+                .as_ref()
+                .filter(|value| !value.to_utf8().is_empty())
         {
             text_units = result.clone();
         }
@@ -1010,15 +1018,16 @@ fn parse_object(line: &str) -> Option<JsValue> {
     Some(value)
 }
 
-fn stringify_result_units(value: &JsValue) -> JsString {
+fn render_block_content(value: Option<&JsValue>) -> Option<JsString> {
+    let value = value?;
     if let Some(items) = value.as_array() {
         let parts = items.iter().map(array_item_units).collect::<Vec<_>>();
-        return join_units(&parts, u16::from(b'\n'));
+        return Some(join_units(&parts, u16::from(b'\n')));
     }
     if let Some(text) = value.as_js_string() {
-        return text.clone();
+        return Some(text.clone());
     }
-    JsString::from_text(&protocol::js::stringify(value))
+    Some(JsString::from_text(&protocol::js::stringify(value)))
 }
 
 fn array_item_units(item: &JsValue) -> JsString {
@@ -1034,8 +1043,10 @@ fn array_item_units(item: &JsValue) -> JsString {
 fn stringify_result(value: &JsValue) -> Option<JsString> {
     if value.is_null() {
         None
+    } else if let Some(text) = value.as_js_string() {
+        Some(text.clone())
     } else {
-        Some(stringify_result_units(value))
+        Some(JsString::from_text(&protocol::js::stringify(value)))
     }
 }
 
@@ -1172,35 +1183,26 @@ fn occurrence_key_tool(name: &str, input: Option<&JsValue>) -> OccurrenceKey {
     }
 }
 
-fn for_each_captured(
-    parsed: &ParsedTranscript,
-    mut visit: impl FnMut(&OccurrenceKey, u64, CapturedSlot),
+fn for_each_captured<'a>(
+    parsed: &'a ParsedTranscript,
+    mut visit: impl FnMut(u64, &str, CapturedSlot<'a>),
 ) {
-    let mut rows = Vec::new();
-    let mut assistant_at = 0usize;
-    let mut tool_at = 0usize;
-    let mut user_at = 0usize;
+    let mut counts = OccurrenceCounts::default();
     for message in &parsed.msgs {
         if is_text_assistant(message) {
             let key = occurrence_key_assistant(&message.content);
-            rows.push(key.clone());
-            let n = occurrence_index(&rows, &key);
-            visit(&key, n, CapturedSlot::Assistant(assistant_at));
-            assistant_at += 1;
+            let (n, tuple) = counts.next(&key);
+            visit(n, &tuple, CapturedSlot::Assistant(message));
         }
         for tool in &message.tools {
             let key = occurrence_key_tool(&tool.name, tool.input.as_ref());
-            rows.push(key.clone());
-            let n = occurrence_index(&rows, &key);
-            visit(&key, n, CapturedSlot::Tool(tool_at));
-            tool_at += 1;
+            let (n, tuple) = counts.next(&key);
+            visit(n, &tuple, CapturedSlot::Tool(tool));
         }
         if is_prompt_user(message) {
             let key = occurrence_key_user(&message.content);
-            rows.push(key.clone());
-            let n = occurrence_index(&rows, &key);
-            visit(&key, n, CapturedSlot::User(user_at));
-            user_at += 1;
+            let (n, tuple) = counts.next(&key);
+            visit(n, &tuple, CapturedSlot::User(message));
         }
     }
 }
@@ -1217,34 +1219,31 @@ fn den_event_ids(parsed: &ParsedTranscript, session_part: &JsString) -> DenIds {
         tool: Vec::new(),
         user: Vec::new(),
     };
-    for_each_captured(parsed, |key, n, slot| match slot {
-        CapturedSlot::Assistant(index) => {
-            let message = assistant_message(parsed, index);
+    for_each_captured(parsed, |n, tuple, slot| match slot {
+        CapturedSlot::Assistant(message) => {
             ids.assistant.push(native_event_id(
                 session_part,
                 ":",
-                message.and_then(|item| item.uuid_units.as_ref()),
-                key,
+                message.uuid_units.as_ref(),
+                tuple,
                 n,
             ));
         }
-        CapturedSlot::Tool(index) => {
-            let tool = tool_at(parsed, index);
+        CapturedSlot::Tool(tool) => {
             ids.tool.push(native_event_id(
                 session_part,
                 ":tool:",
-                tool.and_then(|item| item.id_units.as_ref()),
-                key,
+                tool.id_units.as_ref(),
+                tuple,
                 n,
             ));
         }
-        CapturedSlot::User(index) => {
-            let message = user_message(parsed, index);
+        CapturedSlot::User(message) => {
             ids.user.push(native_event_id(
                 session_part,
                 ":",
-                message.and_then(|item| item.uuid_units.as_ref()),
-                key,
+                message.uuid_units.as_ref(),
+                tuple,
                 n,
             ));
         }
@@ -1256,11 +1255,11 @@ fn native_event_id(
     session_part: &JsString,
     marker: &str,
     id: Option<&JsString>,
-    key: &OccurrenceKey,
+    tuple: &str,
     n: u64,
 ) -> JsString {
     let Some(id) = id else {
-        return JsString::from_text(&occ_event_id(session_part.to_utf8(), key, n));
+        return JsString::from_text(&occ_event_id(session_part.to_utf8(), &sha256_hex(tuple), n));
     };
     let prefix: Vec<u16> = "claude-code:".encode_utf16().collect();
     let middle: Vec<u16> = marker.encode_utf16().collect();
@@ -1272,35 +1271,8 @@ fn native_event_id(
     ])
 }
 
-fn assistant_message(parsed: &ParsedTranscript, offset: usize) -> Option<&ParsedMessage> {
-    parsed
-        .msgs
-        .iter()
-        .filter(|message| is_text_assistant(message))
-        .nth(offset)
-}
-
-fn user_message(parsed: &ParsedTranscript, offset: usize) -> Option<&ParsedMessage> {
-    parsed
-        .msgs
-        .iter()
-        .filter(|message| is_prompt_user(message))
-        .nth(offset)
-}
-
-fn tool_at(parsed: &ParsedTranscript, offset: usize) -> Option<&ToolUse> {
-    parsed
-        .msgs
-        .iter()
-        .flat_map(|message| message.tools.iter())
-        .nth(offset)
-}
-
-fn occ_event_id(session_part: &str, key: &OccurrenceKey, n: u64) -> String {
-    format!(
-        "claude-code:{session_part}:occ:{}:{n}",
-        content_tuple_hash(key)
-    )
+fn occ_event_id(session_part: &str, hash: &str, n: u64) -> String {
+    format!("claude-code:{session_part}:occ:{hash}:{n}")
 }
 
 fn last_match_event_id(path: &Path, key: &OccurrenceKey, session_hint: &str) -> Option<JsString> {
@@ -1316,27 +1288,19 @@ fn last_match_event_id(path: &Path, key: &OccurrenceKey, session_hint: &str) -> 
     };
     let want = content_tuple_hash(key);
     let mut found = None;
-    for_each_captured(&parsed, |row_key, n, slot| {
-        if content_tuple_hash(row_key) != want {
+    for_each_captured(&parsed, |n, tuple, slot| {
+        if sha256_hex(tuple) != want {
             return;
         }
         found = Some(match slot {
-            CapturedSlot::Tool(index) => native_event_id(
-                &session_part,
-                ":tool:",
-                tool_at(&parsed, index).and_then(|tool| tool.id_units.as_ref()),
-                row_key,
-                n,
-            ),
-            CapturedSlot::User(index) => native_event_id(
-                &session_part,
-                ":",
-                user_message(&parsed, index).and_then(|message| message.uuid_units.as_ref()),
-                row_key,
-                n,
-            ),
+            CapturedSlot::Tool(tool) => {
+                native_event_id(&session_part, ":tool:", tool.id_units.as_ref(), tuple, n)
+            }
+            CapturedSlot::User(message) => {
+                native_event_id(&session_part, ":", message.uuid_units.as_ref(), tuple, n)
+            }
             CapturedSlot::Assistant(_) => {
-                JsString::from_text(&occ_event_id(session_part.to_utf8(), row_key, n))
+                JsString::from_text(&occ_event_id(session_part.to_utf8(), &sha256_hex(tuple), n))
             }
         });
     });
@@ -1679,4 +1643,121 @@ async fn load_transcript(path: &Path) -> Result<ParsedTranscript, String> {
         .await
         .map_err(|error| error.to_string())?
         .map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+mod occurrence_scale {
+    use super::{OccurrenceKey, content_tuple_hash, den_event_ids, parse_transcript};
+    use protocol::js::JsString;
+
+    #[test]
+    fn thousands_of_rows_keep_occurrence_ids() {
+        const ROWS: usize = 5_000;
+        let blob = "y".repeat(4_096);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("long.jsonl");
+        let mut lines = Vec::with_capacity(ROWS + 8);
+        let assistant = serde_json::json!({
+            "type": "assistant",
+            "sessionId": "sess-1",
+            "message": {"role": "assistant", "content": "same answer"}
+        });
+        lines.push(assistant.clone());
+        lines.push(assistant);
+        let repeated = serde_json::json!({
+            "type": "assistant",
+            "sessionId": "sess-1",
+            "message": {
+                "role": "assistant",
+                "content": [{
+                    "type": "tool_use",
+                    "name": "Bash",
+                    "input": {"command": blob}
+                }]
+            }
+        });
+        lines.push(repeated.clone());
+        lines.push(repeated.clone());
+        lines.push(repeated.clone());
+        let mut counted = repeated.clone();
+        counted["message"]["content"][0]["id"] = serde_json::Value::String("toolu_dup".to_string());
+        lines.push(counted);
+        lines.push(repeated);
+        for index in 0..ROWS {
+            lines.push(serde_json::json!({
+                "type": "assistant",
+                "sessionId": "sess-1",
+                "message": {
+                    "role": "assistant",
+                    "content": [{
+                        "type": "tool_use",
+                        "id": format!("toolu_{index}"),
+                        "name": "Read",
+                        "input": {"file_path": format!("/tmp/f{index}"), "pad": blob}
+                    }]
+                }
+            }));
+        }
+        let text = lines
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        std::fs::write(&path, text).unwrap();
+        let parsed = parse_transcript(&path).unwrap();
+        let session = JsString::from_text("sess-1");
+        let ids = den_event_ids(&parsed, &session);
+        let assistant_hash = content_tuple_hash(&OccurrenceKey {
+            role: "assistant".to_string(),
+            content: "same answer".to_string(),
+            tool_name: None,
+            tool_args: None,
+        });
+        let tool_hash = content_tuple_hash(&OccurrenceKey {
+            role: "tool".to_string(),
+            content: "[tool call] Bash".to_string(),
+            tool_name: Some("Bash".to_string()),
+            tool_args: Some(protocol::js::from_serde(
+                &serde_json::json!({"command": blob}),
+            )),
+        });
+        assert_eq!(ids.assistant.len(), 2);
+        assert_eq!(
+            ids.assistant[0].to_utf8(),
+            format!("claude-code:sess-1:occ:{assistant_hash}:0")
+        );
+        assert_eq!(
+            ids.assistant[1].to_utf8(),
+            format!("claude-code:sess-1:occ:{assistant_hash}:1")
+        );
+        assert!(ids.user.is_empty());
+        assert_eq!(ids.tool.len(), ROWS + 5);
+        assert_eq!(
+            ids.tool[0].to_utf8(),
+            format!("claude-code:sess-1:occ:{tool_hash}:0")
+        );
+        assert_eq!(
+            ids.tool[1].to_utf8(),
+            format!("claude-code:sess-1:occ:{tool_hash}:1")
+        );
+        assert_eq!(
+            ids.tool[2].to_utf8(),
+            format!("claude-code:sess-1:occ:{tool_hash}:2")
+        );
+        assert_eq!(ids.tool[3].to_utf8(), "claude-code:sess-1:tool:toolu_dup");
+        assert_eq!(
+            ids.tool[4].to_utf8(),
+            format!("claude-code:sess-1:occ:{tool_hash}:4")
+        );
+        assert_eq!(ids.tool[5].to_utf8(), "claude-code:sess-1:tool:toolu_0");
+        assert_eq!(
+            ids.tool[5 + ROWS / 2].to_utf8(),
+            format!("claude-code:sess-1:tool:toolu_{}", ROWS / 2)
+        );
+        assert_eq!(
+            ids.tool.last().unwrap().to_utf8(),
+            format!("claude-code:sess-1:tool:toolu_{}", ROWS - 1)
+        );
+    }
 }
