@@ -69,9 +69,9 @@ pub use step::{
 };
 pub use timeutil::now_iso;
 pub use types::{
-    AgentConfig, AgentDef, CacheSource, CachedStep, CaseState, Field, FieldType, JournalEntry,
-    LoadedWorkflow, OpenGate, OutlineStep, ParentRef, Run, RunDetail, RunFinishedStatus, RunStatus,
-    RunSummary, StartedBy, StartedByType, StepKind, StepUsage, WorkflowBudgets, WorkflowDiagnostic,
-    WorkflowManifest, WorkflowValidateResponse, make_step_id,
+    AgentConfig, AgentDef, CacheSource, CachedStep, CaseState, DetailChild, DetailRun, Field,
+    FieldType, JournalEntry, LoadedWorkflow, OpenGate, OutlineStep, ParentRef, Run, RunDetail,
+    RunFinishedStatus, RunStatus, RunSummary, StartedBy, StartedByType, StepKind, StepUsage,
+    WorkflowBudgets, WorkflowDiagnostic, WorkflowManifest, WorkflowValidateResponse, make_step_id,
 };
 pub use wire::WireJson;

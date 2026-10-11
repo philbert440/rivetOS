@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use workflows::{
     AgentStepOpts, ContractReason, EngineConfig, ExecutorRegistry, HumanStepOpts, JournalEntry,
-    LoadedWorkflow, MockExecutorRegistry, NamespacedCallRegistry, ResumeRunOptions,
+    LoadedWorkflow, MockExecutorRegistry, NamespacedCallRegistry, ParentRef, ResumeRunOptions,
     RunFinishedStatus, RunPatch, RunScript, RunStatus, RunStepOpts, ScaffoldOptions,
     StartRunOptions, StartedBy, StartedByType, StepKind, StepOutput, StepUsage, WireJson,
     WorkflowEngine, WorkflowError, agent_handler, append_journal, branch,
@@ -1340,6 +1340,165 @@ async fn load_run_detail_keeps_raw_payloads() {
     assert!(bytes.contains(r#"\ud800"#), "{bytes}");
     assert!(!bytes.contains('\u{FFFD}'), "{bytes}");
     assert!(bytes.contains(r#""output":{"result":"\ud800"}"#), "{bytes}");
+    assert!(bytes.contains(r#""openGate":null"#), "{bytes}");
+}
+
+#[tokio::test]
+async fn load_run_detail_matches_the_typescript_shape() {
+    let root = temp_root("detail-shape");
+    let (parent_dir, parent_wf) = load_min(&root, "parent-wf", None).await;
+    let (child_dir, child_wf) = load_min(&root, "child-wf", None).await;
+    let engine = engine_for(
+        &root.join("runs"),
+        arc_exec(MockExecutorRegistry::new()),
+        vec![
+            ("parent-wf", parent_dir.as_path()),
+            ("child-wf", child_dir.as_path()),
+        ],
+    );
+    let parent = engine
+        .start_run(
+            "parent-wf",
+            message_input("hi"),
+            human(),
+            start_opts(
+                run_script(|step, _ctx| async move {
+                    step.done(result_output(Value::String("ok".to_string())))
+                        .await
+                }),
+                parent_wf,
+                None,
+            ),
+        )
+        .await
+        .unwrap();
+    assert_eq!(parent.run.status, RunStatus::Done);
+    let started = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&started);
+    let child_script = run_script(move |_step, _ctx| {
+        let flag = Arc::clone(&flag);
+        async move {
+            flag.store(true, Ordering::SeqCst);
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            Ok(())
+        }
+    });
+    let child_engine = engine.clone();
+    let child_wf = child_wf.clone();
+    let parent_id = parent.run.id.clone();
+    let child_case = PathBuf::from(format!("{}/child-live", parent.case_dir));
+    tokio::spawn(async move {
+        let started_by = StartedBy::with_id(StartedByType::Workflow, parent_id.clone());
+        let _ = child_engine
+            .start_run(
+                "child-wf",
+                message_input("from-parent"),
+                started_by,
+                StartRunOptions {
+                    run_id: Some("child-live".to_string()),
+                    case_dir: Some(child_case),
+                    parent: Some(ParentRef {
+                        run_id: parent_id,
+                        step_id: "child-call#1".to_string(),
+                    }),
+                    run_script: Some(child_script),
+                    workflow: Some(child_wf),
+                },
+            )
+            .await;
+    });
+    let saw = tokio::time::timeout(Duration::from_secs(5), async {
+        while !started.load(Ordering::SeqCst) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    assert!(saw.is_ok(), "running child did not start");
+    let parent_detail = load_run_detail(&engine, &parent.run.id).await.unwrap();
+    assert_eq!(parent_detail.children.len(), 1);
+    let child_summary = &parent_detail.children[0];
+    assert_eq!(child_summary.status, RunStatus::Running);
+    assert!(child_summary.finished_at.is_none());
+    assert!(child_summary.current.is_none());
+    let child_summary_json = format!(
+        "{{\"id\":{},\"workflowId\":{},\"status\":\"running\",\"startedAt\":{},\"version\":{},\"nested\":true,\"parentRunId\":{}}}",
+        q(&child_summary.id),
+        q(&child_summary.workflow_id),
+        q(child_summary.started_at.as_deref().unwrap()),
+        q(child_summary.version.as_deref().unwrap()),
+        q(child_summary.parent_run_id.as_deref().unwrap()),
+    );
+    let parent_run = &parent_detail.run;
+    assert!(parent_run.parent_run_id.is_none());
+    assert_eq!(
+        parent_run.output.as_ref().map(WireJson::raw),
+        Some(r#"{"result":"ok"}"#)
+    );
+    assert_eq!(
+        parent_detail.fields.raw(),
+        r#"{"message":"hi","result":"ok"}"#
+    );
+    assert!(parent_run.current.is_none());
+    let parent_run_json = format!(
+        "{{\"id\":{},\"workflowId\":{},\"status\":\"done\",\"startedAt\":{},\"finishedAt\":{},\"version\":{},\"caseDir\":{},\"output\":{},\"startedBy\":{{\"type\":\"human\"}}}}",
+        q(&parent_run.id),
+        q(&parent_run.workflow_id),
+        q(parent_run.started_at.as_deref().unwrap()),
+        q(parent_run.finished_at.as_deref().unwrap()),
+        q(&parent_run.version),
+        q(&parent_run.case_dir),
+        parent_run.output.as_ref().unwrap().raw(),
+    );
+    let parent_bytes = serde_json::to_string(&parent_detail).unwrap();
+    let expected_parent = format!(
+        "{{\"run\":{parent_run_json},\"fields\":{},\"journal\":{},\"children\":[{child_summary_json}],\"openGate\":null}}",
+        parent_detail.fields.raw(),
+        serde_json::to_string(&parent_detail.journal).unwrap(),
+    );
+    assert_eq!(parent_bytes, expected_parent);
+    assert!(!parent_run_json.contains("workflowDir"));
+    assert!(!parent_run_json.contains("parentRunId"));
+    assert!(!child_summary_json.contains("caseDir"));
+    assert!(!child_summary_json.contains("finishedAt"));
+    assert!(!child_summary_json.contains("current"));
+
+    let child_detail = load_run_detail(&engine, "child-live").await.unwrap();
+    let child_run = &child_detail.run;
+    assert_eq!(
+        child_run.parent_run_id.as_deref(),
+        Some(parent.run.id.as_str())
+    );
+    assert!(child_run.finished_at.is_none());
+    assert!(child_run.current.is_none());
+    assert!(child_run.error.is_none());
+    assert!(child_run.output.is_none());
+    assert_eq!(child_detail.fields.raw(), r#"{"message":"from-parent"}"#);
+    assert!(child_detail.open_gate.is_none());
+    assert!(child_detail.children.is_empty());
+    let child_run_json = format!(
+        "{{\"id\":{},\"workflowId\":{},\"status\":\"running\",\"startedAt\":{},\"version\":{},\"parentRunId\":{},\"caseDir\":{},\"startedBy\":{{\"type\":\"workflow\",\"id\":{}}}}}",
+        q(&child_run.id),
+        q(&child_run.workflow_id),
+        q(child_run.started_at.as_deref().unwrap()),
+        q(&child_run.version),
+        q(child_run.parent_run_id.as_deref().unwrap()),
+        q(&child_run.case_dir),
+        q(&parent.run.id),
+    );
+    let child_bytes = serde_json::to_string(&child_detail).unwrap();
+    let expected_child = format!(
+        "{{\"run\":{child_run_json},\"fields\":{},\"journal\":{},\"children\":[],\"openGate\":null}}",
+        child_detail.fields.raw(),
+        serde_json::to_string(&child_detail.journal).unwrap(),
+    );
+    assert_eq!(child_bytes, expected_child);
+    assert!(!child_run_json.contains("workflowDir"));
+    assert!(!child_run_json.contains("\"parent\":"));
+    assert!(child_bytes.contains("parentRunId"));
+}
+
+fn q(text: &str) -> String {
+    serde_json::to_string(text).unwrap()
 }
 
 fn node_skip(text: &str) -> bool {
@@ -2191,6 +2350,103 @@ async fn continue_run_refuses_open_gate_and_does_not_double_append() {
         .filter(|entry| matches!(entry, JournalEntry::GateOpened { label, .. } if label == "gate"))
         .count();
     assert_eq!(opens, 1);
+}
+
+#[tokio::test]
+async fn continue_run_recovers_a_utf8_torn_tail() {
+    let root = temp_root("utf8-continue");
+    let (dir, workflow) = load_min(&root, "wf", None).await;
+    let engine = engine_for(
+        &root.join("runs"),
+        arc_exec(MockExecutorRegistry::new()),
+        vec![("test-wf", dir.as_path())],
+    );
+    let script = run_script(|step, _ctx| async move {
+        step.agent("work", AgentStepOpts::out(vec!["result".to_string()]))
+            .await?;
+        step.human("gate", HumanStepOpts::fields(vec!["ok".to_string()]))
+            .await?;
+        step.done(result_output(Value::String("ok".to_string())))
+            .await
+    });
+    let started = engine
+        .start_run(
+            "test-wf",
+            message_input("hi"),
+            human(),
+            start_opts(script.clone(), workflow.clone(), None),
+        )
+        .await
+        .unwrap();
+    assert!(started.suspended);
+    let path = journal_path(Path::new(&started.case_dir));
+    let mut torn = std::fs::read(&path).unwrap();
+    assert!(torn.ends_with(b"\n"));
+    torn.extend_from_slice(
+        br#"{"type":"step_finished","ts":"t","stepId":"z#1","label":"z","seq":1,"kind":"run","result":""#,
+    );
+    torn.extend_from_slice(&[0xF0, 0x9F]);
+    std::fs::write(&path, &torn).unwrap();
+    let before = read_journal(Path::new(&started.case_dir)).await.unwrap();
+    assert!(before.iter().any(|entry| {
+        matches!(entry, JournalEntry::GateOpened { label, .. } if label == "gate")
+    }));
+    assert!(
+        !before
+            .iter()
+            .any(|entry| matches!(entry, JournalEntry::RunFinished { .. }))
+    );
+    update_run(
+        Path::new(&started.case_dir),
+        RunPatch {
+            status: Some(RunStatus::Running),
+            ..RunPatch::default()
+        },
+    )
+    .await
+    .unwrap();
+    let continued = engine
+        .continue_run(&started.run.id, resume_opts(script, workflow, None))
+        .await
+        .unwrap();
+    assert!(continued.suspended, "{:?}", continued.run.error);
+    assert_eq!(continued.run.status, RunStatus::PausedHuman);
+    let mid = read_journal(Path::new(&started.case_dir)).await.unwrap();
+    assert_eq!(
+        mid.iter()
+            .filter(
+                |entry| matches!(entry, JournalEntry::GateOpened { label, .. } if label == "gate")
+            )
+            .count(),
+        1
+    );
+    append_journal(
+        Path::new(&started.case_dir),
+        &JournalEntry::StepStarted {
+            ts: "t3".to_string(),
+            step_id: "c#1".to_string(),
+            label: "c".to_string(),
+            seq: 1,
+            kind: StepKind::Run,
+        },
+    )
+    .await
+    .unwrap();
+    let raw = std::fs::read(&path).unwrap();
+    let text = std::str::from_utf8(&raw).unwrap();
+    assert!(raw.ends_with(b"\n"));
+    assert!(!text.contains("z#1"));
+    let after = read_journal(Path::new(&started.case_dir)).await.unwrap();
+    assert_eq!(after.len(), mid.len() + 1);
+    assert_eq!(after.last().unwrap().entry_type(), "step_started");
+    assert_eq!(
+        read_case(Path::new(&started.case_dir))
+            .await
+            .unwrap()
+            .run
+            .status,
+        RunStatus::PausedHuman
+    );
 }
 
 #[tokio::test]

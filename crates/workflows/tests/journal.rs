@@ -295,6 +295,61 @@ async fn valid_final_record_without_newline_is_kept_on_append() {
     assert_eq!(again[2].entry_type(), "step_started");
 }
 
+#[tokio::test]
+async fn truncated_utf8_tail_is_recovered_on_read_and_append() {
+    let good = "{\"type\":\"step_finished\",\"ts\":\"t\",\"stepId\":\"a#1\",\"label\":\"a\",\"seq\":1,\"kind\":\"run\",\"result\":\"\u{1F600}\"}";
+    let kept = temp_root("utf8-kept");
+    let kept_path = journal_path(&kept);
+    std::fs::write(&kept_path, good.as_bytes()).unwrap();
+    assert_eq!(read_journal(&kept).await.unwrap().len(), 1);
+    append_started(&kept).await;
+    let kept_bytes = std::fs::read(&kept_path).unwrap();
+    let kept_text = std::str::from_utf8(&kept_bytes).unwrap();
+    assert!(kept_bytes.ends_with(b"\n"));
+    assert!(kept_text.contains('\u{1F600}'));
+    let kept_again = read_journal(&kept).await.unwrap();
+    assert_eq!(kept_again.len(), 2);
+    assert_eq!(kept_again[0].entry_type(), "step_finished");
+
+    let dir = temp_root("utf8-torn");
+    let path = journal_path(&dir);
+    let mut torn = good.as_bytes().to_vec();
+    torn.push(b'\n');
+    torn.extend_from_slice(
+        br#"{"type":"step_finished","ts":"t2","stepId":"b#1","label":"b","seq":1,"kind":"run","result":""#,
+    );
+    torn.extend_from_slice(&[0xF0, 0x9F]);
+    std::fs::write(&path, &torn).unwrap();
+    let first = read_journal(&dir).await.unwrap();
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].entry_type(), "step_finished");
+    append_started(&dir).await;
+    let raw = std::fs::read(&path).unwrap();
+    let text = std::str::from_utf8(&raw).unwrap();
+    assert!(raw.ends_with(b"\n"));
+    assert!(text.contains('\u{1F600}'));
+    assert!(!text.contains("b#1"));
+    let again = read_journal(&dir).await.unwrap();
+    assert_eq!(again.len(), 2);
+    assert_eq!(again[0].entry_type(), "step_finished");
+    assert_eq!(again[1].entry_type(), "step_started");
+
+    let interior = temp_root("utf8-interior");
+    let interior_path = journal_path(&interior);
+    let mut broken = good.as_bytes().to_vec();
+    broken.push(b'\n');
+    broken.extend_from_slice(&[0xF0, 0x9F]);
+    broken.push(b'\n');
+    broken.extend_from_slice(good.as_bytes());
+    broken.push(b'\n');
+    std::fs::write(&interior_path, &broken).unwrap();
+    let err = read_journal(&interior).await.unwrap_err();
+    assert!(
+        err.to_string().starts_with("failed to parse journal line"),
+        "{err}"
+    );
+}
+
 async fn append_started(dir: &std::path::Path) {
     append_journal(
         dir,

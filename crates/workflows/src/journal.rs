@@ -72,8 +72,8 @@ pub async fn read_journal(case_dir: &Path) -> Result<Vec<JournalEntry>, Workflow
         if !path.exists() {
             return Ok(Vec::new());
         }
-        let raw = std::fs::read_to_string(&path).map_err(|err| WorkflowError::io(&path, err))?;
-        parse_journal(&raw)
+        let bytes = std::fs::read(&path).map_err(|err| WorkflowError::io(&path, err))?;
+        parse_journal_bytes(&bytes)
     });
     match task.await {
         Ok(result) => result,
@@ -82,25 +82,38 @@ pub async fn read_journal(case_dir: &Path) -> Result<Vec<JournalEntry>, Workflow
 }
 
 pub fn parse_journal(raw: &str) -> Result<Vec<JournalEntry>, WorkflowError> {
-    if js_trim(raw).is_empty() {
+    parse_journal_bytes(raw.as_bytes())
+}
+
+fn parse_journal_bytes(bytes: &[u8]) -> Result<Vec<JournalEntry>, WorkflowError> {
+    if bytes.is_empty() {
         return Ok(Vec::new());
     }
-    let complete = raw.ends_with('\n');
-    let mut lines: Vec<&str> = raw.split('\n').collect();
+    let complete = bytes.ends_with(b"\n");
+    let mut lines: Vec<&[u8]> = bytes.split(|byte| *byte == b'\n').collect();
     if complete && lines.last().is_some_and(|line| line.is_empty()) {
         lines.pop();
     }
     let last = lines.len().saturating_sub(1);
     let mut entries = Vec::new();
     for (index, line) in lines.iter().enumerate() {
-        let trimmed = js_trim(line);
+        let unfinished = !complete && index == last;
+        let Ok(text) = std::str::from_utf8(line) else {
+            if unfinished {
+                continue;
+            }
+            return Err(WorkflowError::message(
+                "failed to parse journal line: invalid utf-8",
+            ));
+        };
+        let trimmed = js_trim(text);
         if trimmed.is_empty() {
             continue;
         }
         match parse_entry(trimmed) {
             Ok(entry) => entries.push(entry),
             Err(err) => {
-                if !complete && index == last {
+                if unfinished {
                     continue;
                 }
                 return Err(err);

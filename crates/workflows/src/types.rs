@@ -719,12 +719,53 @@ pub struct RunSummary {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct DetailRun {
+    pub id: String,
+    pub workflow_id: String,
+    pub status: RunStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current: Option<String>,
+    pub version: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_run_id: Option<String>,
+    pub case_dir: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output: Option<WireJson>,
+    pub started_by: StartedBy,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DetailChild {
+    pub id: String,
+    pub workflow_id: String,
+    pub status: RunStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    pub nested: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_run_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RunDetail {
-    pub run: Run,
+    pub run: DetailRun,
     pub fields: WireJson,
     pub journal: Vec<JournalEntry>,
-    pub children: Vec<RunSummary>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub children: Vec<DetailChild>,
     pub open_gate: Option<OpenGate>,
 }
 

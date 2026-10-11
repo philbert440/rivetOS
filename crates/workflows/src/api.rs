@@ -8,14 +8,13 @@ use crate::engine::WorkflowEngine;
 use crate::error::WorkflowError;
 use crate::io_fs::{read_string, try_exists};
 use crate::journal::{append_journal, find_open_gate, read_journal};
-use crate::list_runs::list_child_runs;
-use crate::list_runs::list_workflow_defs;
+use crate::list_runs::{list_child_runs, list_workflow_defs};
 use crate::loader::load_workflow_dir;
 use crate::pathutil::{node_join_paths, path_text};
 use crate::timeutil::now_iso;
 use crate::types::{
-    JournalEntry, Run, RunDetail, RunFinishedStatus, RunStatus, StartedBy, WorkflowDiagnostic,
-    WorkflowValidateResponse,
+    DetailChild, DetailRun, JournalEntry, Run, RunDetail, RunFinishedStatus, RunStatus, RunSummary,
+    StartedBy, WorkflowDiagnostic, WorkflowValidateResponse,
 };
 use crate::wire::WireJson;
 
@@ -33,12 +32,44 @@ pub async fn load_run_detail(
         None => WireJson::parse("{}")?,
     };
     Ok(RunDetail {
-        run: state.run,
+        run: detail_run(state.run),
         fields,
         journal,
-        children,
+        children: children.into_iter().map(detail_child).collect(),
         open_gate,
     })
+}
+
+fn detail_run(run: Run) -> DetailRun {
+    let parent_run_id = run.parent.map(|parent| parent.run_id);
+    DetailRun {
+        id: run.id,
+        workflow_id: run.workflow_id,
+        status: run.status,
+        started_at: run.started_at,
+        finished_at: run.finished_at,
+        current: run.current,
+        version: run.version,
+        parent_run_id,
+        case_dir: run.case_dir,
+        error: run.error,
+        output: run.output,
+        started_by: run.started_by,
+    }
+}
+
+fn detail_child(summary: RunSummary) -> DetailChild {
+    DetailChild {
+        id: summary.id,
+        workflow_id: summary.workflow_id,
+        status: summary.status,
+        started_at: summary.started_at,
+        finished_at: summary.finished_at,
+        current: summary.current,
+        version: summary.version,
+        nested: true,
+        parent_run_id: summary.parent_run_id,
+    }
 }
 
 pub async fn validate_workflow_dir(dir: &Path) -> WorkflowValidateResponse {
