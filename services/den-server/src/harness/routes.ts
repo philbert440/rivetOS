@@ -77,6 +77,7 @@ import {
   decodeSessionIdSegment,
   formatSessionId,
   parseSessionId,
+  rosterCommandFor,
   type ApprovalDecision,
   type HarnessEvent,
   type HarnessId,
@@ -245,6 +246,18 @@ export function createHarnessRoutes(opts: {
   /** Stamps `installed` on each `GET /api/harnesses` row (`installed.ts`).
    *  Absent = the field is omitted and clients treat every row as installed. */
   isInstalled?: (harnessId: HarnessId) => boolean
+  /**
+   * Resolve an agent preset for `POST .../sessions { agentId }` — the same
+   * resolution `POST /term` uses (directory, model, effort). Absent = an
+   * `agentId` body is a 501.
+   */
+  resolveAgent?: (
+    agentId: string,
+    explicit: { command?: string; model?: string; effort?: string },
+  ) => Promise<
+    | { ok: true; name: string; harnessId?: string; cwd: string; model?: string; effort?: string }
+    | { ok: false; status: number; body: Record<string, unknown> }
+  >
   /**
    * Stamps `allowed` on each `GET /api/harnesses` row and refuses fresh
    * `POST .../sessions` for ids outside the operator allow-list
@@ -421,11 +434,35 @@ export function createHarnessRoutes(opts: {
     if (req.method === 'POST') {
       const body = await parseJsonBody(req, res)
       if (!body) return true
-      const { cwd, model, nativeSessionId, sessionId, metadata } = body
-      if (cwd !== undefined && typeof cwd !== 'string')
+      const { nativeSessionId, sessionId, metadata, agentId } = body
+      if (body.cwd !== undefined && typeof body.cwd !== 'string')
         return json(res, 400, { error: 'cwd must be a string' })
-      if (model !== undefined && typeof model !== 'string')
+      if (body.model !== undefined && typeof body.model !== 'string')
         return json(res, 400, { error: 'model must be a string' })
+      if (body.effort !== undefined && typeof body.effort !== 'string')
+        return json(res, 400, { error: 'effort must be a string' })
+      let cwd: string | undefined = body.cwd
+      let model: string | undefined = body.model
+      let effort: string | undefined = body.effort
+      if (agentId !== undefined) {
+        if (typeof agentId !== 'string' || !/^[\w-]{1,64}$/.test(agentId))
+          return json(res, 400, { error: 'agentId must be a 1-64 token' })
+        if (cwd !== undefined)
+          return json(res, 400, { error: 'cwd comes from the agent; do not send both' })
+        if (!opts.resolveAgent)
+          return json(res, 501, { error: 'agent presets are not available on this node' })
+        const launch = await opts.resolveAgent(agentId, {
+          command: rosterCommandFor(harnessId),
+          ...(model !== undefined ? { model } : {}),
+          ...(effort !== undefined ? { effort } : {}),
+        })
+        if (!launch.ok) return json(res, launch.status, launch.body)
+        if (launch.harnessId && launch.harnessId !== harnessId)
+          return json(res, 409, { error: `agent "${launch.name}" runs ${launch.harnessId}` })
+        cwd = launch.cwd
+        model = launch.model
+        effort = launch.effort
+      }
       if (nativeSessionId !== undefined && typeof nativeSessionId !== 'string')
         return json(res, 400, { error: 'nativeSessionId must be a string' })
       if (sessionId !== undefined && typeof sessionId !== 'string')
@@ -527,12 +564,14 @@ export function createHarnessRoutes(opts: {
             ? {
                 ...(cwd !== undefined ? { cwd } : {}),
                 ...(model !== undefined ? { model } : {}),
+                ...(effort !== undefined ? { effort } : {}),
                 ...(nativeSessionId !== undefined ? { nativeSessionId } : {}),
                 ...(metadata !== undefined ? { metadata: metadata as Record<string, string> } : {}),
               }
             : {
                 ...(cwd !== undefined ? { cwd } : {}),
                 ...(model !== undefined ? { model } : {}),
+                ...(effort !== undefined ? { effort } : {}),
                 nativeSessionId: minted.native,
                 sessionId: minted.sessionId,
                 ...(metadata !== undefined ? { metadata: metadata as Record<string, string> } : {}),

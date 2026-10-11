@@ -139,6 +139,8 @@ import { createAllowedProbe, harnessNotAllowedMessage } from './harness/allowed.
 import { CodexDriver } from './harness/codex-driver.js'
 import { CodexProtocolDriver, codexThreadDefaults } from './harness/codex-protocol-driver.js'
 import { CodexRpcClient } from './harness/codex-rpc.js'
+import { AcpClient } from './harness/acp-rpc.js'
+import { GrokAcpDriver, OpencodeAcpDriver } from './harness/acp-drivers.js'
 import { createHarnessRoutes, harnessErrorStatus } from './harness/routes.js'
 import { denJoinKey } from './harness/session-key.js'
 import { createUploadRoutes } from './harness/uploads.js'
@@ -766,6 +768,31 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
     )
   }
   let codexProtocol: CodexProtocolDriver | undefined
+  const acpHarnesses = new Set(config.acpHarnesses ?? [])
+  for (const command of acpHarnesses) {
+    if (command !== 'grok' && command !== 'opencode')
+      throw new Error(
+        `RIVETOS_DEN_ACP_HARNESSES: ${command} is not an ACP harness (grok, opencode)`,
+      )
+  }
+  if (acpHarnesses.size && config.usersRegistry) {
+    throw new Error(
+      'ACP harnesses require a single-owner node; the agent runs as the den user for every session',
+    )
+  }
+  /** Roster command → driver whose chat turn blocks opening a terminal. */
+  const acpDrivers = new Map<string, GrokAcpDriver | OpencodeAcpDriver>()
+  const acpClient = (command: 'grok' | 'opencode', args: string[]): AcpClient =>
+    new AcpClient({
+      argv: [rosterProvider.get().commands[command]?.cmd[0] ?? command, ...args],
+      // The agent's den hooks report to this den, as a spawned TUI's do
+      // (term manager: same scheme predicate as tlsReady).
+      env: {
+        ...process.env,
+        RIVET_DEN_URL: `${tlsReady ? 'https' : 'http'}://127.0.0.1:${String(config.port)}`,
+      },
+      log: console.error,
+    })
   let termManager: TermManager | null = null
   let onHerdrStatusRef:
     ((denSession: string, frame: import('@rivetos/types').HarnessStatusFrame) => void) | undefined =
@@ -918,7 +945,15 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         transcript: opts.transcriptWatcher,
         screen: screenFor,
       }),
-      new GrokBuildDriver({
+      ((deps: ConstructorParameters<typeof GrokBuildDriver>[0]) => {
+        if (!acpHarnesses.has('grok')) return new GrokBuildDriver(deps)
+        const driver = new GrokAcpDriver({
+          ...deps,
+          acp: { rpc: acpClient('grok', ['agent', 'stdio']) },
+        })
+        acpDrivers.set('grok', driver)
+        return driver
+      })({
         store: harnessStore('grok'),
         pty: termEnabled ? () => ensureManager() : undefined,
         events: denEventTap,
@@ -1000,7 +1035,15 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         screen: screenFor,
       }),
       new CoworkDriver(),
-      new OpencodeDriver({
+      ((deps: ConstructorParameters<typeof OpencodeDriver>[0]) => {
+        if (!acpHarnesses.has('opencode')) return new OpencodeDriver(deps)
+        const driver = new OpencodeAcpDriver({
+          ...deps,
+          acp: { rpc: acpClient('opencode', ['acp']) },
+        })
+        acpDrivers.set('opencode', driver)
+        return driver
+      })({
         store: harnessStore('opencode'),
         pty: termEnabled ? () => ensureManager() : undefined,
         events: denEventTap,
@@ -1045,7 +1088,93 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
   for (const driver of opts.harnessDrivers ?? []) harnesses.register(driver)
   // Undefined when the allow-list is unset — presence alone stamps + gates.
   const isHarnessAllowed = opts.isHarnessAllowed ?? createAllowedProbe(config.allowedHarnesses)
+  /**
+   * An agent preset as launch settings, shared by POST /term and the control
+   * plane's session start. Explicit command/model/effort win and the preset
+   * fills the rest; its directory is created when missing and is the cwd —
+   * clients never send a raw one. Preset-derived tokens are checked again so
+   * a bad stored value is a 400 that names the preset.
+   */
+  const resolveAgentLaunch = async (
+    agentId: string,
+    explicit: { command?: string; model?: string; effort?: string },
+  ): Promise<
+    | {
+        ok: true
+        name: string
+        harnessId?: string
+        command?: string
+        cwd: string
+        model?: string
+        effort?: string
+      }
+    | { ok: false; status: number; body: Record<string, unknown> }
+  > => {
+    const refuse = (status: number, body: Record<string, unknown>) =>
+      ({ ok: false, status, body }) as const
+    let preset
+    try {
+      preset = await presetStore.get(agentId)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      console.error(`[den-server] agent registry unavailable: ${msg}`)
+      return refuse(503, { error: 'agent registry unavailable' })
+    }
+    if (!preset) return refuse(404, { error: 'agent not found' })
+    if (preset.node && preset.node !== config.nodeName) {
+      return refuse(409, {
+        error: `agent "${preset.name}" is hosted on ${preset.node}`,
+        node: preset.node,
+      })
+    }
+    if (!preset.directory) return refuse(409, { error: `agent "${preset.name}" has no directory` })
+    try {
+      ensureAgentDirectory(preset, {
+        ...(config.sharedRoot ? { sharedDir: config.sharedRoot } : {}),
+        log: (msg) => console.error(`[den-server] ${msg}`),
+      })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      return refuse(500, { error: `could not create agent directory: ${msg}` })
+    }
+    let command = explicit.command
+    if (command === undefined) {
+      command = rosterCommandFor(preset.harnessId)
+      if (!command) return refuse(400, { error: 'agent has no harness and no command was given' })
+    }
+    const derive = (value: string, re: RegExp): string | null => (re.test(value) ? value : null)
+    let model = explicit.model
+    if (model === undefined && preset.model) {
+      const derived = derive(preset.model, MODEL_TOKEN_RE)
+      if (derived === null)
+        return refuse(400, { error: `agent "${preset.name}" model must be a 1-64 token` })
+      model = derived
+    }
+    let effort = explicit.effort
+    if (effort === undefined && preset.effort) {
+      const derived = derive(preset.effort, EFFORT_TOKEN_RE)
+      if (derived === null)
+        return refuse(400, { error: `agent "${preset.name}" effort must be a 1-64 token` })
+      effort = derived
+    }
+    // Normalised once: the record, the spawn, and the response all share it.
+    // A trailing slash or surrounding whitespace must not look like a
+    // different directory.
+    const cwd = validateDirectory(preset.directory)
+    if (!cwd) return refuse(409, { error: `agent "${preset.name}" has no directory` })
+    return {
+      ok: true,
+      name: preset.name,
+      ...(preset.harnessId ? { harnessId: preset.harnessId } : {}),
+      command,
+      cwd,
+      ...(model !== undefined ? { model } : {}),
+      ...(effort !== undefined ? { effort } : {}),
+    }
+  }
+
   const harnessRoutes = createHarnessRoutes({
+    resolveAgent: (agentId, explicit) => resolveAgentLaunch(agentId, explicit),
     registry: harnesses,
     log: console.error,
     isInstalled:
@@ -1846,65 +1975,16 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
           let command: string | undefined = typeof p.command === 'string' ? p.command : undefined
           let cwdOverride: string | undefined
           if (typeof p.agentId === 'string') {
-            let preset
-            try {
-              preset = await presetStore.get(p.agentId)
-            } catch (err) {
-              const msg = err instanceof Error ? err.message : String(err)
-              console.error(`[den-server] agent registry unavailable: ${msg}`)
-              return json(res, 503, { error: 'agent registry unavailable' })
-            }
-            if (!preset) return json(res, 404, { error: 'agent not found' })
-            if (preset.node && preset.node !== config.nodeName) {
-              return json(res, 409, {
-                error: `agent "${preset.name}" is hosted on ${preset.node}`,
-                node: preset.node,
-              })
-            }
-            if (!preset.directory) {
-              return json(res, 409, { error: `agent "${preset.name}" has no directory` })
-            }
-            try {
-              ensureAgentDirectory(preset, {
-                ...(config.sharedRoot ? { sharedDir: config.sharedRoot } : {}),
-                log: (msg) => console.error(`[den-server] ${msg}`),
-              })
-            } catch (err) {
-              const msg = err instanceof Error ? err.message : String(err)
-              return json(res, 500, { error: `could not create agent directory: ${msg}` })
-            }
-            if (command === undefined) {
-              const fromHarness = rosterCommandFor(preset.harnessId)
-              if (!fromHarness) {
-                return json(res, 400, { error: 'agent has no harness and no command was given' })
-              }
-              command = fromHarness
-            }
-            if (modelTok === undefined && preset.model) {
-              const derived = token(preset.model, MODEL_TOKEN_RE)
-              if (derived === null) {
-                return json(res, 400, {
-                  error: `agent "${preset.name}" model must be a 1-64 token`,
-                })
-              }
-              modelTok = derived
-            }
-            if (effortTok === undefined && preset.effort) {
-              const derived = token(preset.effort, EFFORT_TOKEN_RE)
-              if (derived === null) {
-                return json(res, 400, {
-                  error: `agent "${preset.name}" effort must be a 1-64 token`,
-                })
-              }
-              effortTok = derived
-            }
-            // Normalised once: the record, the spawn, and the response all
-            // share it. A trailing slash or surrounding whitespace must not
-            // look like a different directory.
-            cwdOverride = validateDirectory(preset.directory)
-            if (!cwdOverride) {
-              return json(res, 409, { error: `agent "${preset.name}" has no directory` })
-            }
+            const launch = await resolveAgentLaunch(p.agentId, {
+              command,
+              model: modelTok,
+              effort: effortTok,
+            })
+            if (!launch.ok) return json(res, launch.status, launch.body)
+            command = launch.command
+            modelTok = launch.model
+            effortTok = launch.effort
+            cwdOverride = launch.cwd
           }
           const clamp = (v: unknown, lo: number, hi: number, dflt: number): number =>
             typeof v === 'number' && Number.isFinite(v)
@@ -1975,6 +2055,15 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
             ) {
               return json(res, 409, {
                 error: `session runs in ${recorded}; edit the agent or start a new conversation`,
+              })
+            }
+            // Two writers on one session: the TUI would append to the store while
+            // the ACP agent is mid-turn on its own copy.
+            const acpBusyKey = resumeKey ?? sessionKey
+            if (acpBusyKey && acpDrivers.get(spawnCommand)?.chatTurnRunning(acpBusyKey)) {
+              return json(res, 409, {
+                error: 'a chat turn is running in this session; wait for it or interrupt it first',
+                code: 'chat_turn_in_flight',
               })
             }
             if (
