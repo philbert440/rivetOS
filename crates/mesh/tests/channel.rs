@@ -131,7 +131,7 @@ async fn delivers_the_inbound_message_and_waits_for_send() {
     assert_eq!(body["fromAgent"], json!("grok"));
     let message = seen.lock()[0].clone();
     assert_eq!(seen.lock().len(), 1);
-    assert_eq!(message.text, "what time is it?");
+    assert_eq!(message.text.to_utf8(), "what time is it?");
     assert_eq!(message.user_id, "agent:grok");
     assert_eq!(message.platform, "agent");
     assert_eq!(message.chat_type, "agent");
@@ -179,6 +179,46 @@ async fn rejects_missing_fields_invalid_json_and_a_missing_handler() {
     .await;
     assert_eq!(status, 503);
     assert_eq!(body["error"], json!("No message handler registered"));
+    channel.stop().await;
+}
+
+#[tokio::test]
+async fn message_body_keeps_an_escaped_unpaired_surrogate() {
+    let channel = started("opus").await;
+    let seen = Arc::new(Mutex::new(None));
+    let seen_cb = Arc::clone(&seen);
+    let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+    let done = Arc::new(Mutex::new(Some(done_tx)));
+    channel.on_message(move |message| {
+        let seen_cb = Arc::clone(&seen_cb);
+        let done = Arc::clone(&done);
+        async move {
+            *seen_cb.lock() = Some(message.text.units().to_vec());
+            if let Some(tx) = done.lock().take() {
+                let _ = tx.send(());
+            }
+            Ok(())
+        }
+    });
+    let (status, body, _) = exchange(
+        channel.bound_port(),
+        "POST",
+        "/api/message",
+        Some(
+            r#"{"fromAgent":"peer","message":"hello \ud83d","waitForResponse":false,"note":"\ud83d"}"#,
+        ),
+        &[],
+    )
+    .await;
+    assert_eq!(status, 202);
+    assert_eq!(body["status"], json!("accepted"));
+    tokio::time::timeout(Duration::from_secs(2), done_rx)
+        .await
+        .expect("handler finished")
+        .unwrap();
+    let mut expected: Vec<u16> = "hello ".encode_utf16().collect();
+    expected.push(0xD83D);
+    assert_eq!(seen.lock().clone().unwrap(), expected);
     channel.stop().await;
 }
 

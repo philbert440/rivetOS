@@ -103,27 +103,38 @@ fn live_dir_functions_agree_with_the_join_helpers() {
 
 #[test]
 fn mesh_file_paths_follow_the_den_search_order() {
-    let home = protocol::host::home_dir(&protocol::host::ProcessEnv).expect("home");
-    assert_eq!(
-        mesh_file_paths("", Some("/gateway/shared")).unwrap(),
-        vec![
-            path_join("/gateway/shared", &["mesh.json"]),
-            path_join(&home, &[".rivetos", "mesh.json"]),
-        ]
-    );
     assert_eq!(
         mesh_file_paths("/x/mesh.json", Some("/ignored")).unwrap(),
         vec!["/x/mesh.json".to_string()]
     );
-    let live = mesh_file_paths("", None).unwrap();
-    assert_eq!(
-        live[0],
-        path_join(
-            &config::paths::shared_dir(&protocol::host::ProcessEnv),
-            &["mesh.json"]
-        )
-    );
-    assert_eq!(live[1], path_join(&home, &[".rivetos", "mesh.json"]));
+    match protocol::host::home_dir(&protocol::host::ProcessEnv) {
+        Some(home) => {
+            assert_eq!(
+                mesh_file_paths("", Some("/gateway/shared")).unwrap(),
+                vec![
+                    path_join("/gateway/shared", &["mesh.json"]),
+                    path_join(&home, &[".rivetos", "mesh.json"]),
+                ]
+            );
+            let live = mesh_file_paths("", None).unwrap();
+            assert_eq!(
+                live[0],
+                path_join(
+                    &config::paths::shared_dir(&protocol::host::ProcessEnv),
+                    &["mesh.json"]
+                )
+            );
+            assert_eq!(live[1], path_join(&home, &[".rivetos", "mesh.json"]));
+        }
+        None => {
+            let err = mesh_file_paths("", Some("/gateway/shared")).unwrap_err();
+            assert_eq!(err.code, "ERR_SYSTEM_ERROR");
+            assert_eq!(err.syscall, "uv_os_homedir");
+            let live = mesh_file_paths("", None).unwrap_err();
+            assert_eq!(live.code, "ERR_SYSTEM_ERROR");
+            assert_eq!(live.syscall, "uv_os_homedir");
+        }
+    }
 }
 
 #[test]

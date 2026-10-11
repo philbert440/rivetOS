@@ -1,0 +1,28 @@
+[
+  {
+    "label": "no passwd entry",
+    "errno": 2,
+    "code": "ERR_SYSTEM_ERROR",
+    "errno_value": -2,
+    "syscall": "uv_os_homedir",
+    "message": "A system error occurred: uv_os_homedir returned ENOENT (no such file or directory)",
+    "string": "SystemError [ERR_SYSTEM_ERROR]: A system error occurred: uv_os_homedir returned ENOENT (no such file or directory)",
+    "info_code": "ENOENT",
+    "info_errno": -2,
+    "info_syscall": "uv_os_homedir",
+    "info_message": "no such file or directory"
+  },
+  {
+    "label": "nss i/o error",
+    "errno": 5,
+    "code": "ERR_SYSTEM_ERROR",
+    "errno_value": -5,
+    "syscall": "uv_os_homedir",
+    "message": "A system error occurred: uv_os_homedir returned EIO (i/o error)",
+    "string": "SystemError [ERR_SYSTEM_ERROR]: A system error occurred: uv_os_homedir returned EIO (i/o error)",
+    "info_code": "EIO",
+    "info_errno": -5,
+    "info_syscall": "uv_os_homedir",
+    "info_message": "i/o error"
+  }
+]

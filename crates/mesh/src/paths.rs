@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use protocol::host::{Env, FsError, ProcessEnv};
+use protocol::host::{Env, PasswdLookup, ProcessEnv, SystemError};
 use protocol::js::posix_join;
 
 pub const DEFAULT_SHARED_DIR: &str = "/rivet-shared";
@@ -33,15 +33,24 @@ pub fn path_join(root: &str, segments: &[&str]) -> String {
     posix_join(&parts)
 }
 
-pub fn mesh_file_paths(mesh_file: &str, shared_root: Option<&str>) -> Result<Vec<String>, FsError> {
-    mesh_file_paths_in(mesh_file, shared_root, &ProcessEnv)
+pub fn mesh_file_paths(
+    mesh_file: &str,
+    shared_root: Option<&str>,
+) -> Result<Vec<String>, SystemError> {
+    mesh_file_paths_in(
+        mesh_file,
+        shared_root,
+        &ProcessEnv,
+        &protocol::host::CurrentPasswd,
+    )
 }
 
 fn mesh_file_paths_in(
     mesh_file: &str,
     shared_root: Option<&str>,
     env: &dyn Env,
-) -> Result<Vec<String>, FsError> {
+    lookup: &dyn PasswdLookup,
+) -> Result<Vec<String>, SystemError> {
     if !mesh_file.is_empty() {
         return Ok(vec![mesh_file.to_string()]);
     }
@@ -49,26 +58,11 @@ fn mesh_file_paths_in(
         Some(root) => root.to_string(),
         None => config::paths::shared_dir(env),
     };
-    let mut paths = vec![path_join(&shared, &["mesh.json"])];
-    push_instance_mesh(&mut paths, protocol::host::home_dir(env).as_deref())?;
-    Ok(paths)
-}
-
-fn push_instance_mesh(paths: &mut Vec<String>, home: Option<&str>) -> Result<(), FsError> {
-    let Some(home) = home else {
-        return Err(homedir_failure());
-    };
-    paths.push(path_join(home, &[".rivetos", "mesh.json"]));
-    Ok(())
-}
-
-fn homedir_failure() -> FsError {
-    protocol::host::fs_error(
-        "uv_os_homedir",
-        None,
-        None,
-        &std::io::Error::from_raw_os_error(2),
-    )
+    let home = protocol::host::os_homedir(env, lookup)?;
+    Ok(vec![
+        path_join(&shared, &["mesh.json"]),
+        path_join(&home, &[".rivetos", "mesh.json"]),
+    ])
 }
 
 pub fn cli_mesh_paths(root: Option<&str>) -> Vec<String> {
@@ -92,10 +86,20 @@ fn resolve_under(root: &str, name: &str) -> String {
 
 #[cfg(test)]
 mod posix_join_table {
-    use protocol::host::MapEnv;
+    use protocol::host::{MapEnv, PasswdLookup};
     use protocol::js::posix_join;
 
-    use super::{mesh_file_paths_in, path_join, push_instance_mesh};
+    use super::{mesh_file_paths_in, path_join};
+
+    struct StaticPasswd {
+        result: Result<String, i32>,
+    }
+
+    impl PasswdLookup for StaticPasswd {
+        fn current_home(&self) -> Result<String, i32> {
+            self.result.clone()
+        }
+    }
 
     #[test]
     fn node_documented_join_cases() {
@@ -135,25 +139,76 @@ mod posix_join_table {
 
     #[test]
     fn failed_home_lookup_is_the_node_homedir_error() {
-        let mut paths = vec![path_join("/rivet-shared", &["mesh.json"])];
-        let err = push_instance_mesh(&mut paths, None).unwrap_err();
-        assert_eq!(err.code, "ENOENT");
-        assert_eq!(err.errno, -2);
-        assert_eq!(err.syscall, "uv_os_homedir");
-        assert_eq!(err.path, None);
-        assert_eq!(err.dest, None);
+        let rows: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/golden/homedir-system-error.json"))
+                .unwrap();
+        let env = MapEnv::new();
+        for row in rows.as_array().unwrap() {
+            let errno = i32::try_from(row["errno"].as_i64().unwrap()).unwrap();
+            let lookup = StaticPasswd { result: Err(errno) };
+            let err = mesh_file_paths_in("", Some("/rivet-shared"), &env, &lookup).unwrap_err();
+            let direct = protocol::host::os_homedir(&env, &lookup).unwrap_err();
+            assert_eq!(err, direct, "{}", row["label"]);
+            assert_eq!(err.code, row["code"].as_str().unwrap(), "{}", row["label"]);
+            assert_eq!(
+                err.errno,
+                i32::try_from(row["errno_value"].as_i64().unwrap()).unwrap(),
+                "{}",
+                row["label"]
+            );
+            assert_eq!(
+                err.syscall,
+                row["syscall"].as_str().unwrap(),
+                "{}",
+                row["label"]
+            );
+            assert_eq!(
+                err.message,
+                row["message"].as_str().unwrap(),
+                "{}",
+                row["label"]
+            );
+            assert_eq!(
+                err.to_string(),
+                row["string"].as_str().unwrap(),
+                "{}",
+                row["label"]
+            );
+            assert_eq!(
+                err.info.code,
+                row["info_code"].as_str().unwrap(),
+                "{}",
+                row["label"]
+            );
+            assert_eq!(
+                err.info.errno,
+                i32::try_from(row["info_errno"].as_i64().unwrap()).unwrap(),
+                "{}",
+                row["label"]
+            );
+            assert_eq!(
+                err.info.syscall,
+                row["info_syscall"].as_str().unwrap(),
+                "{}",
+                row["label"]
+            );
+            assert_eq!(
+                err.info.message,
+                row["info_message"].as_str().unwrap(),
+                "{}",
+                row["label"]
+            );
+        }
+        let missing = StaticPasswd { result: Err(2) };
         assert_eq!(
-            err.to_string(),
-            "ENOENT: no such file or directory, uv_os_homedir"
+            mesh_file_paths_in("/x/mesh.json", None, &env, &missing).unwrap(),
+            vec!["/x/mesh.json".to_string()]
         );
+        let found = StaticPasswd {
+            result: Ok("/home/example".to_string()),
+        };
         assert_eq!(
-            err.node_string(),
-            "Error: ENOENT: no such file or directory, uv_os_homedir"
-        );
-        assert_eq!(paths, vec!["/rivet-shared/mesh.json".to_string()]);
-        push_instance_mesh(&mut paths, Some("/home/example")).unwrap();
-        assert_eq!(
-            paths,
+            mesh_file_paths_in("", Some("/rivet-shared"), &env, &found).unwrap(),
             vec![
                 "/rivet-shared/mesh.json".to_string(),
                 "/home/example/.rivetos/mesh.json".to_string(),
@@ -162,18 +217,44 @@ mod posix_join_table {
     }
 
     #[test]
-    fn unset_home_uses_the_passwd_entry() {
+    fn unset_home_uses_the_injected_passwd_entry() {
         let mut env = MapEnv::new();
         env.set("RIVETOS_SHARED_DIR", "/data/shared");
-        let home = protocol::host::home_dir(&env).expect("passwd home");
-        assert!(home.starts_with('/'));
+        let lookup = StaticPasswd {
+            result: Ok("/home/injected".to_string()),
+        };
         assert_eq!(
-            mesh_file_paths_in("", None, &env).unwrap(),
+            mesh_file_paths_in("", None, &env, &lookup).unwrap(),
             vec![
                 "/data/shared/mesh.json".to_string(),
-                path_join(&home, &[".rivetos", "mesh.json"]),
+                path_join("/home/injected", &[".rivetos", "mesh.json"]),
             ]
         );
+    }
+
+    #[test]
+    fn live_passwd_lookup_reports_the_system_error_when_the_account_is_absent() {
+        let mut env = MapEnv::new();
+        env.set("RIVETOS_SHARED_DIR", "/data/shared");
+        let lookup = protocol::host::CurrentPasswd;
+        match protocol::host::os_homedir(&env, &lookup) {
+            Ok(home) => {
+                assert!(home.starts_with('/'));
+                assert_eq!(
+                    mesh_file_paths_in("", None, &env, &lookup).unwrap(),
+                    vec![
+                        "/data/shared/mesh.json".to_string(),
+                        path_join(&home, &[".rivetos", "mesh.json"]),
+                    ]
+                );
+            }
+            Err(err) => {
+                assert_eq!(err.code, "ERR_SYSTEM_ERROR");
+                assert_eq!(err.syscall, "uv_os_homedir");
+                let again = mesh_file_paths_in("", None, &env, &lookup).unwrap_err();
+                assert_eq!(again, err);
+            }
+        }
     }
 
     #[test]
@@ -181,8 +262,9 @@ mod posix_join_table {
         let mut env = MapEnv::new();
         env.set("HOME", "/home/example");
         env.set("RIVETOS_SHARED_DIR", "/data/shared");
+        let missing = StaticPasswd { result: Err(2) };
         assert_eq!(
-            mesh_file_paths_in("", None, &env).unwrap(),
+            mesh_file_paths_in("", None, &env, &missing).unwrap(),
             vec![
                 "/data/shared/mesh.json".to_string(),
                 "/home/example/.rivetos/mesh.json".to_string(),
@@ -190,14 +272,14 @@ mod posix_join_table {
         );
         env.set("HOME", "");
         assert_eq!(
-            mesh_file_paths_in("", Some("/gateway/shared"), &env).unwrap(),
+            mesh_file_paths_in("", Some("/gateway/shared"), &env, &missing).unwrap(),
             vec![
                 "/gateway/shared/mesh.json".to_string(),
                 ".rivetos/mesh.json".to_string(),
             ]
         );
         assert_eq!(
-            mesh_file_paths_in("/x/mesh.json", None, &env).unwrap(),
+            mesh_file_paths_in("/x/mesh.json", None, &env, &missing).unwrap(),
             vec!["/x/mesh.json".to_string()]
         );
     }

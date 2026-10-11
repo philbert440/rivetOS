@@ -46,18 +46,70 @@ pub fn env_trimmed(env: &dyn Env, name: &str) -> Option<String> {
         .map(|value| crate::js::js_trim(&value).to_string())
 }
 
-pub fn home_dir(env: &dyn Env) -> Option<String> {
-    if let Some(home) = env.var("HOME") {
-        return Some(home);
-    }
-    passwd_home()
+pub trait PasswdLookup {
+    fn current_home(&self) -> Result<String, i32>;
 }
 
-fn passwd_home() -> Option<String> {
-    let user = nix::unistd::User::from_uid(nix::unistd::Uid::current())
-        .ok()
-        .flatten()?;
-    Some(user.dir.to_string_lossy().into_owned())
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CurrentPasswd;
+
+impl PasswdLookup for CurrentPasswd {
+    fn current_home(&self) -> Result<String, i32> {
+        match nix::unistd::User::from_uid(nix::unistd::Uid::current()) {
+            Ok(Some(user)) => Ok(user.dir.to_string_lossy().into_owned()),
+            Ok(None) => Err(nix::errno::Errno::ENOENT as i32),
+            Err(err) => Err(err as i32),
+        }
+    }
+}
+
+pub fn home_dir(env: &dyn Env) -> Option<String> {
+    os_homedir(env, &CurrentPasswd).ok()
+}
+
+pub fn os_homedir(env: &dyn Env, lookup: &dyn PasswdLookup) -> Result<String, SystemError> {
+    if let Some(home) = env.var("HOME") {
+        return Ok(home);
+    }
+    lookup
+        .current_home()
+        .map_err(|errno| system_error("uv_os_homedir", errno))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SystemErrorInfo {
+    pub code: &'static str,
+    pub errno: i32,
+    pub syscall: &'static str,
+    pub message: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("SystemError [{code}]: {message}")]
+pub struct SystemError {
+    pub code: &'static str,
+    pub errno: i32,
+    pub syscall: &'static str,
+    pub info: SystemErrorInfo,
+    pub message: String,
+}
+
+fn system_error(syscall: &'static str, errno: i32) -> SystemError {
+    let raw = i32::try_from(errno.unsigned_abs()).unwrap_or(0);
+    let (os_code, os_message) = node_code(raw);
+    let info = SystemErrorInfo {
+        code: os_code,
+        errno: -raw,
+        syscall,
+        message: os_message,
+    };
+    SystemError {
+        code: "ERR_SYSTEM_ERROR",
+        errno: info.errno,
+        syscall,
+        message: format!("A system error occurred: {syscall} returned {os_code} ({os_message})"),
+        info,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -300,9 +352,63 @@ mod tests {
     use std::path::Path;
 
     use super::{
-        MapEnv, atomic_replace, env_trimmed, fs_error, home_dir, read_text, read_text_capped,
-        write_text,
+        MapEnv, PasswdLookup, atomic_replace, env_trimmed, fs_error, home_dir, os_homedir,
+        read_text, read_text_capped, write_text,
     };
+
+    struct StaticPasswd {
+        result: Result<String, i32>,
+    }
+
+    impl PasswdLookup for StaticPasswd {
+        fn current_home(&self) -> Result<String, i32> {
+            self.result.clone()
+        }
+    }
+
+    #[test]
+    fn os_homedir_prefers_home_and_keeps_the_lookup_errno() {
+        let missing = StaticPasswd { result: Err(2) };
+        let mut env = MapEnv::new();
+        env.set("HOME", "/home/example");
+        assert_eq!(os_homedir(&env, &missing).unwrap(), "/home/example");
+        env.set("HOME", "");
+        assert_eq!(os_homedir(&env, &missing).unwrap(), "");
+        let bare = MapEnv::new();
+        let err = os_homedir(&bare, &missing).unwrap_err();
+        assert_eq!(err.code, "ERR_SYSTEM_ERROR");
+        assert_eq!(err.errno, -2);
+        assert_eq!(err.syscall, "uv_os_homedir");
+        assert_eq!(err.info.code, "ENOENT");
+        assert_eq!(err.info.errno, -2);
+        assert_eq!(err.info.syscall, "uv_os_homedir");
+        assert_eq!(err.info.message, "no such file or directory");
+        assert_eq!(
+            err.message,
+            "A system error occurred: uv_os_homedir returned ENOENT (no such file or directory)"
+        );
+        assert_eq!(
+            err.to_string(),
+            "SystemError [ERR_SYSTEM_ERROR]: A system error occurred: uv_os_homedir returned ENOENT (no such file or directory)"
+        );
+        let io_error = StaticPasswd { result: Err(5) };
+        let err = os_homedir(&bare, &io_error).unwrap_err();
+        assert_eq!(err.info.code, "EIO");
+        assert_eq!(err.errno, -5);
+        assert_eq!(err.info.message, "i/o error");
+        assert_eq!(
+            err.message,
+            "A system error occurred: uv_os_homedir returned EIO (i/o error)"
+        );
+        let found = StaticPasswd {
+            result: Ok("/home/injected".to_string()),
+        };
+        assert_eq!(os_homedir(&bare, &found).unwrap(), "/home/injected");
+        assert_eq!(
+            home_dir(&bare),
+            os_homedir(&bare, &super::CurrentPasswd).ok()
+        );
+    }
 
     #[test]
     fn trimmed_home_and_files() {

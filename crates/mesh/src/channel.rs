@@ -22,7 +22,7 @@ use tokio_rustls::TlsAcceptor;
 
 use protocol::JsNumber;
 use protocol::events::InboundMessage;
-use protocol::js::{JsObject, JsValue};
+use protocol::js::{JsObject, JsString, JsValue};
 
 use crate::error::MeshError;
 use crate::model::{
@@ -510,37 +510,44 @@ impl Inner {
     }
 
     async fn handle_message(&self, bytes: &[u8]) -> Reply {
-        let body = match serde_json::from_slice::<Value>(bytes) {
-            Ok(body) => body,
+        let text = String::from_utf8_lossy(bytes);
+        let parsed = match protocol::js::parse(&text) {
+            Ok(value) => value,
             Err(_) => return invalid_json(),
         };
-        let Some(from_agent) = truthy_string(&body, "fromAgent") else {
+        let Some(body) = parsed.as_object() else {
             return json_reply(
                 StatusCode::BAD_REQUEST,
                 &error_body("Missing required fields: fromAgent, message"),
             );
         };
-        let Some(message) = truthy_string(&body, "message") else {
+        let Some(from_agent) = js_truthy_string(body, "fromAgent") else {
             return json_reply(
                 StatusCode::BAD_REQUEST,
                 &error_body("Missing required fields: fromAgent, message"),
             );
         };
-        let from_agent = from_agent.to_string();
-        let message = message.to_string();
+        let Some(message) = js_truthy_string(body, "message") else {
+            return json_reply(
+                StatusCode::BAD_REQUEST,
+                &error_body("Missing required fields: fromAgent, message"),
+            );
+        };
+        let from_agent = from_agent.clone();
+        let message = message.clone();
         let conversation_id = body
             .get("conversationId")
-            .and_then(Value::as_str)
-            .map(str::to_string);
+            .and_then(JsValue::as_js_string)
+            .cloned();
         let request_id = new_request_id();
         let inbound = inbound_message(
             &self.config.agent_id,
             &from_agent,
             &message,
-            conversation_id.as_deref(),
+            conversation_id.as_ref(),
             &request_id,
         );
-        if waits_for_response(&body) {
+        if waits_for_response(body) {
             let handler = self.handler.lock().clone();
             let Some(handler) = handler else {
                 return json_reply(
@@ -559,7 +566,7 @@ impl Inner {
                     let _ = sender.send(format!("[error processing message: {msg}]"));
                 }
             });
-            let timeout_ms = scheduled_timeout(body.get("timeoutMs"), 0.0);
+            let timeout_ms = scheduled_timeout_js(body.get("timeoutMs"), 0.0);
             let text = wait_for_text(self.pending.as_ref(), &request_id, rx, timeout_ms).await;
             let mut response = Map::new();
             response.insert("response".to_string(), Value::String(text));
@@ -567,7 +574,10 @@ impl Inner {
                 "agent".to_string(),
                 Value::String(self.config.agent_id.clone()),
             );
-            response.insert("fromAgent".to_string(), Value::String(from_agent));
+            response.insert(
+                "fromAgent".to_string(),
+                Value::String(from_agent.to_utf8().to_string()),
+            );
             response.insert("timestamp".to_string(), number_value(timestamp_ms()));
             json_reply(StatusCode::OK, &Value::Object(response))
         } else {
@@ -932,21 +942,28 @@ fn number_value(number: JsNumber) -> Value {
     serde_json::to_value(number).unwrap_or(Value::Null)
 }
 
-fn truthy_string<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
-    value
-        .get(key)
-        .and_then(Value::as_str)
+fn js_truthy_string<'a>(body: &'a JsObject, key: &str) -> Option<&'a JsString> {
+    body.get(key)
+        .and_then(JsValue::as_js_string)
         .filter(|text| !text.is_empty())
 }
 
-fn waits_for_response(value: &Value) -> bool {
-    !matches!(value.get("waitForResponse"), Some(Value::Bool(false)))
+fn waits_for_response(body: &JsObject) -> bool {
+    !matches!(body.get("waitForResponse"), Some(JsValue::Bool(false)))
 }
 
 const JS_TIMEOUT_MAX_MS: f64 = 2_147_483_647.0;
 
 fn scheduled_timeout(value: Option<&Value>, extra_ms: f64) -> Option<u64> {
-    let number = value?.as_f64()?;
+    scheduled_millis(value.and_then(Value::as_f64), extra_ms)
+}
+
+fn scheduled_timeout_js(value: Option<&JsValue>, extra_ms: f64) -> Option<u64> {
+    scheduled_millis(value.and_then(JsValue::as_f64), extra_ms)
+}
+
+fn scheduled_millis(number: Option<f64>, extra_ms: f64) -> Option<u64> {
+    let number = number?;
     if !number.is_finite() || number == 0.0 {
         return None;
     }
@@ -1055,25 +1072,26 @@ fn random_base36(len: usize) -> String {
 
 fn inbound_message(
     agent_id: &str,
-    from_agent: &str,
-    message: &str,
-    conversation_id: Option<&str>,
+    from_agent: &JsString,
+    message: &JsString,
+    conversation_id: Option<&JsString>,
     request_id: &str,
 ) -> InboundMessage {
+    let from_utf8 = from_agent.to_utf8();
     let mut metadata = JsObject::new();
-    metadata.insert("fromAgent", JsValue::from_text(from_agent));
+    metadata.insert("fromAgent", JsValue::String(from_agent.clone()));
     if let Some(conversation_id) = conversation_id {
-        metadata.insert("conversationId", JsValue::from_text(conversation_id));
+        metadata.insert("conversationId", JsValue::String(conversation_id.clone()));
     }
     metadata.insert("isAgentMessage", JsValue::Bool(true));
     InboundMessage {
         id: request_id.to_string(),
-        user_id: format!("agent:{from_agent}"),
-        username: Some(from_agent.to_string()),
-        display_name: Some(format!("Agent: {from_agent}")),
+        user_id: format!("agent:{from_utf8}"),
+        username: Some(from_utf8.to_string()),
+        display_name: Some(format!("Agent: {from_utf8}")),
         channel_id: request_id.to_string(),
         chat_type: "agent".to_string(),
-        text: message.to_string(),
+        text: message.clone(),
         platform: "agent".to_string(),
         agent: Some(agent_id.to_string()),
         reply_to_message_id: None,

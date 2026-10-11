@@ -109,7 +109,7 @@ pub struct InboundMessage {
     pub display_name: Option<String>,
     pub channel_id: String,
     pub chat_type: String,
-    pub text: String,
+    pub text: JsString,
     pub platform: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
