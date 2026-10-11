@@ -208,59 +208,81 @@ export const Tile = memo(function Tile(props: TileProps): JSX.Element {
           </>
         )}
       </div>
+      {/* The card face counter-scales its type (--cs) so it stays legible as
+          the camera pulls out. Far out that would outgrow the tile and clip
+          every line, so the face is a size container and each size is capped
+          by the tile's own height (cqh): the content always fits. At
+          Everything the last-message line drops (theme.css) to give the
+          name, title and status the room. */}
       <div
         data-face="card"
         aria-hidden="true"
-        className="pointer-events-none absolute inset-0 flex min-w-0 flex-col justify-center"
+        className="pointer-events-none absolute inset-0 [container-type:size]"
         style={withVars(
           { '--cs': 'min(var(--inv, 1), 4.4)' },
-          {
-            opacity: 'calc(1 - var(--live, 0))',
-            gap: 'calc(8px * var(--cs, 1))',
-            padding: 'calc(18px * var(--cs, 1)) calc(24px * var(--cs, 1))',
-          },
+          { opacity: 'calc(1 - var(--live, 0))' },
         )}
       >
         <div
-          className="flex items-center text-ink"
-          style={{ fontSize: 'calc(24px * var(--cs, 1))', gap: '0.4em' }}
-        >
-          <span
-            className="sc-accent shrink-0 rounded-full"
-            data-harness={harness}
-            style={{ width: '0.62em', height: '0.62em' }}
-          />
-          <span className="truncate">{chip}</span>
-        </div>
-        <div className="truncate text-ink-dim" style={{ fontSize: 'calc(13px * var(--cs, 1))' }}>
-          {title}
-        </div>
-        <span
-          className={`self-start rounded-full font-mono uppercase ${
-            status === 'needs'
-              ? 'bg-warn text-bg'
-              : status === 'working'
-                ? 'bg-em/15 text-em'
-                : status === 'done'
-                  ? 'text-em'
-                  : 'bg-panel-2 text-ink-dim'
-          }`}
+          data-face-body=""
+          className="flex h-full min-w-0 flex-col justify-center overflow-hidden"
           style={{
-            fontSize: 'calc(10px * var(--cs, 1))',
-            letterSpacing: '0.06em',
-            padding: '0.45em 0.8em',
+            gap: 'min(calc(8px * var(--cs, 1)), 4cqh)',
+            padding: 'min(calc(18px * var(--cs, 1)), 9cqh) min(calc(24px * var(--cs, 1)), 7cqw)',
           }}
         >
-          {tilePill(status)}
-        </span>
-        {last ? (
           <div
-            className="truncate text-ink-dim"
-            style={{ fontSize: 'calc(11.5px * var(--cs, 1))', lineHeight: 1.3 }}
+            className="flex shrink-0 items-center text-ink"
+            style={{
+              fontSize: 'min(calc(24px * var(--cs, 1)), var(--face-name-cap, 16cqh))',
+              lineHeight: 1.25,
+              gap: '0.4em',
+            }}
           >
-            {last}
+            <span
+              className="sc-accent shrink-0 rounded-full"
+              data-harness={harness}
+              style={{ width: '0.62em', height: '0.62em' }}
+            />
+            <span className="truncate">{chip}</span>
           </div>
-        ) : null}
+          <div
+            className="shrink-0 truncate text-ink-dim"
+            style={{
+              fontSize: 'min(calc(13px * var(--cs, 1)), var(--face-title-cap, 9cqh))',
+              lineHeight: 1.3,
+            }}
+          >
+            {title}
+          </div>
+          <span
+            className={`shrink-0 self-start rounded-full font-mono leading-none uppercase ${
+              status === 'needs'
+                ? 'bg-warn text-bg'
+                : status === 'working'
+                  ? 'bg-em/15 text-em'
+                  : status === 'done'
+                    ? 'text-em'
+                    : 'bg-panel-2 text-ink-dim'
+            }`}
+            style={{
+              fontSize: 'min(calc(10px * var(--cs, 1)), var(--face-pill-cap, 7cqh))',
+              letterSpacing: '0.06em',
+              padding: '0.45em 0.8em',
+            }}
+          >
+            {tilePill(status)}
+          </span>
+          {last ? (
+            <div
+              data-face-last=""
+              className="shrink-0 truncate text-ink-dim"
+              style={{ fontSize: 'min(calc(11.5px * var(--cs, 1)), 8cqh)', lineHeight: 1.3 }}
+            >
+              {last}
+            </div>
+          ) : null}
+        </div>
       </div>
       {props.showMini ? <ThreadMini item={props.item} descriptors={props.descriptors} /> : null}
       {props.showThread ? (
