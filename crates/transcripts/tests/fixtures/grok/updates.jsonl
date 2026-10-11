@@ -1,0 +1,3 @@
+{"method":"_x.ai/session/update","params":{"update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"plan the migrate"}}}}
+{"method":"_x.ai/session/update","params":{"update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"need a plan"}}}}
+{"method":"_x.ai/session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"ok, planning"}}}}
