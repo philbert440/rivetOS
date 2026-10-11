@@ -19,6 +19,7 @@ import {
 import { discardDraft } from '../../lib/discard-session.js'
 import { storageKey } from '../../lib/session-rekey.js'
 import { startNewConversation } from '../../lib/new-conversation.js'
+import { X } from 'lucide-react'
 import { useAgentFilter } from '../../stores/agent-filter.js'
 import { useArchived } from '../../stores/archived.js'
 import { useConnection } from '../../stores/connection.js'
@@ -43,6 +44,9 @@ export function HistoryPanel(props: {
   const membership = useSpaces((s) => s.membership)
   const spaces = useSpaces((s) => s.spaces)
   const agentId = useAgentFilter((s) => s.agentId)
+  const agentName = useAgentFilter((s) => s.name)
+  const agentAccent = useAgentFilter((s) => s.accent)
+  const clearAgent = useAgentFilter((s) => s.clear)
   const [showArchived, setShowArchived] = useState(false)
   const [openGroups, setOpenGroups] = useState<ReadonlySet<string>>(() => new Set())
 
@@ -176,10 +180,38 @@ export function HistoryPanel(props: {
           </button>
         )}
       </div>
+      {/* History follows the sidebar's selected agent, like the
+          conversations list. Say so, with a one-click way back to all of it:
+          a quiet filter reads as "History is missing my threads". */}
+      {agentId && !props.pick ? (
+        <div data-history-filter="" className="px-3 pt-2">
+          <span className="inline-flex max-w-full items-center gap-1.5 rounded-lg border border-line bg-surface px-2.5 py-1 text-xs text-ink classic:bg-panel classic:px-2 classic:py-0.5 classic:text-[11px]">
+            <span
+              className="size-2 shrink-0 rounded-full"
+              style={{ background: agentAccent }}
+              aria-hidden
+            />
+            <span className="min-w-0 truncate">Only {agentName ?? 'this agent'}</span>
+            <button
+              type="button"
+              onClick={() => clearAgent()}
+              aria-label="Show all of History"
+              title="Show all of History"
+              className="shrink-0 text-ink-dim hover:text-em"
+            >
+              <X className="size-3" />
+            </button>
+          </span>
+        </div>
+      ) : null}
       <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
         {renderNodes(forest)}
         {listed.length === 0 && (
-          <div className="px-2 py-2 text-xs text-ink-dim">nothing in History</div>
+          <div className="px-2 py-2 text-xs text-ink-dim">
+            {agentId
+              ? `nothing from ${agentName ?? 'this agent'} in History`
+              : 'nothing in History'}
+          </div>
         )}
       </div>
       {archivedCount > 0 && (
