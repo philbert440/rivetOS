@@ -15,6 +15,7 @@ path = "src/main.rs"
 
 [dependencies]
 base64 = "0.23.1"
+fd-lock = "4.0.4"
 p12-keystore = "0.4.0"
 rand = "0.8"
 rsa = { version = "0.9.10", features = ["pem", "sha2"] }

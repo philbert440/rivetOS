@@ -2,7 +2,7 @@ use std::fs;
 use std::path::Path;
 
 use crate::error::Error;
-use crate::serial;
+use crate::fsutil;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IndexRow {
@@ -24,10 +24,10 @@ impl IndexRow {
 }
 
 pub fn read_index(path: &Path) -> Result<Vec<IndexRow>, Error> {
-    if !path.exists() {
+    let Some(bytes) = fsutil::read_optional(path)? else {
         return Ok(Vec::new());
-    }
-    let text = fs::read_to_string(path)?;
+    };
+    let text = String::from_utf8_lossy(&bytes);
     let mut rows = Vec::new();
     for line in text.split_inclusive('\n') {
         let trimmed = line.trim_end_matches(['\n', '\r']);
@@ -50,21 +50,13 @@ pub fn read_index(path: &Path) -> Result<Vec<IndexRow>, Error> {
     Ok(rows)
 }
 
-pub fn write_index(path: &Path, rows: &[IndexRow]) -> Result<(), Error> {
-    serial::backup(path)?;
-    let mut text = String::new();
-    for row in rows {
-        text.push_str(&row.format_line());
-    }
-    fs::write(path, text)?;
-    Ok(())
-}
-
 pub fn ensure_attr(dir: &Path) -> Result<(), Error> {
     let attr = dir.join("index.txt.attr");
+    fsutil::reject_symlink(&attr)?;
     if !attr.exists() {
-        fs::write(&attr, "unique_subject = no\n")?;
+        fsutil::atomic_write(&attr, b"unique_subject = no\n", 0o644, false)?;
     }
-    fs::copy(&attr, serial::old_path(&attr))?;
+    let bytes = fs::read(&attr)?;
+    fsutil::atomic_write(&fsutil::old_path(&attr), &bytes, 0o644, false)?;
     Ok(())
 }

@@ -14,16 +14,12 @@ pub fn org_then_cn(org: &str, cn: &str) -> Result<Name, Error> {
     Name::from_str(&format!("CN={},O={}", escape(cn), escape(org))).map_err(wrap)
 }
 
-pub fn cn_then_org(org: &str, cn: &str) -> Result<Name, Error> {
-    Name::from_str(&format!("O={},CN={}", escape(org), escape(cn))).map_err(wrap)
-}
-
-pub fn cn_org_ou(org: &str, ou: &str, cn: &str) -> Result<Name, Error> {
+pub fn org_ou_then_cn(org: &str, ou: &str, cn: &str) -> Result<Name, Error> {
     Name::from_str(&format!(
-        "OU={},O={},CN={}",
+        "CN={},OU={},O={}",
+        escape(cn),
         escape(ou),
-        escape(org),
-        escape(cn)
+        escape(org)
     ))
     .map_err(wrap)
 }
@@ -54,7 +50,7 @@ pub fn oneline(name: &X509Name<'_>) -> String {
         text.push('=');
         let value = attr.as_str().unwrap_or("");
         for byte in value.bytes() {
-            if !(0x20..=0x7e).contains(&byte) {
+            if !(0x20..=0x7e).contains(&byte) || byte == b'/' {
                 text.push_str(&format!("\\x{byte:02X}"));
             } else {
                 text.push(char::from(byte));
@@ -127,4 +123,39 @@ fn escape(value: &str) -> String {
         out.push(*ch);
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{oneline, org_ou_then_cn, org_then_cn};
+    use x509_cert::der::Encode;
+    use x509_parser::prelude::FromDer;
+    use x509_parser::x509::X509Name;
+
+    fn render(name: &x509_cert::name::Name) -> (Vec<&'static str>, String) {
+        let der = name.to_der().unwrap();
+        let (_, parsed) = X509Name::from_der(&der).unwrap();
+        let kinds = parsed
+            .iter_attributes()
+            .map(|attr| super::short_name(attr.attr_type()))
+            .collect();
+        (kinds, oneline(&parsed))
+    }
+
+    #[test]
+    fn subject_order_matches_openssl_subj() {
+        let (kinds, line) = render(&org_then_cn("Rivet Collective", "node-a.mesh").unwrap());
+        assert_eq!(kinds, ["O", "CN"]);
+        assert_eq!(line, "/O=Rivet Collective/CN=node-a.mesh");
+        let (kinds, line) =
+            render(&org_ou_then_cn("Rivet Collective", "client", "device:pixel").unwrap());
+        assert_eq!(kinds, ["O", "OU", "CN"]);
+        assert_eq!(line, "/O=Rivet Collective/OU=client/CN=device:pixel");
+    }
+
+    #[test]
+    fn oneline_escapes_slash() {
+        let (_, line) = render(&org_then_cn("Rivet Collective", "a/b").unwrap());
+        assert_eq!(line, "/O=Rivet Collective/CN=a\\x2Fb");
+    }
 }

@@ -1,6 +1,7 @@
 use rsa::RsaPrivateKey;
 use rsa::pkcs1v15::SigningKey;
 use rsa::sha2::Sha256;
+use rsa::traits::PublicKeyParts;
 use x509_cert::der::Decode;
 use x509_cert::der::asn1::{Any, BitString};
 use x509_cert::spki::{
@@ -80,6 +81,32 @@ pub fn subject_spki(key: &RsaPrivateKey) -> Result<SubjectPublicKeyInfoOwned, Er
 
 pub fn generate_rsa(bits: usize) -> Result<RsaPrivateKey, Error> {
     RsaPrivateKey::new(&mut rand::rngs::OsRng, bits).map_err(wrap)
+}
+
+pub fn private_key_matches_cert(key: &RsaPrivateKey, cert_pem: &str) -> Result<(), Error> {
+    let der = crate::pemutil::first_certificate(cert_pem.as_bytes())?;
+    let (_, certificate) = x509_parser::parse_x509_certificate(&der)
+        .map_err(|err| Error::msg(format!("parse certificate: {err:?}")))?;
+    let parsed = certificate
+        .public_key()
+        .parsed()
+        .map_err(|_| Error::msg("CA certificate public key is not RSA"))?;
+    let x509_parser::public_key::PublicKey::RSA(rsa_key) = parsed else {
+        return Err(Error::msg("CA certificate public key is not RSA"));
+    };
+    if strip_leading_zeros(rsa_key.modulus) != key.n().to_bytes_be().as_slice()
+        || strip_leading_zeros(rsa_key.exponent) != key.e().to_bytes_be().as_slice()
+    {
+        return Err(Error::msg("CA private key does not match its certificate"));
+    }
+    Ok(())
+}
+
+fn strip_leading_zeros(bytes: &[u8]) -> &[u8] {
+    let Some(start) = bytes.iter().position(|byte| *byte != 0) else {
+        return &bytes[..bytes.len().min(1)];
+    };
+    &bytes[start..]
 }
 
 pub fn load_rsa_pem(text: &str) -> Result<RsaPrivateKey, Error> {

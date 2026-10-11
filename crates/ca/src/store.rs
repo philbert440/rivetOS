@@ -1,6 +1,6 @@
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use rsa::RsaPrivateKey;
 use x509_cert::ext::pkix::SubjectAltName;
@@ -13,14 +13,13 @@ use crate::certs::{
     leaf_constraints, parse_san_list, server_eku, server_usage, sign_certificate,
 };
 use crate::error::{Error, wrap};
+use crate::fsutil;
 use crate::index::{self, IndexRow};
-use crate::namefmt::{
-    cn_matches, cn_org_ou, cn_then_org, oneline, openssl_subject_line, org_then_cn,
-};
+use crate::namefmt::{cn_matches, oneline, openssl_subject_line, org_ou_then_cn, org_then_cn};
 use crate::paths::CaPaths;
 use crate::pemutil;
 use crate::serial::{self, hex_from_raw, random_serial};
-use crate::signer::{generate_rsa, load_rsa_pem, private_pkcs8_pem};
+use crate::signer::{generate_rsa, load_rsa_pem, private_key_matches_cert, private_pkcs8_pem};
 use crate::timeutil::{self, format_enddate, format_index_time, unix_now};
 use crate::verify as verify_mod;
 
@@ -36,6 +35,12 @@ pub struct CommandOutput {
     pub stdout: String,
     pub stderr: String,
     pub code: i32,
+}
+
+struct SavedFile {
+    path: PathBuf,
+    previous: Option<Vec<u8>>,
+    mode: u32,
 }
 
 fn logged(lines: &[String]) -> CommandOutput {
@@ -68,19 +73,11 @@ fn set_mode(path: &Path, mode: u32) -> Result<(), Error> {
 }
 
 fn ensure_dirs(paths: &CaPaths) -> Result<(), Error> {
-    fs::create_dir_all(&paths.root_dir)?;
-    fs::create_dir_all(paths.int_dir())?;
-    fs::create_dir_all(paths.issued_dir())?;
+    fsutil::ensure_dir(&paths.root_dir)?;
+    fsutil::ensure_dir(&paths.int_dir())?;
+    fsutil::ensure_dir(&paths.issued_dir())?;
     set_mode(&paths.root_dir, 0o700)?;
     Ok(())
-}
-
-fn remove_if_exists(path: &Path) -> Result<(), Error> {
-    match fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(err) => Err(err.into()),
-    }
 }
 
 fn openssl_cnf(int_dir: &Path) -> String {
@@ -131,36 +128,98 @@ authorityKeyIdentifier = keyid,issuer
     )
 }
 
+fn write_if_missing(path: &Path, bytes: &[u8]) -> Result<(), Error> {
+    fsutil::reject_symlink(path)?;
+    if path.exists() {
+        return Ok(());
+    }
+    fsutil::atomic_write(path, bytes, 0o644, false)
+}
+
 fn write_int_cnf(paths: &CaPaths) -> Result<(), Error> {
     let dir = paths.int_dir();
-    fs::write(dir.join("openssl.cnf"), openssl_cnf(&dir))?;
-    let index = dir.join("index.txt");
-    if !index.exists() {
-        fs::write(&index, "")?;
-    }
-    let crlnumber = dir.join("crlnumber");
-    if !crlnumber.exists() {
-        fs::write(&crlnumber, "1000\n")?;
-    }
-    let serial_path = dir.join("int.srl");
-    if !serial_path.exists() {
-        fs::write(&serial_path, "1000\n")?;
-    }
+    fsutil::atomic_write(
+        &dir.join("openssl.cnf"),
+        openssl_cnf(&dir).as_bytes(),
+        0o644,
+        false,
+    )?;
+    write_if_missing(&dir.join("index.txt"), b"")?;
+    write_if_missing(&dir.join("crlnumber"), b"1000\n")?;
+    write_if_missing(&dir.join("int.srl"), b"1000\n")?;
     Ok(())
 }
 
 fn load_or_create_key(path: &Path, bits: usize) -> Result<RsaPrivateKey, Error> {
+    fsutil::reject_symlink(path)?;
     if path.exists() {
-        return load_rsa_pem(&fs::read_to_string(path)?);
+        return load_rsa_pem(&fsutil::read_to_string(path)?);
     }
     let key = generate_rsa(bits)?;
-    fs::write(path, private_pkcs8_pem(&key)?)?;
-    set_mode(path, 0o600)?;
+    fsutil::create_secret(path, private_pkcs8_pem(&key)?.as_bytes())?;
     Ok(key)
+}
+
+fn require_matching_pair(
+    key_path: &Path,
+    crt_path: &Path,
+    missing: &str,
+) -> Result<(RsaPrivateKey, String), Error> {
+    fsutil::reject_symlink(key_path)?;
+    fsutil::reject_symlink(crt_path)?;
+    if !key_path.is_file() || !crt_path.is_file() {
+        return Err(Error::msg(missing));
+    }
+    let key = load_rsa_pem(&fsutil::read_to_string(key_path)?)?;
+    let crt_pem = fsutil::read_to_string(crt_path)?;
+    private_key_matches_cert(&key, &crt_pem)?;
+    Ok((key, crt_pem))
 }
 
 fn parsed_cert(pem: &str) -> Result<Vec<u8>, Error> {
     pemutil::first_certificate(pem.as_bytes())
+}
+
+fn remember(path: &Path, mode: u32, saved: &mut Vec<SavedFile>) -> Result<(), Error> {
+    saved.push(SavedFile {
+        path: path.to_path_buf(),
+        previous: fsutil::read_optional(path)?,
+        mode,
+    });
+    Ok(())
+}
+
+fn restore(saved: &[SavedFile]) -> Result<(), Error> {
+    for item in saved.iter().rev() {
+        match &item.previous {
+            Some(bytes) => fsutil::atomic_write(&item.path, bytes, item.mode, false)?,
+            None => fsutil::remove_file(&item.path)?,
+        }
+    }
+    Ok(())
+}
+
+fn commit_file(
+    path: &Path,
+    bytes: &[u8],
+    mode: u32,
+    keep_old: bool,
+    saved: &mut Vec<SavedFile>,
+) -> Result<(), Error> {
+    if let Err(err) = remember(path, mode, saved) {
+        return restore_or(saved, err);
+    }
+    if let Err(err) = fsutil::atomic_write(path, bytes, mode, keep_old) {
+        return restore_or(saved, err);
+    }
+    Ok(())
+}
+
+fn restore_or(saved: &[SavedFile], err: Error) -> Result<(), Error> {
+    match restore(saved) {
+        Ok(()) => Err(err),
+        Err(rollback) => Err(Error::msg(format!("{err}; rollback failed: {rollback}"))),
+    }
 }
 
 struct LeafFiles {
@@ -177,17 +236,22 @@ fn issue_leaf(
     write_int_cnf(paths)?;
     let key_path = paths.int_dir().join("int.key");
     let crt_path = paths.int_dir().join("int.crt");
-    if !key_path.is_file() || !crt_path.is_file() {
-        return Err(Error::msg(
-            "no intermediate — run 'issue-intermediate' first",
-        ));
-    }
-    let issuer_key = load_rsa_pem(&fs::read_to_string(&key_path)?)?;
-    let issuer = issuer_name_from_pem(&fs::read_to_string(&crt_path)?)?;
+    let (issuer_key, issuer_pem) = require_matching_pair(
+        &key_path,
+        &crt_path,
+        "no intermediate — run 'issue-intermediate' first",
+    )?;
+    let issuer = issuer_name_from_pem(&issuer_pem)?;
     let leaf_key_path = paths.issued_dir().join(format!("{stem}.key"));
     let leaf_crt_path = paths.issued_dir().join(format!("{stem}.crt"));
+    fsutil::reject_symlink(&leaf_key_path)?;
+    fsutil::reject_symlink(&leaf_crt_path)?;
     let leaf_key = load_or_create_key(&leaf_key_path, 2048)?;
-    let serial_value = serial::use_then_increment(&paths.int_dir().join("int.srl"))?;
+    let serial_path = paths.int_dir().join("int.srl");
+    let serial_value = serial::read_counter(&serial_path)?;
+    let next = serial_value
+        .checked_add(1)
+        .ok_or_else(|| Error::msg("serial overflow"))?;
     let serial_hex = serial::hex_u128(serial_value);
     let now = unix_now();
     let not_before = timeutil::time_at(now)?;
@@ -211,12 +275,6 @@ fn issue_leaf(
             san,
         },
     )?;
-    fs::write(&leaf_crt_path, &issued.pem)?;
-    fs::write(
-        paths.int_dir().join(format!("{serial_hex}.pem")),
-        &issued.pem,
-    )?;
-    remove_if_exists(&paths.issued_dir().join(format!("{stem}.csr")))?;
     let der = parsed_cert(&issued.pem)?;
     let (_, certificate) = X509Certificate::from_der(&der)
         .map_err(|err| Error::msg(format!("parse issued cert: {err:?}")))?;
@@ -232,27 +290,85 @@ fn issue_leaf(
     };
     let index_path = paths.int_dir().join("index.txt");
     let mut rows = index::read_index(&index_path)?;
-    rows.push(row.clone());
-    index::write_index(&index_path, &rows)?;
+    rows.push(row);
+    let mut index_text = String::new();
+    for item in &rows {
+        index_text.push_str(&item.format_line());
+    }
+    let archive_path = paths.int_dir().join(format!("{serial_hex}.pem"));
+    let mut saved = Vec::new();
+    commit_file(&index_path, index_text.as_bytes(), 0o644, true, &mut saved)?;
+    commit_file(
+        &serial_path,
+        format!("{}\n", serial::hex_u128(next)).as_bytes(),
+        0o644,
+        true,
+        &mut saved,
+    )?;
+    commit_file(
+        &leaf_crt_path,
+        issued.pem.as_bytes(),
+        0o644,
+        false,
+        &mut saved,
+    )?;
+    commit_file(
+        &archive_path,
+        issued.pem.as_bytes(),
+        0o644,
+        false,
+        &mut saved,
+    )?;
+    fsutil::remove_file(&paths.issued_dir().join(format!("{stem}.csr")))?;
     index::ensure_attr(&paths.int_dir())?;
     Ok(LeafFiles {
         enddate: format_enddate(when),
     })
 }
 
+pub fn valid_path_component(id: &str) -> bool {
+    if id.is_empty() || id.contains('\0') || id.contains('/') || id.contains("..") {
+        return false;
+    }
+    let path = Path::new(id);
+    match path.file_name().and_then(|name| name.to_str()) {
+        Some(name) if name == id => {
+            path.components().count() == 1
+                && matches!(path.components().next(), Some(Component::Normal(_)))
+        }
+        _ => false,
+    }
+}
+
+fn bad_component(label: &str, id: &str) -> Error {
+    Error::msg(format!(
+        "{label} must be a single path component without '/' or '..' (got: {id})"
+    ))
+}
+
 pub fn init(paths: &CaPaths) -> Result<CommandOutput, Error> {
-    ensure_dirs(paths)?;
+    fsutil::ensure_dir(&paths.root_dir)?;
+    fsutil::with_dir_lock(&paths.root_dir, || init_locked(paths))
+}
+
+fn init_locked(paths: &CaPaths) -> Result<CommandOutput, Error> {
+    set_mode(&paths.root_dir, 0o700)?;
     let key_path = paths.root_dir.join("ca.key");
+    fsutil::reject_symlink(&key_path)?;
     if key_path.exists() {
         return Err(Error::msg(format!(
             "root already exists at {} — refusing to overwrite",
             key_path.display()
         )));
     }
+    let mut lines = vec![format!(
+        "generating root key + self-signed cert ({DAYS_ROOT} days) at {}",
+        paths.root_dir.display()
+    )];
     let subject = org_then_cn(ORG, ROOT_CN)?;
     let key = generate_rsa(4096)?;
-    fs::write(&key_path, private_pkcs8_pem(&key)?)?;
-    set_mode(&key_path, 0o600)?;
+    fsutil::create_secret(&key_path, private_pkcs8_pem(&key)?.as_bytes())
+        .map_err(|err| err.with_lines(&lines))?;
     let now = unix_now();
     let issued = sign_certificate(
         &key,
@@ -268,42 +384,69 @@ pub fn init(paths: &CaPaths) -> Result<CommandOutput, Error> {
             eku: None,
             san: None,
         },
-    )?;
-    fs::write(paths.root_dir.join("ca.crt"), issued.pem)?;
-    fs::write(paths.root_dir.join("ca.srl"), "1000\n")?;
-    Ok(logged(&[
-        format!(
-            "generating root key + self-signed cert ({DAYS_ROOT} days) at {}",
-            paths.root_dir.display()
-        ),
-        format!("root cert: {}", paths.root_dir.join("ca.crt").display()),
-        format!(
-            "root key:  {}  (KEEP OFFLINE / LOCAL ONLY)",
-            key_path.display()
-        ),
-    ]))
+    )
+    .map_err(|err| err.with_lines(&lines))?;
+    fsutil::atomic_write(
+        &paths.root_dir.join("ca.crt"),
+        issued.pem.as_bytes(),
+        0o644,
+        false,
+    )
+    .map_err(|err| err.with_lines(&lines))?;
+    fsutil::atomic_write(&paths.root_dir.join("ca.srl"), b"1000\n", 0o644, false)
+        .map_err(|err| err.with_lines(&lines))?;
+    lines.push(format!(
+        "root cert: {}",
+        paths.root_dir.join("ca.crt").display()
+    ));
+    lines.push(format!(
+        "root key:  {}  (KEEP OFFLINE / LOCAL ONLY)",
+        key_path.display()
+    ));
+    Ok(logged(&lines))
 }
 
 pub fn issue_intermediate(paths: &CaPaths) -> Result<CommandOutput, Error> {
     ensure_dirs(paths)?;
+    fsutil::with_both_locks(&paths.root_dir, &paths.shared_dir, || {
+        issue_intermediate_locked(paths)
+    })
+}
+
+fn issue_intermediate_locked(paths: &CaPaths) -> Result<CommandOutput, Error> {
     let root_key_path = paths.root_dir.join("ca.key");
-    if !root_key_path.is_file() {
+    let root_crt_path = paths.root_dir.join("ca.crt");
+    let int_key_path = paths.int_dir().join("int.key");
+    fsutil::reject_symlink(&root_key_path)?;
+    fsutil::reject_symlink(&root_crt_path)?;
+    fsutil::reject_symlink(&int_key_path)?;
+    if !root_key_path.is_file() || !root_crt_path.is_file() {
         return Err(Error::msg("no root — run 'init' first"));
     }
-    let int_key_path = paths.int_dir().join("int.key");
     if int_key_path.exists() {
         return Err(Error::msg(format!(
             "intermediate already exists at {}",
             int_key_path.display()
         )));
     }
-    let root_key = load_rsa_pem(&fs::read_to_string(&root_key_path)?)?;
-    let issuer = issuer_name_from_pem(&fs::read_to_string(paths.root_dir.join("ca.crt"))?)?;
+    let root_key = load_rsa_pem(&fsutil::read_to_string(&root_key_path)?)?;
+    let root_pem = fsutil::read_to_string(&root_crt_path)?;
+    private_key_matches_cert(&root_key, &root_pem)?;
+    let mut lines = vec![format!(
+        "generating intermediate key + CSR ({DAYS_INT} days)"
+    )];
+    let issuer = issuer_name_from_pem(&root_pem)?;
     let subject = org_then_cn(ORG, INT_CN)?;
     let key = generate_rsa(4096)?;
-    fs::write(&int_key_path, private_pkcs8_pem(&key)?)?;
-    set_mode(&int_key_path, 0o600)?;
-    let serial_value = serial::increment_then_use(&paths.root_dir.join("ca.srl"))?;
+    fsutil::create_secret(&int_key_path, private_pkcs8_pem(&key)?.as_bytes())
+        .map_err(|err| err.with_lines(&lines))?;
+    lines.push("signing intermediate with root".to_string());
+    let serial_path = paths.root_dir.join("ca.srl");
+    let current = serial::read_counter(&serial_path).map_err(|err| err.with_lines(&lines))?;
+    let serial_value = current
+        .checked_add(1)
+        .ok_or_else(|| Error::msg("serial overflow"))
+        .map_err(|err| err.with_lines(&lines))?;
     let now = unix_now();
     let issued = sign_certificate(
         &key,
@@ -319,21 +462,29 @@ pub fn issue_intermediate(paths: &CaPaths) -> Result<CommandOutput, Error> {
             eku: None,
             san: None,
         },
-    )?;
+    )
+    .map_err(|err| err.with_lines(&lines))?;
+    serial::write_counter(&serial_path, serial_value, false)
+        .map_err(|err| err.with_lines(&lines))?;
     let int_crt = paths.int_dir().join("int.crt");
-    fs::write(&int_crt, &issued.pem)?;
-    remove_if_exists(&paths.int_dir().join("int.csr"))?;
-    let mut chain = fs::read(&int_crt)?;
-    chain.extend(fs::read(paths.root_dir.join("ca.crt"))?);
+    fsutil::atomic_write(&int_crt, issued.pem.as_bytes(), 0o644, false)
+        .map_err(|err| err.with_lines(&lines))?;
+    fsutil::remove_file(&paths.int_dir().join("int.csr"))?;
+    let mut chain = fsutil::read_optional(&int_crt)?
+        .ok_or_else(|| Error::msg("intermediate cert missing after write"))
+        .map_err(|err| err.with_lines(&lines))?;
+    chain.extend(
+        fsutil::read_optional(&root_crt_path)?
+            .ok_or_else(|| Error::msg("root cert missing"))
+            .map_err(|err| err.with_lines(&lines))?,
+    );
     let chain_path = paths.chain_path();
-    fs::write(&chain_path, &chain)?;
-    fs::write(paths.int_dir().join("ca-chain.pem"), &chain)?;
-    let crl_out = crl(paths)?;
-    let mut stderr = logged(&[
-        format!("generating intermediate key + CSR ({DAYS_INT} days)"),
-        "signing intermediate with root".to_string(),
-    ])
-    .stderr;
+    fsutil::atomic_write(&chain_path, &chain, 0o644, false)
+        .map_err(|err| err.with_lines(&lines))?;
+    fsutil::atomic_write(&paths.int_dir().join("ca-chain.pem"), &chain, 0o644, false)
+        .map_err(|err| err.with_lines(&lines))?;
+    let crl_out = crl_locked(paths).map_err(|err| err.with_lines(&lines))?;
+    let mut stderr = logged(&lines).stderr;
     stderr.push_str(&crl_out.stderr);
     stderr.push_str(
         &logged(&[
@@ -376,7 +527,20 @@ pub fn issue_node(
     if node_id.is_empty() {
         return Err(Error::msg("usage: issue-node <node-id> [extra-san ...]"));
     }
+    if !valid_path_component(node_id) {
+        return Err(bad_component("node-id", node_id));
+    }
     ensure_dirs(paths)?;
+    fsutil::with_dir_lock(&paths.shared_dir, || {
+        issue_node_locked(paths, node_id, extras)
+    })
+}
+
+fn issue_node_locked(
+    paths: &CaPaths,
+    node_id: &str,
+    extras: &[String],
+) -> Result<CommandOutput, Error> {
     let crt = paths.issued_dir().join(format!("{node_id}.crt"));
     let mut lines = Vec::new();
     if crt.exists() {
@@ -386,8 +550,10 @@ pub fn issue_node(
         ));
     }
     let sans = node_sans(node_id, extras);
-    let subject = cn_then_org(ORG, &format!("{node_id}.mesh"))?;
-    let leaf = issue_leaf(paths, node_id, subject, Some(parse_san_list(&sans)?), true)?;
+    let subject =
+        org_then_cn(ORG, &format!("{node_id}.mesh")).map_err(|err| err.with_lines(&lines))?;
+    let leaf = issue_leaf(paths, node_id, subject, Some(parse_san_list(&sans)?), true)
+        .map_err(|err| err.with_lines(&lines))?;
     lines.push(format!("issued node cert: {}", crt.display()));
     lines.push(format!("  SANs: {sans}"));
     lines.push(format!("  expires: {}", leaf.enddate));
@@ -398,10 +564,26 @@ pub fn issue_agent(paths: &CaPaths, agent_id: &str, node_id: &str) -> Result<Com
     if agent_id.is_empty() || node_id.is_empty() {
         return Err(Error::msg("usage: issue-agent <agent-id> <node-id>"));
     }
+    if !valid_path_component(agent_id) {
+        return Err(bad_component("agent-id", agent_id));
+    }
+    if !valid_path_component(node_id) {
+        return Err(bad_component("node-id", node_id));
+    }
     ensure_dirs(paths)?;
+    fsutil::with_dir_lock(&paths.shared_dir, || {
+        issue_agent_locked(paths, agent_id, node_id)
+    })
+}
+
+fn issue_agent_locked(
+    paths: &CaPaths,
+    agent_id: &str,
+    node_id: &str,
+) -> Result<CommandOutput, Error> {
     let cn = format!("{agent_id}@{node_id}");
     let crt = paths.issued_dir().join(format!("{cn}.crt"));
-    let subject = cn_then_org(ORG, &cn)?;
+    let subject = org_then_cn(ORG, &cn)?;
     let leaf = issue_leaf(paths, &cn, subject, None, false)?;
     Ok(logged(&[
         format!("issued agent cert: {}  (CN={cn})", crt.display()),
@@ -431,10 +613,14 @@ pub fn issue_client(paths: &CaPaths, device_id: &str) -> Result<CommandOutput, E
         )));
     }
     ensure_dirs(paths)?;
+    fsutil::with_dir_lock(&paths.shared_dir, || issue_client_locked(paths, device_id))
+}
+
+fn issue_client_locked(paths: &CaPaths, device_id: &str) -> Result<CommandOutput, Error> {
     let cn = format!("device:{device_id}");
     let stem = format!("device-{device_id}");
     let crt = paths.issued_dir().join(format!("{stem}.crt"));
-    let subject = cn_org_ou(ORG, "client", &cn)?;
+    let subject = org_ou_then_cn(ORG, "client", &cn)?;
     let leaf = issue_leaf(paths, &stem, subject, None, false)?;
     Ok(logged(&[
         format!(
@@ -467,6 +653,18 @@ pub fn revoke(paths: &CaPaths, cn: &str) -> Result<CommandOutput, Error> {
             "usage: revoke <cn>   (e.g. node-b.mesh, opus@node-b)",
         ));
     }
+    fsutil::with_dir_lock(&paths.shared_dir, || revoke_locked(paths, cn))
+}
+
+fn revoke_failed(path: &Path, message: &str) -> CommandOutput {
+    CommandOutput {
+        stdout: String::new(),
+        stderr: format!("rivet-ca: revoking {}\n{message}\n", path.display()),
+        code: 1,
+    }
+}
+
+fn revoke_locked(paths: &CaPaths, cn: &str) -> Result<CommandOutput, Error> {
     write_int_cnf(paths)?;
     let mut target = None;
     for path in issued_certs(&paths.issued_dir())? {
@@ -489,12 +687,12 @@ pub fn revoke(paths: &CaPaths, cn: &str) -> Result<CommandOutput, Error> {
     let mut rows = index::read_index(&index_path)?;
     let mut found = false;
     for row in &mut rows {
-        if row.serial.eq_ignore_ascii_case(&serial_hex) {
+        if serial::same_serial(&row.serial, &serial_hex) {
             if row.status == "R" {
-                return Err(Error::msg(format!(
-                    "ERROR:Already revoked, serial number {}",
-                    row.serial
-                )));
+                return Ok(revoke_failed(
+                    &path,
+                    &format!("ERROR:Already revoked, serial number {}", row.serial),
+                ));
             }
             row.status = "R".to_string();
             let now = timeutil::time_at(unix_now())?;
@@ -504,13 +702,30 @@ pub fn revoke(paths: &CaPaths, cn: &str) -> Result<CommandOutput, Error> {
         }
     }
     if !found {
-        return Err(Error::msg(format!(
-            "ERROR:Serial number {serial_hex} not present in db"
-        )));
+        return Ok(revoke_failed(
+            &path,
+            &format!("ERROR:Serial number {serial_hex} not present in db"),
+        ));
     }
-    index::write_index(&index_path, &rows)?;
+    let mut saved = Vec::new();
+    let mut index_text = String::new();
+    for row in &rows {
+        index_text.push_str(&row.format_line());
+    }
+    commit_file(&index_path, index_text.as_bytes(), 0o644, true, &mut saved)?;
+    let crl_out = match crl_locked(paths) {
+        Ok(output) => output,
+        Err(err) => {
+            let rollback = restore(&saved);
+            if let Err(rollback_err) = rollback {
+                return Err(Error::msg(format!(
+                    "{err}; rollback failed: {rollback_err}"
+                )));
+            }
+            return Err(err.with_lines(&[format!("revoking {}", path.display())]));
+        }
+    };
     index::ensure_attr(&paths.int_dir())?;
-    let crl_out = crl(paths)?;
     let mut stderr = logged(&[format!("revoking {}", path.display())]).stderr;
     stderr.push_str(&crl_out.stderr);
     Ok(CommandOutput {
@@ -521,21 +736,42 @@ pub fn revoke(paths: &CaPaths, cn: &str) -> Result<CommandOutput, Error> {
 }
 
 pub fn crl(paths: &CaPaths) -> Result<CommandOutput, Error> {
+    fsutil::with_dir_lock(&paths.shared_dir, || crl_locked(paths))
+}
+
+fn crl_locked(paths: &CaPaths) -> Result<CommandOutput, Error> {
     write_int_cnf(paths)?;
     let key_path = paths.int_dir().join("int.key");
     let crt_path = paths.int_dir().join("int.crt");
-    if !key_path.is_file() || !crt_path.is_file() {
-        return Err(Error::msg(
-            "no intermediate — run 'issue-intermediate' first",
-        ));
-    }
-    let key_pem = fs::read_to_string(&key_path)?;
-    let issuer = issuer_name_from_pem(&fs::read_to_string(&crt_path)?)?;
+    let (key, crt_pem) = require_matching_pair(
+        &key_path,
+        &crt_path,
+        "no intermediate — run 'issue-intermediate' first",
+    )?;
+    let issuer = issuer_name_from_pem(&crt_pem)?;
     let number_path = paths.int_dir().join("crlnumber");
-    let crl_number = serial::use_then_increment(&number_path)?;
+    let crl_number = serial::read_counter(&number_path)?;
+    let next = crl_number
+        .checked_add(1)
+        .ok_or_else(|| Error::msg("serial overflow"))?;
     let rows = index::read_index(&paths.int_dir().join("index.txt"))?;
+    let key_pem = private_pkcs8_pem(&key)?;
     let pem = crate::crl::build_crl_pem(&key_pem, issuer, &rows, crl_number, unix_now())?;
-    fs::write(paths.crl_path(), pem)?;
+    let mut saved = Vec::new();
+    commit_file(
+        &number_path,
+        format!("{}\n", serial::hex_u128(next)).as_bytes(),
+        0o644,
+        true,
+        &mut saved,
+    )?;
+    commit_file(
+        paths.crl_path().as_path(),
+        pem.as_bytes(),
+        0o644,
+        false,
+        &mut saved,
+    )?;
     index::ensure_attr(&paths.int_dir())?;
     Ok(logged(&[format!(
         "CRL written: {}",
@@ -581,4 +817,22 @@ pub fn list_issued(paths: &CaPaths) -> Result<CommandOutput, Error> {
         stderr: String::new(),
         code: 0,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::valid_path_component;
+
+    #[test]
+    fn path_component_rejects_traversal() {
+        assert!(valid_path_component("node-a"));
+        assert!(valid_path_component("opus"));
+        assert!(!valid_path_component("../x"));
+        assert!(!valid_path_component("a/b"));
+        assert!(!valid_path_component("a..b"));
+        assert!(!valid_path_component("a\0b"));
+        assert!(!valid_path_component("."));
+        assert!(!valid_path_component(".."));
+        assert!(!valid_path_component(""));
+    }
 }

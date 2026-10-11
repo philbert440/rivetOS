@@ -2,6 +2,7 @@ mod certs;
 mod cli;
 mod crl;
 mod error;
+mod fsutil;
 mod index;
 mod namefmt;
 mod p12;

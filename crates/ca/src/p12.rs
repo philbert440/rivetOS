@@ -1,6 +1,5 @@
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use p12_keystore::{
     Certificate, EncryptionAlgorithm, KeyStore, KeyStoreEntry, MacAlgorithm, PrivateKey,
@@ -8,6 +7,7 @@ use p12_keystore::{
 };
 
 use crate::error::{Error, wrap};
+use crate::fsutil;
 use crate::paths::CaPaths;
 use crate::pemutil;
 use crate::signer::{load_rsa_pem, private_pkcs8_der};
@@ -48,22 +48,60 @@ pub fn mint_device_p12(
     password: &str,
     output: &Path,
 ) -> Result<(), Error> {
+    fsutil::with_dir_lock(&paths.shared_dir, || {
+        mint_device_p12_locked(paths, device_id, password, output)
+    })
+}
+
+fn mint_device_p12_locked(
+    paths: &CaPaths,
+    device_id: &str,
+    password: &str,
+    output: &Path,
+) -> Result<(), Error> {
     let stem = format!("device-{device_id}");
     let key_path = paths.issued_dir().join(format!("{stem}.key"));
     let cert_path = paths.issued_dir().join(format!("{stem}.crt"));
-    let key_pem = fs::read_to_string(&key_path)
+    let key_pem = fsutil::read_to_string(&key_path)
         .map_err(|_| Error::msg(format!("no device key at {}", key_path.display())))?;
-    let cert_pem = fs::read_to_string(&cert_path)
+    let cert_pem = fsutil::read_to_string(&cert_path)
         .map_err(|_| Error::msg(format!("no device cert at {}", cert_path.display())))?;
-    let chain_pem = fs::read_to_string(paths.chain_path()).ok();
-    let bytes = export_pkcs12(&key_pem, &cert_pem, chain_pem.as_deref(), password)?;
+    let chain_path = select_chain(paths)?;
+    let chain_pem = fsutil::read_to_string(&chain_path)?;
+    let bytes = export_pkcs12(&key_pem, &cert_pem, Some(&chain_pem), password)?;
     if let Some(parent) = output.parent()
         && !parent.as_os_str().is_empty()
     {
-        fs::create_dir_all(parent)?;
+        fsutil::ensure_dir(parent)?;
     }
-    fs::write(output, bytes)?;
-    fs::set_permissions(output, fs::Permissions::from_mode(0o600))?;
-    fs::remove_file(&key_path)?;
+    fsutil::atomic_write(output, &bytes, 0o600, false)?;
+    fsutil::remove_file(&key_path)?;
     Ok(())
+}
+
+fn select_chain(paths: &CaPaths) -> Result<PathBuf, Error> {
+    let preferred = paths.int_dir().join("ca-chain.pem");
+    let fallback = paths.chain_path();
+    if let Some(path) = existing_chain(&preferred)? {
+        return Ok(path);
+    }
+    if let Some(path) = existing_chain(&fallback)? {
+        return Ok(path);
+    }
+    Err(Error::msg(format!(
+        "no CA chain at {} or {}",
+        preferred.display(),
+        fallback.display()
+    )))
+}
+
+fn existing_chain(path: &Path) -> Result<Option<PathBuf>, Error> {
+    match fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            Err(Error::msg(format!("refusing symlink {}", path.display())))
+        }
+        Ok(_) => Ok(Some(path.to_path_buf())),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(err.into()),
+    }
 }

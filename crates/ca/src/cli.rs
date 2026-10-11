@@ -59,7 +59,14 @@ pub fn run(
     match result {
         Ok(output) => emit(stdout, stderr, &output),
         Err(err) => {
-            let _ = writeln!(stderr, "rivet-ca: {err}");
+            let text = err.to_string();
+            if text.is_empty() {
+                let _ = writeln!(stderr, "rivet-ca:");
+            } else {
+                for line in text.split('\n') {
+                    let _ = writeln!(stderr, "rivet-ca: {line}");
+                }
+            }
             1
         }
     }
