@@ -3,7 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::{Map, Value};
 
 use protocol::JsNumber;
-use protocol::js::{JsObject, JsValue};
+use protocol::js::{JsObject, JsString, JsValue};
 
 use crate::error::{MeshParseError, MeshParseErrorCode};
 use crate::paths::shared_path;
@@ -35,7 +35,7 @@ const KNOWN_NODE_KEYS: &[&str] = &[
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct JsEntries {
-    entries: Vec<(String, JsValue)>,
+    entries: Vec<(JsString, JsValue)>,
 }
 
 impl JsEntries {
@@ -46,18 +46,18 @@ impl JsEntries {
     }
 
     pub fn get(&self, key: &str) -> Option<&JsValue> {
+        let needle = JsString::from_text(key);
         self.entries
             .iter()
-            .find(|(existing, _)| existing == key)
+            .find(|(existing, _)| existing == &needle)
             .map(|(_, value)| value)
     }
 
-    pub fn insert(&mut self, key: impl Into<String>, value: JsValue) {
-        let key = key.into();
+    pub fn insert(&mut self, key: JsString, value: JsValue) {
         if let Some(slot) = self
             .entries
             .iter_mut()
-            .find(|(existing, _)| *existing == key)
+            .find(|(existing, _)| existing == &key)
         {
             slot.1 = value;
         } else {
@@ -69,10 +69,8 @@ impl JsEntries {
         self.entries.is_empty()
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (&str, &JsValue)> {
-        self.entries
-            .iter()
-            .map(|(key, value)| (key.as_str(), value))
+    pub fn iter(&self) -> impl Iterator<Item = (&JsString, &JsValue)> {
+        self.entries.iter().map(|(key, value)| (key, value))
     }
 }
 
@@ -102,7 +100,7 @@ pub struct MeshNode {
 #[derive(Debug, Clone, PartialEq)]
 pub struct MeshFile {
     pub version: JsNumber,
-    pub nodes: Vec<(String, MeshNode)>,
+    pub nodes: Vec<(JsString, MeshNode)>,
     pub updated_at: JsNumber,
     pub extra: JsEntries,
 }
@@ -156,17 +154,12 @@ pub enum JoinNodeError {
     MissingFields,
 }
 
-pub fn now_ms() -> JsNumber {
-    let millis = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis())
-        .unwrap_or(0);
-    let millis = u64::try_from(millis).unwrap_or(u64::MAX);
-    JsNumber::from(millis)
+pub(crate) fn timestamp_ms() -> JsNumber {
+    JsNumber::from(protocol::js::date_now())
 }
 
-pub fn now_ms_u64() -> u64 {
-    now_ms().as_u64().unwrap_or(0)
+pub(crate) fn timestamp_millis() -> u64 {
+    timestamp_ms().as_u64().unwrap_or(0)
 }
 
 impl MeshFile {
@@ -174,27 +167,30 @@ impl MeshFile {
         Self {
             version: JsNumber::from(1_u32),
             nodes: Vec::new(),
-            updated_at: now_ms(),
+            updated_at: timestamp_ms(),
             extra: JsEntries::new(),
         }
     }
 
     pub fn get(&self, id: &str) -> Option<&MeshNode> {
+        let needle = JsString::from_text(id);
         self.nodes
             .iter()
-            .find(|(key, _)| key == id)
+            .find(|(key, _)| key == &needle)
             .map(|(_, node)| node)
     }
 
     pub fn get_mut(&mut self, id: &str) -> Option<&mut MeshNode> {
+        let needle = JsString::from_text(id);
         self.nodes
             .iter_mut()
-            .find(|(key, _)| key == id)
+            .find(|(key, _)| key == &needle)
             .map(|(_, node)| node)
     }
 
-    pub fn insert(&mut self, id: String, node: MeshNode) {
-        if let Some(slot) = self.nodes.iter_mut().find(|(key, _)| *key == id) {
+    pub fn insert(&mut self, id: impl Into<JsString>, node: MeshNode) {
+        let id = id.into();
+        if let Some(slot) = self.nodes.iter_mut().find(|(key, _)| key == &id) {
             slot.1 = node;
         } else {
             self.nodes.push((id, node));
@@ -221,15 +217,11 @@ pub fn mesh_file_to_pretty(file: &MeshFile) -> String {
 }
 
 pub fn mesh_nodes_json(nodes: &[MeshNode]) -> String {
-    let mut out = String::from("[");
-    for (index, node) in nodes.iter().enumerate() {
-        if index > 0 {
-            out.push(',');
-        }
-        out.push_str(&node_compact(node));
-    }
-    out.push(']');
-    canonical_json(&out)
+    let items: Vec<JsValue> = nodes
+        .iter()
+        .map(|node| JsValue::Object(node_object(node)))
+        .collect();
+    protocol::js::stringify(&JsValue::Array(items))
 }
 
 pub fn inherit_operator_fields(incoming: MeshNode, existing: Option<&MeshNode>) -> MeshNode {
@@ -337,18 +329,18 @@ pub fn assert_record_mesh_file(
     let mut nodes = Vec::new();
     if let Some(nodes_in) = root.get("nodes").and_then(JsValue::as_object) {
         for (key, value) in nodes_in.iter() {
-            let key = key.to_utf8().to_string();
             if value.is_null() {
                 continue;
             }
-            match parse_mesh_node(&key, value, path, false) {
-                Ok(node) => nodes.push((key, node)),
+            let label = key.to_utf8();
+            match parse_mesh_node(label, value, path, false) {
+                Ok(node) => nodes.push((key.clone(), node)),
                 Err(err) => {
                     if options.on_invalid_node == OnInvalidNode::Skip
                         && err.code() == MeshParseErrorCode::NodeInvalid
                     {
                         let warning =
-                            format!("mesh.json at {path}: skipping invalid node \"{key}\"");
+                            format!("mesh.json at {path}: skipping invalid node \"{label}\"");
                         warnings.push(warning);
                         continue;
                     }
@@ -365,11 +357,11 @@ pub fn assert_record_mesh_file(
         .unwrap_or_else(|| JsNumber::from(0_u32));
     let mut extra = JsEntries::new();
     for (key, value) in root.iter() {
-        let key = key.to_utf8();
-        if key == "version" || key == "nodes" || key == "updatedAt" {
+        let name = key.to_utf8();
+        if name == "version" || name == "nodes" || name == "updatedAt" {
             continue;
         }
-        extra.insert(key, value.clone());
+        extra.insert(key.clone(), value.clone());
     }
     Ok(ParseOutcome {
         file: MeshFile {
@@ -549,9 +541,8 @@ fn assemble_node(object: &JsObject, record_key: &str) -> MeshNode {
     let name = truthy_string(object.get("name")).unwrap_or_else(|| id.clone());
     let mut extra = JsEntries::new();
     for (key, value) in object.iter() {
-        let key = key.to_utf8();
-        if !KNOWN_NODE_KEYS.contains(&key) {
-            extra.insert(key, value.clone());
+        if !KNOWN_NODE_KEYS.contains(&key.to_utf8()) {
+            extra.insert(key.clone(), value.clone());
         }
     }
     MeshNode {
@@ -703,56 +694,31 @@ fn truthy_string(value: Option<&JsValue>) -> Option<String> {
         .map(str::to_string)
 }
 
-struct JsonObject {
-    parts: Vec<(String, String)>,
-}
-
-impl JsonObject {
-    fn new() -> Self {
-        Self { parts: Vec::new() }
-    }
-
-    fn field(&mut self, key: &str, value: impl AsRef<str>) {
-        self.parts
-            .push((js_string_literal(key), value.as_ref().to_string()));
-    }
-
-    fn finish(self) -> String {
-        let mut out = String::from("{");
-        for (index, (key, value)) in self.parts.iter().enumerate() {
-            if index > 0 {
-                out.push(',');
-            }
-            out.push_str(key);
-            out.push(':');
-            out.push_str(value);
-        }
-        out.push('}');
-        canonical_json(&out)
-    }
-}
-
 fn node_compact(node: &MeshNode) -> String {
-    if let Some(origin) = &node.origin {
-        return joined_compact(origin, node);
-    }
-    typed_node_compact(node)
+    protocol::js::stringify(&JsValue::Object(node_object(node)))
 }
 
-fn joined_compact(origin: &JsValue, node: &MeshNode) -> String {
+fn node_object(node: &MeshNode) -> JsObject {
+    if let Some(origin) = &node.origin {
+        return joined_object(origin, node);
+    }
+    typed_node_object(node)
+}
+
+fn joined_object(origin: &JsValue, node: &MeshNode) -> JsObject {
     let Some(object) = origin.as_object() else {
-        return typed_node_compact(node);
+        return typed_node_object(node);
     };
-    let mut out = JsonObject::new();
+    let mut out = JsObject::new();
     let mut seen = [false; 3];
     for (key, value) in object.iter() {
         let name = key.to_utf8();
         if let Some(index) = operator_index(name) {
             seen[index] = true;
-            push_operator(&mut out, name, value, operator_text(node, name));
+            push_operator(&mut out, key, value, operator_text(node, name));
             continue;
         }
-        out.field(name, protocol::js::stringify(value));
+        out.insert(key.clone(), value.clone());
     }
     for (index, key) in ["sshUser", "installRoot", "platform"]
         .into_iter()
@@ -761,10 +727,10 @@ fn joined_compact(origin: &JsValue, node: &MeshNode) -> String {
         if !seen[index]
             && let Some(text) = operator_text(node, key)
         {
-            out.field(key, js_string_literal(text));
+            out.insert(key, JsValue::from_text(text));
         }
     }
-    out.finish()
+    out
 }
 
 fn operator_index(key: &str) -> Option<usize> {
@@ -785,96 +751,81 @@ fn operator_text<'a>(node: &'a MeshNode, key: &str) -> Option<&'a str> {
     }
 }
 
-fn push_operator(out: &mut JsonObject, key: &str, value: &JsValue, inherited: Option<&str>) {
+fn push_operator(out: &mut JsObject, key: &JsString, value: &JsValue, inherited: Option<&str>) {
     if value.is_null() {
         if let Some(text) = inherited {
-            out.field(key, js_string_literal(text));
+            out.insert(key.clone(), JsValue::from_text(text));
         }
         return;
     }
-    out.field(key, protocol::js::stringify(value));
+    out.insert(key.clone(), value.clone());
 }
 
-fn typed_node_compact(node: &MeshNode) -> String {
-    let mut object = JsonObject::new();
-    object.field("id", js_string_literal(&node.id));
-    object.field("name", js_string_literal(&node.name));
-    object.field("host", js_string_literal(&node.host));
-    object.field("port", js_number_literal(node.port));
-    object.field("agents", js_string_array(&node.agents));
-    object.field("providers", js_string_array(&node.providers));
-    object.field("models", js_string_array(&node.models));
-    object.field("capabilities", js_string_array(&node.capabilities));
-    object.field("status", js_string_literal(&node.status));
-    object.field("lastSeen", js_number_literal(node.last_seen));
-    object.field("registeredAt", js_number_literal(node.registered_at));
-    object.field("version", js_string_literal(&node.version));
+fn typed_node_object(node: &MeshNode) -> JsObject {
+    let mut object = JsObject::new();
+    object.insert("id", JsValue::from_text(&node.id));
+    object.insert("name", JsValue::from_text(&node.name));
+    object.insert("host", JsValue::from_text(&node.host));
+    object.insert("port", js_number_value(node.port));
+    object.insert("agents", js_string_array(&node.agents));
+    object.insert("providers", js_string_array(&node.providers));
+    object.insert("models", js_string_array(&node.models));
+    object.insert("capabilities", js_string_array(&node.capabilities));
+    object.insert("status", JsValue::from_text(&node.status));
+    object.insert("lastSeen", js_number_value(node.last_seen));
+    object.insert("registeredAt", js_number_value(node.registered_at));
+    object.insert("version", JsValue::from_text(&node.version));
     if let Some(role) = &node.role {
-        object.field("role", js_string_literal(role));
+        object.insert("role", JsValue::from_text(role));
     }
     if let Some(metadata) = &node.metadata {
-        object.field("metadata", protocol::js::stringify(metadata));
+        object.insert("metadata", metadata.clone());
     }
     if let Some(ssh_user) = &node.ssh_user {
-        object.field("sshUser", js_string_literal(ssh_user));
+        object.insert("sshUser", JsValue::from_text(ssh_user));
     }
     if let Some(install_root) = &node.install_root {
-        object.field("installRoot", js_string_literal(install_root));
+        object.insert("installRoot", JsValue::from_text(install_root));
     }
     if let Some(platform) = &node.platform {
-        object.field("platform", js_string_literal(platform));
+        object.insert("platform", JsValue::from_text(platform));
     }
     for (key, value) in node.extra.iter() {
-        object.field(key, protocol::js::stringify(value));
+        object.insert(key.clone(), value.clone());
     }
-    object.finish()
+    object
+}
+
+fn file_value(file: &MeshFile) -> JsValue {
+    let mut nodes = JsObject::new();
+    for (key, node) in &file.nodes {
+        nodes.insert(key.clone(), JsValue::Object(node_object(node)));
+    }
+    let mut object = JsObject::new();
+    object.insert("version", js_number_value(file.version));
+    object.insert("nodes", JsValue::Object(nodes));
+    object.insert("updatedAt", js_number_value(file.updated_at));
+    for (key, value) in file.extra.iter() {
+        object.insert(key.clone(), value.clone());
+    }
+    JsValue::Object(object)
 }
 
 fn file_compact(file: &MeshFile) -> String {
-    let mut nodes = JsonObject::new();
-    for (key, node) in &file.nodes {
-        nodes.field(key, node_compact(node));
-    }
-    let nodes_json = nodes.finish();
-    let mut object = JsonObject::new();
-    object.field("version", js_number_literal(file.version));
-    object.field("nodes", nodes_json);
-    object.field("updatedAt", js_number_literal(file.updated_at));
-    for (key, value) in file.extra.iter() {
-        object.field(key, protocol::js::stringify(value));
-    }
-    object.finish()
+    protocol::js::stringify(&file_value(file))
 }
 
-fn canonical_json(compact: &str) -> String {
-    match protocol::js::parse(compact) {
-        Ok(value) => protocol::js::stringify(&value),
-        Err(_) => compact.to_string(),
-    }
-}
-
-fn js_string_literal(text: &str) -> String {
-    protocol::js::stringify(&JsValue::from_text(text))
-}
-
-fn js_number_literal(number: JsNumber) -> String {
-    if number.as_f64().is_finite() {
-        number.to_string()
+fn js_number_value(number: JsNumber) -> JsValue {
+    let value = number.as_f64();
+    if value.is_finite() {
+        JsValue::Number(value)
     } else {
-        "null".to_string()
+        JsValue::Null
     }
 }
 
-fn js_string_array(items: &[String]) -> String {
-    let mut out = String::from("[");
-    for (index, item) in items.iter().enumerate() {
-        if index > 0 {
-            out.push(',');
-        }
-        out.push_str(&js_string_literal(item));
-    }
-    out.push(']');
-    out
+fn js_string_array(items: &[String]) -> JsValue {
+    JsValue::Array(items.iter().map(|item| JsValue::from_text(item)).collect())
 }
 
 fn pretty_json(compact: &str) -> String {
@@ -952,7 +903,7 @@ fn push_indent(out: &mut String, depth: usize) {
 }
 
 pub fn local_mesh_identity(
-    nodes: Option<&[(String, MeshNode)]>,
+    nodes: Option<&[(JsString, MeshNode)]>,
     node_id: &str,
     fallback_host: &str,
 ) -> MeshIdentity {
@@ -962,9 +913,10 @@ pub fn local_mesh_identity(
             ssh_user: "rivet".to_string(),
         };
     };
+    let needle = JsString::from_text(node_id);
     let by_key = nodes
         .iter()
-        .find(|(key, _)| key == node_id)
+        .find(|(key, _)| key == &needle)
         .map(|(_, node)| node);
     let by_id = nodes
         .iter()
@@ -1065,7 +1017,7 @@ pub fn mesh_den_origins(file: &MeshFile) -> Vec<String> {
     let mut out = Vec::new();
     for (key, node) in &file.nodes {
         let id = if node.id.is_empty() {
-            key.as_str()
+            key.to_utf8()
         } else {
             node.id.as_str()
         };
@@ -1121,7 +1073,7 @@ pub struct BuildLocalNodeArgs {
 }
 
 pub fn build_local_node(args: BuildLocalNodeArgs) -> MeshNode {
-    let now = now_ms();
+    let now = timestamp_ms();
     MeshNode {
         id: args.existing_id.unwrap_or_else(random_uuid),
         name: args.name.unwrap_or_else(system_hostname),

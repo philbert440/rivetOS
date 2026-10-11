@@ -58,7 +58,7 @@ impl MeshParseError {
                 path,
                 context,
                 cause,
-                timestamp: crate::model::now_ms(),
+                timestamp: crate::model::timestamp_ms(),
             }),
         }
     }

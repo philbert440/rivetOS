@@ -2,8 +2,10 @@ use std::collections::HashMap;
 use std::convert::Infallible;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU16, Ordering};
-use std::sync::{Arc, Mutex};
+
+use parking_lot::Mutex;
 use std::time::Duration;
 
 use http_body_util::{BodyExt, Full};
@@ -20,11 +22,12 @@ use tokio_rustls::TlsAcceptor;
 
 use protocol::JsNumber;
 use protocol::events::InboundMessage;
+use protocol::js::{JsObject, JsValue};
 
 use crate::error::MeshError;
 use crate::model::{
     JoinNodeError, JoinedMeshNode, MeshNode, fill_random, mesh_node_from_join, mesh_nodes_json,
-    now_ms, now_ms_u64,
+    timestamp_millis, timestamp_ms,
 };
 use crate::tls::{TlsMaterial, client_config, server_config};
 
@@ -124,14 +127,14 @@ impl AgentChannel {
         Fut: Future<Output = Result<(), String>> + Send + 'static,
     {
         let handler: MessageHandler = Arc::new(move |message| Box::pin(handler(message)));
-        *lock(&self.inner.handler) = Some(handler);
+        *self.inner.handler.lock() = Some(handler);
     }
 
     pub fn send(&self, channel_id: &str, text: &str) -> Option<String> {
         if text.is_empty() {
             return None;
         }
-        let mut pending = lock(&self.inner.pending);
+        let mut pending = self.inner.pending.lock();
         let sender = pending.remove(channel_id)?;
         let _ = sender.send(text.to_string());
         Some(channel_id.to_string())
@@ -172,7 +175,7 @@ impl AgentChannel {
                 run_axum(inner, listener, rx).await;
             }
         });
-        *lock(&self.inner.server) = Some(ServerHandle {
+        *self.inner.server.lock() = Some(ServerHandle {
             shutdown: Some(tx),
             task,
         });
@@ -181,7 +184,7 @@ impl AgentChannel {
 
     pub async fn stop(&self) {
         self.resolve_pending("[channel shutting down]");
-        let server = lock(&self.inner.server).take();
+        let server = self.inner.server.lock().take();
         if let Some(mut server) = server {
             abort_connections(&self.inner.connections);
             if let Some(tx) = server.shutdown.take() {
@@ -241,7 +244,7 @@ impl AgentChannel {
     }
 
     fn resolve_pending(&self, text: &str) {
-        let pending = std::mem::take(&mut *lock(&self.inner.pending));
+        let pending = std::mem::take(&mut *self.inner.pending.lock());
         for (_, sender) in pending {
             let _ = sender.send(text.to_string());
         }
@@ -538,7 +541,7 @@ impl Inner {
             &request_id,
         );
         if waits_for_response(&body) {
-            let handler = lock(&self.handler).clone();
+            let handler = self.handler.lock().clone();
             let Some(handler) = handler else {
                 return json_reply(
                     StatusCode::SERVICE_UNAVAILABLE,
@@ -546,12 +549,12 @@ impl Inner {
                 );
             };
             let (tx, rx) = oneshot::channel();
-            lock(&self.pending).insert(request_id.clone(), tx);
+            self.pending.lock().insert(request_id.clone(), tx);
             let request_for_handler = request_id.clone();
             let handler_pending = Arc::clone(&self.pending);
             tokio::spawn(async move {
                 if let Err(msg) = handler(inbound).await
-                    && let Some(sender) = lock(&handler_pending).remove(&request_for_handler)
+                    && let Some(sender) = handler_pending.lock().remove(&request_for_handler)
                 {
                     let _ = sender.send(format!("[error processing message: {msg}]"));
                 }
@@ -565,10 +568,10 @@ impl Inner {
                 Value::String(self.config.agent_id.clone()),
             );
             response.insert("fromAgent".to_string(), Value::String(from_agent));
-            response.insert("timestamp".to_string(), number_value(now_ms()));
+            response.insert("timestamp".to_string(), number_value(timestamp_ms()));
             json_reply(StatusCode::OK, &Value::Object(response))
         } else {
-            if let Some(handler) = lock(&self.handler).clone() {
+            if let Some(handler) = self.handler.lock().clone() {
                 tokio::spawn(async move {
                     let _ = handler(inbound).await;
                 });
@@ -580,7 +583,7 @@ impl Inner {
                 "agent".to_string(),
                 Value::String(self.config.agent_id.clone()),
             );
-            response.insert("timestamp".to_string(), number_value(now_ms()));
+            response.insert("timestamp".to_string(), number_value(timestamp_ms()));
             json_reply(StatusCode::ACCEPTED, &Value::Object(response))
         }
     }
@@ -699,7 +702,7 @@ async fn wait_for_text(
             Ok(Ok(text)) => text,
             Ok(Err(_)) => "[channel shutting down]".to_string(),
             Err(_) => {
-                lock(pending).remove(request_id);
+                pending.lock().remove(request_id);
                 "[timeout — agent did not respond in time]".to_string()
             }
         },
@@ -738,7 +741,7 @@ async fn run_tls(
                 let Ok((stream, _)) = accepted else {
                     break;
                 };
-                lock(&inner.connections).retain(|task| !task.is_finished());
+                inner.connections.lock().retain(|task| !task.is_finished());
                 let acceptor = acceptor.clone();
                 let task_inner = Arc::clone(&inner);
                 let tracked = TrackedConnection::arm(
@@ -798,12 +801,12 @@ impl Drop for TrackedConnection {
         let Some(task) = self.task.take() else {
             return;
         };
-        lock(&self.connections).push(task);
+        self.connections.lock().push(task);
     }
 }
 
 fn abort_connections(connections: &Mutex<Vec<JoinHandle<()>>>) {
-    let tasks = lock(connections);
+    let tasks = connections.lock();
     for task in tasks.iter() {
         task.abort();
     }
@@ -812,7 +815,7 @@ fn abort_connections(connections: &Mutex<Vec<JoinHandle<()>>>) {
 async fn finish_connections(connections: &Mutex<Vec<JoinHandle<()>>>) {
     abort_connections(connections);
     loop {
-        let task = lock(connections).pop();
+        let task = connections.lock().pop();
         let Some(task) = task else {
             break;
         };
@@ -913,7 +916,7 @@ fn health_body(agent_id: &str) -> Value {
     let mut map = Map::new();
     map.insert("status".to_string(), Value::String("ok".to_string()));
     map.insert("agent".to_string(), Value::String(agent_id.to_string()));
-    map.insert("timestamp".to_string(), number_value(now_ms()));
+    map.insert("timestamp".to_string(), number_value(timestamp_ms()));
     Value::Object(map)
 }
 
@@ -1037,7 +1040,7 @@ fn tls_is_plaintext(value: &Value) -> bool {
 }
 
 fn new_request_id() -> String {
-    format!("agent-msg-{}-{}", now_ms_u64(), random_base36(6))
+    format!("agent-msg-{}-{}", timestamp_millis(), random_base36(6))
 }
 
 fn random_base36(len: usize) -> String {
@@ -1057,18 +1060,12 @@ fn inbound_message(
     conversation_id: Option<&str>,
     request_id: &str,
 ) -> InboundMessage {
-    let mut metadata = Map::new();
-    metadata.insert(
-        "fromAgent".to_string(),
-        Value::String(from_agent.to_string()),
-    );
+    let mut metadata = JsObject::new();
+    metadata.insert("fromAgent", JsValue::from_text(from_agent));
     if let Some(conversation_id) = conversation_id {
-        metadata.insert(
-            "conversationId".to_string(),
-            Value::String(conversation_id.to_string()),
-        );
+        metadata.insert("conversationId", JsValue::from_text(conversation_id));
     }
-    metadata.insert("isAgentMessage".to_string(), Value::Bool(true));
+    metadata.insert("isAgentMessage", JsValue::Bool(true));
     InboundMessage {
         id: request_id.to_string(),
         user_id: format!("agent:{from_agent}"),
@@ -1082,12 +1079,8 @@ fn inbound_message(
         reply_to_message_id: None,
         attachments: None,
         metadata: Some(metadata),
-        timestamp: JsNumber::from(now_ms_u64() / 1000),
+        timestamp: JsNumber::from(timestamp_millis() / 1000),
     }
-}
-
-fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|err| err.into_inner())
 }
 
 #[cfg(test)]

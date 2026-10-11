@@ -1,11 +1,13 @@
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+
+use parking_lot::Mutex;
 use std::time::Duration;
 
 use mesh::{
     BuildLocalNodeArgs, FileMeshRegistry, JsNumber, MESH_FILE_NAME, MeshNode, MeshNodeEvent,
-    RegistryConfig, inherit_operator_fields, operator_host_warning, shared_dir,
+    RegistryConfig, inherit_operator_fields, operator_host_warning,
 };
 use serde_json::{Value, json};
 
@@ -71,7 +73,7 @@ async fn registers_and_retrieves_a_node() {
         heartbeat_interval_ms: Some(60_000),
         stale_threshold_ms: Some(5_000),
         discovery: None,
-        on_event: Some(Arc::new(move |event| seen.lock().unwrap().push(event))),
+        on_event: Some(Arc::new(move |event| seen.lock().push(event))),
         tls: None,
     });
     let node = mesh::build_local_node(BuildLocalNodeArgs {
@@ -103,8 +105,8 @@ async fn registers_and_retrieves_a_node() {
     assert_eq!(data["version"], json!(1));
     assert_eq!(data["nodes"].as_object().unwrap().len(), 1);
     assert!(!raw.ends_with('\n'));
-    let event_type = events.lock().unwrap()[0].event_type.clone();
-    assert_eq!(events.lock().unwrap().len(), 1);
+    let event_type = events.lock()[0].event_type.clone();
+    assert_eq!(events.lock().len(), 1);
     assert_eq!(event_type, "node:joined");
     registry.stop().await.unwrap();
 }
@@ -199,11 +201,11 @@ async fn prunes_stale_agent_nodes_and_skips_self_and_infrastructure() {
     let local = sample("local-node", &["opus"], "192.168.1.101");
     registry.start(local).await.unwrap();
     let mut stale = sample("stale-node", &["old"], "192.168.1.200");
-    stale.last_seen = JsNumber::from(mesh::now_ms_u64().saturating_sub(100_000));
+    stale.last_seen = JsNumber::from((protocol::js::date_now() - 100_000.0).max(0.0));
     registry.register(stale.clone()).await.unwrap();
     let mut infra = sample("datahub", &[], "192.168.1.110");
     infra.role = Some("datahub".to_string());
-    infra.last_seen = JsNumber::from(mesh::now_ms_u64().saturating_sub(100_000));
+    infra.last_seen = JsNumber::from((protocol::js::date_now() - 100_000.0).max(0.0));
     registry.register(infra.clone()).await.unwrap();
     let pruned = registry.prune(Some(5_000)).await.unwrap();
     assert_eq!(pruned.len(), 1);
@@ -225,7 +227,7 @@ async fn empty_role_is_pruned_like_a_missing_role() {
     let registry = registry(scratch.path());
     let mut node = sample("blank-role", &["opus"], "10.0.0.4");
     node.role = Some(String::new());
-    node.last_seen = JsNumber::from(mesh::now_ms_u64().saturating_sub(100_000));
+    node.last_seen = JsNumber::from((protocol::js::date_now() - 100_000.0).max(0.0));
     registry.register(node.clone()).await.unwrap();
     let pruned = registry.prune(Some(5_000)).await.unwrap();
     assert_eq!(pruned.len(), 1);
@@ -621,7 +623,7 @@ async fn events_run_after_the_file_lock_is_released() {
         stale_threshold_ms: Some(5_000),
         discovery: None,
         on_event: Some(Arc::new(move |_| {
-            let reg = slot_cb.lock().unwrap().clone().unwrap();
+            let reg = slot_cb.lock().clone().unwrap();
             let (tx, rx) = std::sync::mpsc::channel();
             std::thread::spawn(move || {
                 let runtime = tokio::runtime::Builder::new_current_thread()
@@ -637,7 +639,7 @@ async fn events_run_after_the_file_lock_is_released() {
         })),
         tls: None,
     });
-    *slot.lock().unwrap() = Some(registry.clone());
+    *slot.lock() = Some(registry.clone());
     registry
         .register(sample("locked", &["opus"], "10.0.0.8"))
         .await
@@ -670,6 +672,7 @@ fn empty_storage_dir_uses_the_shared_dir_at_construction() {
     });
     assert_eq!(
         registry.file_path(),
-        std::path::Path::new(&shared_dir()).join(MESH_FILE_NAME)
+        std::path::Path::new(&config::paths::shared_dir(&protocol::host::ProcessEnv))
+            .join(MESH_FILE_NAME)
     );
 }

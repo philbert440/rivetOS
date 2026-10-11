@@ -386,3 +386,58 @@ fn saved_key_order_lifts_index_keys_and_passes_js_values_through() {
     );
     assert_eq!(compact, expected);
 }
+
+#[test]
+fn unpaired_surrogate_keys_stay_distinct_from_the_replacement_character() {
+    let raw = concat!(
+        r#"{"version":1,"nodes":{"\ud800":{"id":"a","name":"a","host":"h","\ud800":true,"\ufffd":false},"#,
+        r#""\ufffd":{"id":"b","name":"b","host":"h"}},"updatedAt":1,"\ud800":"k","\ufffd":"r"}"#
+    );
+    let outcome = parse(raw).unwrap();
+    let pretty = mesh_file_to_pretty(&outcome.file);
+    let parsed = protocol::js::parse(&pretty).unwrap();
+    let root = parsed.as_object().unwrap();
+    let lone = protocol::js::JsString::from_units(vec![0xD800]);
+    let replacement = protocol::js::JsString::from_text("\u{FFFD}");
+    assert_eq!(
+        root.iter()
+            .find(|(key, _)| *key == &lone)
+            .and_then(|(_, value)| value.as_str()),
+        Some("k")
+    );
+    assert_eq!(
+        root.iter()
+            .find(|(key, _)| *key == &replacement)
+            .and_then(|(_, value)| value.as_str()),
+        Some("r")
+    );
+    let nodes = root.get("nodes").unwrap().as_object().unwrap();
+    let lone_node = nodes
+        .iter()
+        .find(|(key, _)| *key == &lone)
+        .and_then(|(_, value)| value.as_object())
+        .unwrap();
+    let replacement_node = nodes
+        .iter()
+        .find(|(key, _)| *key == &replacement)
+        .and_then(|(_, value)| value.as_object())
+        .unwrap();
+    assert_eq!(
+        lone_node
+            .iter()
+            .find(|(key, _)| *key == &lone)
+            .and_then(|(_, value)| value.as_bool()),
+        Some(true)
+    );
+    assert_eq!(
+        lone_node
+            .iter()
+            .find(|(key, _)| *key == &replacement)
+            .and_then(|(_, value)| value.as_bool()),
+        Some(false)
+    );
+    assert_eq!(
+        replacement_node.get("id").and_then(|value| value.as_str()),
+        Some("b")
+    );
+}

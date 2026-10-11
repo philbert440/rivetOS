@@ -1,8 +1,10 @@
 use std::fs::OpenOptions;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+
+use parking_lot::Mutex;
 use std::time::{Duration, Instant};
 
 use tokio::task::JoinHandle;
@@ -11,9 +13,9 @@ use crate::error::{MeshError, MeshParseErrorCode};
 use crate::model::{
     DEFAULT_HEARTBEAT_INTERVAL_MS, DEFAULT_STALE_THRESHOLD_MS, MESH_FILE_NAME, MeshFile, MeshNode,
     MeshNodeEvent, MeshParseOptions, OnInvalidNode, ParseOutcome, inherit_operator_fields,
-    mesh_file_to_pretty, mesh_node_from_network, now_ms, operator_host_warning, parse_mesh_file,
+    mesh_file_to_pretty, mesh_node_from_network, operator_host_warning, parse_mesh_file,
+    timestamp_ms,
 };
-use crate::paths::shared_dir;
 use crate::resolve::{MeshDiscovery, should_take_remote, sync_target};
 use crate::ssh::SEED_SYNC_TIMEOUT_MS;
 use crate::tls::{TlsMaterial, client_config};
@@ -55,7 +57,7 @@ pub struct FileMeshRegistry {
 impl FileMeshRegistry {
     pub fn new(config: RegistryConfig) -> Self {
         let dir = if config.storage_dir.is_empty() {
-            shared_dir()
+            ::config::paths::shared_dir(&protocol::host::ProcessEnv)
         } else {
             config.storage_dir
         };
@@ -87,19 +89,11 @@ impl FileMeshRegistry {
     }
 
     pub fn fail_next_save(&self, message: impl Into<String>) {
-        *self
-            .inner
-            .fail_next_save
-            .lock()
-            .unwrap_or_else(|err| err.into_inner()) = Some(message.into());
+        *self.inner.fail_next_save.lock() = Some(message.into());
     }
 
     pub fn warnings(&self) -> Vec<String> {
-        self.inner
-            .warnings
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .clone()
+        self.inner.warnings.lock().clone()
     }
 
     pub async fn register(&self, node: MeshNode) -> Result<(), MeshError> {
@@ -132,17 +126,12 @@ impl FileMeshRegistry {
         })
         .await?;
         if missing {
-            let local = self
-                .inner
-                .local_node
-                .lock()
-                .unwrap_or_else(|err| err.into_inner())
-                .clone();
+            let local = self.inner.local_node.lock().clone();
             if let Some(mut local) = local
                 && local.id == node_id
             {
                 tracing::warn!("Local node {node_id} missing from mesh roster — re-registering");
-                local.last_seen = now_ms();
+                local.last_seen = timestamp_ms();
                 if let Some(status) = status {
                     local.status = status.to_string();
                 }
@@ -222,16 +211,8 @@ impl FileMeshRegistry {
         self.inner.flights.wait_idle().await;
         self.inner.shutdown.store(false, Ordering::SeqCst);
         {
-            *self
-                .inner
-                .local_node_id
-                .lock()
-                .unwrap_or_else(|err| err.into_inner()) = Some(local_node.id.clone());
-            *self
-                .inner
-                .local_node
-                .lock()
-                .unwrap_or_else(|err| err.into_inner()) = Some(local_node.clone());
+            *self.inner.local_node_id.lock() = Some(local_node.id.clone());
+            *self.inner.local_node.lock() = Some(local_node.clone());
         }
         self.register(local_node.clone()).await?;
         let interval = self
@@ -255,23 +236,13 @@ impl FileMeshRegistry {
 
     pub async fn stop(&self) -> Result<(), MeshError> {
         self.inner.shutdown.store(true, Ordering::SeqCst);
-        let handle = self
-            .inner
-            .heartbeat
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .take();
+        let handle = self.inner.heartbeat.lock().take();
         if let Some(handle) = handle {
             handle.abort();
             let _ = handle.await;
         }
         self.inner.flights.wait_idle().await;
-        let node_id = self
-            .inner
-            .local_node_id
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .clone();
+        let node_id = self.inner.local_node_id.lock().clone();
         if let Some(node_id) = node_id
             && let Err(err) = self.deregister_offline(&node_id).await
         {
@@ -293,13 +264,7 @@ impl FileMeshRegistry {
     }
 
     fn spawn_heartbeat(&self, node_id: String, interval_ms: u64) {
-        if let Some(previous) = self
-            .inner
-            .heartbeat
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .take()
-        {
+        if let Some(previous) = self.inner.heartbeat.lock().take() {
             previous.abort();
         }
         let registry = self.clone();
@@ -322,11 +287,7 @@ impl FileMeshRegistry {
                 }
             }
         });
-        *self
-            .inner
-            .heartbeat
-            .lock()
-            .unwrap_or_else(|err| err.into_inner()) = Some(handle);
+        *self.inner.heartbeat.lock() = Some(handle);
     }
 
     async fn sync_from_seed(&self, host: &str, port: u16) {
@@ -377,7 +338,7 @@ impl Inner {
             }
             let is_new = existing.is_none();
             let merged = inherit_operator_fields(node, existing.as_ref());
-            let now = now_ms();
+            let now = timestamp_ms();
             let event = MeshNodeEvent {
                 event_type: if is_new {
                     "node:joined"
@@ -419,7 +380,7 @@ impl Inner {
                 return Ok(Vec::new());
             };
             node.status = "offline".to_string();
-            let now = now_ms();
+            let now = timestamp_ms();
             data.insert(node_id.to_string(), node.clone());
             data.updated_at = now;
             self.save_locked_mode(&data, deadline, shutdown_write)?;
@@ -443,7 +404,7 @@ impl Inner {
             let Some(node) = data.get_mut(node_id) else {
                 return Ok(true);
             };
-            let now = now_ms();
+            let now = timestamp_ms();
             node.last_seen = now;
             if let Some(status) = status {
                 node.status = status.to_string();
@@ -462,19 +423,18 @@ impl Inner {
         let threshold = stale_threshold_ms
             .or(self.stale_threshold_ms)
             .unwrap_or(DEFAULT_STALE_THRESHOLD_MS);
-        let local_id = self
-            .local_node_id
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .clone();
+        let local_id = self.local_node_id.lock().clone();
         self.with_lock(deadline, || {
             let mut data = self.load_locked()?;
-            let now = now_ms();
+            let now = timestamp_ms();
             let now_f = now.as_f64();
             let mut pruned = Vec::new();
             let mut events = Vec::new();
             for (id, node) in &mut data.nodes {
-                if local_id.as_deref() == Some(id.as_str()) {
+                if local_id
+                    .as_deref()
+                    .is_some_and(|local| id == &protocol::js::JsString::from_text(local))
+                {
                     continue;
                 }
                 if is_infrastructure_role(node.role.as_deref()) {
@@ -526,7 +486,7 @@ impl Inner {
                 merged += 1;
             }
             if merged > 0 {
-                data.updated_at = now_ms();
+                data.updated_at = timestamp_ms();
                 self.save_locked(&data, deadline)?;
             }
             Ok(merged)
@@ -572,10 +532,7 @@ impl Inner {
         let raw = match std::fs::read_to_string(&self.file_path) {
             Ok(raw) => raw,
             Err(_) => {
-                self.warnings
-                    .lock()
-                    .unwrap_or_else(|err| err.into_inner())
-                    .clear();
+                self.warnings.lock().clear();
                 return Ok(MeshFile::empty());
             }
         };
@@ -591,7 +548,7 @@ impl Inner {
                 for warning in &outcome.warnings {
                     tracing::warn!("{warning}");
                 }
-                *self.warnings.lock().unwrap_or_else(|err| err.into_inner()) = outcome.warnings;
+                *self.warnings.lock() = outcome.warnings;
                 Ok(outcome.file)
             }
             Err(err) => {
@@ -599,10 +556,7 @@ impl Inner {
                     tracing::error!("{}", err.message());
                     return Err(err.into());
                 }
-                self.warnings
-                    .lock()
-                    .unwrap_or_else(|err| err.into_inner())
-                    .clear();
+                self.warnings.lock().clear();
                 Ok(MeshFile::empty())
             }
         }
@@ -624,12 +578,7 @@ impl Inner {
         if deadline_passed(deadline) {
             return Err(file_timeout());
         }
-        if let Some(message) = self
-            .fail_next_save
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .take()
-        {
+        if let Some(message) = self.fail_next_save.lock().take() {
             return Err(MeshError::message(message));
         }
         if let Some(parent) = self.file_path.parent() {
@@ -1059,11 +1008,7 @@ mod deadline_and_seed {
         .unwrap();
         let node = crate::model::mesh_node_from_value("n", &parsed, "test").unwrap();
         registry.register(node).await.unwrap();
-        *registry
-            .inner
-            .local_node_id
-            .lock()
-            .unwrap_or_else(|err| err.into_inner()) = Some("n".to_string());
+        *registry.inner.local_node_id.lock() = Some("n".to_string());
 
         let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
         let (held_tx, held_rx) = std::sync::mpsc::channel::<()>();

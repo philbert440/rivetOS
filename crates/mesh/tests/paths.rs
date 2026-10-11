@@ -2,20 +2,28 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use mesh::{
-    MeshFile, MeshNode, MeshParseOptions, OnInvalidNode, cli_mesh_paths, den_url_for, home_dir,
-    install_root, install_root_from, load_mesh_file_blocking, local_mesh_identity,
-    mesh_den_origins, mesh_file_paths, path_join, shared_dir, shared_dir_from, shared_path,
+    MeshFile, MeshNode, MeshParseOptions, OnInvalidNode, cli_mesh_paths, den_url_for, install_root,
+    install_root_from, load_mesh_file_blocking, local_mesh_identity, mesh_den_origins,
+    mesh_file_paths, path_join, shared_path,
 };
 use serde_json::json;
 
+fn shared_from(raw: Option<&str>) -> String {
+    let mut env = protocol::host::MapEnv::new();
+    if let Some(raw) = raw {
+        env.set("RIVETOS_SHARED_DIR", raw);
+    }
+    config::paths::shared_dir(&env)
+}
+
 #[test]
 fn shared_dir_from_matches_the_typescript_rules() {
-    assert_eq!(shared_dir_from(None), "/rivet-shared");
-    assert_eq!(shared_dir_from(Some("")), "/rivet-shared");
-    assert_eq!(shared_dir_from(Some("   ")), "/rivet-shared");
-    assert_eq!(shared_dir_from(Some("  /mnt/shared  ")), "/mnt/shared");
-    assert_eq!(shared_dir_from(Some("/mnt/shared/")), "/mnt/shared/");
-    assert_eq!(shared_dir_from(Some("/custom/shared")), "/custom/shared");
+    assert_eq!(shared_from(None), "/rivet-shared");
+    assert_eq!(shared_from(Some("")), "/rivet-shared");
+    assert_eq!(shared_from(Some("   ")), "/rivet-shared");
+    assert_eq!(shared_from(Some("  /mnt/shared  ")), "/mnt/shared");
+    assert_eq!(shared_from(Some("/mnt/shared/")), "/mnt/shared/");
+    assert_eq!(shared_from(Some("/custom/shared")), "/custom/shared");
 }
 
 #[test]
@@ -67,8 +75,8 @@ fn roots_stay_lexical_until_a_segment_is_joined() {
         install_root_from(Some("/srv/current/..")),
         "/srv/current/.."
     );
-    assert_eq!(shared_dir_from(Some("/mnt/link/..")), "/mnt/link/..");
-    assert_eq!(shared_dir_from(Some("/mnt/shared//")), "/mnt/shared//");
+    assert_eq!(shared_from(Some("/mnt/link/..")), "/mnt/link/..");
+    assert_eq!(shared_from(Some("/mnt/shared//")), "/mnt/shared//");
     assert_eq!(path_join("/srv/current/..", &["packages"]), "/srv/packages");
     assert_eq!(path_join("/srv/current/..", &[]), "/srv");
     assert_eq!(
@@ -79,7 +87,7 @@ fn roots_stay_lexical_until_a_segment_is_joined() {
 
 #[test]
 fn live_dir_functions_agree_with_the_join_helpers() {
-    let shared = shared_dir();
+    let shared = config::paths::shared_dir(&protocol::host::ProcessEnv);
     let install = install_root();
     assert_eq!(shared_path(&[]), path_join(&shared, &[]));
     assert_eq!(
@@ -95,22 +103,28 @@ fn live_dir_functions_agree_with_the_join_helpers() {
 
 #[test]
 fn mesh_file_paths_follow_the_den_search_order() {
-    let home = home_dir();
-    assert!(!home.is_empty());
-    assert_eq!(
-        mesh_file_paths("", Some("/gateway/shared")),
-        vec![
-            path_join("/gateway/shared", &["mesh.json"]),
-            path_join(&home, &[".rivetos", "mesh.json"]),
-        ]
-    );
+    let home = protocol::host::home_dir(&protocol::host::ProcessEnv);
+    let mut expected = vec![path_join("/gateway/shared", &["mesh.json"])];
+    if let Some(home) = home.as_deref() {
+        expected.push(path_join(home, &[".rivetos", "mesh.json"]));
+    }
+    assert_eq!(mesh_file_paths("", Some("/gateway/shared")), expected);
     assert_eq!(
         mesh_file_paths("/x/mesh.json", Some("/ignored")),
         vec!["/x/mesh.json".to_string()]
     );
     let live = mesh_file_paths("", None);
-    assert_eq!(live[0], path_join(&shared_dir(), &["mesh.json"]));
-    assert_eq!(live[1], path_join(&home, &[".rivetos", "mesh.json"]));
+    assert_eq!(
+        live[0],
+        path_join(
+            &config::paths::shared_dir(&protocol::host::ProcessEnv),
+            &["mesh.json"]
+        )
+    );
+    match home.as_deref() {
+        Some(home) => assert_eq!(live[1], path_join(home, &[".rivetos", "mesh.json"])),
+        None => assert_eq!(live.len(), 1),
+    }
 }
 
 #[test]
@@ -126,7 +140,7 @@ fn cli_mesh_paths_start_at_the_shared_file() {
 #[test]
 fn local_mesh_identity_reads_the_roster_entry() {
     let node = identity_node("node-g", "192.0.2.116", Some("user"));
-    let nodes = vec![("node-g".to_string(), node)];
+    let nodes = vec![("node-g".into(), node)];
     let identity = local_mesh_identity(Some(&nodes), "node-g", "fallback");
     assert_eq!(identity.host, "192.0.2.116");
     assert_eq!(identity.ssh_user, "user");
@@ -138,7 +152,7 @@ fn local_mesh_identity_defaults_when_the_node_is_missing() {
     assert_eq!(missing.host, "box");
     assert_eq!(missing.ssh_user, "rivet");
     let other = identity_node("other", "192.0.2.10", None);
-    let nodes = vec![("other".to_string(), other)];
+    let nodes = vec![("other".into(), other)];
     let identity = local_mesh_identity(Some(&nodes), "node-g", "box");
     assert_eq!(identity.host, "box");
     assert_eq!(identity.ssh_user, "rivet");
@@ -147,7 +161,7 @@ fn local_mesh_identity_defaults_when_the_node_is_missing() {
 #[test]
 fn local_mesh_identity_matches_by_node_id_when_the_key_differs() {
     let node = identity_node("node-g", "192.0.2.10", Some("rivet"));
-    let nodes = vec![("alias".to_string(), node)];
+    let nodes = vec![("alias".into(), node)];
     let identity = local_mesh_identity(Some(&nodes), "node-g", "box");
     assert_eq!(identity.host, "192.0.2.10");
     assert_eq!(identity.ssh_user, "rivet");
@@ -202,10 +216,10 @@ fn mesh_den_origins_lists_every_den_origin() {
     let file = MeshFile {
         version: mesh::JsNumber::from(1_u32),
         nodes: vec![
-            ("plain".to_string(), plain),
-            ("tls".to_string(), tls),
-            ("port".to_string(), port),
-            ("tag".to_string(), tagged),
+            ("plain".into(), plain),
+            ("tls".into(), tls),
+            ("port".into(), port),
+            ("tag".into(), tagged),
         ],
         updated_at: mesh::JsNumber::from(1_u32),
         extra: mesh::JsEntries::new(),

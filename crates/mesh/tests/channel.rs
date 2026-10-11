@@ -1,4 +1,6 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
+use parking_lot::Mutex;
 use std::time::Duration;
 
 use mesh::{
@@ -102,7 +104,7 @@ async fn delivers_the_inbound_message_and_waits_for_send() {
         let seen_cb = Arc::clone(&seen_cb);
         let responder = responder.clone();
         async move {
-            seen_cb.lock().unwrap().push(message.clone());
+            seen_cb.lock().push(message.clone());
             responder.send(
                 &message.channel_id,
                 &format!("I got your message: {}", message.text),
@@ -127,8 +129,8 @@ async fn delivers_the_inbound_message_and_waits_for_send() {
     );
     assert_eq!(body["agent"], json!("opus"));
     assert_eq!(body["fromAgent"], json!("grok"));
-    let message = seen.lock().unwrap()[0].clone();
-    assert_eq!(seen.lock().unwrap().len(), 1);
+    let message = seen.lock()[0].clone();
+    assert_eq!(seen.lock().len(), 1);
     assert_eq!(message.text, "what time is it?");
     assert_eq!(message.user_id, "agent:grok");
     assert_eq!(message.platform, "agent");
@@ -137,10 +139,16 @@ async fn delivers_the_inbound_message_and_waits_for_send() {
     assert_eq!(message.agent.as_deref(), Some("opus"));
     assert_eq!(message.id, message.channel_id);
     assert!(message.id.starts_with("agent-msg-"));
-    assert!(message.timestamp.as_f64() * 1000.0 <= mesh::now_ms().as_f64());
+    assert!(message.timestamp.as_f64() * 1000.0 <= protocol::js::date_now());
     let metadata = message.metadata.as_ref().unwrap();
-    assert_eq!(metadata.get("fromAgent"), Some(&json!("grok")));
-    assert_eq!(metadata.get("isAgentMessage"), Some(&json!(true)));
+    assert_eq!(
+        metadata.get("fromAgent"),
+        Some(&protocol::js::JsValue::from_text("grok"))
+    );
+    assert_eq!(
+        metadata.get("isAgentMessage"),
+        Some(&protocol::js::JsValue::Bool(true))
+    );
     channel.stop().await;
 }
 
@@ -295,7 +303,7 @@ async fn mesh_routes_use_bearer_auth_and_ping_is_open() {
     config.on_mesh_join = Some(Arc::new(move |node| {
         let joined_cb = Arc::clone(&joined_cb);
         Box::pin(async move {
-            joined_cb.lock().unwrap().push(node.id().to_string());
+            joined_cb.lock().push(node.id().to_string());
             Ok(())
         })
     }));
@@ -355,7 +363,7 @@ async fn mesh_routes_use_bearer_auth_and_ping_is_open() {
     .await;
     assert_eq!(status, 200);
     assert_eq!(body["status"], json!("joined"));
-    assert_eq!(joined.lock().unwrap().as_slice(), ["n1"]);
+    assert_eq!(joined.lock().as_slice(), ["n1"]);
     let mut disabled = plain("opus");
     disabled.secret = Some("test-secret-123".to_string());
     let disabled = AgentChannel::new(disabled);
@@ -722,7 +730,7 @@ async fn join_keeps_typed_fields_and_omits_null_operators() {
     config.on_mesh_join = Some(Arc::new(move |node| {
         let seen_cb = Arc::clone(&seen_cb);
         Box::pin(async move {
-            *seen_cb.lock().unwrap() = Some(node);
+            *seen_cb.lock() = Some(node);
             Ok(())
         })
     }));
@@ -740,7 +748,7 @@ async fn join_keeps_typed_fields_and_omits_null_operators() {
     .await;
     assert_eq!(status, 200);
     assert_eq!(body["status"], json!("joined"));
-    let node = seen.lock().unwrap().clone().unwrap();
+    let node = seen.lock().clone().unwrap();
     assert!(node.ssh_user().is_none());
     assert!(node.original().get("sshUser").unwrap().is_null());
     assert_eq!(node.port().unwrap().as_f64(), 3100.0);
@@ -763,7 +771,7 @@ async fn join_keeps_typed_fields_and_omits_null_operators() {
     partial_config.on_mesh_join = Some(Arc::new(move |node| {
         let partial_cb = Arc::clone(&partial_cb);
         Box::pin(async move {
-            *partial_cb.lock().unwrap() = Some(node);
+            *partial_cb.lock() = Some(node);
             Ok(())
         })
     }));
@@ -778,7 +786,7 @@ async fn join_keeps_typed_fields_and_omits_null_operators() {
     )
     .await;
     assert_eq!(partial_status, 200);
-    let forwarded = partial.lock().unwrap().clone().unwrap();
+    let forwarded = partial.lock().clone().unwrap();
     assert!(forwarded.port().is_none());
     assert!(forwarded.status().is_none());
     assert!(forwarded.agents().is_none());
@@ -814,7 +822,7 @@ async fn zero_wait_is_fire_and_forget_and_the_server_still_waits() {
         .await;
     assert!(result.contains("async — no response expected"));
     assert!(result.contains("Request ID: abc"));
-    let captured = seen.lock().unwrap().clone();
+    let captured = seen.lock().clone();
     assert!(captured.contains("\"waitForResponse\":0"));
 
     let channel = started("opus").await;
@@ -906,8 +914,8 @@ async fn negative_timeout_fires_and_zero_keeps_waiting() {
         .execute(&json!({ "to_agent": "zero", "message": "x", "timeout_ms": 0 }))
         .await;
     assert_eq!(zero, "zero");
-    assert!(kept_body.lock().unwrap().contains("\"timeoutMs\":-1"));
-    assert!(zero_body.lock().unwrap().contains("\"timeoutMs\":0"));
+    assert!(kept_body.lock().contains("\"timeoutMs\":-1"));
+    assert!(zero_body.lock().contains("\"timeoutMs\":0"));
 
     let hung = serve_hang().await;
     let mut config = AgentChannelConfig::new("opus");
@@ -992,7 +1000,7 @@ async fn serve_capture(status: u16, body: &'static str) -> (u16, Arc<Mutex<Strin
     tokio::spawn(async move {
         let (mut sock, _) = listener.accept().await.unwrap();
         let raw = read_http(&mut sock).await;
-        *seen_task.lock().unwrap() = raw;
+        *seen_task.lock() = raw;
         let response = format!(
             "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()

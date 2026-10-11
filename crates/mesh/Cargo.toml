@@ -6,34 +6,38 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-axum = "0.8"
-fd-lock = "4"
-getrandom = "0.2"
-hostname = "0.4"
-http-body-util = "0.1"
-hyper = { version = "1", features = ["server", "http1"] }
-hyper-util = { version = "0.1", features = ["tokio", "server-auto", "http1"] }
+axum = { workspace = true }
+config = { path = "../config" }
+fd-lock = { workspace = true }
+getrandom = { workspace = true }
+hostname = { workspace = true }
+http-body-util = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+parking_lot = { workspace = true }
 protocol = { path = "../protocol" }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
-rustls-pemfile = "2"
+reqwest = { workspace = true }
+rustls = { workspace = true }
+rustls-pemfile = { workspace = true }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-tokio = { version = "1", features = ["fs", "macros", "net", "rt-multi-thread", "sync", "time"] }
-tokio-rustls = "0.26"
-tower = "0.5"
-tracing = "0.1"
-url = "2"
+tokio = { workspace = true, features = ["fs", "macros", "net", "rt-multi-thread", "sync", "time"] }
+tokio-rustls = { workspace = true }
+tower = { workspace = true }
+tracing = { workspace = true }
+url = { workspace = true }
 
 [dev-dependencies]
+config = { path = "../config" }
+parking_lot = { workspace = true }
 protocol = { path = "../protocol" }
-rcgen = "0.13"
+rcgen = { workspace = true }
+reqwest = { workspace = true }
+rustls = { workspace = true }
+rustls-pemfile = { workspace = true }
 serde_json.workspace = true
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
-rustls-pemfile = "2"
-tokio = { version = "1", features = ["fs", "macros", "net", "rt-multi-thread", "sync", "time"] }
+tokio = { workspace = true, features = ["fs", "macros", "net", "rt-multi-thread", "sync", "time"] }
 
 [lints]
 workspace = true
