@@ -466,13 +466,7 @@ async fn start_server(
     let early = find_pg_ctl(&resolved.installation_dir);
     clear_stale_postmaster(&pgdata, early.as_deref(), log).await?;
     remove_incomplete(&pgdata, log).await?;
-    remove_incomplete_install(&resolved.installation_dir, log).await?;
-    let guard = if binary_install_required(&resolved.installation_dir) {
-        Some(acquire_install_lock(&resolved.installation_dir).await?)
-    } else {
-        None
-    };
-    remove_incomplete_install(&resolved.installation_dir, log).await?;
+    let guard = prepare_shared_install(&resolved.installation_dir, log).await?;
     let settings = engine_settings(resolved, port, max, env).await?;
     write_password_file(&settings.password_file, &settings.password).await?;
     ensure_crypto_provider();
@@ -736,6 +730,21 @@ fn binaries_offline_error(installation_dir: &Path, detail: &str) -> LocalDbError
         "embedded postgres: PostgreSQL {POSTGRES_VERSION} binaries are not installed under {} and were not downloaded because the network path is unavailable ({detail}). Retry while online, or place bin/pg_ctl in that directory; later boots stay offline and do not query the network.",
         dir.display()
     ))
+}
+
+async fn prepare_shared_install(
+    installation_dir: &Path,
+    log: &dyn EmbeddedPgLog,
+) -> Result<Option<FileLock>> {
+    if !binary_install_required(installation_dir) {
+        return Ok(None);
+    }
+    let guard = acquire_install_lock(installation_dir).await?;
+    remove_incomplete_install(installation_dir, log).await?;
+    if !binary_install_required(installation_dir) {
+        return Ok(None);
+    }
+    Ok(Some(guard))
 }
 
 async fn acquire_install_lock(installation_dir: &Path) -> Result<FileLock> {
@@ -1329,23 +1338,25 @@ async fn relation_exists(client: &mut PgClient, schema: &str, name: &str) -> Res
 async fn dest_columns(client: &mut PgClient, schema: &str, table: &str) -> Result<Vec<DestColumn>> {
     let rows = client
         .query_columns(
-            "SELECT a.attname::text, pg_catalog.format_type(a.atttypid, a.atttypmod), a.attgenerated::text \
+            "SELECT a.attname::text, pg_catalog.format_type(a.atttypid, a.atttypmod), a.attgenerated::text, a.attidentity::text \
              FROM pg_catalog.pg_attribute a \
              JOIN pg_catalog.pg_class c ON c.oid = a.attrelid \
              JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
              WHERE n.nspname = $1::text AND c.relname = $2::text AND a.attnum > 0 AND NOT a.attisdropped \
              ORDER BY a.attnum",
             &[Some(schema.to_string()), Some(table.to_string())],
-            3,
+            4,
         )
         .await?;
     let mut columns = Vec::with_capacity(rows.len());
     for row in rows {
         let generated = row[2] == "s";
+        let identity = row[3] == "a" || row[3] == "d";
         columns.push(DestColumn {
             name: row[0].clone(),
             type_name: row[1].clone(),
             generated,
+            identity,
         });
     }
     Ok(columns)
@@ -1998,6 +2009,43 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
+    #[tokio::test]
+    async fn incomplete_install_is_removed_only_while_the_install_lock_is_held() {
+        let home = temp_home("install-lock");
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).expect("home");
+        let config = json!({
+            "memory": {"postgres": {"embedded": {"port": 5433, "max_connections": 16}}}
+        });
+        let resolved = resolve_embedded_pg(&config, &home, None).expect("resolved");
+        let version = resolved.installation_dir.join("16.10.0");
+        std::fs::create_dir_all(version.join("share")).expect("incomplete");
+        std::fs::write(version.join("share").join("README"), b"partial").expect("partial");
+        let installation = resolved.installation_dir.clone();
+        let held = FileLock::acquire(
+            &installation.join(INSTALL_LOCK),
+            Duration::from_secs(2),
+            "lock busy".to_string(),
+        )
+        .await
+        .expect("hold");
+        let blocked = tokio::time::timeout(
+            Duration::from_millis(400),
+            prepare_shared_install(&installation, &TracingLog),
+        )
+        .await;
+        assert!(blocked.is_err());
+        assert!(version.join("share").join("README").is_file());
+        drop(held);
+        let guard = prepare_shared_install(&installation, &TracingLog)
+            .await
+            .expect("prepare");
+        assert!(guard.is_some());
+        assert!(!version.exists());
+        drop(guard);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
     #[test]
     fn install_waits_for_pg_ctl_and_the_pgvector_marker() {
         let root = temp_home("bin-marker");
@@ -2524,7 +2572,103 @@ mod tests {
             )));
         }
         lane_self_links(client, schema, &incomplete).await?;
+        lane_identity(client, schema, &incomplete).await?;
         let _ = std::fs::remove_dir_all(&incomplete);
+        Ok(())
+    }
+
+    async fn lane_identity(client: &mut PgClient, schema: &str, dir: &Path) -> Result<()> {
+        let qualified = format!("{}.{}", quote_ident(schema), quote_ident("identity_jobs"));
+        let sequence = format!(
+            "{}.{}",
+            quote_ident(schema),
+            quote_ident("identity_jobs_id_seq")
+        );
+        let create = format!(
+            "CREATE TABLE {qualified} (id bigint PRIMARY KEY GENERATED ALWAYS AS IDENTITY, payload json NOT NULL)"
+        );
+        let mut out = String::new();
+        out.push_str(&export_line(&json!({"op": "begin"})));
+        out.push_str(&export_line(&json!({"op": "ddl", "sql": create})));
+        out.push_str(&export_line(&json!({"op": "commit"})));
+        out.push_str(&export_line(&json!({"op": "begin"})));
+        out.push_str(&export_line(&json!({
+            "op": "insert",
+            "schema": schema,
+            "table": "identity_jobs",
+            "columns": ["id", "payload"],
+            "rows": [[cell("7"), cell(r#"{"task":"extract-wiki"}"#)]]
+        })));
+        out.push_str(&export_line(&json!({
+            "op": "count",
+            "schema": schema,
+            "table": "identity_jobs",
+            "n": 1
+        })));
+        out.push_str(&export_line(&json!({"op": "commit"})));
+        out.push_str(&export_line(&json!({
+            "op": "setval",
+            "schema": schema,
+            "name": "identity_jobs_id_seq",
+            "last": "7",
+            "called": true
+        })));
+        out.push_str(&export_line(&json!({"op": "done"})));
+        let path = dir.join("identity.jsonl");
+        std::fs::write(&path, out).expect("identity");
+        apply_export(client, &path, Path::new("source"), &TracingLog).await?;
+        let id = client
+            .query_text(&format!("SELECT id::text FROM {qualified}"))
+            .await?;
+        if id.as_deref() != Some("7") {
+            return Err(LocalDbError::message(format!("identity id is {id:?}")));
+        }
+        let marker = client
+            .query_one_text(
+                "SELECT a.attidentity::text FROM pg_attribute a \
+                 JOIN pg_class c ON c.oid = a.attrelid \
+                 JOIN pg_namespace n ON n.oid = c.relnamespace \
+                 WHERE n.nspname = $1::text AND c.relname = 'identity_jobs' AND a.attname = 'id'",
+                &[Some(schema.to_string())],
+            )
+            .await?;
+        if marker.as_deref() != Some("a") {
+            return Err(LocalDbError::message(format!(
+                "identity marker is {marker:?}"
+            )));
+        }
+        let last = client
+            .query_text(&format!("SELECT last_value::text FROM {sequence}"))
+            .await?;
+        if last.as_deref() != Some("7") {
+            return Err(LocalDbError::message(format!(
+                "identity sequence last is {last:?}"
+            )));
+        }
+        let called = client
+            .query_text(&format!("SELECT is_called::text FROM {sequence}"))
+            .await?;
+        if called.as_deref() != Some("true") {
+            return Err(LocalDbError::message(format!(
+                "identity sequence called is {called:?}"
+            )));
+        }
+        client
+            .batch(
+                &format!(
+                    "INSERT INTO {qualified} (payload) VALUES ('{{\"task\":\"again\"}}'::json)"
+                ),
+                COMMAND_TIMEOUT,
+            )
+            .await?;
+        let next = client
+            .query_text(&format!("SELECT id::text FROM {qualified} WHERE id <> 7"))
+            .await?;
+        if next.as_deref() != Some("8") {
+            return Err(LocalDbError::message(format!(
+                "next identity id is {next:?}"
+            )));
+        }
         Ok(())
     }
 
@@ -3030,7 +3174,102 @@ mod tests {
             .await
             .expect("jobs_state");
         assert_eq!(index.as_deref(), Some("jobs_state"));
+        for table in ["_private_jobs", "_private_tasks", "_private_job_queues"] {
+            let marker = client
+                .query_text(&format!(
+                    "SELECT a.attidentity::text FROM pg_attribute a \
+                     JOIN pg_class c ON c.oid = a.attrelid \
+                     JOIN pg_namespace n ON n.oid = c.relnamespace \
+                     WHERE n.nspname = 'graphile_worker' AND c.relname = '{table}' AND a.attname = 'id'"
+                ))
+                .await
+                .expect("identity");
+            assert_eq!(marker.as_deref(), Some("a"), "{table}");
+        }
+        let job_id = client
+            .query_text("SELECT id::text FROM graphile_worker._private_jobs")
+            .await
+            .expect("job id");
+        assert_eq!(job_id.as_deref(), Some("1"));
+        let task_id = client
+            .query_text(
+                "SELECT id::text FROM graphile_worker._private_tasks WHERE identifier = 'extract-wiki'",
+            )
+            .await
+            .expect("task id");
+        assert_eq!(task_id.as_deref(), Some("1"));
+        let jobs_last = client
+            .query_text("SELECT last_value::text FROM graphile_worker._private_jobs_id_seq")
+            .await
+            .expect("jobs sequence");
+        assert_eq!(jobs_last.as_deref(), Some("1"));
+        let jobs_called = client
+            .query_text("SELECT is_called::text FROM graphile_worker._private_jobs_id_seq")
+            .await
+            .expect("jobs called");
+        assert_eq!(jobs_called.as_deref(), Some("true"));
+        client
+            .batch(
+                "INSERT INTO graphile_worker._private_jobs (task_id, payload) VALUES (1, '{\"task\":\"again\"}'::json)",
+                COMMAND_TIMEOUT,
+            )
+            .await
+            .expect("next job");
+        let next_job = client
+            .query_text(
+                "SELECT id::text FROM graphile_worker._private_jobs WHERE payload::text LIKE '%again%'",
+            )
+            .await
+            .expect("next job id");
+        assert_eq!(next_job.as_deref(), Some("2"));
+        client
+            .batch(
+                "INSERT INTO graphile_worker._private_job_queues (queue_name) VALUES ('default')",
+                COMMAND_TIMEOUT,
+            )
+            .await
+            .expect("queue");
+        let queue_id = client
+            .query_text("SELECT id::text FROM graphile_worker._private_job_queues")
+            .await
+            .expect("queue id");
+        assert_eq!(queue_id.as_deref(), Some("1"));
+        drop(client);
         handle.close().await.expect("close");
+        assert!(source_is_migrated(&home, &data_dir).expect("recorded"));
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind later");
+        let port = listener.local_addr().expect("addr").port();
+        let config = json!({
+            "memory": {"postgres": {"embedded": {
+                "port": port,
+                "max_connections": 16,
+                "data_dir": data_dir.display().to_string()
+            }}}
+        });
+        let mut resolved = resolve_embedded_pg(&config, &home, None).expect("resolved later");
+        use_shared_binaries(&mut resolved);
+        let mut again = acquire_embedded_pg_with(resolved, &TracingLog, Some(listener), &env)
+            .await
+            .expect("later boot");
+        let mut client = PgClient::connect(again.pg_url())
+            .await
+            .expect("connect later");
+        let kept = client
+            .query_text("SELECT payload::text FROM graphile_worker._private_jobs WHERE id = 2")
+            .await
+            .expect("kept job");
+        assert!(kept.as_deref().is_some_and(|text| text.contains("again")));
+        let original = client
+            .query_text("SELECT payload::text FROM graphile_worker.jobs WHERE id = 1")
+            .await
+            .expect("original job");
+        assert!(
+            original
+                .as_deref()
+                .is_some_and(|text| text.contains("extract-wiki"))
+        );
+        drop(client);
+        again.close().await.expect("close later");
         let _ = std::fs::remove_dir_all(&home);
     }
 }

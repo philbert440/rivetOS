@@ -1,4 +1,4 @@
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 pub const PGLITE_DIR_NAME: &str = "pglite";
 pub const POSTGRES_DIR_NAME: &str = "postgres";
@@ -6,13 +6,6 @@ pub const PG_BIN_DIR_NAME: &str = "pg-bin";
 pub const BACKUPS_DIR_NAME: &str = "backups";
 pub const MIGRATE_DIR_NAME: &str = "migrate";
 pub const RIVET_DIR_NAME: &str = ".rivetos";
-
-pub fn user_home() -> Option<PathBuf> {
-    std::env::var_os("HOME")
-        .filter(|value| !value.is_empty())
-        .or_else(|| std::env::var_os("USERPROFILE").filter(|value| !value.is_empty()))
-        .map(PathBuf::from)
-}
 
 pub fn rivet_dir(home: &Path) -> PathBuf {
     home.join(RIVET_DIR_NAME)
@@ -91,28 +84,12 @@ pub fn expand_tilde(raw: &str, home: &Path) -> PathBuf {
 }
 
 pub fn lexical_absolute(path: &Path) -> PathBuf {
-    let absolute = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        std::env::current_dir()
-            .unwrap_or_else(|_| PathBuf::from("."))
-            .join(path)
-    };
-    normalize_lexical(&absolute)
-}
-
-pub fn normalize_lexical(path: &Path) -> PathBuf {
-    let mut out = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                out.pop();
-            }
-            other => out.push(other),
-        }
-    }
-    out
+    let cwd = std::env::current_dir()
+        .ok()
+        .map(|dir| dir.to_string_lossy().into_owned())
+        .unwrap_or_else(|| ".".to_string());
+    let text = path.to_string_lossy();
+    PathBuf::from(protocol::js::posix_resolve(&cwd, &[text.as_ref()]))
 }
 
 pub fn shell_quote(text: &str) -> String {
@@ -136,9 +113,23 @@ mod tests {
     }
 
     #[test]
-    fn lexical_absolute_normalizes_dot_segments() {
-        let path = lexical_absolute(Path::new("/tmp/fake/../pglite"));
-        assert_eq!(path, PathBuf::from("/tmp/pglite"));
+    fn lexical_absolute_follows_posix_resolve() {
+        let cwd = std::env::current_dir().expect("cwd");
+        let cwd_text = cwd.to_string_lossy();
+        let absolute = lexical_absolute(Path::new("/tmp/fake/../pglite"));
+        assert_eq!(
+            absolute,
+            PathBuf::from(protocol::js::posix_resolve(
+                &cwd_text,
+                &["/tmp/fake/../pglite"]
+            ))
+        );
+        assert_eq!(absolute, PathBuf::from("/tmp/pglite"));
+        let relative = lexical_absolute(Path::new("fake/../pglite"));
+        assert_eq!(
+            relative,
+            PathBuf::from(protocol::js::posix_resolve(&cwd_text, &["fake/../pglite"]))
+        );
     }
 
     #[test]

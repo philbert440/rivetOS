@@ -491,9 +491,14 @@ async function seedWorkerQueue(pg) {
   await pg.exec(
     'CREATE SCHEMA graphile_worker;' +
       "CREATE TYPE graphile_worker.job_state AS ENUM ('created', 'running');" +
-      'CREATE TABLE graphile_worker._private_tasks (id integer PRIMARY KEY, identifier text NOT NULL);' +
+      'CREATE TABLE graphile_worker._private_job_queues (' +
+      'id integer PRIMARY KEY GENERATED ALWAYS AS IDENTITY, ' +
+      'queue_name text NOT NULL UNIQUE);' +
+      'CREATE TABLE graphile_worker._private_tasks (' +
+      'id integer PRIMARY KEY GENERATED ALWAYS AS IDENTITY, ' +
+      'identifier text NOT NULL UNIQUE);' +
       'CREATE TABLE graphile_worker._private_jobs (' +
-      'id integer PRIMARY KEY, ' +
+      'id bigint PRIMARY KEY GENERATED ALWAYS AS IDENTITY, ' +
       'task_id integer NOT NULL REFERENCES graphile_worker._private_tasks (id), ' +
       "state graphile_worker.job_state NOT NULL DEFAULT 'created', " +
       'payload json NOT NULL);' +
@@ -502,12 +507,12 @@ async function seedWorkerQueue(pg) {
       'CREATE VIEW graphile_worker.jobs AS SELECT id, payload, state FROM graphile_worker._private_jobs;',
   )
   await pg.query(
-    'INSERT INTO graphile_worker._private_tasks (id, identifier) VALUES (1, $1)',
+    'INSERT INTO graphile_worker._private_tasks (identifier) VALUES ($1) ON CONFLICT (identifier) DO UPDATE SET identifier = EXCLUDED.identifier',
     ['extract-wiki'],
   )
   await pg.query(
-    "INSERT INTO graphile_worker._private_jobs (id, task_id, state, payload) VALUES (1, 1, 'created', $1::json)",
-    ['{"task":"extract-wiki"}'],
+    'INSERT INTO graphile_worker._private_jobs (task_id, payload) SELECT id, $1::json FROM graphile_worker._private_tasks WHERE identifier = $2',
+    ['{"task":"extract-wiki"}', 'extract-wiki'],
   )
 }
 

@@ -79,6 +79,7 @@ pub struct DestColumn {
     pub name: String,
     pub type_name: String,
     pub generated: bool,
+    pub identity: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -376,7 +377,12 @@ pub fn plan_insert(
         if column.generated {
             continue;
         }
-        kept.push((index, name.clone(), column.type_name.clone()));
+        kept.push((
+            index,
+            name.clone(),
+            column.type_name.clone(),
+            column.identity,
+        ));
     }
     if kept.is_empty() || rows.is_empty() {
         return Ok(None);
@@ -391,7 +397,7 @@ pub fn plan_insert(
             )));
         }
         let mut places = Vec::new();
-        for (index, _, type_name) in &kept {
+        for (index, _, type_name, _) in &kept {
             places.push(format!("(${number}::text)::{type_name}"));
             params.push(row[*index].clone());
             number += 1;
@@ -400,12 +406,17 @@ pub fn plan_insert(
     }
     let listed = kept
         .iter()
-        .map(|(_, name, _)| quote_ident(name))
+        .map(|(_, name, _, _)| quote_ident(name))
         .collect::<Vec<_>>()
         .join(", ");
+    let overriding = if kept.iter().any(|(_, _, _, identity)| *identity) {
+        " OVERRIDING SYSTEM VALUE"
+    } else {
+        ""
+    };
     Ok(Some(BoundInsert {
         sql: format!(
-            "INSERT INTO {}.{} ({listed}) VALUES {}",
+            "INSERT INTO {}.{} ({listed}){overriding} VALUES {}",
             quote_ident(schema),
             quote_ident(table),
             tuples.join(", ")
@@ -1133,6 +1144,9 @@ mod tests {
         assert!(EXPORT_SCRIPT.contains("parent_task_id"));
         assert!(EXPORT_SCRIPT.contains("extract-wiki"));
         assert!(EXPORT_SCRIPT.contains("job_count"));
+        assert!(EXPORT_SCRIPT.contains("GENERATED ALWAYS AS IDENTITY"));
+        assert!(EXPORT_SCRIPT.contains("_private_job_queues"));
+        assert!(EXPORT_SCRIPT.contains("ON CONFLICT (identifier)"));
         assert!(!EXPORT_SCRIPT.contains("op: 'table'"));
         assert!(!EXPORT_SCRIPT.contains("pgDump"));
         assert!(!EXPORT_SCRIPT.contains("pglite-tools"));
@@ -1148,6 +1162,7 @@ mod tests {
                         name: "body".to_string(),
                         type_name: "text".to_string(),
                         generated: false,
+                        identity: false,
                     }],
                     &batch.rows,
                 )
@@ -1162,6 +1177,7 @@ mod tests {
                 assert!(plan.sql.contains("($1::text)::text"));
                 assert!(!plan.sql.contains("$1::text::text"));
                 assert!(!plan.sql.contains("\\restrict"));
+                assert!(!plan.sql.contains("OVERRIDING"));
             }
             other => panic!("unexpected {other:?}"),
         }
@@ -1183,11 +1199,13 @@ mod tests {
                     name: "aliases".to_string(),
                     type_name: "text[]".to_string(),
                     generated: false,
+                    identity: false,
                 },
                 DestColumn {
                     name: "content_tsv".to_string(),
                     type_name: "tsvector".to_string(),
                     generated: true,
+                    identity: false,
                 },
             ],
             &rows,
@@ -1205,6 +1223,7 @@ mod tests {
                 name: "created_at".to_string(),
                 type_name: "timestamp with time zone".to_string(),
                 generated: false,
+                identity: false,
             }],
             &[vec![Some("2024-01-02 03:04:05+00".to_string())]],
         )
@@ -1212,6 +1231,56 @@ mod tests {
         .expect("insert");
         assert!(stamped.sql.contains("($1::text)::timestamp with time zone"));
         assert!(!stamped.sql.contains("$1::text::timestamp"));
+        assert!(!plan.sql.contains("OVERRIDING"));
+        let identity = plan_insert(
+            "graphile_worker",
+            "_private_jobs",
+            &["id".to_string(), "payload".to_string()],
+            &[
+                DestColumn {
+                    name: "id".to_string(),
+                    type_name: "bigint".to_string(),
+                    generated: false,
+                    identity: true,
+                },
+                DestColumn {
+                    name: "payload".to_string(),
+                    type_name: "json".to_string(),
+                    generated: false,
+                    identity: false,
+                },
+            ],
+            &[vec![
+                Some("1".to_string()),
+                Some(r#"{"task":"extract-wiki"}"#.to_string()),
+            ]],
+        )
+        .expect("identity")
+        .expect("insert");
+        let values_at = identity.sql.find("VALUES").expect("values");
+        let override_at = identity
+            .sql
+            .find("OVERRIDING SYSTEM VALUE")
+            .expect("override");
+        assert!(override_at < values_at);
+        assert!(identity.sql.contains("($1::text)::bigint"));
+        assert!(identity.sql.contains("($2::text)::json"));
+        assert!(!identity.sql.contains("OVERRIDING USER VALUE"));
+        let by_default = plan_insert(
+            "graphile_worker",
+            "_private_tasks",
+            &["id".to_string()],
+            &[DestColumn {
+                name: "id".to_string(),
+                type_name: "integer".to_string(),
+                generated: false,
+                identity: true,
+            }],
+            &[vec![Some("4".to_string())]],
+        )
+        .expect("by default")
+        .expect("insert");
+        assert!(by_default.sql.contains("OVERRIDING SYSTEM VALUE"));
         assert!(copy_this_table("ros_messages"));
         assert!(!copy_this_table("_rivetos_migrations"));
         assert!(
@@ -1464,11 +1533,11 @@ mod tests {
                 & 0o777;
             assert_eq!(mode, 0o600);
         }
-        assert!(
-            !migrated_record(&home)
-                .with_file_name("migrated-sources.lock")
-                .exists()
-        );
+        let lock_path = migrated_record(&home).with_file_name("migrated-sources.lock");
+        #[cfg(unix)]
+        assert!(lock_path.is_file());
+        #[cfg(not(unix))]
+        assert!(!lock_path.exists());
         let text = std::fs::read_to_string(migrated_record(&home)).expect("json");
         let parsed: serde_json::Value = serde_json::from_str(&text).expect("parse");
         assert!(

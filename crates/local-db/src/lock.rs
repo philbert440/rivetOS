@@ -383,9 +383,17 @@ fn try_file_lock(path: &Path) -> std::result::Result<FileLock, LockTry> {
             }
         }
     };
+    if !held_matches_path(&locked, path) {
+        let _ = locked.unlock();
+        return Err(LockTry::Busy);
+    }
     if let Err(error) = write_lock_owner(&mut locked) {
         let _ = locked.unlock();
         return Err(LockTry::Failed(error));
+    }
+    if !held_matches_path(&locked, path) {
+        let _ = locked.unlock();
+        return Err(LockTry::Busy);
     }
     Ok(FileLock {
         path: path.to_path_buf(),
@@ -394,15 +402,16 @@ fn try_file_lock(path: &Path) -> std::result::Result<FileLock, LockTry> {
 }
 
 #[cfg(unix)]
-fn release_file_lock(file: HeldLock, path: &Path) {
+fn held_matches_path(file: &HeldLock, path: &Path) -> bool {
     use std::os::unix::fs::MetadataExt;
-    let same = match (file.metadata(), std::fs::metadata(path)) {
+    match (file.metadata(), std::fs::metadata(path)) {
         (Ok(ours), Ok(current)) => ours.dev() == current.dev() && ours.ino() == current.ino(),
         _ => false,
-    };
-    if same {
-        let _ = std::fs::remove_file(path);
     }
+}
+
+#[cfg(unix)]
+fn release_file_lock(file: HeldLock, _path: &Path) {
     let _ = file.unlock();
 }
 
@@ -662,7 +671,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn file_lock_waits_out_an_empty_publication_and_recovers_a_dead_holder() {
-        use std::os::unix::fs::OpenOptionsExt;
+        use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
         let dir = temp_dir("file-lock");
         let path = dir.join("migrated-sources.lock");
         let held = std::fs::OpenOptions::new()
@@ -695,8 +704,51 @@ mod tests {
                 .expect("recovered");
         let text = std::fs::read_to_string(&path).expect("pid");
         assert_eq!(text.trim(), std::process::id().to_string());
+        let inode = std::fs::metadata(&path).expect("meta").ino();
         drop(recovered);
-        assert!(!path.exists());
+        let kept = std::fs::metadata(&path).expect("lock file stays");
+        assert_eq!(kept.ino(), inode);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn file_lock_keeps_one_inode_so_an_open_holder_blocks_a_new_path() {
+        use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+        let dir = temp_dir("file-lock-handoff");
+        let path = dir.join("migrated-sources.lock");
+        let first = FileLock::acquire(&path, Duration::from_secs(1), "lock busy".to_string())
+            .await
+            .expect("first");
+        let inode = std::fs::metadata(&path).expect("meta").ino();
+        let opened = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .mode(0o600)
+            .open(&path)
+            .expect("open");
+        assert_eq!(opened.metadata().expect("open meta").ino(), inode);
+        drop(first);
+        assert_eq!(std::fs::metadata(&path).expect("still").ino(), inode);
+        let held =
+            match nix::fcntl::Flock::lock(opened, nix::fcntl::FlockArg::LockExclusiveNonblock) {
+                Ok(locked) => locked,
+                Err((_, errno)) => panic!("opened lock {errno}"),
+            };
+        let started = std::time::Instant::now();
+        let error = FileLock::acquire(&path, Duration::from_millis(200), "lock busy".to_string())
+            .await
+            .expect_err("overlap");
+        assert_eq!(error.to_string(), "lock busy");
+        assert!(started.elapsed() >= Duration::from_millis(150));
+        assert_eq!(std::fs::metadata(&path).expect("same").ino(), inode);
+        drop(held);
+        let third = FileLock::acquire(&path, Duration::from_secs(1), "lock busy".to_string())
+            .await
+            .expect("third");
+        assert_eq!(std::fs::metadata(&path).expect("third meta").ino(), inode);
+        drop(third);
+        assert_eq!(std::fs::metadata(&path).expect("after").ino(), inode);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

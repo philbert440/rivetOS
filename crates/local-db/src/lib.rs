@@ -33,7 +33,7 @@ pub use migrate::{
     MIGRATE_PENDING_FILE, MigrationPlan, SkipReason, node_missing_message, package_entry,
     pending_marker, pgdata_dir, plan_migration,
 };
-pub use paths::{cluster_dir_for, user_home};
+pub use paths::cluster_dir_for;
 pub use sql_compat::quote_ident;
 pub use status::{
     STATUS_NOT_CONFIGURED, STATUS_PREFIX_OK, STATUS_PREFIX_WARN, db_status_lines, dir_size_bytes,
