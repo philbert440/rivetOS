@@ -66,14 +66,16 @@ pub fn field_is_nullish_empty(value: Option<&Value>) -> bool {
     }
 }
 
-pub fn slice_text(text: &str, start: isize, end: Option<isize>) -> String {
+pub fn slice_text(text: &str, start: isize, end: Option<isize>) -> protocol::js::JsString {
     protocol::js::js_slice(text, Some(start as f64), end.map(|value| value as f64))
-        .to_utf8()
-        .to_string()
+}
+
+pub fn slice_utf8(text: &str, start: isize, end: Option<isize>) -> String {
+    slice_text(text, start, end).to_utf8().to_string()
 }
 
 pub fn clip(text: &str, max: usize) -> String {
-    slice_text(text, 0, Some(max as isize))
+    slice_utf8(text, 0, Some(max as isize))
 }
 
 pub fn arr<'a>(obj: &'a Obj, key: &str) -> Option<&'a Vec<Value>> {

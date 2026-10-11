@@ -11,7 +11,7 @@ use crate::nest::{DelegatedLink, apply_delegated_nesting, with_ancestors};
 use crate::roots::Roots;
 use crate::text::strip_pasted_content_wrapper;
 use crate::turn::SessionRow;
-use crate::value::{jtrim, slice_text};
+use crate::value::{jtrim, slice_utf8};
 
 struct ClaudeFile {
     id: String,
@@ -404,7 +404,7 @@ fn session_title(file: &Path) -> Option<String> {
         {
             let trimmed = jtrim(summary);
             if !trimmed.is_empty() {
-                return Some(slice_text(trimmed, 0, Some(120)));
+                return Some(slice_utf8(trimmed, 0, Some(120)));
             }
         }
         if kind == "user" {
@@ -416,7 +416,7 @@ fn session_title(file: &Path) -> Option<String> {
             let trimmed = jtrim(&txt);
             if !trimmed.is_empty() {
                 let stripped = strip_pasted_content_wrapper(trimmed);
-                return Some(slice_text(jtrim(&stripped), 0, Some(120)));
+                return Some(slice_utf8(jtrim(&stripped), 0, Some(120)));
             }
         }
     }
@@ -447,7 +447,7 @@ fn clip_label(value: Option<&Value>, max: isize) -> String {
     if trimmed.is_empty() {
         String::new()
     } else {
-        slice_text(trimmed, 0, Some(max))
+        slice_utf8(trimmed, 0, Some(max))
     }
 }
 

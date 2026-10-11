@@ -9,7 +9,7 @@ use crate::jsonl::read_jsonl;
 use crate::pi::pi_turns_from_lines;
 use crate::roots::Roots;
 use crate::turn::SessionRow;
-use crate::value::{jtrim, slice_text};
+use crate::value::{jtrim, slice_utf8};
 
 pub fn list(roots: &Roots, limit: usize) -> Vec<SessionRow> {
     let mut newest: std::collections::HashMap<String, PiFile> = std::collections::HashMap::new();
@@ -192,7 +192,7 @@ fn title_from(path: &Path) -> String {
                 .unwrap_or("");
             let trimmed = jtrim(name);
             if !trimmed.is_empty() {
-                return slice_text(trimmed, 0, Some(120));
+                return slice_utf8(trimmed, 0, Some(120));
             }
         }
     }
@@ -200,7 +200,7 @@ fn title_from(path: &Path) -> String {
         if turn.role == crate::turn::Role::User {
             let trimmed = jtrim(&turn.text);
             if !trimmed.is_empty() {
-                return slice_text(trimmed, 0, Some(120));
+                return slice_utf8(trimmed, 0, Some(120));
             }
         }
     }

@@ -9,7 +9,7 @@ use crate::nest::with_ancestors;
 use crate::roots::Roots;
 use crate::timeutil::parse_date_ms;
 use crate::turn::SessionRow;
-use crate::value::{jtrim, slice_text};
+use crate::value::{jtrim, slice_utf8};
 
 const LOCATE_TTL_MS: i64 = 30_000;
 const LOCATE_MISS_TTL_MS: i64 = 5_000;
@@ -77,7 +77,7 @@ pub fn list(roots: &Roots, index: &mut GrokIndex, limit: usize) -> Vec<SessionRo
                 continue;
             }
             updates.push(session_dir.join("updates.jsonl"));
-            if let Some(read) = read_summary(&session_dir, &name) {
+            if let Some(read) = read_summary(&session_dir, &name, roots) {
                 reads.push(read);
             }
         }
@@ -106,13 +106,13 @@ pub fn describe(roots: &Roots, index: &mut GrokIndex, id: &str) -> Option<Sessio
             return None;
         }
         if let Some(dir) = cached.dir.clone() {
-            if let Some(found) = read_summary(&dir, id) {
+            if let Some(found) = read_summary(&dir, id, roots) {
                 return Some(finish(index, &root, found));
             }
             index.locations.retain(|(key, _)| key != id);
         }
     }
-    match locate(&root, id) {
+    match locate(&root, id, roots) {
         Locate::NoStore | Locate::Pending => None,
         Locate::Absent => {
             remember(
@@ -257,7 +257,7 @@ fn update_files(index: &mut GrokIndex, root: &Path) -> Vec<PathBuf> {
     paths
 }
 
-fn locate(root: &Path, id: &str) -> Locate {
+fn locate(root: &Path, id: &str, env: &dyn protocol::host::Env) -> Locate {
     let Some(cwd_dirs) = fsutil::read_dir_names(root) else {
         return Locate::NoStore;
     };
@@ -265,7 +265,7 @@ fn locate(root: &Path, id: &str) -> Locate {
     let mut saw_dir = false;
     for cwd in cwd_dirs {
         let session_dir = root.join(&cwd).join(id);
-        if let Some(read) = read_summary(&session_dir, id) {
+        if let Some(read) = read_summary(&session_dir, id, env) {
             let replace = best
                 .as_ref()
                 .is_none_or(|(prev, _)| read.row.updated_at > prev.row.updated_at);
@@ -291,7 +291,11 @@ fn locate(root: &Path, id: &str) -> Locate {
     }
 }
 
-fn read_summary(dir: &Path, fallback_id: &str) -> Option<SummaryRead> {
+fn read_summary(
+    dir: &Path,
+    fallback_id: &str,
+    env: &dyn protocol::host::Env,
+) -> Option<SummaryRead> {
     let text = fsutil::read_lossy(&dir.join("summary.json"))?;
     let obj = parse_object(&text)?;
     let id = obj
@@ -305,12 +309,12 @@ fn read_summary(dir: &Path, fallback_id: &str) -> Option<SummaryRead> {
     let updated = obj
         .get("updated_at")
         .and_then(Value::as_str)
-        .and_then(parse_date_ms)
+        .and_then(|text| parse_date_ms(text, env))
         .unwrap_or(0);
     let created = obj
         .get("created_at")
         .and_then(Value::as_str)
-        .and_then(parse_date_ms);
+        .and_then(|text| parse_date_ms(text, env));
     let title_raw = obj
         .get("session_summary")
         .and_then(Value::as_str)
@@ -320,7 +324,7 @@ fn read_summary(dir: &Path, fallback_id: &str) -> Option<SummaryRead> {
         if trimmed.is_empty() {
             id.clone()
         } else {
-            slice_text(trimmed, 0, Some(120))
+            slice_utf8(trimmed, 0, Some(120))
         }
     };
     let mut row = SessionRow {
@@ -356,7 +360,7 @@ fn clip(value: Option<&Value>, max: isize) -> String {
     if trimmed.is_empty() {
         String::new()
     } else {
-        slice_text(trimmed, 0, Some(max))
+        slice_utf8(trimmed, 0, Some(max))
     }
 }
 

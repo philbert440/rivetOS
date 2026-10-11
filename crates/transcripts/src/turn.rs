@@ -1,8 +1,6 @@
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::value::Obj;
-
 pub const THINKING_TAIL_CHARS: usize = 8_000;
 pub const DEFAULT_TRANSCRIPT_MAX_BYTES: u64 = 8 * 1024 * 1024;
 pub const PROMPT_INPUT_MAX: usize = 8192;
@@ -46,7 +44,7 @@ pub struct Tool {
     pub name: String,
     pub status: ToolStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub args: Option<Obj>,
+    pub args: Option<protocol::js::JsObject>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -129,8 +127,10 @@ impl Turn {
     }
 
     pub fn to_json(&self) -> Value {
-        let value = serde_json::to_value(self).unwrap_or(Value::Null);
-        crate::value::js_norm(&value)
+        let Ok(text) = serde_json::to_string(self) else {
+            return Value::Null;
+        };
+        crate::value::parse_json(&text).unwrap_or(Value::Null)
     }
 }
 
@@ -142,7 +142,7 @@ pub fn cap_thinking(raw: &str) -> String {
     if protocol::js::utf16_len(raw) > THINKING_TAIL_CHARS {
         format!(
             "…{}",
-            crate::value::slice_text(raw, -(THINKING_TAIL_CHARS as isize), None)
+            crate::value::slice_utf8(raw, -(THINKING_TAIL_CHARS as isize), None)
         )
     } else {
         raw.to_string()
@@ -317,7 +317,7 @@ pub fn prompt_input(raw: &Value) -> Value {
 
 pub fn cap_result(text: &str) -> String {
     if protocol::js::utf16_len(text) > PROMPT_RESULT_MAX {
-        crate::value::slice_text(text, 0, Some(PROMPT_RESULT_MAX as isize))
+        crate::value::slice_utf8(text, 0, Some(PROMPT_RESULT_MAX as isize))
     } else {
         text.to_string()
     }
@@ -344,33 +344,23 @@ pub struct SessionRow {
     pub task_id: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, PartialEq)]
 pub struct CaptureMessage {
     pub role: String,
     pub content: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_args: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_result: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub event_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub event_ts: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub created_at: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub ordinal: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub line_index: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub source_offset: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub extra: Option<Value>,
+    pub wire_extra: Option<protocol::js::JsValue>,
+    pub wire_tool_args: Option<protocol::js::JsValue>,
 }
 
 impl CaptureMessage {
@@ -389,6 +379,8 @@ impl CaptureMessage {
             source_offset: None,
             session_id: None,
             extra: None,
+            wire_extra: None,
+            wire_tool_args: None,
         }
     }
 
@@ -411,7 +403,82 @@ impl CaptureMessage {
             source_offset: None,
             session_id: None,
             extra: None,
+            wire_extra: None,
+            wire_tool_args: None,
         }
+    }
+}
+
+impl Serialize for CaptureMessage {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+        let tool_name = self.tool_name.is_some();
+        let tool_args = self.wire_tool_args.is_some() || self.tool_args.is_some();
+        let tool_result = self.tool_result.is_some();
+        let event_id = self.event_id.is_some();
+        let event_ts = self.event_ts.is_some();
+        let created_at = self.created_at.is_some();
+        let ordinal = self.ordinal.is_some();
+        let line_index = self.line_index.is_some();
+        let source_offset = self.source_offset.is_some();
+        let session_id = self.session_id.is_some();
+        let extra = self.wire_extra.is_some() || self.extra.is_some();
+        let count = 2
+            + usize::from(tool_name)
+            + usize::from(tool_args)
+            + usize::from(tool_result)
+            + usize::from(event_id)
+            + usize::from(event_ts)
+            + usize::from(created_at)
+            + usize::from(ordinal)
+            + usize::from(line_index)
+            + usize::from(source_offset)
+            + usize::from(session_id)
+            + usize::from(extra);
+        let mut state = serializer.serialize_struct("CaptureMessage", count)?;
+        state.serialize_field("role", &self.role)?;
+        state.serialize_field("content", &self.content)?;
+        if let Some(value) = &self.tool_name {
+            state.serialize_field("toolName", value)?;
+        }
+        if let Some(value) = &self.wire_tool_args {
+            state.serialize_field("toolArgs", value)?;
+        } else if let Some(value) = &self.tool_args {
+            state.serialize_field("toolArgs", value)?;
+        }
+        if let Some(value) = &self.tool_result {
+            state.serialize_field("toolResult", value)?;
+        }
+        if let Some(value) = &self.event_id {
+            state.serialize_field("eventId", value)?;
+        }
+        if let Some(value) = &self.event_ts {
+            state.serialize_field("eventTs", value)?;
+        }
+        if let Some(value) = &self.created_at {
+            state.serialize_field("createdAt", value)?;
+        }
+        if let Some(value) = &self.ordinal {
+            state.serialize_field("ordinal", value)?;
+        }
+        if let Some(value) = &self.line_index {
+            state.serialize_field("lineIndex", value)?;
+        }
+        if let Some(value) = &self.source_offset {
+            state.serialize_field("sourceOffset", value)?;
+        }
+        if let Some(value) = &self.session_id {
+            state.serialize_field("sessionId", value)?;
+        }
+        if let Some(value) = &self.wire_extra {
+            state.serialize_field("extra", value)?;
+        } else if let Some(value) = &self.extra {
+            state.serialize_field("extra", value)?;
+        }
+        state.end()
     }
 }
 

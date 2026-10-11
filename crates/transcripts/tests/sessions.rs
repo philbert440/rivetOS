@@ -3,6 +3,7 @@ mod common;
 
 use std::path::Path;
 
+use protocol::host::ProcessEnv;
 use transcripts::identity::{
     REGISTRY_PROBE, TRANSCRIPT_PROBE, codex_native_id, hermes_announced_id, hermes_timestamp_id,
     kimi_session_id, opencode_native_id,
@@ -34,14 +35,14 @@ fn claude_line(text: &str) -> String {
 #[test]
 fn date_parse_matches_known_epoch() {
     assert_eq!(
-        parse_date_ms("2023-11-14T22:13:20.000Z"),
+        parse_date_ms("2023-11-14T22:13:20.000Z", &ProcessEnv),
         Some(1_700_000_000_000)
     );
     assert_eq!(
-        parse_date_ms("2023-11-14T22:14:20.000Z"),
+        parse_date_ms("2023-11-14T22:14:20.000Z", &ProcessEnv),
         Some(1_700_000_060_000)
     );
-    assert!(parse_date_ms("2026-07-07T00:00:00.000Z").unwrap() > 1_700_000_000_000);
+    assert!(parse_date_ms("2026-07-07T00:00:00.000Z", &ProcessEnv).unwrap() > 1_700_000_000_000);
 }
 
 #[test]
@@ -491,7 +492,10 @@ fn grok_created_at_agrees_between_list_and_describe() {
         .next()
         .unwrap();
     let described = store.describe_grok(id).unwrap();
-    assert_eq!(listed.created_at, parse_date_ms("2026-07-07T00:00:00.000Z"));
+    assert_eq!(
+        listed.created_at,
+        parse_date_ms("2026-07-07T00:00:00.000Z", &ProcessEnv)
+    );
     assert_eq!(described, listed);
 }
 

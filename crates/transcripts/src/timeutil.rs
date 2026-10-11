@@ -1,10 +1,23 @@
-pub fn parse_date_ms(text: &str) -> Option<i64> {
+pub fn parse_date_ms(text: &str, env: &dyn protocol::host::Env) -> Option<i64> {
     let trimmed = protocol::js::js_trim(text);
     if trimmed.is_empty() {
         return None;
     }
-    let ms = protocol::js::date_parse(trimmed, &protocol::host::ProcessEnv)?;
+    let ms = protocol::js::date_parse(trimmed, env)?;
     ms.is_finite().then_some(ms.trunc() as i64)
+}
+
+pub fn iso_from_date_text(text: &str, env: &dyn protocol::host::Env) -> Option<String> {
+    if text.is_empty() {
+        return None;
+    }
+    match protocol::js::date_parse(text, env) {
+        Some(ms) if ms.is_finite() => match protocol::js::to_iso_string(ms) {
+            Ok(iso) => Some(iso),
+            Err(_) => Some(text.to_string()),
+        },
+        _ => Some(text.to_string()),
+    }
 }
 
 pub fn iso_from_ms(ms: i64) -> String {

@@ -10,7 +10,7 @@ use crate::opencode::opencode_turns_from_messages;
 use crate::roots::Roots;
 use crate::timeutil::{opencode_epoch_number, parse_date_ms};
 use crate::turn::{CaptureMessage, SessionRow, Turn};
-use crate::value::{Obj, jtrim, slice_text, whitespace_collapse};
+use crate::value::{Obj, jtrim, slice_utf8, whitespace_collapse};
 
 pub fn list(roots: &Roots, limit: usize) -> Vec<SessionRow> {
     let Some(conn) = db::open_readonly(&db_path(roots)) else {
@@ -23,7 +23,7 @@ pub fn list(roots: &Roots, limit: usize) -> Vec<SessionRow> {
     let Some(rows) = query_maps(&conn, sql, &[&limit_i64]) else {
         return Vec::new();
     };
-    rows.iter().map(row_to_session).collect()
+    rows.iter().map(|row| row_to_session(row, roots)).collect()
 }
 
 pub fn describe(roots: &Roots, id: &str) -> Option<SessionRow> {
@@ -34,7 +34,7 @@ pub fn describe(roots: &Roots, id: &str) -> Option<SessionRow> {
     let sql =
         "SELECT id, title, model, time_created, time_updated FROM session WHERE id = ? LIMIT 1";
     let rows = query_maps(&conn, sql, &[&id])?;
-    rows.first().map(row_to_session)
+    rows.first().map(|row| row_to_session(row, roots))
 }
 
 pub fn exists_session(roots: &Roots, id: &str) -> bool {
@@ -185,7 +185,7 @@ fn id_safe(id: &str) -> bool {
     !id.is_empty() && !id.contains('/') && !id.contains("..")
 }
 
-fn row_to_session(row: &Obj) -> SessionRow {
+fn row_to_session(row: &Obj, env: &dyn protocol::host::Env) -> SessionRow {
     let id = row
         .get("id")
         .and_then(Value::as_str)
@@ -197,10 +197,10 @@ fn row_to_session(row: &Obj) -> SessionRow {
     let title = if collapsed.is_empty() {
         id.clone()
     } else {
-        slice_text(collapsed, 0, Some(120))
+        slice_utf8(collapsed, 0, Some(120))
     };
-    let created = epoch_of(row.get("time_created"));
-    let updated = epoch_of(row.get("time_updated"));
+    let created = epoch_of(row.get("time_created"), env);
+    let updated = epoch_of(row.get("time_updated"), env);
     let model = model_label(row.get("model"));
     SessionRow {
         id,
@@ -240,10 +240,10 @@ fn model_label(raw: Option<&Value>) -> Option<String> {
     }
 }
 
-fn epoch_of(value: Option<&Value>) -> i64 {
+fn epoch_of(value: Option<&Value>, env: &dyn protocol::host::Env) -> i64 {
     match value {
         Some(Value::Number(number)) => number.as_f64().map(opencode_epoch_number).unwrap_or(0),
-        Some(Value::String(text)) => parse_date_ms(text).unwrap_or(0),
+        Some(Value::String(text)) => parse_date_ms(text, env).unwrap_or(0),
         _ => 0,
     }
 }

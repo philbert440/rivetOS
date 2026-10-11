@@ -91,13 +91,14 @@ fn utf16_length_and_slice_follow_the_golden() {
             continue;
         };
         assert_eq!(
-            transcripts::value::slice_text(&text, start_index, end_index),
-            js_slice(
-                &text,
-                Some(start_index as f64),
-                end_index.map(|value| value as f64)
-            )
-            .to_utf8()
+            transcripts::value::slice_text(&text, start_index, end_index).units(),
+            expected.as_slice()
+        );
+        let sliced = transcripts::value::slice_text(&text, start_index, end_index);
+        let golden_value = protocol::js::JsValue::String(JsString::from_units(expected.clone()));
+        assert_eq!(
+            serde_json::to_string(&sliced).unwrap_or_default(),
+            protocol::js::stringify(&golden_value)
         );
     }
 }
@@ -190,7 +191,7 @@ fn date_parse_follows_every_recorded_zone() {
         }
         let expected = agreed[&text].map(|ms| ms as i64);
         assert_eq!(
-            transcripts::timeutil::parse_date_ms(&text),
+            transcripts::timeutil::parse_date_ms(&text, &MapEnv::new()),
             expected,
             "{text}"
         );

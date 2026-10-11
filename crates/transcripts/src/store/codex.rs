@@ -8,7 +8,7 @@ use crate::fsutil::{self, birth_ms, mtime_ms};
 use crate::jsonl::parse_object;
 use crate::roots::Roots;
 use crate::turn::SessionRow;
-use crate::value::{jtrim, slice_text, whitespace_collapse};
+use crate::value::{jtrim, slice_utf8, whitespace_collapse};
 
 pub fn list(roots: &Roots, limit: usize) -> Vec<SessionRow> {
     let mut found = rollouts(roots);
@@ -242,7 +242,7 @@ fn session_row(path: &Path, id: &str, mtime: i64, birth: i64) -> SessionRow {
         title: if collapsed.is_empty() {
             id.to_string()
         } else {
-            slice_text(collapsed, 0, Some(120))
+            slice_utf8(collapsed, 0, Some(120))
         },
         updated_at: mtime,
         created_at: Some(birth),
@@ -285,7 +285,7 @@ fn rollout_title(file: &Path) -> String {
         {
             continue;
         }
-        return slice_text(trimmed, 0, Some(120));
+        return slice_utf8(trimmed, 0, Some(120));
     }
     String::new()
 }

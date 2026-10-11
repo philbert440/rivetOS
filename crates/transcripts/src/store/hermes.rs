@@ -7,7 +7,7 @@ use crate::hermes::hermes_turns_from_rows;
 use crate::roots::Roots;
 use crate::timeutil::{parse_date_ms, to_epoch_ms_number};
 use crate::turn::{SessionRow, Turn};
-use crate::value::{jtrim, slice_text};
+use crate::value::{jtrim, slice_utf8};
 
 pub fn list(roots: &Roots, limit: usize) -> Vec<SessionRow> {
     let Some(conn) = db::open_readonly(&db_path(roots)) else {
@@ -26,7 +26,7 @@ pub fn list(roots: &Roots, limit: usize) -> Vec<SessionRow> {
     let Some(rows) = query_maps(&conn, sql, &[&limit_i64]) else {
         return Vec::new();
     };
-    rows.iter().map(row_from).collect()
+    rows.iter().map(|row| row_from(row, roots)).collect()
 }
 
 pub fn describe(roots: &Roots, id: &str) -> Option<SessionRow> {
@@ -41,8 +41,8 @@ pub fn describe(roots: &Roots, id: &str) -> Option<SessionRow> {
          FROM sessions s WHERE s.id = ? LIMIT 1";
     let rows = query_maps(&conn, sql, &[&id])?;
     let row = rows.first()?;
-    let mut session = row_from(row);
-    let started = epoch_of(row.get("started"));
+    let mut session = row_from(row, roots);
+    let started = epoch_of(row.get("started"), roots);
     if started != 0 {
         session.created_at = Some(started);
     }
@@ -79,7 +79,7 @@ pub fn db_path(roots: &Roots) -> PathBuf {
     base.join("state.db")
 }
 
-fn row_from(row: &serde_json::Map<String, Value>) -> SessionRow {
+fn row_from(row: &serde_json::Map<String, Value>, env: &dyn protocol::host::Env) -> SessionRow {
     let id = row.get("id").map(value_string).unwrap_or_default();
     let title_raw = row.get("title").and_then(Value::as_str).unwrap_or("");
     let title = {
@@ -87,10 +87,10 @@ fn row_from(row: &serde_json::Map<String, Value>) -> SessionRow {
         if trimmed.is_empty() {
             id.clone()
         } else {
-            slice_text(trimmed, 0, Some(120))
+            slice_utf8(trimmed, 0, Some(120))
         }
     };
-    let updated = epoch_of(row.get("ended").or_else(|| row.get("started")));
+    let updated = epoch_of(row.get("ended").or_else(|| row.get("started")), env);
     SessionRow {
         id,
         command: "hermes".into(),
@@ -105,10 +105,10 @@ fn row_from(row: &serde_json::Map<String, Value>) -> SessionRow {
     }
 }
 
-fn epoch_of(value: Option<&Value>) -> i64 {
+fn epoch_of(value: Option<&Value>, env: &dyn protocol::host::Env) -> i64 {
     match value {
         Some(Value::Number(number)) => number.as_f64().map(to_epoch_ms_number).unwrap_or(0),
-        Some(Value::String(text)) => parse_date_ms(text).unwrap_or(0),
+        Some(Value::String(text)) => parse_date_ms(text, env).unwrap_or(0),
         _ => 0,
     }
 }

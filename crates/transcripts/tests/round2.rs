@@ -200,7 +200,10 @@ fn kimi_hint_fills_a_wire_line_without_a_session() {
         material.starts_with("session_hint\u{0}assistant\u{0}hi\u{0}"),
         "{material}"
     );
-    assert!(rows[0].event_id.is_none());
+    assert_eq!(
+        rows[0].event_id.as_deref(),
+        Some(protocol::digest::sha256_hex(material.as_bytes()).as_str())
+    );
 }
 
 #[test]

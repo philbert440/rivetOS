@@ -24,10 +24,15 @@ fn obj(value: Value) -> Obj {
 }
 
 fn tool(name: &str, status: ToolStatus, id: Option<&str>, args: serde_json::Value) -> Tool {
+    let wire = protocol::js::from_serde(&args);
+    let object = match &wire {
+        protocol::js::JsValue::Object(object) => Some(object.clone()),
+        _ => None,
+    };
     Tool {
         name: name.into(),
         status,
-        args: args.as_object().cloned(),
+        args: object,
         id: id.map(str::to_string),
         input: None,
         result_text: None,

@@ -9,7 +9,7 @@ use crate::jsonl::{parse_object, read_jsonl};
 use crate::qwen::qwen_turns_from_lines;
 use crate::roots::Roots;
 use crate::turn::{Role, SessionRow};
-use crate::value::{jtrim, slice_text};
+use crate::value::{jtrim, slice_utf8};
 
 pub fn list(roots: &Roots, limit: usize) -> Vec<SessionRow> {
     let mut newest = std::collections::HashMap::new();
@@ -184,14 +184,14 @@ fn title_from(path: &Path) -> String {
             .unwrap_or_default();
         let trimmed = jtrim(&text);
         if !trimmed.is_empty() {
-            return slice_text(trimmed, 0, Some(120));
+            return slice_utf8(trimmed, 0, Some(120));
         }
     }
     for turn in qwen_turns_from_lines(&parsed.objects) {
         if turn.role == Role::User {
             let trimmed = jtrim(&turn.text);
             if !trimmed.is_empty() {
-                return slice_text(trimmed, 0, Some(120));
+                return slice_utf8(trimmed, 0, Some(120));
             }
         }
     }

@@ -129,7 +129,7 @@ fn claude_read_skips_wrappers_and_folds_usage() {
             .args
             .as_ref()
             .and_then(|row| row.get("command"))
-            .and_then(Value::as_str),
+            .and_then(protocol::js::JsValue::as_str),
         Some("npm test")
     );
     assert_eq!(tools[1].name, "Edit");
@@ -422,7 +422,7 @@ fn claude_stop_reason_ask_and_bash_args() {
             .args
             .as_ref()
             .and_then(|row| row.get("command"))
-            .and_then(Value::as_str),
+            .and_then(protocol::js::JsValue::as_str),
         Some("ls")
     );
     assert!(
@@ -860,7 +860,7 @@ fn opencode_fold_matches_message_and_part_rows() {
         tool.args
             .as_ref()
             .and_then(|row| row.get("command"))
-            .and_then(Value::as_str),
+            .and_then(protocol::js::JsValue::as_str),
         Some("git diff")
     );
     let resolved = store.resolve(&format!("opencode:{id}")).unwrap();

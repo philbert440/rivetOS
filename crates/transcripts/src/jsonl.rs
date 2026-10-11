@@ -104,6 +104,7 @@ pub(crate) fn stream_json_objects(
     let mut byte_off = 0u64;
     let mut lossy_off = 0u64;
     let mut index = 0usize;
+    let mut scan_at = 0usize;
     while remaining > 0 {
         let want = usize::try_from(remaining.min(buf.len() as u64)).unwrap_or(0);
         if want == 0 {
@@ -116,8 +117,14 @@ pub(crate) fn stream_json_objects(
         };
         remaining = remaining.saturating_sub(read as u64);
         pending.extend_from_slice(&buf[..read]);
-        while let Some(nl) = pending.iter().position(|byte| *byte == b'\n') {
+        loop {
+            let Some(rel) = pending[scan_at..].iter().position(|byte| *byte == b'\n') else {
+                scan_at = pending.len();
+                break;
+            };
+            let nl = scan_at + rel;
             let mut raw = pending.drain(..=nl).collect::<Vec<_>>();
+            scan_at = 0;
             let raw_len = raw.len() as u64;
             let raw_decoded = decoded_len(&raw);
             let nl_at = byte_off.saturating_add(raw_len).saturating_sub(1);

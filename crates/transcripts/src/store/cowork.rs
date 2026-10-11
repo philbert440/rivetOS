@@ -87,7 +87,7 @@ fn tasks(roots: &Roots) -> Vec<TaskMeta> {
     }
     let mut by_id: Vec<TaskMeta> = Vec::new();
     for file in files {
-        let Some(meta) = read_meta(&file) else {
+        let Some(meta) = read_meta(&file, roots) else {
             continue;
         };
         if let Some(prev) = by_id
@@ -125,7 +125,7 @@ fn walk_meta(dir: &Path, out: &mut Vec<PathBuf>, depth: usize) {
     }
 }
 
-fn read_meta(path: &Path) -> Option<TaskMeta> {
+fn read_meta(path: &Path, env: &dyn protocol::host::Env) -> Option<TaskMeta> {
     let text = fsutil::read_lossy(path)?;
     let row = parse_object(&text)?;
     let id = row
@@ -136,10 +136,10 @@ fn read_meta(path: &Path) -> Option<TaskMeta> {
     if id.is_empty() || id.contains('/') || id.contains("..") || id.contains('\\') {
         return None;
     }
-    let created =
-        activity_ms(row.get("createdAt")).or_else(|| activity_ms(row.get("created_at")))?;
-    let updated = activity_ms(row.get("lastActivityAt"))
-        .or_else(|| activity_ms(row.get("updatedAt")))
+    let created = activity_ms(row.get("createdAt"), env)
+        .or_else(|| activity_ms(row.get("created_at"), env))?;
+    let updated = activity_ms(row.get("lastActivityAt"), env)
+        .or_else(|| activity_ms(row.get("updatedAt"), env))
         .unwrap_or(created);
     let cwd = row
         .get("cwd")
@@ -244,7 +244,7 @@ fn walk_projects(dir: &Path, id: &str, depth: usize, best: &mut Option<(PathBuf,
     }
 }
 
-fn activity_ms(value: Option<&Value>) -> Option<i64> {
+fn activity_ms(value: Option<&Value>, env: &dyn protocol::host::Env) -> Option<i64> {
     match value {
         Some(Value::Number(number)) => number.as_f64().filter(|n| n.is_finite()).map(|n| n as i64),
         Some(Value::String(text)) => {
@@ -257,7 +257,7 @@ fn activity_ms(value: Option<&Value>) -> Option<i64> {
             {
                 return Some(number as i64);
             }
-            parse_date_ms(trimmed)
+            parse_date_ms(trimmed, env)
         }
         _ => None,
     }

@@ -4,7 +4,7 @@ use crate::reutil::Regex;
 use serde_json::Value;
 
 use crate::turn::Usage;
-use crate::value::{Obj, finite, jtrim, slice_text};
+use crate::value::{Obj, finite, jtrim};
 
 pub fn objects_from_lines(lines: &[String]) -> Vec<Obj> {
     let mut out = Vec::new();
@@ -30,27 +30,33 @@ pub fn object_from_line(line: &str) -> Option<Obj> {
         .and_then(|value| value.as_object().cloned())
 }
 
-pub fn summarize_turn_args(raw: &Value) -> Option<Obj> {
+pub fn summarize_turn_args(raw: &Value) -> Option<protocol::js::JsObject> {
     let normalized = crate::value::js_norm(raw);
     let obj = normalized.as_object()?;
-    let mut out = Obj::new();
+    let mut out = protocol::js::JsObject::new();
     let mut keys = 0usize;
     for (key, value) in obj {
         if keys >= 12 {
             break;
         }
-        if let Some(text) = value.as_str() {
-            let stored = if protocol::js::utf16_len(text) > 200 {
-                format!("{}…", slice_text(text, 0, Some(200)))
+        let stored = if let Some(text) = value.as_str() {
+            if protocol::js::utf16_len(text) > 200 {
+                let mut units = protocol::js::js_slice(text, Some(0.0), Some(200.0))
+                    .units()
+                    .to_vec();
+                units.push(0x2026);
+                protocol::js::JsValue::String(protocol::js::JsString::from_units(units))
             } else {
-                text.to_string()
-            };
-            out.insert(key.clone(), Value::String(stored));
-        } else if value.is_number() || value.is_boolean() {
-            out.insert(key.clone(), value.clone());
+                protocol::js::JsValue::from_text(text)
+            }
+        } else if let Some(number) = value.as_f64() {
+            protocol::js::JsValue::Number(number)
+        } else if let Some(flag) = value.as_bool() {
+            protocol::js::JsValue::Bool(flag)
         } else {
             continue;
-        }
+        };
+        out.insert(key.clone(), stored);
         keys += 1;
     }
     if keys > 0 { Some(out) } else { None }

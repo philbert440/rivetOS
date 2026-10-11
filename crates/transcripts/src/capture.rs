@@ -130,6 +130,8 @@ struct KimiAccum {
 struct PiAccum {
     session_id: String,
     names: HashMap<String, String>,
+    model: String,
+    provider: String,
 }
 
 #[derive(Default)]
@@ -169,7 +171,7 @@ fn capture_batch(command: &str, lines: &[ParsedLine], hint: Option<&str>) -> Vec
         "kimi" => kimi_capture_for(lines, hint),
         "pi" => {
             let mut state = PiAccum::default();
-            pi_capture_lines(lines, hint, &mut state, false)
+            pi_capture_lines(lines, hint, &mut state, "")
         }
         "qwen" => {
             let mut state = QwenAccum::default();
@@ -626,7 +628,9 @@ fn kimi_resume(
         };
         last_ms = created_ms;
         let event_ts = crate::timeutil::iso_from_ms(wire_i);
+        let event_id = protocol::digest::sha256_hex(material.as_bytes());
         let mut message = CaptureMessage::new("assistant", content);
+        message.event_id = Some(event_id);
         message.event_ts = Some(event_ts);
         message.created_at = Some(crate::timeutil::iso_from_ms(created_ms));
         message.session_id = Some(session_id.to_string());
@@ -643,10 +647,6 @@ fn kimi_resume(
         extra.insert("session_jsonl_line".into(), Value::from(line.index as u64));
         extra.insert("occurrence".into(), Value::from(occurrence));
         extra.insert("hashMaterial".into(), Value::String(material));
-        extra.insert(
-            "eventIdDeferred".into(),
-            Value::String("protocol::digest".into()),
-        );
         if let Some(turn) = event.get("turnId") {
             match turn {
                 Value::String(text) => {
@@ -941,14 +941,14 @@ pub fn pi_capture_text(text: &str) -> Vec<CaptureMessage> {
 
 pub fn pi_capture_text_for(text: &str, hint: Option<&str>) -> Vec<CaptureMessage> {
     let mut state = PiAccum::default();
-    pi_capture_lines(&parse_lines(text), hint, &mut state, false)
+    pi_capture_lines(&parse_lines(text), hint, &mut state, "")
 }
 
 fn pi_capture_lines(
     lines: &[ParsedLine],
     hint: Option<&str>,
     state: &mut PiAccum,
-    pointer: bool,
+    path: &str,
 ) -> Vec<CaptureMessage> {
     let mut session_id = std::mem::take(&mut state.session_id);
     if session_id.is_empty()
@@ -957,6 +957,9 @@ fn pi_capture_lines(
         session_id = id.to_string();
     }
     let mut names = std::mem::take(&mut state.names);
+    let mut model = std::mem::take(&mut state.model);
+    let mut provider = std::mem::take(&mut state.provider);
+    let pointer = !path.is_empty();
     let mut out = Vec::new();
     for line in lines {
         let Some(obj) = line.value.as_object() else {
@@ -967,6 +970,28 @@ fn pi_capture_lines(
                 && pi_native_session(id)
             {
                 session_id = id.to_string();
+            }
+            continue;
+        }
+        if obj.get("type").and_then(Value::as_str) == Some("model_change") {
+            if let Some(next) = obj
+                .get("provider")
+                .and_then(Value::as_str)
+                .filter(|text| !text.is_empty())
+            {
+                provider = next.to_string();
+            }
+            if let Some(next) = obj
+                .get("modelId")
+                .and_then(Value::as_str)
+                .filter(|text| !text.is_empty())
+                .or_else(|| {
+                    obj.get("model")
+                        .and_then(Value::as_str)
+                        .filter(|text| !text.is_empty())
+                })
+            {
+                model = next.to_string();
             }
             continue;
         }
@@ -1004,16 +1029,31 @@ fn pi_capture_lines(
             row.event_id = Some(event_id);
             row.event_ts = event_ts;
             row.session_id = Some(pi_sid(&session_id).to_string());
-            out.push(place(row, line));
+            let mut extra = protocol::js::JsObject::new();
+            extra.insert(
+                "sourceEvent",
+                protocol::js::JsValue::from_text("message:toolResult"),
+            );
+            extra.insert("source", protocol::js::JsValue::from_text("pi-session"));
+            if let Some(id) = call_id {
+                extra.insert("callId", protocol::js::JsValue::from_text(id));
+            }
+            out.push(finish_pi(row, line, extra, path, &model, &provider));
             continue;
         }
         if role == "user" {
-            if let Some(body) = text_items(message) {
+            if let Some(body) = pi_text_body(message) {
                 let mut row = CaptureMessage::new("user", body);
                 row.event_id = Some(event_id);
                 row.event_ts = event_ts;
                 row.session_id = Some(pi_sid(&session_id).to_string());
-                out.push(place(row, line));
+                let mut extra = protocol::js::JsObject::new();
+                extra.insert(
+                    "sourceEvent",
+                    protocol::js::JsValue::from_text("message:user"),
+                );
+                extra.insert("source", protocol::js::JsValue::from_text("pi-session"));
+                out.push(finish_pi(row, line, extra, path, &model, &provider));
             }
             continue;
         }
@@ -1034,15 +1074,16 @@ fn pi_capture_lines(
             row.event_id = Some(event_id.clone());
             row.event_ts = event_ts.clone();
             row.session_id = Some(pi_sid(&session_id).to_string());
-            row.extra = Some(pi_row_extra(
+            let extra = pi_row_extra(
                 "message:assistant",
                 thinking.as_deref(),
                 pointer,
                 usage.as_ref(),
                 stop.as_deref(),
                 None,
-            ));
-            out.push(place(row, line));
+                None,
+            );
+            out.push(finish_pi(row, line, extra, path, &model, &provider));
             accounting = true;
         }
         for item in calls {
@@ -1068,29 +1109,36 @@ fn pi_capture_lines(
                 None => format!("{event_id}:tool"),
             };
             let mut row = CaptureMessage::tool(format!("[tool] {name}"), name, None);
-            row.tool_args = item
-                .get("arguments")
-                .or_else(|| item.get("input"))
-                .map(parse_tool_input);
+            let (tool_args, wire_args, args_full) = pi_stored_args(
+                item.get("arguments")
+                    .filter(|value| !value.is_null())
+                    .or_else(|| item.get("input")),
+                pointer,
+            );
+            row.tool_args = tool_args;
+            row.wire_tool_args = wire_args;
             row.event_id = Some(tool_event);
             row.event_ts = event_ts.clone();
             row.session_id = Some(pi_sid(&session_id).to_string());
-            row.extra = Some(pi_row_extra(
+            let extra = pi_row_extra(
                 "message:toolCall",
                 None,
-                false,
+                pointer,
                 if accounting { None } else { usage.as_ref() },
                 if accounting { None } else { stop.as_deref() },
                 call_id,
-            ));
+                args_full,
+            );
             if !accounting {
                 accounting = true;
             }
-            out.push(place(row, line));
+            out.push(finish_pi(row, line, extra, path, &model, &provider));
         }
     }
     state.session_id = session_id;
     state.names = names;
+    state.model = model;
+    state.provider = provider;
     out
 }
 
@@ -1368,6 +1416,7 @@ fn cowork_capture_lines_parsed(
     pending: &mut HashMap<String, String>,
 ) -> Vec<CaptureMessage> {
     let hinted = hint.filter(|text| !text.is_empty()).map(str::to_string);
+    let mut seen = Vec::new();
     let mut results = HashMap::new();
     for line in lines {
         let Some(obj) = line.value.as_object() else {
@@ -1416,8 +1465,12 @@ fn cowork_capture_lines_parsed(
                 .and_then(Value::as_str)
                 == Some("assistant");
         let mut push_text = |role: &str, content: String| {
+            let event_id = match uuid {
+                Some(id) => format!("cowork:{part}:{id}"),
+                None => cowork_occ_event_id(part, &format!("{role}\0{content}\0\0"), &mut seen),
+            };
             let mut row = CaptureMessage::new(role, content);
-            row.event_id = uuid.map(|id| format!("cowork:{part}:{id}"));
+            row.event_id = Some(event_id);
             row.event_ts = created.clone();
             row.created_at = created.clone();
             row.session_id = Some(part.to_string());
@@ -1444,10 +1497,17 @@ fn cowork_capture_lines_parsed(
             }
             let mut row = CaptureMessage::tool(format!("[tool call] {name}"), name, result.clone());
             row.tool_args = input.clone().map(|value| js_norm(&value));
-            row.event_id = id
-                .as_ref()
-                .map(|id| format!("cowork:{part}:tool:{id}"))
-                .or_else(|| uuid.map(|id| format!("cowork:{part}:{id}")));
+            let tool_fields = format!(
+                "tool\0[tool call] {name}\0{name}\0{}",
+                match input {
+                    Some(value) => crate::value::stringify_json(value),
+                    None => String::new(),
+                }
+            );
+            row.event_id = Some(match id {
+                Some(id) => format!("cowork:{part}:tool:{id}"),
+                None => cowork_occ_event_id(part, &tool_fields, &mut seen),
+            });
             row.event_ts = created.clone();
             row.created_at = created.clone();
             row.session_id = Some(part.to_string());
@@ -1480,6 +1540,13 @@ fn cowork_capture_lines_parsed(
         }
     }
     out
+}
+
+fn cowork_occ_event_id(part: &str, fields: &str, seen: &mut Vec<String>) -> String {
+    let n = seen.iter().filter(|row| row.as_str() == fields).count();
+    seen.push(fields.to_string());
+    let hash = protocol::digest::sha256_hex(fields.as_bytes());
+    format!("cowork:{part}:occ:{hash}:{n}")
 }
 
 pub fn hermes_capture_rows(rows: &[Obj]) -> Vec<CaptureMessage> {
@@ -1878,40 +1945,118 @@ fn pi_row_extra(
     usage: Option<&Value>,
     stop_reason: Option<&str>,
     call_id: Option<&str>,
-) -> Value {
-    let mut extra = serde_json::Map::new();
+    args_full: Option<u64>,
+) -> protocol::js::JsObject {
+    let mut extra = protocol::js::JsObject::new();
     extra.insert(
-        "sourceEvent".into(),
-        Value::String(source_event.to_string()),
+        "sourceEvent",
+        protocol::js::JsValue::from_text(source_event),
     );
-    extra.insert("source".into(), Value::String("pi-session".into()));
+    extra.insert("source", protocol::js::JsValue::from_text("pi-session"));
     if let Some(id) = call_id {
-        extra.insert("callId".into(), Value::String(id.to_string()));
+        extra.insert("callId", protocol::js::JsValue::from_text(id));
     }
     if let Some(usage) = usage {
-        extra.insert("usage".into(), usage.clone());
+        extra.insert("usage", protocol::js::from_serde(usage));
     }
     if let Some(reason) = stop_reason {
-        extra.insert("stopReason".into(), Value::String(reason.to_string()));
+        extra.insert("stopReason", protocol::js::JsValue::from_text(reason));
     }
     if let Some(thinking) = thinking {
-        extra.insert("partType".into(), Value::String("think".into()));
+        extra.insert("partType", protocol::js::JsValue::from_text("think"));
         let units = protocol::js::utf16_len(thinking);
         let (stored, truncated) = if pointer && units > 16_000 {
             (crate::value::slice_text(thinking, 0, Some(16_000)), true)
         } else {
-            (thinking.to_string(), false)
+            (protocol::js::JsString::from_text(thinking), false)
         };
-        extra.insert("reasoning".into(), Value::String(stored));
+        extra.insert("reasoning", protocol::js::JsValue::String(stored));
         if truncated {
             extra.insert(
-                "full_reasoning_length".into(),
-                Value::from(u64::try_from(units).unwrap_or(u64::MAX)),
+                "full_reasoning_length",
+                protocol::js::JsValue::Number(units as f64),
             );
-            extra.insert("truncated".into(), Value::Bool(true));
+            extra.insert("truncated", protocol::js::JsValue::Bool(true));
         }
     }
-    Value::Object(extra)
+    if let Some(full) = args_full {
+        extra.insert(
+            "full_tool_args_length",
+            protocol::js::JsValue::Number(full as f64),
+        );
+        extra.insert("truncated", protocol::js::JsValue::Bool(true));
+    }
+    extra
+}
+
+fn finish_pi(
+    mut row: CaptureMessage,
+    line: &ParsedLine,
+    extra: protocol::js::JsObject,
+    path: &str,
+    model: &str,
+    provider: &str,
+) -> CaptureMessage {
+    row.line_index = Some(line.index as u64);
+    row.source_offset = Some(line.offset);
+    let mut extra = extra;
+    if !path.is_empty() {
+        extra.insert("session_jsonl_path", protocol::js::JsValue::from_text(path));
+        extra.insert("sessionJsonlPath", protocol::js::JsValue::from_text(path));
+    }
+    extra.insert(
+        "session_jsonl_line",
+        protocol::js::JsValue::Number(line.index as f64),
+    );
+    extra.insert(
+        "sessionJsonlLine",
+        protocol::js::JsValue::Number(line.index as f64),
+    );
+    if !model.is_empty() {
+        extra.insert("model", protocol::js::JsValue::from_text(model));
+        extra.insert(
+            "provider",
+            if provider.is_empty() {
+                protocol::js::JsValue::Null
+            } else {
+                protocol::js::JsValue::from_text(provider)
+            },
+        );
+    }
+    row.created_at = row
+        .event_ts
+        .clone()
+        .filter(|text| protocol::js::date_parse(text, &protocol::host::ProcessEnv).is_some());
+    row.wire_extra = Some(protocol::js::JsValue::Object(extra.clone()));
+    row.extra = crate::value::parse_json(&protocol::js::stringify_object(&extra)).ok();
+    row
+}
+
+fn pi_stored_args(
+    raw: Option<&Value>,
+    pointer: bool,
+) -> (Option<Value>, Option<protocol::js::JsValue>, Option<u64>) {
+    let Some(value) = raw else {
+        return (None, None, None);
+    };
+    let parsed = parse_tool_input(value);
+    if parsed.is_null() {
+        return (None, None, None);
+    }
+    let text = match &parsed {
+        Value::String(text) => text.clone(),
+        other => crate::value::stringify_json(other),
+    };
+    let units = protocol::js::utf16_len(&text);
+    if pointer && units > 16_000 {
+        let clipped = protocol::js::js_slice(&text, Some(0.0), Some(16_000.0));
+        return (
+            Some(Value::String(clipped.to_utf8().to_string())),
+            Some(protocol::js::JsValue::String(clipped)),
+            Some(u64::try_from(units).unwrap_or(u64::MAX)),
+        );
+    }
+    (Some(parsed), None, None)
 }
 
 fn pi_tool_result_text(message: &Obj) -> Option<String> {
@@ -1972,7 +2117,9 @@ fn pi_text_from_items(items: &[&Obj]) -> String {
 
 fn event_ts_of(value: Option<&Value>, numbers: bool) -> Option<String> {
     match value? {
-        Value::String(text) if !text.is_empty() => Some(text.clone()),
+        Value::String(text) if !text.is_empty() => {
+            crate::timeutil::iso_from_date_text(text, &protocol::host::ProcessEnv)
+        }
         Value::Number(number) if numbers => {
             let raw = number.as_f64()?;
             if !raw.is_finite() {
@@ -2292,39 +2439,6 @@ fn extract_text(content: Option<&Value>) -> Option<String> {
     }
     let text = row.get("text").and_then(Value::as_str)?;
     (!text.is_empty()).then(|| text.to_string())
-}
-
-fn text_items(message: &Obj) -> Option<String> {
-    let text = item_texts(message, false);
-    (!text.is_empty()).then_some(text)
-}
-
-fn item_texts(message: &Obj, thinking: bool) -> String {
-    message
-        .get("content")
-        .and_then(Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(Value::as_object)
-                .filter_map(|row| {
-                    let kind = row.get("type").and_then(Value::as_str).unwrap_or("");
-                    if thinking {
-                        (kind == "thinking" || kind == "reasoning").then(|| {
-                            row.get("thinking")
-                                .or_else(|| row.get("text"))
-                                .and_then(Value::as_str)
-                                .unwrap_or("")
-                        })
-                    } else {
-                        (kind == "text" || kind == "input_text" || kind == "output_text")
-                            .then(|| row.get("text").and_then(Value::as_str).unwrap_or(""))
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
-        })
-        .unwrap_or_default()
 }
 
 fn tool_items(message: &Obj) -> Vec<Obj> {
@@ -2691,7 +2805,10 @@ fn ingest_slot(
         "claude" => claude_capture_lines(lines, hint),
         "codex" => codex_capture_lines(lines, hint, &mut slot.codex),
         "kimi" => kimi_resume(&mut slot.kimi, lines, hint),
-        "pi" => pi_capture_lines(lines, hint, &mut slot.pi, !path.as_os_str().is_empty()),
+        "pi" => {
+            let owned = path.to_string_lossy();
+            pi_capture_lines(lines, hint, &mut slot.pi, owned.as_ref())
+        }
         "qwen" => qwen_capture_lines(lines, hint, &mut slot.qwen),
         "cursor" => {
             let owned = path.to_string_lossy();

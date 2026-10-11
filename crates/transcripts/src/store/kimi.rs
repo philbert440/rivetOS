@@ -8,7 +8,7 @@ use crate::roots::Roots;
 use crate::text::extract_turn_text;
 use crate::timeutil::{kimi_time_number, parse_date_ms};
 use crate::turn::SessionRow;
-use crate::value::{jtrim, slice_text, whitespace_collapse};
+use crate::value::{jtrim, slice_utf8, whitespace_collapse};
 
 const PREFIX: &str = "session_";
 const SCAN_MAX: u64 = 1024 * 1024;
@@ -38,7 +38,7 @@ pub fn list(roots: &Roots, limit: usize) -> Vec<SessionRow> {
     found.sort_by_key(|row| std::cmp::Reverse(row.2));
     let mut out = Vec::new();
     for (id, path, _) in found.into_iter().take(limit) {
-        if let Some(row) = read_session(&path, &id) {
+        if let Some(row) = read_session(&path, &id, roots) {
             out.push(row);
         }
     }
@@ -50,7 +50,7 @@ pub fn describe(roots: &Roots, id: &str) -> Option<SessionRow> {
         return None;
     }
     let dir = session_dir(roots, id)?;
-    read_session(&dir, id)
+    read_session(&dir, id, roots)
 }
 
 pub fn exists_session(roots: &Roots, id: &str) -> bool {
@@ -120,7 +120,7 @@ fn index_dir(roots: &Roots, id: &str) -> Option<PathBuf> {
     indexed
 }
 
-fn read_session(dir: &Path, id: &str) -> Option<SessionRow> {
+fn read_session(dir: &Path, id: &str, env: &dyn protocol::host::Env) -> Option<SessionRow> {
     let state_file = dir.join("state.json");
     let text = fsutil::read_lossy(&state_file)?;
     let obj = parse_object(&text)?;
@@ -140,9 +140,9 @@ fn read_session(dir: &Path, id: &str) -> Option<SessionRow> {
     let title = if collapsed.is_empty() {
         id.to_string()
     } else {
-        slice_text(collapsed, 0, Some(120))
+        slice_utf8(collapsed, 0, Some(120))
     };
-    let updated = time_of(obj.get("updatedAt"));
+    let updated = time_of(obj.get("updatedAt"), env);
     let mut row = SessionRow {
         id: id.to_string(),
         command: "kimi".into(),
@@ -155,7 +155,7 @@ fn read_session(dir: &Path, id: &str) -> Option<SessionRow> {
         agent_name: None,
         task_id: None,
     };
-    let created = time_of(obj.get("createdAt"));
+    let created = time_of(obj.get("createdAt"), env);
     if created != 0 {
         row.created_at = Some(created);
     }
@@ -169,10 +169,10 @@ fn string_field(obj: &serde_json::Map<String, Value>, key: &str) -> String {
         .unwrap_or_default()
 }
 
-fn time_of(value: Option<&Value>) -> i64 {
+fn time_of(value: Option<&Value>, env: &dyn protocol::host::Env) -> i64 {
     match value {
         Some(Value::Number(number)) => number.as_f64().map(kimi_time_number).unwrap_or(0),
-        Some(Value::String(text)) => parse_date_ms(text).unwrap_or(0),
+        Some(Value::String(text)) => parse_date_ms(text, env).unwrap_or(0),
         _ => 0,
     }
 }
@@ -229,7 +229,7 @@ fn title_from_line(line: &str) -> Option<String> {
         return None;
     }
     let text = extract_turn_text(msg.get("content").unwrap_or(&Value::Null), "user")?;
-    let clipped = slice_text(&text, 0, Some(120));
+    let clipped = slice_utf8(&text, 0, Some(120));
     if clipped.is_empty() {
         None
     } else {
