@@ -166,6 +166,74 @@ async fn defs_sort_names_with_locale_compare() {
     assert_eq!(names, vec!["apple", "readme.md", "README.md", "Zebra"]);
 }
 
+#[tokio::test]
+async fn running_run_summary_omits_absent_optional_fields() {
+    let root = temp_root("list-running");
+    let dir = root.join("run-new");
+    std::fs::create_dir_all(&dir).unwrap();
+    let body = json!({
+        "run": {
+            "id": "run-new",
+            "workflowId": "hello-world",
+            "version": "1.0.0",
+            "startedBy": {"type": "human"},
+            "caseDir": dir.display().to_string(),
+            "status": "running",
+            "startedAt": "2026-04-01T00:00:00.000Z"
+        },
+        "fields": {}
+    });
+    std::fs::write(
+        dir.join("case.json"),
+        format!("{}\n", serde_json::to_string(&body).unwrap()),
+    )
+    .unwrap();
+    let child = dir.join("child-1");
+    std::fs::create_dir_all(&child).unwrap();
+    let child_body = json!({
+        "run": {
+            "id": "child-1",
+            "workflowId": "hello-world",
+            "version": "1.0.0",
+            "startedBy": {"type": "workflow", "id": "run-new"},
+            "caseDir": child.display().to_string(),
+            "status": "done",
+            "startedAt": "2026-04-01T00:00:00.000Z",
+            "finishedAt": "2026-04-01T01:00:00.000Z",
+            "current": "approve-gate",
+            "parent": {"runId": "run-new", "stepId": "call#1"}
+        },
+        "fields": {}
+    });
+    std::fs::write(
+        child.join("case.json"),
+        format!("{}\n", serde_json::to_string(&child_body).unwrap()),
+    )
+    .unwrap();
+    let runs = list_runs(&root, ListRunsOptions::default(), &|_message| {})
+        .await
+        .unwrap();
+    assert_eq!(runs.len(), 1);
+    let case_dir = runs[0].case_dir.clone();
+    assert!(case_dir.ends_with("/run-new"), "{case_dir}");
+    let bytes = serde_json::to_string(&runs).unwrap();
+    let expected = format!(
+        "[{{\"id\":\"run-new\",\"workflowId\":\"hello-world\",\"status\":\"running\",\"startedAt\":\"2026-04-01T00:00:00.000Z\",\"caseDir\":{case_json},\"nested\":false,\"version\":\"1.0.0\"}}]",
+        case_json = serde_json::to_string(&case_dir).unwrap()
+    );
+    assert_eq!(bytes.as_bytes(), expected.as_bytes());
+    let children = list_child_runs(&dir, &|_message| {}).await.unwrap();
+    assert_eq!(children.len(), 1);
+    let child_dir = children[0].case_dir.clone();
+    assert!(child_dir.ends_with("/run-new/child-1"), "{child_dir}");
+    let child_bytes = serde_json::to_string(&children).unwrap();
+    let child_expected = format!(
+        "[{{\"id\":\"child-1\",\"workflowId\":\"hello-world\",\"status\":\"done\",\"startedAt\":\"2026-04-01T00:00:00.000Z\",\"finishedAt\":\"2026-04-01T01:00:00.000Z\",\"current\":\"approve-gate\",\"caseDir\":{child_json},\"nested\":true,\"parentRunId\":\"run-new\",\"version\":\"1.0.0\"}}]",
+        child_json = serde_json::to_string(&child_dir).unwrap()
+    );
+    assert_eq!(child_bytes.as_bytes(), child_expected.as_bytes());
+}
+
 fn write_def(dir: &std::path::Path, id: &str, name: &str) {
     std::fs::create_dir_all(dir).unwrap();
     std::fs::write(

@@ -708,12 +708,17 @@ pub struct RunSummary {
     pub id: String,
     pub workflow_id: String,
     pub status: RunStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub started_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub finished_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub current: Option<String>,
     pub case_dir: String,
     pub nested: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_run_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
 }
 

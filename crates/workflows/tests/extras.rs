@@ -370,6 +370,100 @@ async fn resolve_skips_a_file_named_like_a_workflow_and_uses_the_next_root() {
 }
 
 #[tokio::test]
+async fn resolve_skips_an_unreadable_dir_and_uses_the_next_root() {
+    let root = temp_root("eacces-roots");
+    let first = root.join("first");
+    let blocked = first.join("hello-world");
+    tokio::fs::create_dir_all(&blocked).await.unwrap();
+    let hidden = blocked.join("workflow.yaml");
+    tokio::fs::write(&hidden, b"id: hidden\nversion: \"1.0.0\"\nname: Hidden\n")
+        .await
+        .unwrap();
+    let mut permissions = std::fs::metadata(&blocked).unwrap().permissions();
+    let original = permissions.mode();
+    permissions.set_mode(0o0);
+    std::fs::set_permissions(&blocked, permissions.clone()).unwrap();
+    let second = root.join("second");
+    let real = second.join("hello-world");
+    write_minimal(&real).await;
+    match std::fs::metadata(&hidden) {
+        Ok(_) => {
+            eprintln!(
+                "skipping permission-denied fallback assertion: process can still stat {}",
+                hidden.display()
+            );
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => {
+            let resolved = resolve_workflow_dir("hello-world", &[], &[first, second])
+                .await
+                .unwrap();
+            assert_eq!(resolved, real);
+            let loaded = load_workflow_dir(&resolved).await.unwrap();
+            assert_eq!(loaded.manifest.id, "test-wf");
+        }
+        Err(err) => panic!("expected EACCES or a successful stat, got {err}"),
+    }
+    permissions.set_mode(original);
+    std::fs::set_permissions(&blocked, permissions).unwrap();
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[tokio::test]
+async fn file_field_beneath_an_unreadable_directory_is_file_missing() {
+    let root = temp_root("eacces-file");
+    let case_dir = root.join("case");
+    let blocked = case_dir.join("secret");
+    tokio::fs::create_dir_all(&blocked).await.unwrap();
+    let hidden = blocked.join("doc.txt");
+    tokio::fs::write(&hidden, b"notes").await.unwrap();
+    let mut permissions = std::fs::metadata(&blocked).unwrap().permissions();
+    let original = permissions.mode();
+    permissions.set_mode(0o0);
+    std::fs::set_permissions(&blocked, permissions.clone()).unwrap();
+    let fields = vec![Field {
+        name: "doc".to_string(),
+        field_type: FieldType::File,
+        required: Some(true),
+        description: None,
+    }];
+    let mut input = Map::new();
+    input.insert(
+        "doc".to_string(),
+        Value::String("secret/doc.txt".to_string()),
+    );
+    match std::fs::metadata(&hidden) {
+        Ok(_) => {
+            eprintln!(
+                "skipping permission-denied file-contract assertion: process can still stat {}",
+                hidden.display()
+            );
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => {
+            let err = validate_input_contract(&fields, &input, Some(&case_dir), true)
+                .await
+                .unwrap_err();
+            let text = err.to_string();
+            assert!(!text.contains("EACCES"), "{text}");
+            match err {
+                WorkflowError::Contract { issues, .. } => {
+                    assert_eq!(issues.len(), 1);
+                    assert_eq!(issues[0].reason, ContractReason::FileMissing);
+                    assert_eq!(
+                        issues[0].message,
+                        "file field \"doc\" path \"secret/doc.txt\" does not exist under caseDir"
+                    );
+                }
+                other => panic!("expected a contract error, got {other}"),
+            }
+        }
+        Err(err) => panic!("expected EACCES or a successful stat, got {err}"),
+    }
+    permissions.set_mode(original);
+    std::fs::set_permissions(&blocked, permissions).unwrap();
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[tokio::test]
 async fn file_field_beneath_a_regular_file_is_file_missing() {
     let root = temp_root("enotdir-file");
     let case_dir = root.join("case");

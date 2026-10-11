@@ -234,7 +234,7 @@ pub async fn try_exists(path: &Path) -> Result<bool, WorkflowError> {
 fn stat_exists(path: &Path) -> Result<bool, WorkflowError> {
     match protocol::host::stat(path) {
         Ok(_) => Ok(true),
-        Err(err) if err.code == "ENOENT" || err.code == "ENOTDIR" => Ok(false),
+        Err(err) if matches!(err.code, "ENOENT" | "ENOTDIR" | "EACCES") => Ok(false),
         Err(err) => Err(WorkflowError::from_fs(err)),
     }
 }
@@ -460,6 +460,39 @@ mod tests {
         assert!(!super::stat_exists(&nested).unwrap());
         assert!(super::stat_exists(&file).unwrap());
         assert!(!super::stat_exists(&dir.join("missing")).unwrap());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn stat_treats_eacces_like_absent() {
+        let dir = temp_dir("eacces");
+        let blocked = dir.join("secret");
+        std::fs::create_dir(&blocked).unwrap();
+        let hidden = blocked.join("workflow.yaml");
+        std::fs::write(&hidden, b"id: hidden\n").unwrap();
+        let visible = dir.join("visible.txt");
+        std::fs::write(&visible, b"ok").unwrap();
+        let mut permissions = std::fs::metadata(&blocked).unwrap().permissions();
+        let original = permissions.mode();
+        permissions.set_mode(0o0);
+        std::fs::set_permissions(&blocked, permissions.clone()).unwrap();
+        assert!(super::stat_exists(&blocked).unwrap());
+        assert!(super::stat_exists(&visible).unwrap());
+        assert!(!super::stat_exists(&dir.join("missing")).unwrap());
+        match std::fs::metadata(&hidden) {
+            Ok(_) => {
+                eprintln!(
+                    "skipping EACCES existence assertion: process can still stat {}",
+                    hidden.display()
+                );
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => {
+                assert!(!super::stat_exists(&hidden).unwrap());
+            }
+            Err(err) => panic!("expected EACCES or a successful stat, got {err}"),
+        }
+        permissions.set_mode(original);
+        std::fs::set_permissions(&blocked, permissions).unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
