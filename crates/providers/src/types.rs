@@ -249,7 +249,10 @@ pub fn summarize_args(value: &Value) -> Value {
     }
 }
 
-pub fn text_event(kind: protocol::StreamEventType, content: &str) -> StreamEvent {
+pub fn text_event(
+    kind: protocol::StreamEventType,
+    content: impl Into<protocol::js::JsString>,
+) -> StreamEvent {
     StreamEvent {
         r#type: kind,
         content: content.into(),
@@ -270,12 +273,14 @@ pub fn tool_start_event(name: &str, args: &Value) -> StreamEvent {
 
 pub fn tool_result_event(name: &str, text: &str, is_error: bool) -> StreamEvent {
     let mark = if is_error { "❌" } else { "✅" };
-    let sliced: String = text.chars().take(200).collect();
+    let sliced = protocol::js::js_slice(text, Some(0.0), Some(200.0));
+    let mut units: Vec<u16> = format!("{mark} {name}: ").encode_utf16().collect();
+    units.extend_from_slice(sliced.units());
     let mut metadata = protocol::js::JsObject::new();
     metadata.insert("tool", protocol::js::JsValue::from_text(name));
     StreamEvent {
         r#type: protocol::StreamEventType::ToolResult,
-        content: format!("{mark} {name}: {sliced}").into(),
+        content: protocol::js::JsString::from_units(units),
         metadata: Some(metadata),
     }
 }

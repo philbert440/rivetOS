@@ -140,9 +140,23 @@ impl From<&str> for JsString {
     }
 }
 
+impl From<&String> for JsString {
+    fn from(text: &String) -> Self {
+        Self::from_text(text)
+    }
+}
+
 impl From<String> for JsString {
     fn from(text: String) -> Self {
         Self::from_text(&text)
+    }
+}
+
+impl std::ops::Deref for JsString {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        self.to_utf8()
     }
 }
 

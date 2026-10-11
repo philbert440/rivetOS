@@ -522,30 +522,18 @@ impl CliProvider {
         }
         let args = args_of(&snap, &request, &prompt, &plan, &grok_override);
         let has_stdin = matches!(kind, CliKind::Claude | CliKind::Codex);
-        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let mut child = spawn_command(
+            &binary,
+            &args,
+            &env,
+            cwd.as_deref(),
+            has_stdin,
+            &provider_id,
+        )?;
+        let mut target = group_target(child.id().unwrap_or(0));
+        let mut guard = arm_watch(&mut child);
         let (tx, rx) = unbounded_channel();
         let task = tokio::spawn(async move {
-            let spawned = spawn_command(
-                &binary,
-                &args,
-                &env,
-                cwd.as_deref(),
-                has_stdin,
-                &provider_id,
-            );
-            let mut child = match spawned {
-                Ok(child) => child,
-                Err(err) => {
-                    let _ = ready_tx.send(Err(err));
-                    return;
-                }
-            };
-            let mut guard = arm_watch(&mut child);
-            if ready_tx.send(Ok(())).is_err() {
-                guard.disarm();
-                return;
-            }
-            let mut pgid = child.id().unwrap_or(0);
             loop {
                 let stdin_text = match kind {
                     CliKind::Claude => Some(claude_stdin(&user_prompt)),
@@ -558,7 +546,7 @@ impl CliProvider {
                     stdin_text.as_deref(),
                     timeout_ms,
                     &provider_id,
-                    pgid,
+                    target,
                     |line| {
                         let (chunks, fatal) = machine.push_line(line);
                         for chunk in chunks {
@@ -595,7 +583,7 @@ impl CliProvider {
                     ) {
                         Ok(next) => {
                             child = next;
-                            pgid = child.id().unwrap_or(0);
+                            target = group_target(child.id().unwrap_or(0));
                             guard = arm_watch(&mut child);
                             continue;
                         }
@@ -624,7 +612,7 @@ impl CliProvider {
                     ) {
                         Ok(next) => {
                             child = next;
-                            pgid = child.id().unwrap_or(0);
+                            target = group_target(child.id().unwrap_or(0));
                             guard = arm_watch(&mut child);
                             continue;
                         }
@@ -664,21 +652,7 @@ impl CliProvider {
                 break;
             }
         });
-        match ready_rx.await {
-            Ok(Ok(())) => Ok(live_stream(rx, task)),
-            Ok(Err(err)) => {
-                task.abort();
-                Err(err)
-            }
-            Err(_) => {
-                task.abort();
-                Err(ProviderError::new(
-                    format!("{} failed to spawn", self.id),
-                    0,
-                    &self.id,
-                ))
-            }
-        }
+        Ok(live_stream(rx, PumpGuard { task: Some(task) }))
     }
 
     fn map_path(&self) -> Option<String> {
@@ -698,7 +672,7 @@ impl CliProvider {
         let home = self
             .home
             .clone()
-            .or_else(|| std::env::var("HOME").ok())
+            .or_else(|| protocol::host::home_dir(&protocol::host::ProcessEnv))
             .filter(|home| !home.is_empty())?;
         Some(format!("{home}/.rivetos/{file}"))
     }
@@ -707,13 +681,10 @@ impl CliProvider {
         if let Some(path) = self.hermes_db_path.lock().clone() {
             return path;
         }
-        let base = std::env::var("HERMES_HOME")
-            .ok()
-            .map(|value| value.trim().to_string())
+        let base = protocol::host::env_trimmed(&protocol::host::ProcessEnv, "HERMES_HOME")
             .filter(|value| !value.is_empty())
             .or_else(|| {
-                std::env::var("HOME")
-                    .ok()
+                protocol::host::home_dir(&protocol::host::ProcessEnv)
                     .map(|home| format!("{home}/.hermes"))
             })
             .unwrap_or_else(|| ".hermes".to_string());
@@ -1672,7 +1643,7 @@ fn compose_grok_prompt(system: &str, chunks: &[String], mode: &str) -> GrokPromp
     if prompt.len() > MAX_PROMPT_BYTES && kept.len() == 1 {
         let extra = format!("{head}{TRUNCATION_NOTE}{PROMPT_SEP}");
         let keep = MAX_PROMPT_BYTES.saturating_sub(extra.len());
-        let last = clip_utf16_tail(&kept[0], keep);
+        let last = clip_utf16_tail(&kept[0], keep).to_utf8().to_string();
         prompt = format!("{head}{TRUNCATION_NOTE}{PROMPT_SEP}{last}");
     }
     GrokPrompt {
@@ -1927,17 +1898,33 @@ fn arm_watch(child: &mut Child) -> ChildWatch {
     ChildWatch::arm(child.id(), stdout, stderr)
 }
 
+struct PumpGuard {
+    task: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl PumpGuard {
+    fn abort(&mut self) {
+        if let Some(task) = self.task.take() {
+            task.abort();
+        }
+    }
+}
+
+impl Drop for PumpGuard {
+    fn drop(&mut self) {
+        self.abort();
+    }
+}
+
 struct LiveBody {
     rx: UnboundedReceiver<Result<LlmChunk, ProviderError>>,
-    task: Option<tokio::task::JoinHandle<()>>,
+    pump: PumpGuard,
     capture: Arc<Mutex<crate::types::StepCapture>>,
 }
 
 impl Drop for LiveBody {
     fn drop(&mut self) {
-        if let Some(task) = self.task.take() {
-            task.abort();
-        }
+        self.pump.abort();
     }
 }
 
@@ -1982,12 +1969,12 @@ fn note_capture(capture: &Mutex<crate::types::StepCapture>, chunk: &LlmChunk) {
 
 fn live_stream(
     rx: UnboundedReceiver<Result<LlmChunk, ProviderError>>,
-    task: tokio::task::JoinHandle<()>,
+    pump: PumpGuard,
 ) -> ChatStream {
     let capture = Arc::new(Mutex::new(crate::types::StepCapture::default()));
     let inner = LiveBody {
         rx,
-        task: Some(task),
+        pump,
         capture: Arc::clone(&capture),
     };
     ChatStream {
@@ -2002,7 +1989,7 @@ async fn supervise<F>(
     stdin_text: Option<&str>,
     timeout_ms: u64,
     provider_id: &str,
-    pgid: u32,
+    target: GroupTarget,
     mut on_line: F,
 ) -> Result<ChildOutput, ProviderError>
 where
@@ -2100,7 +2087,8 @@ where
                         } else {
                             stderr_text.push_str(&String::from_utf8_lossy(&err_tmp[..count]));
                             if stderr_text.len() > 64_000 {
-                                stderr_text = clip_utf16_tail(&stderr_text, 32_000);
+                                stderr_text =
+                                    clip_utf16_tail(&stderr_text, 32_000).to_utf8().to_string();
                             }
                         }
                     }
@@ -2133,12 +2121,12 @@ where
         }
     }
     if timed_out {
-        terminate_child(child, pgid).await;
+        terminate_child(child, target).await;
         guard.disarm();
         return Err(ProviderError::timeout(provider_id, timeout_ms));
     }
     if capped {
-        terminate_child(child, pgid).await;
+        terminate_child(child, target).await;
         guard.disarm();
         return Err(ProviderError::new(
             "output exceeded buffer".to_string(),
@@ -2147,7 +2135,7 @@ where
         ));
     }
     if let Some(err) = wait_err {
-        terminate_child(child, pgid).await;
+        terminate_child(child, target).await;
         guard.disarm();
         return Err(ProviderError::new(
             format!("{provider_id} failed to spawn: {err}"),
@@ -2156,7 +2144,7 @@ where
         ));
     }
     if fatal.is_some() {
-        terminate_child(child, pgid).await;
+        terminate_child(child, target).await;
     }
     guard.disarm();
     Ok(ChildOutput {
@@ -2197,7 +2185,7 @@ async fn run_child(
     provider_id: &str,
 ) -> Result<ChildOutput, ProviderError> {
     let mut child = spawn_command(binary, args, env, cwd, stdin_text.is_some(), provider_id)?;
-    let pgid = child.id().unwrap_or(0);
+    let target = group_target(child.id().unwrap_or(0));
     let guard = arm_watch(&mut child);
     supervise(
         &mut child,
@@ -2205,13 +2193,26 @@ async fn run_child(
         stdin_text,
         timeout_ms,
         provider_id,
-        pgid,
+        target,
         |_| None,
     )
     .await
 }
 
 const KILL_GRACE: Duration = Duration::from_millis(3_000);
+
+#[derive(Clone, Copy)]
+struct GroupTarget {
+    pgid: u32,
+    start: Option<u64>,
+}
+
+fn group_target(pgid: u32) -> GroupTarget {
+    GroupTarget {
+        pgid,
+        start: proc_start_time(pgid),
+    }
+}
 
 struct ChildWatch {
     stop: Arc<AtomicBool>,
@@ -2222,12 +2223,12 @@ impl ChildWatch {
     fn arm(pid: Option<u32>, stdout: Option<OwnedFd>, stderr: Option<OwnedFd>) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let cancel = Arc::new(AtomicBool::new(false));
-        if let Some(pid) = pid {
+        if let Some(target) = pid.map(group_target) {
             let stop_flag = Arc::clone(&stop);
             let cancel_flag = Arc::clone(&cancel);
             let _ = std::thread::Builder::new().spawn(move || {
                 let _hold = (stdout, stderr);
-                watch_child(pid, &stop_flag, &cancel_flag);
+                watch_child(target, &stop_flag, &cancel_flag);
             });
         }
         Self { stop, cancel }
@@ -2246,7 +2247,7 @@ impl Drop for ChildWatch {
     }
 }
 
-fn watch_child(pid: u32, stop: &AtomicBool, cancel: &AtomicBool) {
+fn watch_child(target: GroupTarget, stop: &AtomicBool, cancel: &AtomicBool) {
     loop {
         if stop.load(Ordering::Acquire) {
             return;
@@ -2263,7 +2264,7 @@ fn watch_child(pid: u32, stop: &AtomicBool, cancel: &AtomicBool) {
     if stop.load(Ordering::Acquire) {
         return;
     }
-    reap_group(pid);
+    reap_group(target);
 }
 
 fn dup_owned(fd: &impl AsFd) -> Option<OwnedFd> {
@@ -2296,7 +2297,8 @@ pub(crate) fn group_has_live(pgid: u32) -> bool {
 }
 
 fn proc_group(pid: u32) -> Option<(char, u32)> {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let stat =
+        protocol::host::read_text(&Path::new("/proc").join(pid.to_string()).join("stat")).ok()?;
     let end = stat.rfind(')')?;
     let mut parts = stat[end + 1..].split_whitespace();
     let state = parts.next()?.chars().next()?;
@@ -2305,10 +2307,47 @@ fn proc_group(pid: u32) -> Option<(char, u32)> {
     Some((state, group))
 }
 
-fn signal_tree(pid: u32, flag: &str) {
+fn proc_start_time(pid: u32) -> Option<u64> {
+    let stat =
+        protocol::host::read_text(&Path::new("/proc").join(pid.to_string()).join("stat")).ok()?;
+    let end = stat.rfind(')')?;
+    let mut parts = stat[end + 1..].split_whitespace();
+    let _state = parts.next()?;
+    let _ppid = parts.next()?;
+    let _group = parts.next()?;
+    let _session = parts.next()?;
+    let _tty = parts.next()?;
+    let _tpgid = parts.next()?;
+    let _flags = parts.next()?;
+    let _minflt = parts.next()?;
+    let _cminflt = parts.next()?;
+    let _majflt = parts.next()?;
+    let _cmajflt = parts.next()?;
+    let _utime = parts.next()?;
+    let _stime = parts.next()?;
+    let _cutime = parts.next()?;
+    let _cstime = parts.next()?;
+    let _priority = parts.next()?;
+    let _nice = parts.next()?;
+    let _threads = parts.next()?;
+    let _itreal = parts.next()?;
+    parts.next()?.parse().ok()
+}
+
+fn same_leader(pid: u32, start: Option<u64>) -> bool {
+    let Some(start) = start else {
+        return false;
+    };
+    proc_start_time(pid) == Some(start)
+}
+
+fn signal_tree(pid: u32, flag: &str, start: Option<u64>) {
     let group = kill_cmd(flag).arg(format!("-{pid}")).status();
-    if !matches!(group, Ok(status) if status.success()) {
+    if !matches!(group, Ok(status) if status.success()) && same_leader(pid, start) {
         signal_one(pid, flag);
+    }
+    if !same_leader(pid, start) {
+        return;
     }
     let mut kids = child_pids(pid);
     if kids.is_empty() {
@@ -2322,7 +2361,13 @@ fn signal_tree(pid: u32, flag: &str) {
 
 fn child_pids(pid: u32) -> Vec<u32> {
     let mut out = Vec::new();
-    if let Ok(kids) = std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children")) {
+    if let Ok(kids) = protocol::host::read_text(
+        &Path::new("/proc")
+            .join(pid.to_string())
+            .join("task")
+            .join(pid.to_string())
+            .join("children"),
+    ) {
         for kid in kids.split_whitespace() {
             if let Ok(kid) = kid.parse::<u32>() {
                 out.push(kid);
@@ -2353,7 +2398,8 @@ fn ppid_children(pid: u32) -> Vec<u32> {
 }
 
 fn parent_pid(pid: u32) -> Option<u32> {
-    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    let status =
+        protocol::host::read_text(&Path::new("/proc").join(pid.to_string()).join("status")).ok()?;
     for line in status.lines() {
         if let Some(rest) = line.strip_prefix("PPid:") {
             return rest.trim().parse().ok();
@@ -2383,23 +2429,23 @@ fn kill_cmd(flag: &str) -> std::process::Command {
     cmd
 }
 
-async fn terminate_child(child: &mut tokio::process::Child, pgid: u32) {
-    let _ = tokio::task::spawn_blocking(move || reap_group(pgid)).await;
+async fn terminate_child(child: &mut tokio::process::Child, target: GroupTarget) {
+    let _ = tokio::task::spawn_blocking(move || reap_group(target)).await;
     let _ = child.wait().await;
 }
 
-fn reap_group(pgid: u32) {
-    if pgid == 0 {
+fn reap_group(target: GroupTarget) {
+    if target.pgid == 0 {
         return;
     }
-    signal_tree(pgid, "-TERM");
+    signal_tree(target.pgid, "-TERM", target.start);
     let started = Instant::now();
     loop {
-        if !group_has_live(pgid) {
+        if !group_has_live(target.pgid) {
             return;
         }
         if started.elapsed() >= KILL_GRACE {
-            signal_tree(pgid, "-KILL");
+            signal_tree(target.pgid, "-KILL", target.start);
             return;
         }
         std::thread::sleep(Duration::from_millis(50));

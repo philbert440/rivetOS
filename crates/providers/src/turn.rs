@@ -45,12 +45,12 @@ pub async fn run_agent_turn(
             let chunk = item?;
             match chunk.r#type {
                 LlmChunkType::Text => {
-                    if let Some(delta) = chunk.delta.as_deref() {
+                    if let Some(delta) = chunk.delta.clone() {
                         events.push(text_event(protocol::StreamEventType::Text, delta));
                     }
                 }
                 LlmChunkType::Reasoning => {
-                    if let Some(delta) = chunk.delta.as_deref() {
+                    if let Some(delta) = chunk.delta.clone() {
                         events.push(text_event(protocol::StreamEventType::Reasoning, delta));
                     }
                 }

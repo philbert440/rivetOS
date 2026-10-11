@@ -70,6 +70,7 @@ pub struct HttpProvider {
     catalog: Option<ModelCatalog>,
     warnings: Arc<Mutex<Vec<String>>>,
     verify_model: bool,
+    redactor: Arc<crate::http::Redactor>,
 }
 
 #[derive(Default)]
@@ -363,6 +364,7 @@ impl HttpProvider {
             "/v1".to_string()
         };
         *provider.models_url.lock() = config.models_url.clone().filter(|url| !url.is_empty());
+        provider.register_secrets();
         if matches!(kind, Wire::Vllm | Wire::Llama) {
             let floor = if let Some(models) = config.models.clone() {
                 models
@@ -457,7 +459,9 @@ impl HttpProvider {
             catalog: None,
             warnings: Arc::new(Mutex::new(Vec::new())),
             verify_model: false,
+            redactor: Arc::new(crate::http::Redactor::new()),
         };
+        provider.register_secrets();
         if matches!(wire, Wire::Vllm | Wire::Llama) {
             let floor = if provider.model_pinned {
                 vec![provider.get_model()]
@@ -482,7 +486,11 @@ impl HttpProvider {
     }
 
     pub fn set_api_key(&self, key: Option<String>) {
-        *self.api_key.lock() = key.filter(|key| !key.is_empty());
+        let filtered = key.filter(|key| !key.is_empty());
+        if let Some(key) = filtered.as_deref() {
+            self.redactor.register(key);
+        }
+        *self.api_key.lock() = filtered;
     }
 
     pub fn set_token_source(&self, source: Option<Arc<TokenSource>>) {
@@ -504,7 +512,11 @@ impl HttpProvider {
     }
 
     pub fn set_models_url(&self, url: Option<String>) {
-        *self.models_url.lock() = url.filter(|item| !item.is_empty());
+        let filtered = url.filter(|item| !item.is_empty());
+        if let Some(url) = filtered.as_deref() {
+            self.redactor.register_url(url);
+        }
+        *self.models_url.lock() = filtered;
     }
 
     pub fn set_verify_model(&mut self, verify: bool) {
@@ -532,6 +544,7 @@ impl HttpProvider {
             },
             PROBE_TIMEOUT,
             &self.id,
+            &self.redactor,
         )
         .await?;
         let _ = read_limited(response.response, 2048).await;
@@ -560,8 +573,18 @@ impl HttpProvider {
         self.tokens.lock().clone()
     }
 
+    fn register_secrets(&self) {
+        if let Some(key) = self.api_key.lock().as_deref() {
+            self.redactor.register(key);
+        }
+        self.redactor.register_url(&self.base_url.lock());
+        if let Some(url) = self.models_url.lock().as_deref() {
+            self.redactor.register_url(url);
+        }
+    }
+
     fn note(&self, message: impl AsRef<str>) {
-        let message = crate::http::redact_text(message.as_ref());
+        let message = self.redactor.redact(message.as_ref());
         tracing::warn!(provider = %self.id, "{message}");
         self.warnings.lock().push(message);
     }
@@ -574,9 +597,10 @@ impl HttpProvider {
             return;
         };
         let warnings = Arc::clone(&self.warnings);
+        let redactor = Arc::clone(&self.redactor);
         handle.spawn(async move {
             if let Err(err) = source.get_token().await {
-                let message = crate::http::redact_text(&TokenSource::warm_log(&err));
+                let message = redactor.redact(&TokenSource::warm_log(&err));
                 tracing::warn!("{message}");
                 warnings.lock().push(message);
             }
@@ -594,12 +618,14 @@ impl HttpProvider {
             client: self.client.clone(),
             id: self.id.clone(),
             wire: self.wire,
+            redactor: Arc::clone(&self.redactor),
         };
         let fetch: FetchIds = Arc::new(move || {
             let shared = shared.clone();
             Box::pin(async move { shared.fetch_ids().await })
         });
         let warnings = Arc::clone(&self.warnings);
+        let redactor = Arc::clone(&self.redactor);
         ModelCatalog::new(
             floor,
             fetch,
@@ -607,7 +633,7 @@ impl HttpProvider {
             None,
             Some(Arc::new(|| protocol::js::date_now() as i64)),
             Some(Arc::new(move |message| {
-                let message = crate::http::redact_text(&message);
+                let message = redactor.redact(&message);
                 tracing::warn!("{message}");
                 warnings.lock().push(message);
             })),
@@ -644,7 +670,8 @@ impl HttpProvider {
             let token = source
                 .get_token()
                 .await
-                .map_err(|err| ProviderError::new(err.0, 0, &self.id))?;
+                .map_err(|err| ProviderError::new(self.redactor.redact(&err.0), 0, &self.id))?;
+            self.redactor.register(&token);
             return Ok(Some(self.auth_header(&token, probe, true)));
         }
         let key = self.api_key.lock().clone();
@@ -859,12 +886,16 @@ impl HttpProvider {
 
     async fn probe_key(&self) -> Result<String, ProviderError> {
         if let Some(source) = self.token_source() {
-            return source
+            let token = source
                 .get_token()
                 .await
-                .map_err(|err| ProviderError::new(err.0, 0, &self.id));
+                .map_err(|err| ProviderError::new(self.redactor.redact(&err.0), 0, &self.id))?;
+            self.redactor.register(&token);
+            return Ok(token);
         }
-        Ok(self.api_key.lock().clone().unwrap_or_default())
+        let key = self.api_key.lock().clone().unwrap_or_default();
+        self.redactor.register(&key);
+        Ok(key)
     }
 
     async fn exchange(
@@ -892,7 +923,7 @@ impl HttpProvider {
                 headers: headers.clone(),
                 body: body.clone(),
             };
-            let response = send(&self.client, &attempt, timeout, &self.id).await?;
+            let response = send(&self.client, &attempt, timeout, &self.id, &self.redactor).await?;
             let status = response.status;
             if status == 401 && self.token_source().is_some() && !reminted {
                 let rejected = current_auth
@@ -933,7 +964,11 @@ impl HttpProvider {
                 } else {
                     format!("{} {status}: {text}", self.name)
                 };
-                return Err(ProviderError::new(message, i64::from(status), &self.id));
+                return Err(ProviderError::new(
+                    self.redactor.redact(&message),
+                    i64::from(status),
+                    &self.id,
+                ));
             }
             return Ok(response);
         }
@@ -1018,6 +1053,7 @@ impl HttpProvider {
             deadline,
             &self.id,
             timeout.as_millis() as u64,
+            Arc::clone(&self.redactor),
         ))
     }
 
@@ -1152,6 +1188,7 @@ impl Provider for HttpProvider {
     }
 
     fn set_base_url(&self, url: String) {
+        self.redactor.register_url(&url);
         *self.base_url.lock() = url;
     }
 
@@ -1252,6 +1289,7 @@ struct CatalogShared {
     client: reqwest::Client,
     id: String,
     wire: Wire,
+    redactor: Arc<crate::http::Redactor>,
 }
 
 impl CatalogShared {
@@ -1291,6 +1329,7 @@ impl CatalogShared {
         let source = self.tokens.lock().clone();
         if let Some(source) = source {
             let token = source.get_token().await.map_err(|err| err.0)?;
+            self.redactor.register(&token);
             return Ok((
                 Some(("Authorization".to_string(), format!("Bearer {token}"))),
                 Some(token),
@@ -1326,6 +1365,7 @@ impl CatalogShared {
             },
             Duration::from_millis(crate::catalog::DEFAULT_CATALOG_TIMEOUT_MS),
             &self.id,
+            &self.redactor,
         )
         .await
         .map_err(|err| err.message)

@@ -44,15 +44,17 @@ pub async fn send(
     attempt: &HttpAttempt,
     timeout: Duration,
     provider_id: &str,
+    redactor: &Redactor,
 ) -> Result<RawResponse, ProviderError> {
     if timeout.is_zero() {
         return Err(ProviderError::new(
-            "provider timed out after 0 ms",
+            redactor.redact("provider timed out after 0 ms"),
             0,
             provider_id,
         ));
     }
-    tracing::debug!(method = %attempt.method, url = %DisplayUrl::new(&attempt.url), provider = provider_id, "provider http");
+    let shown = redactor.redact(&attempt.url);
+    tracing::debug!(method = %attempt.method, url = %shown, provider = provider_id, "provider http");
     let mut builder = client
         .request(attempt.method.clone(), &attempt.url)
         .timeout(timeout);
@@ -85,12 +87,19 @@ pub async fn send(
         Err(err) => {
             if err.is_timeout() {
                 Err(ProviderError::new(
-                    format!("provider timed out after {} ms", timeout.as_millis()),
+                    redactor.redact(&format!(
+                        "provider timed out after {} ms",
+                        timeout.as_millis()
+                    )),
                     0,
                     provider_id,
                 ))
             } else {
-                Err(ProviderError::new(err.to_string(), 0, provider_id))
+                Err(ProviderError::new(
+                    redactor.redact(&err.to_string()),
+                    0,
+                    provider_id,
+                ))
             }
         }
     }
@@ -129,6 +138,7 @@ struct Live {
     finish_ran: bool,
     provider_id: String,
     timeout_ms: u64,
+    redactor: Arc<Redactor>,
 }
 
 impl Stream for Live {
@@ -170,7 +180,7 @@ impl Stream for Live {
                 Poll::Ready(Some(Err(err))) => {
                     live.finish_ran = true;
                     return Poll::Ready(Some(Err(ProviderError::new(
-                        err.to_string(),
+                        live.redactor.redact(&err.to_string()),
                         0,
                         live.provider_id.clone(),
                     ))));
@@ -185,7 +195,11 @@ impl Stream for Live {
                         live.pending.push_back(Ok(chunk));
                     }
                     if let Some(err) = live.decoder.take_error() {
-                        live.pending.push_back(Err(err));
+                        live.pending.push_back(Err(ProviderError::new(
+                            live.redactor.redact(&err.message),
+                            err.status,
+                            err.provider_id.clone(),
+                        )));
                         live.incoming_done = true;
                         live.finish_ran = true;
                     }
@@ -201,6 +215,7 @@ pub fn decode_response(
     deadline: Instant,
     provider_id: &str,
     timeout_ms: u64,
+    redactor: Arc<Redactor>,
 ) -> ChatStream {
     let capture = Arc::new(Mutex::new(StepCapture::default()));
     let remaining = deadline.saturating_duration_since(Instant::now());
@@ -214,6 +229,7 @@ pub fn decode_response(
         finish_ran: false,
         provider_id: provider_id.to_string(),
         timeout_ms,
+        redactor,
     };
     ChatStream {
         capture,
@@ -263,9 +279,74 @@ impl std::fmt::Display for DisplayUrl {
     }
 }
 
+const REDACTED: &str = "REDACTED";
+
+#[derive(Clone, Default)]
+pub struct Redactor {
+    secrets: Arc<Mutex<Vec<String>>>,
+}
+
+impl Redactor {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn register(&self, secret: &str) {
+        if secret.is_empty() || secret == REDACTED {
+            return;
+        }
+        let mut guard = self.secrets.lock();
+        if !guard.iter().any(|item| item == secret) {
+            guard.push(secret.to_string());
+        }
+    }
+
+    pub fn register_url(&self, url: &str) {
+        if let Ok(parsed) = reqwest::Url::parse(url) {
+            if !parsed.username().is_empty() {
+                self.register(parsed.username());
+                self.register(&percent_decode(parsed.username()));
+            }
+            if let Some(password) = parsed.password() {
+                self.register(password);
+                self.register(&percent_decode(password));
+            }
+            for (key, value) in parsed.query_pairs() {
+                if secret_query(&key) {
+                    self.register(&value);
+                    self.register(&percent_decode(&value));
+                }
+            }
+            return;
+        }
+        register_unparsed_secrets(self, url);
+    }
+
+    pub fn redact(&self, text: &str) -> String {
+        let mut secrets = self.secrets.lock().clone();
+        secrets.sort_by_key(|secret| std::cmp::Reverse(secret.len()));
+        let mut out = text.to_string();
+        for secret in &secrets {
+            if secret.is_empty() || secret == REDACTED {
+                continue;
+            }
+            out = out.replace(secret, REDACTED);
+            let encoded = crate::jsonutil::encode_query(secret);
+            if encoded != *secret {
+                out = out.replace(&encoded, REDACTED);
+                let lower = encoded.to_ascii_lowercase();
+                if lower != encoded {
+                    out = out.replace(&lower, REDACTED);
+                }
+            }
+        }
+        redact_text(&out)
+    }
+}
+
 pub fn redact_url(url: &str) -> String {
     let Ok(mut parsed) = reqwest::Url::parse(url) else {
-        return redact_text(url);
+        return redact_unparsed_url(url);
     };
     let userinfo = !parsed.username().is_empty() || parsed.password().is_some();
     strip_userinfo(&mut parsed);
@@ -275,7 +356,7 @@ pub fn redact_url(url: &str) -> String {
         .collect();
     let needs_query = pairs
         .iter()
-        .any(|(key, value)| secret_query(key) && value != "REDACTED");
+        .any(|(key, value)| secret_query(key) && value != REDACTED);
     if !userinfo && !needs_query {
         return url.to_string();
     }
@@ -287,7 +368,7 @@ pub fn redact_url(url: &str) -> String {
         .iter()
         .map(|(key, value)| {
             if secret_query(key) {
-                format!("{key}=REDACTED")
+                format!("{key}={REDACTED}")
             } else {
                 format!("{key}={value}")
             }
@@ -300,16 +381,13 @@ pub fn redact_url(url: &str) -> String {
 
 pub fn redact_text(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
-    let bytes = text.as_bytes();
     let mut index = 0;
-    while index < bytes.len() {
+    while index < text.len() {
         let rest = &text[index..];
-        if let Some(start) = rest.find("http://").or_else(|| rest.find("https://")) {
+        if let Some(start) = find_scheme(rest) {
             out.push_str(&rest[..start]);
             let tail = &rest[start..];
-            let end = tail
-                .find(|ch: char| ch.is_whitespace() || matches!(ch, ')' | '"' | '\'' | '>' | ','))
-                .unwrap_or(tail.len());
+            let end = tail.find(url_terminator).unwrap_or(tail.len());
             out.push_str(&redact_url_piece(&tail[..end]));
             index += start + end;
         } else {
@@ -320,11 +398,142 @@ pub fn redact_text(text: &str) -> String {
     out
 }
 
+fn find_scheme(text: &str) -> Option<usize> {
+    match (text.find("http://"), text.find("https://")) {
+        (Some(http), Some(https)) => Some(http.min(https)),
+        (Some(http), None) => Some(http),
+        (None, Some(https)) => Some(https),
+        (None, None) => None,
+    }
+}
+
+fn url_terminator(ch: char) -> bool {
+    ch.is_whitespace() || matches!(ch, ')' | '"' | '\'' | '>' | '<' | '}' | ']' | '|')
+}
+
 fn redact_url_piece(piece: &str) -> String {
     if reqwest::Url::parse(piece).is_ok() {
         redact_url(piece)
     } else {
-        piece.to_string()
+        redact_unparsed_url(piece)
+    }
+}
+
+fn redact_unparsed_url(piece: &str) -> String {
+    let Some(start) = find_scheme(piece) else {
+        return piece.to_string();
+    };
+    let scheme_len = if piece[start..].starts_with("https://") {
+        "https://".len()
+    } else {
+        "http://".len()
+    };
+    let auth_start = start + scheme_len;
+    let mut out = piece.to_string();
+    let rest = &piece[auth_start..];
+    if let Some(at) = rest.find('@') {
+        let userinfo = &rest[..at];
+        if !userinfo.is_empty() && !userinfo.contains('/') && !userinfo.contains('?') {
+            out.replace_range(auth_start..auth_start + at + 1, "");
+        }
+    }
+    let Some(query_at) = out.find('?') else {
+        return out;
+    };
+    let head = out[..query_at].to_string();
+    let query = &out[query_at + 1..];
+    let end = query.find(url_terminator).unwrap_or(query.len());
+    let mut rebuilt = head;
+    rebuilt.push('?');
+    rebuilt.push_str(&redact_query_pairs(&query[..end]));
+    rebuilt.push_str(&query[end..]);
+    rebuilt
+}
+
+fn redact_query_pairs(query: &str) -> String {
+    query
+        .split('&')
+        .map(|pair| {
+            let Some((key, _)) = pair.split_once('=') else {
+                return pair.to_string();
+            };
+            let decoded = percent_decode(key);
+            if secret_query(&decoded) || secret_query(key) {
+                format!("{key}={REDACTED}")
+            } else {
+                pair.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
+fn register_unparsed_secrets(redactor: &Redactor, url: &str) {
+    let Some(start) = find_scheme(url) else {
+        return;
+    };
+    let scheme_len = if url[start..].starts_with("https://") {
+        "https://".len()
+    } else {
+        "http://".len()
+    };
+    let rest = &url[start + scheme_len..];
+    let (after_user, query_from) = if let Some(at) = rest.find('@') {
+        let userinfo = &rest[..at];
+        if !userinfo.is_empty() && !userinfo.contains('/') && !userinfo.contains('?') {
+            if let Some((user, password)) = userinfo.split_once(':') {
+                redactor.register(&percent_decode(user));
+                redactor.register(&percent_decode(password));
+            } else {
+                redactor.register(&percent_decode(userinfo));
+            }
+        }
+        (&rest[at + 1..], &rest[at + 1..])
+    } else {
+        (rest, rest)
+    };
+    let Some(query_at) = query_from.find('?').or_else(|| after_user.find('?')) else {
+        return;
+    };
+    let query = &query_from[query_at + 1..];
+    let end = query.find(url_terminator).unwrap_or(query.len());
+    for pair in query[..end].split('&') {
+        let Some((key, value)) = pair.split_once('=') else {
+            continue;
+        };
+        let decoded = percent_decode(key);
+        if secret_query(&decoded) || secret_query(key) {
+            redactor.register(value);
+            redactor.register(&percent_decode(value));
+        }
+    }
+}
+
+fn percent_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%'
+            && index + 2 < bytes.len()
+            && let (Some(hi), Some(lo)) = (hex_val(bytes[index + 1]), hex_val(bytes[index + 2]))
+        {
+            out.push((hi << 4) | lo);
+            index += 3;
+            continue;
+        }
+        out.push(bytes[index]);
+        index += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn hex_val(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
     }
 }
 
@@ -362,7 +571,7 @@ fn host_header_value(url: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{DisplayUrl, redact_text, redact_url};
+    use super::{DisplayUrl, Redactor, redact_text, redact_url};
 
     const CRED_MARK: &str = "rr6p-cred-4f91c2e7";
 
@@ -411,5 +620,58 @@ mod tests {
         assert!(!text.contains("rr6p-cred-4f91c2e7"), "{text}");
         assert!(text.starts_with("boom "), "{text}");
         assert!(text.ends_with(" tail"), "{text}");
+    }
+
+    #[test]
+    fn registered_secrets_die_in_realistic_diagnostics() {
+        let redactor = Redactor::new();
+        redactor.register("sk-live-value");
+        redactor.register_url("https://operator:sekret@example.test:8/v1?api_key=sk-live-value");
+        let cases = [
+            "models probe http://127.0.0.1:8000/v1/models?served-model-name=llama,mistral&api_key=sk-live-value".to_string(),
+            "{\"error\":\"bad key sk-live-value (vLLM), retry later\"}".to_string(),
+            "config \"https://operator:sekret@example.test:8/v1?api_key=sk-live-value\" rejected".to_string(),
+            "https://example.test/v1?api%5Fkey=sk-live-value&x=1".to_string(),
+            "https://operator:sekret@example.test:bad/models?api_key=sk-live-value".to_string(),
+            "upstream https://example.test/?api_key=sk-live-value see http://help.test".to_string(),
+            "token=%73k-live-value and (sk-live-value, sk-live-value)".to_string(),
+        ];
+        for case in &cases {
+            let out = redactor.redact(case);
+            assert!(!out.contains("sk-live-value"), "{case} -> {out}");
+            assert!(!out.contains("sekret"), "{case} -> {out}");
+            assert!(!out.contains("operator"), "{case} -> {out}");
+            assert!(out.contains("REDACTED"), "{case} -> {out}");
+        }
+    }
+
+    #[test]
+    fn url_scan_fails_closed_without_registered_values() {
+        let mixed = redact_text(
+            "upstream https://example.test/?api_key=unregistered-secret see http://help.test",
+        );
+        assert!(!mixed.contains("unregistered-secret"), "{mixed}");
+        assert!(
+            mixed.contains("https://example.test/?api_key=REDACTED"),
+            "{mixed}"
+        );
+        assert!(mixed.contains("http://help.test"), "{mixed}");
+        let malformed = redact_text(
+            "probe https://operator:sekret@example.test:bad/models?api_key=token failed",
+        );
+        assert!(!malformed.contains("sekret"), "{malformed}");
+        assert!(!malformed.contains("operator"), "{malformed}");
+        assert!(malformed.contains("example.test:bad"), "{malformed}");
+        assert!(malformed.contains("api_key=REDACTED"), "{malformed}");
+        let comma =
+            redact_text("see http://user:sekret@example.test/v?list=a,b&token=tok-value end");
+        assert!(!comma.contains("tok-value"), "{comma}");
+        assert!(!comma.contains("sekret"), "{comma}");
+        assert!(!comma.contains("user"), "{comma}");
+        assert!(comma.contains("list=a,b"), "{comma}");
+        assert!(comma.contains("token=REDACTED"), "{comma}");
+        let quoted = redact_text("docs \"https://example.test/v?api%5Fkey=tok-value\" done");
+        assert!(!quoted.contains("tok-value"), "{quoted}");
+        assert!(quoted.contains("REDACTED"), "{quoted}");
     }
 }

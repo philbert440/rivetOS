@@ -73,16 +73,24 @@ fn trim_and_slice_follow_the_js_goldens() {
             && let Some(end) = end
             && let Some(limit) = whole_units(end)
         {
-            assert_eq!(clip_utf16(&utf8, limit), actual.to_utf8());
+            assert_eq!(clip_utf16(&utf8, limit).units(), actual.units());
         }
         if end.is_none()
             && let Some(start) = start
             && start < 0.0
             && let Some(keep) = whole_units(-start)
         {
-            assert_eq!(clip_utf16_tail(&utf8, keep), actual.to_utf8());
+            assert_eq!(clip_utf16_tail(&utf8, keep).units(), actual.units());
         }
     }
     assert!(kept_surrogate);
-    assert_eq!(clip_utf16_tail("a😀b", 0), "");
+    assert_eq!(clip_utf16_tail("a😀b", 0).to_utf8(), "");
+    let split = clip_utf16("a😀b", 2);
+    assert_eq!(split.units(), vec![u16::from(b'a'), 0xD83D]);
+    assert!(split.to_utf8().contains('\u{FFFD}'));
+    let serialized = serde_json::to_string(&crate::chunks::text_chunk(split)).unwrap();
+    assert_eq!(
+        serialized,
+        "{\"type\":\"text\",\"delta\":\"a\\ud83d\"}".to_string()
+    );
 }

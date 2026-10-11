@@ -290,13 +290,13 @@ impl Machine {
         let mut chunks = Vec::new();
         if !self.saw_text && code != Some(0) && self.fatal.is_none() {
             let detail = if stderr.trim().is_empty() {
-                format!("exit {}", code.unwrap_or(-1))
+                protocol::js::JsString::from_text(&format!("exit {}", code.unwrap_or(-1)))
             } else {
                 clip_utf16(stderr, 500)
             };
             self.note_text(
                 &mut chunks,
-                &format!("⚠️ pi-cli bridge error: {detail}"),
+                bridge_text("⚠️ pi-cli bridge error: ", &detail),
                 true,
             );
         }
@@ -419,13 +419,13 @@ impl Machine {
         let mut chunks = Vec::new();
         if !self.saw_text && code != Some(0) && !self.result_error {
             let detail = if stderr.trim().is_empty() {
-                format!("exit {}", code.unwrap_or(-1))
+                protocol::js::JsString::from_text(&format!("exit {}", code.unwrap_or(-1)))
             } else {
                 clip_utf16(stderr, 500)
             };
             self.note_text(
                 &mut chunks,
-                &format!("⚠️ qwen-code bridge error: {detail}"),
+                bridge_text("⚠️ qwen-code bridge error: ", &detail),
                 true,
             );
         }
@@ -460,7 +460,7 @@ impl Machine {
             self.session_id = Some(id);
         }
         if let Some(text) = text {
-            self.note_text(&mut chunks, &text, true);
+            self.note_text(&mut chunks, text, true);
             return chunks;
         }
         let tokens = tokens_of(&value);
@@ -485,13 +485,13 @@ impl Machine {
         let mut chunks = Vec::new();
         if !self.saw_text && code != Some(0) {
             let detail = if stderr.trim().is_empty() {
-                format!("exit {}", code.unwrap_or(-1))
+                protocol::js::JsString::from_text(&format!("exit {}", code.unwrap_or(-1)))
             } else {
                 clip_utf16(stderr, 500)
             };
             self.note_text(
                 &mut chunks,
-                &format!("⚠️ opencode-cli bridge error: {detail}"),
+                bridge_text("⚠️ opencode-cli bridge error: ", &detail),
                 true,
             );
         }
@@ -652,11 +652,11 @@ impl Machine {
         }
         if !self.saw_reason_delta && !self.fallback_reason.is_empty() {
             let text = self.fallback_reason.clone();
-            self.note_reason(chunks, &text, true);
+            self.note_reason(chunks, text, true);
         }
         if !self.saw_text_delta && !self.saw_text && !self.fallback_text.is_empty() {
             let text = self.fallback_text.clone();
-            self.note_text(chunks, &text, true);
+            self.note_text(chunks, text, true);
         }
         if !self.saw_text && !self.saw_reason_delta && self.recognized == 0 {
             let err = clip_utf16(&first_detail(stderr, stdout), 500);
@@ -763,7 +763,7 @@ impl Machine {
                     text.to_string()
                 };
                 if !final_text.is_empty() {
-                    self.note_text(&mut chunks, &final_text, true);
+                    self.note_text(&mut chunks, final_text, true);
                 }
             }
             self.note_stop(value.get("stop_reason"));
@@ -794,7 +794,13 @@ impl Machine {
         None
     }
 
-    fn note_text(&mut self, chunks: &mut Vec<LlmChunk>, text: &str, delta: bool) {
+    fn note_text(
+        &mut self,
+        chunks: &mut Vec<LlmChunk>,
+        text: impl Into<protocol::js::JsString>,
+        delta: bool,
+    ) {
+        let text = text.into();
         if text.is_empty() {
             return;
         }
@@ -811,7 +817,13 @@ impl Machine {
         chunks.push(text_chunk(text));
     }
 
-    fn note_reason(&mut self, chunks: &mut Vec<LlmChunk>, text: &str, delta: bool) {
+    fn note_reason(
+        &mut self,
+        chunks: &mut Vec<LlmChunk>,
+        text: impl Into<protocol::js::JsString>,
+        delta: bool,
+    ) {
+        let text = text.into();
         if text.is_empty() {
             return;
         }
@@ -955,7 +967,7 @@ impl Machine {
 
     fn fail_plain(&self, code: Option<i32>, stderr: &str) -> ProviderError {
         let detail = if stderr.is_empty() {
-            format!("exit {}", code.unwrap_or(-1))
+            protocol::js::JsString::from_text(&format!("exit {}", code.unwrap_or(-1)))
         } else {
             clip_utf16(stderr, 500)
         };
@@ -963,21 +975,21 @@ impl Machine {
     }
 }
 
-pub fn clip_utf16(text: &str, limit: usize) -> String {
-    slice_to_string(text, Some(0.0), Some(limit as f64))
+pub fn clip_utf16(text: &str, limit: usize) -> protocol::js::JsString {
+    protocol::js::js_slice(text, Some(0.0), Some(limit as f64))
 }
 
-pub fn clip_utf16_tail(text: &str, keep: usize) -> String {
+pub fn clip_utf16_tail(text: &str, keep: usize) -> protocol::js::JsString {
     if keep == 0 {
-        return String::new();
+        return protocol::js::JsString::from_text("");
     }
-    slice_to_string(text, Some(-(keep as f64)), None)
+    protocol::js::js_slice(text, Some(-(keep as f64)), None)
 }
 
-fn slice_to_string(text: &str, start: Option<f64>, end: Option<f64>) -> String {
-    protocol::js::js_slice(text, start, end)
-        .to_utf8()
-        .to_string()
+fn bridge_text(prefix: &str, detail: &protocol::js::JsString) -> protocol::js::JsString {
+    let mut units: Vec<u16> = prefix.encode_utf16().collect();
+    units.extend_from_slice(detail.units());
+    protocol::js::JsString::from_units(units)
 }
 
 fn fatal_stop(reason: &str) -> bool {

@@ -14,7 +14,7 @@ pub const QWEN_SESSION_MAP: &str = "qwen-code-sessions.json";
 pub const GROK_SESSION_MAP: &str = "grok-cli-sessions.json";
 
 pub fn load_session_map(path: &str) -> Map<String, Value> {
-    let Ok(text) = std::fs::read_to_string(path) else {
+    let Ok(text) = protocol::host::read_text(Path::new(path)) else {
         return Map::new();
     };
     let Ok(value) = serde_json::from_str::<Value>(&text) else {
@@ -89,8 +89,7 @@ pub fn sha1_hex(data: &[u8]) -> String {
 
 pub fn random_uuid_v4() -> Result<String, String> {
     let mut bytes = [0u8; 16];
-    let mut file = std::fs::File::open("/dev/urandom").map_err(|err| err.to_string())?;
-    std::io::Read::read_exact(&mut file, &mut bytes).map_err(|err| err.to_string())?;
+    getrandom::getrandom(&mut bytes).map_err(|err| err.to_string())?;
     bytes[6] = (bytes[6] & 0x0f) | 0x40;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
     Ok(format_uuid(&bytes))

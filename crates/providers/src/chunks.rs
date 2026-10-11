@@ -3,10 +3,10 @@ use serde_json::Value;
 
 use crate::jsonutil::obj;
 
-pub fn text_chunk(delta: &str) -> LlmChunk {
+pub fn text_chunk(delta: impl Into<protocol::js::JsString>) -> LlmChunk {
     LlmChunk {
         r#type: LlmChunkType::Text,
-        delta: Some(delta.to_string()),
+        delta: Some(delta.into()),
         tool_call: None,
         usage: None,
         citations: None,
@@ -14,10 +14,10 @@ pub fn text_chunk(delta: &str) -> LlmChunk {
     }
 }
 
-pub fn reasoning_chunk(delta: &str) -> LlmChunk {
+pub fn reasoning_chunk(delta: impl Into<protocol::js::JsString>) -> LlmChunk {
     LlmChunk {
         r#type: LlmChunkType::Reasoning,
-        delta: Some(delta.to_string()),
+        delta: Some(delta.into()),
         tool_call: None,
         usage: None,
         citations: None,
@@ -51,10 +51,10 @@ pub fn tool_start(index: u64, id: &str, name: &str) -> LlmChunk {
     }
 }
 
-pub fn tool_delta(index: u64, delta: &str) -> LlmChunk {
+pub fn tool_delta(index: u64, delta: impl Into<protocol::js::JsString>) -> LlmChunk {
     LlmChunk {
         r#type: LlmChunkType::ToolCallDelta,
-        delta: Some(delta.to_string()),
+        delta: Some(delta.into()),
         tool_call: Some(partial(vec![("index", Value::from(index))])),
         usage: None,
         citations: None,
@@ -88,10 +88,10 @@ pub fn done_chunk(usage: LlmUsage, citations: &[String]) -> LlmChunk {
     }
 }
 
-pub fn status_chunk(delta: &str) -> LlmChunk {
+pub fn status_chunk(delta: impl Into<protocol::js::JsString>) -> LlmChunk {
     LlmChunk {
         r#type: LlmChunkType::Status,
-        delta: Some(delta.to_string()),
+        delta: Some(delta.into()),
         tool_call: None,
         usage: None,
         citations: None,

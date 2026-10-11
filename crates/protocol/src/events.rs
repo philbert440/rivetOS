@@ -462,7 +462,7 @@ pub struct LlmChunk {
     #[serde(rename = "type")]
     pub r#type: LlmChunkType,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub delta: Option<String>,
+    pub delta: Option<JsString>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call: Option<PartialToolCall>,
     #[serde(skip_serializing_if = "Option::is_none")]

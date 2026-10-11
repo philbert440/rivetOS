@@ -14,7 +14,7 @@ use providers::{
     TurnMessage, chat_completions_url, default_run_command, execute_permission_prompt,
     models_probe_url, normalize_api_prefix, permission_decision_text, process_env,
     read_hermes_session_tokens, session_map_strings, strip_openai_base, tokens_for_turn,
-    unknown_tokens, usage_delta, uuid_for_conversation,
+    tool_result_event, unknown_tokens, usage_delta, uuid_for_conversation,
 };
 use serde_json::{Map, Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -1116,7 +1116,10 @@ async fn cli_sessions_hermes_db_and_signals() {
     let chunks = drain(opencode.stream_chat(chat("again", "conv", 2_000)).await)
         .await
         .unwrap();
-    let text: String = chunks.into_iter().filter_map(|chunk| chunk.delta).collect();
+    let text: String = chunks
+        .into_iter()
+        .filter_map(|chunk| chunk.delta.map(|delta| delta.to_utf8().to_string()))
+        .collect();
     assert!(text.contains("opencode-cli bridge error"), "{text}");
     assert!(!session_map_strings(&oc_map).contains_key("conv"));
 
@@ -1441,6 +1444,52 @@ async fn cli_cancel_kills_descendants_after_the_leader_exits() {
 }
 
 #[tokio::test]
+async fn cli_drop_of_the_stream_kills_a_live_child() {
+    let dir = scratch("cli-drop-live");
+    let pid_file = format!("{dir}/pid");
+    let bin = format!("{dir}/bin");
+    write_script(
+        &bin,
+        &format!("#!/bin/bash\necho $$ > {pid_file}\nexec sleep 30\n"),
+    );
+    let mut provider = CliProvider::claude(&bin);
+    provider.set_home(Some(dir));
+    let stream = provider
+        .stream_chat(chat("hi", "drop-live", 30_000))
+        .await
+        .unwrap();
+    let ready = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < ready && !Path::new(&pid_file).exists() {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let leader = read_pid_file(&pid_file);
+    let (state, group) = proc_state_group(leader).expect("leader should exist");
+    assert_ne!(state, 'Z', "leader should still be live");
+    assert_eq!(group, leader);
+    drop(stream);
+    assert_group_clear(leader).await;
+    assert_dead(leader).await;
+}
+
+#[test]
+fn tool_result_preview_counts_utf16_units_on_the_wire() {
+    let emoji = "\u{1F600}";
+    let plain: String = "a".repeat(198);
+    let event = tool_result_event("echo", &format!("{plain}{emoji}gone"), false);
+    let expected = format!(
+        "{{\"type\":\"tool_result\",\"content\":\"\u{2705} echo: {plain}{emoji}\",\"metadata\":{{\"tool\":\"echo\"}}}}"
+    );
+    assert_eq!(serde_json::to_string(&event).unwrap(), expected);
+
+    let split = tool_result_event("echo", &format!("{}{emoji}tail", "a".repeat(199)), true);
+    let split_expected = format!(
+        "{{\"type\":\"tool_result\",\"content\":\"\u{274C} echo: {}\\ud83d\",\"metadata\":{{\"tool\":\"echo\"}}}}",
+        "a".repeat(199)
+    );
+    assert_eq!(serde_json::to_string(&split).unwrap(), split_expected);
+}
+
+#[tokio::test]
 async fn token_timeout_kills_descendants_after_the_leader_exits() {
     let dir = scratch("tok-desc");
     let leader_file = format!("{dir}/leader");
@@ -1510,7 +1559,10 @@ exit 0
     let chunks = drain(qwen.stream_chat(chat("again", "qwen-recover", 2_000)).await)
         .await
         .unwrap();
-    let text: String = chunks.into_iter().filter_map(|chunk| chunk.delta).collect();
+    let text: String = chunks
+        .into_iter()
+        .filter_map(|chunk| chunk.delta.map(|delta| delta.to_utf8().to_string()))
+        .collect();
     assert!(text.contains("recovered answer"), "{text}");
     assert!(!text.contains("qwen-code bridge error"), "{text}");
     let logged = std::fs::read_to_string(&args_log).unwrap();
@@ -1571,7 +1623,10 @@ exit 0
     let chunks = drain(grok.stream_chat(chat("again", key, 2_000)).await)
         .await
         .unwrap();
-    let text: String = chunks.into_iter().filter_map(|chunk| chunk.delta).collect();
+    let text: String = chunks
+        .into_iter()
+        .filter_map(|chunk| chunk.delta.map(|delta| delta.to_utf8().to_string()))
+        .collect();
     assert!(text.contains("kept"), "{text}");
     assert_eq!(
         session_map_strings(&map).get(key).map(String::as_str),
@@ -1918,4 +1973,44 @@ async fn configured_credential_stays_out_of_warnings_and_errors() {
     );
     assert_clean("anthropic chat", &err.message);
     assert_warnings("anthropic", &anthropic);
+}
+
+#[tokio::test]
+async fn credential_redaction_fails_closed_on_realistic_diagnostics() {
+    let refused = cred_base("http://127.0.0.1:9");
+    let malformed =
+        format!("https://{CRED_USER}:{CRED_SECRET}@example.test:bad/models?api_key={CRED_SECRET}");
+    let bad = HttpProvider::vllm(Some(CRED_SECRET.to_string()), "m", &refused).unwrap();
+    bad.set_models_url(Some(malformed));
+    assert!(!bad.is_available().await);
+    let joined = bad.warnings().join("\n");
+    assert!(joined.contains("cannot reach"), "{joined}");
+    assert!(joined.contains("Is the server running?"), "{joined}");
+    assert!(joined.contains("example.test:bad"), "{joined}");
+    assert!(joined.contains("api_key=REDACTED"), "{joined}");
+    assert_clean("malformed models url", &joined);
+    assert_warnings("malformed models url", &bad);
+
+    let (base, gate) = serve().await;
+    let body = format!(
+        "{{\"error\":{{\"message\":\"quota exceeded for key {CRED_SECRET} (plan a,b), docs: \\\"https://example.test/v?api%5Fkey={CRED_SECRET}\\\" upstream https://example.test/?api_key={CRED_SECRET} see http://help.test\"}}}}"
+    );
+    gate.script(&[(&body, 500)]);
+    let mut chat_http = HttpProvider::vllm(Some(CRED_SECRET.to_string()), "m", &base).unwrap();
+    chat_http.set_probe_models(false);
+    let err = err_of(
+        chat_http
+            .stream_chat(chat("hi", "cred-realistic", 2_000))
+            .await,
+    );
+    assert!(err.message.contains("vLLM 500:"), "{}", err.message);
+    assert!(err.message.contains("http://help.test"), "{}", err.message);
+    assert!(err.message.contains("api_key=REDACTED"), "{}", err.message);
+    assert!(
+        err.message.contains("REDACTED (plan a,b)"),
+        "{}",
+        err.message
+    );
+    assert_clean("realistic 500", &err.message);
+    assert_warnings("realistic 500 warnings", &chat_http);
 }
