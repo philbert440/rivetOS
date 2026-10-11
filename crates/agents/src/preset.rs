@@ -1,11 +1,17 @@
+use std::sync::Arc;
+
 use protocol::HARNESS_IDS;
 use protocol::JsNumber;
-use protocol::js::js_trim;
+use protocol::js::{JsValue, js_trim};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Number, Value};
 
 use crate::error::PresetError;
-use crate::validate::{is_harness_id, json_is_integer};
+use crate::js_row::{
+    entries_of, js_f64, js_i64, js_str, js_string, object_from_entries, object_from_pairs,
+    remove_key, serde_to_js, upsert,
+};
+use crate::validate::is_harness_id;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -30,6 +36,8 @@ pub struct AgentPreset {
     pub sort_order: Option<i64>,
     pub created_at: JsNumber,
     pub updated_at: JsNumber,
+    #[serde(skip)]
+    pub document: Option<Arc<JsValue>>,
 }
 
 impl AgentPreset {
@@ -39,6 +47,13 @@ impl AgentPreset {
 
     pub fn updated_at_ms(&self) -> f64 {
         self.updated_at.as_f64()
+    }
+
+    pub fn document_json(&self) -> String {
+        if let Some(document) = &self.document {
+            return protocol::js::stringify(document);
+        }
+        protocol::js::stringify(&synthesized_document(self))
     }
 }
 
@@ -163,20 +178,11 @@ pub fn migrate_fields(model: &str, harness_id: Option<&str>) -> MigratedFields {
 }
 
 pub fn epoch_ms(ms: i64) -> Result<JsNumber, PresetError> {
-    if ms < 0 {
-        return Err(PresetError::message(format!(
-            "invalid preset timestamp: {ms}"
-        )));
-    }
     Ok(JsNumber::from(ms))
 }
 
 pub fn json_string(map: &Map<String, Value>, key: &str) -> Option<String> {
     map.get(key).and_then(Value::as_str).map(str::to_string)
-}
-
-pub fn json_bool(map: &Map<String, Value>, key: &str) -> Option<bool> {
-    map.get(key).and_then(Value::as_bool)
 }
 
 pub fn number_to_i64(number: &Number) -> Option<i64> {
@@ -196,43 +202,210 @@ pub fn number_to_i64(number: &Number) -> Option<i64> {
     Some(value as i64)
 }
 
-pub fn json_f64(map: &Map<String, Value>, key: &str) -> Option<f64> {
-    map.get(key).and_then(Value::as_f64)
-}
-
-fn harness_for_migrate(raw: Option<&str>) -> Option<&str> {
-    match raw {
-        Some(value) if is_harness_id(value) => Some(value),
-        _ => None,
-    }
-}
-
 pub fn preset_from_map(map: &Map<String, Value>) -> Result<AgentPreset, PresetError> {
-    let model = json_string(map, "model").unwrap_or_default();
-    let harness_raw = json_string(map, "harnessId").filter(|value| !value.is_empty());
-    let migrated = migrate_fields(&model, harness_for_migrate(harness_raw.as_deref()));
-    let created = json_f64(map, "createdAt").unwrap_or(0.0);
-    let updated = json_f64(map, "updatedAt").unwrap_or(0.0);
-    let sort_order = map.get("sortOrder").and_then(|value| match value {
-        Value::Number(number) if json_is_integer(number) => number_to_i64(number),
-        _ => None,
-    });
+    preset_from_js(&serde_to_js(&Value::Object(map.clone())))
+}
+
+pub fn preset_from_js(row: &JsValue) -> Result<AgentPreset, PresetError> {
+    let migrated = migrate_row(row)?;
+    preset_from_migrated(&migrated)
+}
+
+pub fn migrate_row(row: &JsValue) -> Result<JsValue, PresetError> {
+    let Some(object) = row.as_object() else {
+        return Err(PresetError::message("preset row is not an object"));
+    };
+    if object
+        .get("harnessId")
+        .and_then(JsValue::as_str)
+        .is_some_and(|id| !id.is_empty())
+    {
+        return Ok(row.clone());
+    }
+    let model = object.get("model").and_then(JsValue::as_str).unwrap_or("");
+    let Some(harness) = catalog_agent_to_harness(model) else {
+        return Ok(row.clone());
+    };
+    let mut entries = entries_of(row)?;
+    upsert(&mut entries, "model", js_string(""));
+    upsert(&mut entries, "harnessId", js_string(harness));
+    object_from_entries(entries)
+}
+
+fn preset_from_migrated(migrated: &JsValue) -> Result<AgentPreset, PresetError> {
+    let Some(object) = migrated.as_object() else {
+        return Err(PresetError::message("preset row is not an object"));
+    };
+    let sort_order = object.get("sortOrder").and_then(js_i64);
+    let created = object.get("createdAt").and_then(js_f64).unwrap_or(0.0);
+    let updated = object.get("updatedAt").and_then(js_f64).unwrap_or(0.0);
     Ok(AgentPreset {
-        id: json_string(map, "id").unwrap_or_default(),
-        name: json_string(map, "name").unwrap_or_default(),
-        color: json_string(map, "color").unwrap_or_default(),
-        harness_id: migrated.harness_id,
-        model: migrated.model,
-        effort: json_string(map, "effort").unwrap_or_default(),
-        system_prompt: json_string(map, "systemPrompt").unwrap_or_default(),
-        node: json_string(map, "node"),
-        directory: json_string(map, "directory"),
-        shared_link: json_bool(map, "sharedLink"),
-        node_base_url: json_string(map, "nodeBaseUrl"),
+        id: js_str(migrated, "id").unwrap_or("").to_string(),
+        name: js_str(migrated, "name").unwrap_or("").to_string(),
+        color: js_str(migrated, "color").unwrap_or("").to_string(),
+        harness_id: object
+            .get("harnessId")
+            .and_then(JsValue::as_str)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string),
+        model: js_str(migrated, "model").unwrap_or("").to_string(),
+        effort: js_str(migrated, "effort").unwrap_or("").to_string(),
+        system_prompt: js_str(migrated, "systemPrompt").unwrap_or("").to_string(),
+        node: object
+            .get("node")
+            .and_then(JsValue::as_str)
+            .map(str::to_string),
+        directory: object
+            .get("directory")
+            .and_then(JsValue::as_str)
+            .map(str::to_string),
+        shared_link: object.get("sharedLink").and_then(JsValue::as_bool),
+        node_base_url: object
+            .get("nodeBaseUrl")
+            .and_then(JsValue::as_str)
+            .map(str::to_string),
         sort_order,
         created_at: JsNumber::from(created),
         updated_at: JsNumber::from(updated),
+        document: Some(Arc::new(migrated.clone())),
     })
+}
+
+pub(crate) struct PresetColumns<'a> {
+    pub id: &'a str,
+    pub name: &'a str,
+    pub color: &'a str,
+    pub model: &'a str,
+    pub effort: &'a str,
+    pub system_prompt: &'a str,
+    pub node: &'a str,
+    pub directory: &'a str,
+    pub shared_link: bool,
+    pub node_base_url: &'a str,
+    pub created_at: JsNumber,
+    pub updated_at: JsNumber,
+    pub sort_order: Option<i64>,
+    pub harness_id: Option<&'a str>,
+}
+
+pub(crate) fn preset_from_columns(columns: PresetColumns<'_>) -> Result<AgentPreset, PresetError> {
+    let mut pairs = vec![
+        ("id", js_string(columns.id)),
+        ("name", js_string(columns.name)),
+        ("color", js_string(columns.color)),
+        ("model", js_string(columns.model)),
+        ("effort", js_string(columns.effort)),
+        ("systemPrompt", js_string(columns.system_prompt)),
+        ("node", js_string(columns.node)),
+        ("directory", js_string(columns.directory)),
+        ("sharedLink", JsValue::Bool(columns.shared_link)),
+        ("nodeBaseUrl", js_string(columns.node_base_url)),
+        ("createdAt", JsValue::Number(columns.created_at.as_f64())),
+        ("updatedAt", JsValue::Number(columns.updated_at.as_f64())),
+    ];
+    if let Some(order) = columns.sort_order {
+        pairs.push(("sortOrder", JsValue::Number(order as f64)));
+    }
+    if let Some(harness) = columns.harness_id.filter(|value| is_harness_id(value)) {
+        pairs.push(("harnessId", js_string(harness)));
+    }
+    preset_from_js(&object_from_pairs(pairs)?)
+}
+
+pub fn patch_stored_row(
+    current: &JsValue,
+    patch: &AgentPresetPatch,
+    now: i64,
+) -> Result<JsValue, PresetError> {
+    let name = match &patch.name {
+        Some(value) => Some(require_agent_name(value)?),
+        None => None,
+    };
+    let mut entries = entries_of(current)?;
+    upsert(&mut entries, "updatedAt", JsValue::Number(now as f64));
+    if let Some(value) = name {
+        upsert(&mut entries, "name", js_string(&value));
+    }
+    if let Some(value) = &patch.color {
+        upsert(&mut entries, "color", js_string(value));
+    }
+    if let Some(value) = &patch.model {
+        upsert(&mut entries, "model", js_string(value));
+    }
+    if let Some(value) = &patch.effort {
+        upsert(&mut entries, "effort", js_string(value));
+    }
+    if let Some(value) = &patch.system_prompt {
+        upsert(&mut entries, "systemPrompt", js_string(value));
+    }
+    if let Some(value) = &patch.directory {
+        upsert(&mut entries, "directory", js_string(value));
+    }
+    if let Some(value) = patch.shared_link {
+        upsert(&mut entries, "sharedLink", JsValue::Bool(value));
+    }
+    match patch.sort_order {
+        SortPatch::Unchanged => {}
+        SortPatch::Clear => remove_key(&mut entries, "sortOrder"),
+        SortPatch::Set(value) => upsert(&mut entries, "sortOrder", JsValue::Number(value as f64)),
+    }
+    if let Some(value) = &patch.node_base_url {
+        upsert(&mut entries, "nodeBaseUrl", js_string(value));
+    }
+    match &patch.harness {
+        HarnessPatch::Unchanged => {}
+        HarnessPatch::Clear => remove_key(&mut entries, "harnessId"),
+        HarnessPatch::Set(value) => upsert(&mut entries, "harnessId", js_string(value)),
+    }
+    migrate_row(&object_from_entries(entries)?)
+}
+
+pub fn fresh_stored_row(
+    input: &AgentPresetInput,
+    id: &str,
+    now: i64,
+) -> Result<JsValue, PresetError> {
+    let name = require_agent_name(&input.name)?;
+    let mut pairs = vec![
+        (
+            "id",
+            js_string(&input.id.clone().unwrap_or_else(|| id.to_string())),
+        ),
+        ("name", js_string(&name)),
+        ("color", js_string(input.color.as_deref().unwrap_or(""))),
+        ("model", js_string(input.model.as_deref().unwrap_or(""))),
+        (
+            "effort",
+            js_string(input.effort.as_deref().unwrap_or("medium")),
+        ),
+        (
+            "systemPrompt",
+            js_string(input.system_prompt.as_deref().unwrap_or("")),
+        ),
+        (
+            "nodeBaseUrl",
+            js_string(input.node_base_url.as_deref().unwrap_or("")),
+        ),
+        (
+            "createdAt",
+            JsValue::Number(input.created_at.unwrap_or(now) as f64),
+        ),
+        ("updatedAt", JsValue::Number(now as f64)),
+        (
+            "sharedLink",
+            JsValue::Bool(input.shared_link.unwrap_or(true)),
+        ),
+        ("node", js_string(&input.node)),
+        ("directory", js_string(&input.directory)),
+    ];
+    if let Some(harness) = input
+        .harness_id
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    {
+        pairs.push(("harnessId", js_string(harness)));
+    }
+    migrate_row(&object_from_pairs(pairs)?)
 }
 
 pub fn number_value(ms: i64) -> Value {
@@ -355,6 +528,38 @@ pub fn fresh_preset_map(preset: &AgentPreset) -> Map<String, Value> {
         map.insert("sortOrder".to_string(), number_value(value));
     }
     map
+}
+
+fn synthesized_document(preset: &AgentPreset) -> JsValue {
+    let mut pairs = vec![
+        ("id", js_string(&preset.id)),
+        ("name", js_string(&preset.name)),
+        ("color", js_string(&preset.color)),
+        ("model", js_string(&preset.model)),
+        ("effort", js_string(&preset.effort)),
+        ("systemPrompt", js_string(&preset.system_prompt)),
+    ];
+    if let Some(value) = &preset.node_base_url {
+        pairs.push(("nodeBaseUrl", js_string(value)));
+    }
+    pairs.push(("createdAt", JsValue::Number(preset.created_at.as_f64())));
+    pairs.push(("updatedAt", JsValue::Number(preset.updated_at.as_f64())));
+    if let Some(value) = preset.shared_link {
+        pairs.push(("sharedLink", JsValue::Bool(value)));
+    }
+    if let Some(value) = &preset.node {
+        pairs.push(("node", js_string(value)));
+    }
+    if let Some(value) = &preset.directory {
+        pairs.push(("directory", js_string(value)));
+    }
+    if let Some(value) = &preset.harness_id {
+        pairs.push(("harnessId", js_string(value)));
+    }
+    if let Some(value) = preset.sort_order {
+        pairs.push(("sortOrder", JsValue::Number(value as f64)));
+    }
+    object_from_pairs(pairs).unwrap_or(JsValue::Null)
 }
 
 pub fn name_key(name: &str) -> String {

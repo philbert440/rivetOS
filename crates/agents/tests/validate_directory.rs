@@ -228,6 +228,26 @@ fn ensure_skips_the_link_when_shared_link_is_false() {
 }
 
 #[test]
+fn ensure_rejects_an_existing_file_and_a_dangling_symlink() {
+    let root = TempDir::new("agent-registry-dir");
+    let file = root.path_str("notes.txt");
+    std::fs::write(&file, "x").unwrap();
+    let err = ensure_agent_directory(Some(&file), Some(false), &empty_opts()).unwrap_err();
+    assert!(err.to_string().contains("EEXIST") || err.to_string().contains("exist"));
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "x");
+    let dangling = root.path_str("dangling");
+    symlink(root.join("missing-target"), &dangling).unwrap();
+    let err = ensure_agent_directory(Some(&dangling), Some(false), &empty_opts()).unwrap_err();
+    assert!(err.to_string().contains("EEXIST") || err.to_string().contains("exist"));
+    assert!(
+        std::fs::symlink_metadata(&dangling)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+}
+
+#[test]
 fn ensure_rejects_an_empty_or_non_absolute_directory() {
     let err = ensure_agent_directory(Some(""), None, &empty_opts()).unwrap_err();
     assert_eq!(err.to_string(), "agent directory is empty");

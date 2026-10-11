@@ -1,5 +1,4 @@
 use std::collections::HashSet;
-use std::sync::LazyLock;
 
 use parking_lot::Mutex;
 use protocol::js::js_trim;
@@ -15,8 +14,54 @@ pub const ROSTER_READ_BOUND_MS: i64 = 2_000;
 pub const DELEGATION_CACHE_TTL_MS: i64 = 300_000;
 pub const NO_MESH_REGISTRY: &str = "no mesh registry";
 
-static LOGGED_EFFORTS: LazyLock<Mutex<HashSet<String>>> =
-    LazyLock::new(|| Mutex::new(HashSet::new()));
+#[derive(Debug)]
+pub struct DelegationResolver {
+    warned_efforts: Mutex<HashSet<String>>,
+}
+
+impl Default for DelegationResolver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl DelegationResolver {
+    pub fn new() -> Self {
+        Self {
+            warned_efforts: Mutex::new(HashSet::new()),
+        }
+    }
+
+    pub fn note_non_task_effort(&self, effort: &str) -> bool {
+        self.warned_efforts.lock().insert(effort.to_string())
+    }
+
+    pub fn task_effort(&self, effort: &str) -> Option<&'static str> {
+        let trimmed = js_trim(effort);
+        if trimmed.is_empty() {
+            return None;
+        }
+        match trimmed {
+            "low" => Some("low"),
+            "medium" => Some("medium"),
+            "high" => Some("high"),
+            other => {
+                if self.note_non_task_effort(other) {
+                    tracing::warn!("{}", non_task_effort_message(other));
+                }
+                None
+            }
+        }
+    }
+
+    pub fn preset_task_spec(
+        &self,
+        preset: &AgentPreset,
+        opts: &PresetTaskSpecOptions,
+    ) -> Map<String, Value> {
+        preset_task_spec_with(self, preset, opts)
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfigAgentRef {
@@ -136,29 +181,6 @@ pub fn non_task_effort_message(effort: &str) -> String {
     )
 }
 
-pub fn note_non_task_effort(effort: &str) -> bool {
-    let mut logged = LOGGED_EFFORTS.lock();
-    logged.insert(effort.to_string())
-}
-
-pub fn task_effort(effort: &str) -> Option<&'static str> {
-    let trimmed = js_trim(effort);
-    if trimmed.is_empty() {
-        return None;
-    }
-    match trimmed {
-        "low" => Some("low"),
-        "medium" => Some("medium"),
-        "high" => Some("high"),
-        other => {
-            if note_non_task_effort(other) {
-                tracing::warn!("{}", non_task_effort_message(other));
-            }
-            None
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PresetTaskSpecOptions {
     pub model: Option<String>,
@@ -169,7 +191,11 @@ pub struct PresetTaskSpecOptions {
     pub owner: Option<String>,
 }
 
-pub fn preset_task_spec(preset: &AgentPreset, opts: &PresetTaskSpecOptions) -> Map<String, Value> {
+fn preset_task_spec_with(
+    resolver: &DelegationResolver,
+    preset: &AgentPreset,
+    opts: &PresetTaskSpecOptions,
+) -> Map<String, Value> {
     let delegation = opts.delegation.unwrap_or(true);
     let model_source = if opts.model_present {
         opts.model.clone().unwrap_or_default()
@@ -182,7 +208,7 @@ pub fn preset_task_spec(preset: &AgentPreset, opts: &PresetTaskSpecOptions) -> M
     } else {
         Some(trimmed_model.to_string())
     };
-    let effort = task_effort(&preset.effort);
+    let effort = resolver.task_effort(&preset.effort);
     let system_prompt_append = if preset.system_prompt.is_empty() {
         None
     } else {
@@ -217,13 +243,8 @@ pub fn preset_task_spec(preset: &AgentPreset, opts: &PresetTaskSpecOptions) -> M
     {
         spec.insert("meshFrom".to_string(), Value::String(mesh_from.to_string()));
     }
-    match &preset.directory {
-        Some(directory) => {
-            spec.insert("workingDir".to_string(), Value::String(directory.clone()));
-        }
-        None => {
-            spec.insert("workingDir".to_string(), Value::Null);
-        }
+    if let Some(directory) = &preset.directory {
+        spec.insert("workingDir".to_string(), Value::String(directory.clone()));
     }
     spec.insert(
         "sharedLink".to_string(),

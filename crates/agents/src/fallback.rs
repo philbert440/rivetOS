@@ -23,6 +23,7 @@ struct FallbackState {
     callbacks: Vec<Box<dyn Fn() + Send>>,
     drainers: Vec<oneshot::Sender<()>>,
     inflight: Option<watch::Receiver<Option<bool>>>,
+    drain_hook: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 struct Shared {
@@ -67,6 +68,7 @@ pub fn create_fallback_preset_store(opts: FallbackPresetStoreOptions) -> Fallbac
                 callbacks: Vec::new(),
                 drainers: Vec::new(),
                 inflight: None,
+                drain_hook: None,
             }),
         }),
     }
@@ -88,66 +90,81 @@ impl FallbackPresetStore {
         drain(&self.shared).await;
     }
 
-    async fn choose(&self) -> Choice<'_> {
-        let cached = {
-            let mut state = lock(&self.shared.state);
-            if !state.serving_primary && state.inflight.is_none() {
-                let t = (self.shared.now)();
-                if state
-                    .last_check
-                    .is_some_and(|last| t.saturating_sub(last) < self.shared.recheck_ms)
-                {
-                    state.fallback_ops += 1;
-                    true
-                } else {
-                    false
-                }
+    pub fn on_fallback_drain(&self, hook: Arc<dyn Fn() + Send + Sync>) {
+        lock(&self.shared.state).drain_hook = Some(hook);
+    }
+}
+
+struct FallbackDone(Arc<Shared>);
+
+impl Drop for FallbackDone {
+    fn drop(&mut self) {
+        end_fallback(&self.0);
+    }
+}
+
+async fn dispatch<T, Make, Fut>(shared: Arc<Shared>, make: Make) -> Result<T, PresetError>
+where
+    T: Send + 'static,
+    Make: FnOnce(Arc<dyn AgentPresetStore>) -> Fut,
+    Fut: std::future::Future<Output = Result<T, PresetError>> + Send + 'static,
+{
+    let on_fallback = using_fallback(&shared).await;
+    let store: Arc<dyn AgentPresetStore> = if on_fallback {
+        Arc::clone(&shared.fallback)
+    } else {
+        Arc::clone(&shared.primary)
+    };
+    let operation = make(store);
+    if !on_fallback {
+        return operation.await;
+    }
+    let (sender, receiver) = oneshot::channel();
+    let task_shared = Arc::clone(&shared);
+    tokio::spawn(async move {
+        let _done = FallbackDone(task_shared);
+        let result = operation.await;
+        let _ = sender.send(result);
+    });
+    match receiver.await {
+        Ok(result) => result,
+        Err(_) => Err(PresetError::message(
+            "fallback preset operation ended before it finished",
+        )),
+    }
+}
+
+async fn using_fallback(shared: &Arc<Shared>) -> bool {
+    let cached = {
+        let mut state = lock(&shared.state);
+        if !state.serving_primary && state.inflight.is_none() {
+            let t = (shared.now)();
+            if state
+                .last_check
+                .is_some_and(|last| t.saturating_sub(last) < shared.recheck_ms)
+            {
+                state.fallback_ops += 1;
+                true
             } else {
                 false
             }
-        };
-        if cached {
-            return Choice {
-                store: self.shared.fallback.as_ref(),
-                guard: Some(FallbackGuard {
-                    shared: &self.shared,
-                }),
-            };
+        } else {
+            false
         }
-        let ready = use_primary(Arc::clone(&self.shared)).await;
-        let serving = lock(&self.shared.state).serving_primary;
-        if ready || serving {
-            return Choice {
-                store: self.shared.primary.as_ref(),
-                guard: None,
-            };
-        }
-        {
-            let mut state = lock(&self.shared.state);
-            state.fallback_ops += 1;
-        }
-        Choice {
-            store: self.shared.fallback.as_ref(),
-            guard: Some(FallbackGuard {
-                shared: &self.shared,
-            }),
-        }
+    };
+    if cached {
+        return true;
     }
-}
-
-struct Choice<'a> {
-    store: &'a dyn AgentPresetStore,
-    guard: Option<FallbackGuard<'a>>,
-}
-
-struct FallbackGuard<'a> {
-    shared: &'a Shared,
-}
-
-impl Drop for FallbackGuard<'_> {
-    fn drop(&mut self) {
-        end_fallback(self.shared);
+    let ready = use_primary(Arc::clone(shared)).await;
+    let serving = lock(&shared.state).serving_primary;
+    if ready || serving {
+        return false;
     }
+    {
+        let mut state = lock(&shared.state);
+        state.fallback_ops += 1;
+    }
+    true
 }
 
 impl AgentPresetStore for FallbackPresetStore {
@@ -179,45 +196,37 @@ impl AgentPresetStore for FallbackPresetStore {
     }
 
     fn list(&self, node: Option<&str>) -> BoxFuture<'_, Result<Vec<AgentPreset>, PresetError>> {
+        let shared = Arc::clone(&self.shared);
         let node = node.map(str::to_string);
-        Box::pin(async move {
-            let Choice { store, guard } = self.choose().await;
-            let result = store.list(node.as_deref()).await;
-            drop(guard);
-            result
-        })
+        Box::pin(dispatch(shared, move |store| async move {
+            store.list(node.as_deref()).await
+        }))
     }
 
     fn get(&self, id: &str) -> BoxFuture<'_, Result<Option<AgentPreset>, PresetError>> {
+        let shared = Arc::clone(&self.shared);
         let id = id.to_string();
-        Box::pin(async move {
-            let Choice { store, guard } = self.choose().await;
-            let result = store.get(&id).await;
-            drop(guard);
-            result
-        })
+        Box::pin(dispatch(shared, move |store| async move {
+            store.get(&id).await
+        }))
     }
 
     fn find_by_handle(
         &self,
         handle: &str,
     ) -> BoxFuture<'_, Result<Option<AgentPreset>, PresetError>> {
+        let shared = Arc::clone(&self.shared);
         let handle = handle.to_string();
-        Box::pin(async move {
-            let Choice { store, guard } = self.choose().await;
-            let result = store.find_by_handle(&handle).await;
-            drop(guard);
-            result
-        })
+        Box::pin(dispatch(shared, move |store| async move {
+            store.find_by_handle(&handle).await
+        }))
     }
 
     fn create(&self, input: AgentPresetInput) -> BoxFuture<'_, Result<AgentPreset, PresetError>> {
-        Box::pin(async move {
-            let Choice { store, guard } = self.choose().await;
-            let result = store.create(input).await;
-            drop(guard);
-            result
-        })
+        let shared = Arc::clone(&self.shared);
+        Box::pin(dispatch(shared, move |store| async move {
+            store.create(input).await
+        }))
     }
 
     fn update(
@@ -225,23 +234,19 @@ impl AgentPresetStore for FallbackPresetStore {
         id: &str,
         patch: AgentPresetPatch,
     ) -> BoxFuture<'_, Result<Option<AgentPreset>, PresetError>> {
+        let shared = Arc::clone(&self.shared);
         let id = id.to_string();
-        Box::pin(async move {
-            let Choice { store, guard } = self.choose().await;
-            let result = store.update(&id, patch).await;
-            drop(guard);
-            result
-        })
+        Box::pin(dispatch(shared, move |store| async move {
+            store.update(&id, patch).await
+        }))
     }
 
     fn delete(&self, id: &str) -> BoxFuture<'_, Result<bool, PresetError>> {
+        let shared = Arc::clone(&self.shared);
         let id = id.to_string();
-        Box::pin(async move {
-            let Choice { store, guard } = self.choose().await;
-            let result = store.delete(&id).await;
-            drop(guard);
-            result
-        })
+        Box::pin(dispatch(shared, move |store| async move {
+            store.delete(&id).await
+        }))
     }
 }
 
@@ -344,7 +349,7 @@ async fn probe(shared: Arc<Shared>) -> bool {
 }
 
 async fn drain(shared: &Arc<Shared>) {
-    let receiver = {
+    let (receiver, hook) = {
         let mut state = lock(&shared.state);
         if state.fallback_ops == 0 {
             return;
@@ -352,8 +357,11 @@ async fn drain(shared: &Arc<Shared>) {
         arm_drain(shared, &mut state);
         let (sender, receiver) = oneshot::channel();
         state.drainers.push(sender);
-        receiver
+        (receiver, state.drain_hook.clone())
     };
+    if let Some(hook) = hook {
+        hook();
+    }
     let _ = receiver.await;
 }
 

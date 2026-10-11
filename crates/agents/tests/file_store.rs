@@ -113,6 +113,22 @@ async fn quarantines_non_json_and_still_accepts_writes() {
 }
 
 #[tokio::test]
+async fn loads_a_file_whose_utf8_readfilesync_would_replace() {
+    let dir = TempDir::new("agent-registry-file");
+    let file = dir.path_str("agents.json");
+    let mut bytes = br#"{"agents":[{"id":"a","name":"n","color":"","model":"m","effort":"medium","systemPrompt":"","nodeBaseUrl":"","createdAt":1,"updatedAt":1,"note":"x"#.to_vec();
+    bytes.push(0xff);
+    bytes.extend_from_slice(br#"y"}]}"#);
+    std::fs::write(&file, &bytes).unwrap();
+    let registry = FileAgentPresetStore::new(&file);
+    let loaded = registry.list(None).await.unwrap();
+    assert_eq!(loaded.len(), 1);
+    assert_eq!(loaded[0].id, "a");
+    assert!(loaded[0].document_json().contains("note"));
+    assert!(std::path::Path::new(&file).exists());
+}
+
+#[tokio::test]
 async fn quarantines_a_non_array_agents_field() {
     let dir = TempDir::new("agent-registry-file");
     let file = dir.path_str("agents.json");
@@ -405,6 +421,136 @@ async fn lists_by_created_at_then_id_and_deletes() {
     assert!(registry.delete("a").await.unwrap());
     assert!(!registry.delete("a").await.unwrap());
     assert!(registry.get("a").await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn writes_create_order_and_preserves_surrogate_rows() {
+    let dir = TempDir::new("agent-registry-file");
+    let file = dir.path_str("agents.json");
+    let registry = store_at(&file, 5_000);
+    let mut body = input("Reviewer");
+    body.id = Some("fixed".to_string());
+    let created = registry.create(body).await.unwrap();
+    assert_eq!(
+        created.document_json(),
+        r#"{"id":"fixed","name":"Reviewer","color":"","model":"","effort":"medium","systemPrompt":"","nodeBaseUrl":"","createdAt":5000,"updatedAt":5000,"sharedLink":true,"node":"node-f","directory":"/tmp/agents/reviewer"}"#
+    );
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        "{\n  \"agents\": [\n    {\n      \"id\": \"fixed\",\n      \"name\": \"Reviewer\",\n      \"color\": \"\",\n      \"model\": \"\",\n      \"effort\": \"medium\",\n      \"systemPrompt\": \"\",\n      \"nodeBaseUrl\": \"\",\n      \"createdAt\": 5000,\n      \"updatedAt\": 5000,\n      \"sharedLink\": true,\n      \"node\": \"node-f\",\n      \"directory\": \"/tmp/agents/reviewer\"\n    }\n  ]\n}"
+    );
+    let decoy = format!("{file}.tmp-{}", std::process::id());
+    std::fs::write(&decoy, "keep").unwrap();
+    let legacy = r#"{"agents":[{"id":"legacy","name":"Old","color":"","model":"claude","effort":"medium","systemPrompt":"\ud83d","nodeBaseUrl":"","createdAt":1,"updatedAt":1,"displayMetadata":{"k":1}}]}"#;
+    std::fs::write(&file, legacy).unwrap();
+    let loaded = registry.list(None).await.unwrap();
+    assert_eq!(loaded.len(), 1);
+    assert_eq!(loaded[0].model, "");
+    assert_eq!(loaded[0].harness_id.as_deref(), Some("claude-code"));
+    assert!(loaded[0].document_json().contains("displayMetadata"));
+    assert!(loaded[0].document_json().contains(r"\ud83d"));
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), legacy);
+    let mut second = input("Second");
+    second.id = Some("second".to_string());
+    second.directory = "/tmp/agents/second".to_string();
+    registry.create(second).await.unwrap();
+    let saved = std::fs::read_to_string(&file).unwrap();
+    assert!(saved.contains(r"\ud83d"));
+    assert!(saved.contains("displayMetadata"));
+    assert!(saved.contains("\"harnessId\": \"claude-code\""));
+    assert!(saved.contains("\"model\": \"\""));
+    assert_eq!(std::fs::read_to_string(&decoy).unwrap(), "keep");
+    assert!(!std::fs::read_dir(&dir.path).unwrap().any(|entry| {
+        entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .contains("corrupt")
+    }));
+}
+
+#[tokio::test]
+async fn a_write_persists_catalog_migration_of_every_loaded_row() {
+    let dir = TempDir::new("agent-registry-file");
+    let file = dir.path_str("agents.json");
+    std::fs::write(
+        &file,
+        serde_json::to_string(&json!({
+            "agents": [
+                {
+                    "id": "a",
+                    "name": "Legacy",
+                    "color": "",
+                    "model": "claude",
+                    "effort": "medium",
+                    "systemPrompt": "",
+                    "nodeBaseUrl": "",
+                    "createdAt": 1,
+                    "updatedAt": 1
+                },
+                {
+                    "id": "b",
+                    "name": "Other",
+                    "color": "",
+                    "model": "opus",
+                    "effort": "medium",
+                    "systemPrompt": "",
+                    "nodeBaseUrl": "",
+                    "createdAt": 2,
+                    "updatedAt": 2
+                }
+            ]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let registry = store_at(&file, 9);
+    assert!(registry.delete("b").await.unwrap());
+    let saved: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    let row = &saved["agents"][0];
+    assert_eq!(row["model"], "");
+    assert_eq!(row["harnessId"], "claude-code");
+    assert_eq!(row["id"], "a");
+}
+
+#[tokio::test]
+async fn two_stores_keep_both_rows() {
+    let dir = TempDir::new("agent-registry-file");
+    let file = dir.path_str("agents.json");
+    let left = FileAgentPresetStore::new(file.clone());
+    let right = FileAgentPresetStore::new(format!("{}/./agents.json", dir.path.display()));
+    let mut one = input("Left");
+    one.directory = "/left".to_string();
+    let mut two = input("Right");
+    two.directory = "/right".to_string();
+    let (first, second) = tokio::join!(left.create(one), right.create(two));
+    first.unwrap();
+    second.unwrap();
+    let mut names: Vec<_> = left
+        .list(None)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|row| row.name)
+        .collect();
+    names.sort();
+    assert_eq!(names, ["Left", "Right"]);
+}
+
+#[tokio::test]
+async fn accepts_a_negative_created_at() {
+    let dir = TempDir::new("agent-registry-file");
+    let file = dir.path_str("agents.json");
+    std::fs::write(
+        &file,
+        r#"{"agents":[{"id":"pre","name":"Pre","color":"","model":"m","effort":"medium","systemPrompt":"","nodeBaseUrl":"","createdAt":-5,"updatedAt":-5}]}"#,
+    )
+    .unwrap();
+    let registry = FileAgentPresetStore::new(&file);
+    let row = registry.get("pre").await.unwrap().unwrap();
+    assert_eq!(row.created_at, -5);
+    assert_eq!(row.updated_at, -5);
+    assert!(std::path::Path::new(&file).exists());
 }
 
 #[tokio::test]

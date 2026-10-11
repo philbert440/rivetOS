@@ -74,29 +74,8 @@ pub fn preset_from_create(
     id: &str,
     now: i64,
 ) -> Result<AgentPreset, PresetError> {
-    let name = require_agent_name(&input.name)?;
-    let harness = input
-        .harness_id
-        .as_deref()
-        .filter(|value| !value.is_empty());
-    let model = input.model.clone().unwrap_or_default();
-    let migrated = migrate_fields(&model, harness);
-    Ok(AgentPreset {
-        id: input.id.clone().unwrap_or_else(|| id.to_string()),
-        name,
-        color: input.color.clone().unwrap_or_default(),
-        harness_id: migrated.harness_id,
-        model: migrated.model,
-        effort: input.effort.clone().unwrap_or_else(|| "medium".to_string()),
-        system_prompt: input.system_prompt.clone().unwrap_or_default(),
-        node: Some(input.node.clone()),
-        directory: Some(input.directory.clone()),
-        shared_link: Some(input.shared_link.unwrap_or(true)),
-        node_base_url: Some(input.node_base_url.clone().unwrap_or_default()),
-        sort_order: None,
-        created_at: JsNumber::from(input.created_at.unwrap_or(now)),
-        updated_at: JsNumber::from(now),
-    })
+    let row = crate::preset::fresh_stored_row(input, id, now)?;
+    crate::preset::preset_from_js(&row)
 }
 
 pub fn preset_from_patch(
@@ -104,6 +83,10 @@ pub fn preset_from_patch(
     patch: &AgentPresetPatch,
     now: i64,
 ) -> Result<AgentPreset, PresetError> {
+    if let Some(document) = &current.document {
+        let next = crate::preset::patch_stored_row(document, patch, now)?;
+        return crate::preset::preset_from_js(&next);
+    }
     let mut next = current.clone();
     next.updated_at = JsNumber::from(now);
     if let Some(name) = &patch.name {

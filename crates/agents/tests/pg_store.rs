@@ -227,6 +227,10 @@ async fn postgres_store_matches_the_preset_contract() {
     lands_concurrent_patches(&store).await;
     reset(&pool).await;
     lists_filters_and_deletes(&store).await;
+    reset(&pool).await;
+    accepts_a_pre_epoch_timestamp(&store).await;
+    reset(&pool).await;
+    oversized_sort_order_reports_the_database(&store).await;
 
     reset(&pool).await;
     run_store_contract(&store, &PgHooks { pool: pool.clone() }).await;
@@ -272,6 +276,37 @@ async fn before_0018_lists_by_creation_and_names_the_migration(store: &PgAgentPr
             .sort_order
             .is_none()
     );
+}
+
+async fn accepts_a_pre_epoch_timestamp(store: &PgAgentPresetStore) {
+    let mut body = input("Pre");
+    body.created_at = Some(-1);
+    let created = store.create(body).await.unwrap();
+    assert_eq!(created.created_at, -1_i64);
+    assert_eq!(created.updated_at, NOW);
+    let got = store.get(&created.id).await.unwrap().unwrap();
+    assert_eq!(got.created_at, -1_i64);
+    assert_eq!(got.updated_at, NOW);
+}
+
+async fn oversized_sort_order_reports_the_database(store: &PgAgentPresetStore) {
+    let created = store.create(input("Wide")).await.unwrap();
+    let err = store
+        .update(
+            &created.id,
+            AgentPresetPatch {
+                sort_order: SortPatch::Set(i64::from(i32::MAX) + 1),
+                ..AgentPresetPatch::default()
+            },
+        )
+        .await
+        .unwrap_err();
+    let text = err.to_string();
+    assert!(
+        text.contains("integer out of range"),
+        "database error was {text}"
+    );
+    assert!(!text.contains("sortOrder must be an integer"));
 }
 
 async fn fills_defaults_and_round_trips_timestamps(store: &PgAgentPresetStore, pool: &PgPool) {

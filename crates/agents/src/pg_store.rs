@@ -9,20 +9,20 @@ use sqlx::{PgPool, Row};
 
 use crate::error::{MIGRATION_0018, PresetError};
 use crate::preset::{
-    AgentPreset, AgentPresetInput, AgentPresetPatch, AgentRegistryBackend, HarnessPatch, SortPatch,
-    catalog_pairs, epoch_ms, migrate_fields, require_agent_name,
+    AgentPreset, AgentPresetInput, AgentPresetPatch, AgentRegistryBackend, HarnessPatch,
+    PresetColumns, SortPatch, catalog_pairs, epoch_ms, migrate_fields, preset_from_columns,
+    require_agent_name,
 };
 use crate::store::{
     AgentPresetStore, BoxFuture, find_preset_by_handle, preset_from_create, sort_presets,
     system_now_ms,
 };
-use crate::validate::is_harness_id;
 
 const QUERY_TIMEOUT: Duration = Duration::from_secs(10);
 
 enum SqlArg {
     Text(String),
-    Int(i32),
+    Int8(i64),
     Bool(bool),
     Time(DateTime<Utc>),
     NullText,
@@ -41,7 +41,8 @@ impl Binder {
     fn push(&mut self, arg: SqlArg) -> String {
         let cast = match &arg {
             SqlArg::Text(_) | SqlArg::NullText => "text",
-            SqlArg::Int(_) | SqlArg::NullInt => "int4",
+            SqlArg::NullInt => "int4",
+            SqlArg::Int8(_) => "int8",
             SqlArg::Bool(_) => "bool",
             SqlArg::Time(_) => "timestamptz",
         };
@@ -53,8 +54,9 @@ impl Binder {
         self.push(SqlArg::Text(value.to_string()))
     }
 
-    fn int(&mut self, value: i32) -> String {
-        self.push(SqlArg::Int(value))
+    fn int4_from_i64(&mut self, value: i64) -> String {
+        let slot = self.push(SqlArg::Int8(value));
+        format!("({slot})::int4")
     }
 
     fn boolean(&mut self, value: bool) -> String {
@@ -180,9 +182,7 @@ fn update_statement(
         SortPatch::Unchanged => {}
         SortPatch::Clear => push_set(&mut sets, "sort_order", &binder.null_int()),
         SortPatch::Set(value) => {
-            let value = i32::try_from(value)
-                .map_err(|_| PresetError::message(crate::error::sort_order_message()))?;
-            push_set(&mut sets, "sort_order", &binder.int(value));
+            push_set(&mut sets, "sort_order", &binder.int4_from_i64(value));
         }
     }
     if let Some(url) = &patch.node_base_url {
@@ -240,9 +240,7 @@ fn map_db(err: sqlx::Error) -> PresetError {
 
 fn row_to_preset(row: &sqlx::postgres::PgRow) -> Result<AgentPreset, PresetError> {
     let harness: Option<String> = row.try_get("harness_id").map_err(map_db)?;
-    let harness = harness.filter(|id| is_harness_id(id));
     let model: String = row.try_get("model").map_err(map_db)?;
-    let migrated = migrate_fields(&model, harness.as_deref());
     let sort_order = match row.try_get::<Option<i32>, _>("sort_order") {
         Ok(value) => value.map(i64::from),
         Err(sqlx::Error::ColumnNotFound(_)) => None,
@@ -250,21 +248,29 @@ fn row_to_preset(row: &sqlx::postgres::PgRow) -> Result<AgentPreset, PresetError
     };
     let created: DateTime<Utc> = row.try_get("created_at").map_err(map_db)?;
     let updated: DateTime<Utc> = row.try_get("updated_at").map_err(map_db)?;
-    Ok(AgentPreset {
-        id: row.try_get("id").map_err(map_db)?,
-        name: row.try_get("name").map_err(map_db)?,
-        color: row.try_get("color").map_err(map_db)?,
-        harness_id: migrated.harness_id,
-        model: migrated.model,
-        effort: row.try_get("effort").map_err(map_db)?,
-        system_prompt: row.try_get("system_prompt").map_err(map_db)?,
-        node: Some(row.try_get::<String, _>("node").map_err(map_db)?),
-        directory: Some(row.try_get::<String, _>("directory").map_err(map_db)?),
-        shared_link: Some(row.try_get::<bool, _>("shared_link").map_err(map_db)?),
-        node_base_url: Some(row.try_get::<String, _>("node_base_url").map_err(map_db)?),
-        sort_order,
+    let id: String = row.try_get("id").map_err(map_db)?;
+    let name: String = row.try_get("name").map_err(map_db)?;
+    let color: String = row.try_get("color").map_err(map_db)?;
+    let effort: String = row.try_get("effort").map_err(map_db)?;
+    let system_prompt: String = row.try_get("system_prompt").map_err(map_db)?;
+    let node: String = row.try_get("node").map_err(map_db)?;
+    let directory: String = row.try_get("directory").map_err(map_db)?;
+    let node_base_url: String = row.try_get("node_base_url").map_err(map_db)?;
+    preset_from_columns(PresetColumns {
+        id: &id,
+        name: &name,
+        color: &color,
+        model: &model,
+        effort: &effort,
+        system_prompt: &system_prompt,
+        node: &node,
+        directory: &directory,
+        shared_link: row.try_get("shared_link").map_err(map_db)?,
+        node_base_url: &node_base_url,
         created_at: epoch_from_time(created)?,
         updated_at: epoch_from_time(updated)?,
+        sort_order,
+        harness_id: harness.as_deref(),
     })
 }
 
@@ -277,7 +283,7 @@ async fn fetch_all(
     for arg in args {
         query = match arg {
             SqlArg::Text(value) => query.bind(value.clone()),
-            SqlArg::Int(value) => query.bind(*value),
+            SqlArg::Int8(value) => query.bind(*value),
             SqlArg::Bool(value) => query.bind(*value),
             SqlArg::Time(value) => query.bind(*value),
             SqlArg::NullText => query.bind(None::<String>),
@@ -556,6 +562,19 @@ mod tests {
         assert_eq!(max_placeholder(&sql), args.len());
         assert!(sql.contains("CASE WHEN harness_id IS NULL"));
         assert!(count_token(&sql, "$1") >= 2);
+    }
+
+    #[test]
+    fn oversized_sort_order_is_a_database_cast() {
+        let patch = AgentPresetPatch {
+            sort_order: crate::preset::SortPatch::Set(i64::from(i32::MAX) + 1),
+            ..AgentPresetPatch::default()
+        };
+        let (sql, args) = update_statement("id-1", &patch, 1_700_000_000_000).unwrap();
+        assert_eq!(max_placeholder(&sql), args.len());
+        assert!(sql.contains("::int8"));
+        assert!(sql.contains("::int4"));
+        assert!(!sql.contains("sortOrder must be an integer"));
     }
 
     #[test]

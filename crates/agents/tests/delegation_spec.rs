@@ -1,12 +1,11 @@
 use agents::{
     ConfigAgentRef, DEFAULT_MAX_CHAIN_DEPTH, DEFAULT_WAIT_MS, DELEGATION_CACHE_TTL_MS,
-    DelegationTarget, MESH_REFRESH_TTL_MS, NO_MESH_REGISTRY, PresetTaskSpecOptions,
-    ROSTER_READ_BOUND_MS, chain_depth_limit_message, chain_depth_limited, gap_message,
-    hosting_node_offline_message, no_harness_message, no_hosting_node_message,
+    DelegationResolver, DelegationTarget, MESH_REFRESH_TTL_MS, NO_MESH_REGISTRY,
+    PresetTaskSpecOptions, ROSTER_READ_BOUND_MS, chain_depth_limit_message, chain_depth_limited,
+    gap_message, hosting_node_offline_message, no_harness_message, no_hosting_node_message,
     no_mesh_registry_reach_message, no_shared_queue_message, non_task_effort_message,
-    not_runnable_message, note_non_task_effort, preset_chain_depth, preset_chain_too_deep,
-    preset_chain_too_deep_message, preset_task_spec, resolve_delegation_target, task_effort,
-    unknown_agent_message,
+    not_runnable_message, preset_chain_depth, preset_chain_too_deep, preset_chain_too_deep_message,
+    resolve_delegation_target, unknown_agent_message,
 };
 use serde_json::Value;
 
@@ -110,11 +109,12 @@ fn refusal_strings_match_the_preset_engine() {
 
 #[test]
 fn preset_task_spec_trims_model_and_omits_blank_effort() {
+    let resolver = DelegationResolver::new();
     let mut row = preset("p1", "reviewer");
     row.model = " haiku ".to_string();
     row.directory = Some("/srv/reviewer".to_string());
     row.system_prompt = "keep me".to_string();
-    let spec = preset_task_spec(&row, &PresetTaskSpecOptions::default());
+    let spec = resolver.preset_task_spec(&row, &PresetTaskSpecOptions::default());
     assert_eq!(spec.get("model").and_then(Value::as_str), Some("haiku"));
     assert_eq!(
         spec.keys().cloned().collect::<Vec<_>>(),
@@ -136,48 +136,55 @@ fn preset_task_spec_trims_model_and_omits_blank_effort() {
         ..PresetTaskSpecOptions::default()
     };
     assert_eq!(
-        preset_task_spec(&row, &override_opts)
+        resolver
+            .preset_task_spec(&row, &override_opts)
             .get("model")
             .and_then(Value::as_str),
         Some("opus")
     );
     override_opts.model = Some("   ".to_string());
     assert!(
-        preset_task_spec(&row, &override_opts)
+        resolver
+            .preset_task_spec(&row, &override_opts)
             .get("model")
             .is_none()
     );
     row.model.clear();
     assert!(
-        preset_task_spec(&row, &PresetTaskSpecOptions::default())
+        resolver
+            .preset_task_spec(&row, &PresetTaskSpecOptions::default())
             .get("model")
             .is_none()
     );
     row.effort = "xhigh".to_string();
     row.system_prompt.clear();
-    let bare = preset_task_spec(&row, &PresetTaskSpecOptions::default());
+    let bare = resolver.preset_task_spec(&row, &PresetTaskSpecOptions::default());
     assert!(bare.get("effort").is_none());
     assert!(bare.get("systemPromptAppend").is_none());
     row.system_prompt = " ".to_string();
     assert_eq!(
-        preset_task_spec(&row, &PresetTaskSpecOptions::default())
+        resolver
+            .preset_task_spec(&row, &PresetTaskSpecOptions::default())
             .get("systemPromptAppend")
             .and_then(Value::as_str),
         Some(" ")
     );
     row.effort = " low ".to_string();
-    assert_eq!(task_effort(&row.effort), Some("low"));
-    assert_eq!(task_effort(""), None);
-    assert_eq!(task_effort("   "), None);
+    assert_eq!(resolver.task_effort(&row.effort), Some("low"));
+    assert_eq!(resolver.task_effort(""), None);
+    assert_eq!(resolver.task_effort("   "), None);
     let unique = format!("not-a-task-{}", std::process::id());
-    assert!(note_non_task_effort(&unique));
-    assert!(!note_non_task_effort(&unique));
-    assert!(task_effort(&unique).is_none());
+    assert!(resolver.note_non_task_effort(&unique));
+    assert!(!resolver.note_non_task_effort(&unique));
+    assert!(resolver.task_effort(&unique).is_none());
+    let other = DelegationResolver::new();
+    assert!(other.note_non_task_effort(&unique));
     assert!(non_task_effort_message(&unique).contains("low|medium|high"));
 }
 
 #[test]
 fn preset_task_spec_omits_delegation_fields_and_keeps_session_ids() {
+    let resolver = DelegationResolver::new();
     let mut row = preset("p1", "reviewer");
     row.directory = None;
     row.shared_link = None;
@@ -190,7 +197,7 @@ fn preset_task_spec_omits_delegation_fields_and_keeps_session_ids() {
         owner: Some(" coco ".to_string()),
         ..PresetTaskSpecOptions::default()
     };
-    let spec = preset_task_spec(&row, &opts);
+    let spec = resolver.preset_task_spec(&row, &opts);
     assert!(spec.get("delegation").is_none());
     assert!(spec.get("meshFrom").is_none());
     assert_eq!(
@@ -198,7 +205,7 @@ fn preset_task_spec_omits_delegation_fields_and_keeps_session_ids() {
         Some("claude-code:11111111-1111-4111-8111-111111111111")
     );
     assert_eq!(spec.get("owner").and_then(Value::as_str), Some("coco"));
-    assert!(spec.get("workingDir").unwrap().is_null());
+    assert!(spec.get("workingDir").is_none());
     assert_eq!(spec.get("sharedLink").and_then(Value::as_bool), Some(true));
     assert_eq!(
         spec.get("excludeTools").and_then(Value::as_array).unwrap()[0].as_str(),
@@ -208,7 +215,7 @@ fn preset_task_spec_omits_delegation_fields_and_keeps_session_ids() {
     opts.parent_session_id = Some("   ".to_string());
     opts.owner = None;
     opts.mesh_from = Some(" ".to_string());
-    let with_mesh = preset_task_spec(&row, &opts);
+    let with_mesh = resolver.preset_task_spec(&row, &opts);
     assert_eq!(with_mesh.get("meshFrom").and_then(Value::as_str), Some(" "));
     assert!(with_mesh.get("parentSessionId").is_none());
 }

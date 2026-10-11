@@ -6,6 +6,7 @@ mod error;
 mod fallback;
 mod file_store;
 mod import_legacy;
+mod js_row;
 mod pg_store;
 mod preset;
 mod request;
@@ -18,13 +19,12 @@ pub use cached::{
 };
 pub use delegation::{
     ConfigAgentRef, DEFAULT_MAX_CHAIN_DEPTH, DEFAULT_WAIT_MS, DELEGATION_CACHE_TTL_MS,
-    DelegationTarget, MESH_REFRESH_TTL_MS, NO_MESH_REGISTRY, PresetTaskSpecOptions,
-    ROSTER_READ_BOUND_MS, chain_depth_limit_message, chain_depth_limited, gap_message,
-    hosting_node_offline_message, no_harness_message, no_hosting_node_message,
+    DelegationResolver, DelegationTarget, MESH_REFRESH_TTL_MS, NO_MESH_REGISTRY,
+    PresetTaskSpecOptions, ROSTER_READ_BOUND_MS, chain_depth_limit_message, chain_depth_limited,
+    gap_message, hosting_node_offline_message, no_harness_message, no_hosting_node_message,
     no_mesh_registry_reach_message, no_shared_queue_message, non_task_effort_message,
-    not_runnable_message, note_non_task_effort, preset_chain_depth, preset_chain_too_deep,
-    preset_chain_too_deep_message, preset_name_key, preset_task_spec, resolve_delegation_target,
-    task_effort, unknown_agent_message,
+    not_runnable_message, preset_chain_depth, preset_chain_too_deep, preset_chain_too_deep_message,
+    preset_name_key, resolve_delegation_target, unknown_agent_message,
 };
 pub use den_state::{agents_json_file, agents_json_file_in, den_state_dir, den_state_dir_from};
 pub use directory::{

@@ -1,5 +1,5 @@
 use std::io;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::Path;
 
 use crate::error::{DIRECTORY_EMPTY, DIRECTORY_MUST_BE_ABSOLUTE, LINK_NAME, PresetError};
@@ -164,8 +164,24 @@ fn symlink_metadata(path: &Path) -> io::Result<std::fs::Metadata> {
 }
 
 pub fn mkdir_p_700(path: &Path) -> io::Result<()> {
-    if path.as_os_str().is_empty() || path_exists(path) {
+    if path.as_os_str().is_empty() {
         return Ok(());
+    }
+    match std::fs::metadata(path) {
+        Ok(meta) if meta.is_dir() => return Ok(()),
+        Ok(_) => {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "EEXIST: file already exists",
+            ));
+        }
+        Err(_) => {}
+    }
+    if std::fs::symlink_metadata(path).is_ok() {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "EEXIST: file already exists",
+        ));
     }
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
@@ -173,9 +189,14 @@ pub fn mkdir_p_700(path: &Path) -> io::Result<()> {
     {
         mkdir_p_700(parent)?;
     }
-    match std::fs::create_dir(path) {
-        Ok(()) => set_mode(path, 0o700),
-        Err(err) if err.kind() == io::ErrorKind::AlreadyExists => Ok(()),
+    let mut builder = std::fs::DirBuilder::new();
+    builder.mode(0o700);
+    match builder.create(path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == io::ErrorKind::AlreadyExists => match std::fs::metadata(path) {
+            Ok(meta) if meta.is_dir() => Ok(()),
+            _ => Err(err),
+        },
         Err(err) => Err(err),
     }
 }

@@ -1,29 +1,31 @@
+use std::collections::HashMap;
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use parking_lot::Mutex;
-
-use serde_json::{Map, Value};
+use protocol::js::{JsValue, parse};
 use uuid::Uuid;
 
 use crate::directory::{mkdir_p_700, set_mode};
 use crate::error::PresetError;
+use crate::js_row::{
+    entries_of, file_identity, is_js_integer, js_f64, js_str, object_from_entries,
+    object_from_pairs, remove_key, stringify_pretty,
+};
 use crate::preset::{
-    AgentPreset, AgentPresetInput, AgentPresetPatch, AgentRegistryBackend, fresh_preset_map,
-    name_key, preset_from_map, write_preset_fields,
+    AgentPreset, AgentPresetInput, AgentPresetPatch, AgentRegistryBackend, fresh_stored_row,
+    migrate_row, name_key, patch_stored_row, preset_from_js,
 };
 use crate::store::{
-    AgentPresetStore, BoxFuture, find_preset_by_handle, preset_from_create, preset_from_patch,
-    sort_presets, system_now_ms,
+    AgentPresetStore, BoxFuture, find_preset_by_handle, sort_presets, system_now_ms,
 };
-use crate::validate::is_agent_preset;
+use crate::validate::is_effort;
 
 pub struct FileAgentPresetStore {
     file: String,
     now: Arc<dyn Fn() -> i64 + Send + Sync>,
-    lock: Arc<Mutex<()>>,
 }
 
 impl FileAgentPresetStore {
@@ -35,7 +37,6 @@ impl FileAgentPresetStore {
         Self {
             file: file.into(),
             now,
-            lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -61,10 +62,10 @@ impl AgentPresetStore for FileAgentPresetStore {
         let file = self.file.clone();
         let node = node.map(str::to_string);
         Box::pin(async move {
-            let maps = load_blocking(&file).await?;
+            let rows = load_blocking(&file).await?;
             let mut presets = Vec::new();
-            for map in maps {
-                let preset = preset_from_map(&map)?;
+            for row in rows {
+                let preset = preset_from_js(&row)?;
                 if node
                     .as_deref()
                     .is_none_or(|filter| preset.node.as_deref() == Some(filter))
@@ -80,10 +81,10 @@ impl AgentPresetStore for FileAgentPresetStore {
         let file = self.file.clone();
         let id = id.to_string();
         Box::pin(async move {
-            let maps = load_blocking(&file).await?;
-            for map in maps {
-                if map.get("id").and_then(Value::as_str) == Some(id.as_str()) {
-                    return Ok(Some(preset_from_map(&map)?));
+            let rows = load_blocking(&file).await?;
+            for row in rows {
+                if js_str(&row, "id") == Some(id.as_str()) {
+                    return Ok(Some(preset_from_js(&row)?));
                 }
             }
             Ok(None)
@@ -97,10 +98,10 @@ impl AgentPresetStore for FileAgentPresetStore {
         let file = self.file.clone();
         let handle = handle.to_string();
         Box::pin(async move {
-            let maps = load_blocking(&file).await?;
+            let rows = load_blocking(&file).await?;
             let mut presets = Vec::new();
-            for map in maps {
-                presets.push(preset_from_map(&map)?);
+            for row in rows {
+                presets.push(preset_from_js(&row)?);
             }
             Ok(find_preset_by_handle(&presets, &handle).cloned())
         })
@@ -108,25 +109,32 @@ impl AgentPresetStore for FileAgentPresetStore {
 
     fn create(&self, input: AgentPresetInput) -> BoxFuture<'_, Result<AgentPreset, PresetError>> {
         let file = self.file.clone();
-        let lock = Arc::clone(&self.lock);
         let now = Arc::clone(&self.now);
         Box::pin(async move {
             spawn_io(move || {
+                let lock = lock_for(&file);
                 let _guard = lock.lock();
-                let mut maps = load_registry(&file)?;
-                let preset = preset_from_create(&input, &Uuid::new_v4().to_string(), now())?;
-                if maps
+                let mut rows = load_for_write(&file)?;
+                let preset = preset_from_js(&fresh_stored_row(
+                    &input,
+                    &Uuid::new_v4().to_string(),
+                    now(),
+                )?)?;
+                if rows
                     .iter()
-                    .any(|map| map.get("id").and_then(Value::as_str) == Some(preset.id.as_str()))
+                    .any(|row| js_str(row, "id") == Some(preset.id.as_str()))
                 {
                     return Err(PresetError::conflict(format!(
                         "agent id already exists: {}",
                         preset.id
                     )));
                 }
-                assert_name_available(&maps, &preset.name, None)?;
-                maps.push(fresh_preset_map(&preset));
-                save_registry(&file, &maps)?;
+                assert_name_available(&rows, &preset.name, None)?;
+                let Some(document) = preset.document.clone() else {
+                    return Err(PresetError::message("preset row is not an object"));
+                };
+                rows.push((*document).clone());
+                save_registry(&file, &rows)?;
                 Ok(preset)
             })
             .await
@@ -139,24 +147,24 @@ impl AgentPresetStore for FileAgentPresetStore {
         patch: AgentPresetPatch,
     ) -> BoxFuture<'_, Result<Option<AgentPreset>, PresetError>> {
         let file = self.file.clone();
-        let lock = Arc::clone(&self.lock);
         let now = Arc::clone(&self.now);
         let id = id.to_string();
         Box::pin(async move {
             spawn_io(move || {
+                let lock = lock_for(&file);
                 let _guard = lock.lock();
-                let mut maps = load_registry(&file)?;
-                let Some(index) = maps
+                let mut rows = load_for_write(&file)?;
+                let Some(index) = rows
                     .iter()
-                    .position(|map| map.get("id").and_then(Value::as_str) == Some(id.as_str()))
+                    .position(|row| js_str(row, "id") == Some(id.as_str()))
                 else {
                     return Ok(None);
                 };
-                let current = preset_from_map(&maps[index])?;
-                let next = preset_from_patch(&current, &patch, now())?;
-                assert_name_available(&maps, &next.name, Some(&id))?;
-                write_preset_fields(&mut maps[index], &next);
-                save_registry(&file, &maps)?;
+                let next_row = patch_stored_row(&rows[index], &patch, now())?;
+                let next = preset_from_js(&next_row)?;
+                assert_name_available(&rows, &next.name, Some(&id))?;
+                rows[index] = next_row;
+                save_registry(&file, &rows)?;
                 Ok(Some(next))
             })
             .await
@@ -165,16 +173,16 @@ impl AgentPresetStore for FileAgentPresetStore {
 
     fn delete(&self, id: &str) -> BoxFuture<'_, Result<bool, PresetError>> {
         let file = self.file.clone();
-        let lock = Arc::clone(&self.lock);
         let id = id.to_string();
         Box::pin(async move {
             spawn_io(move || {
+                let lock = lock_for(&file);
                 let _guard = lock.lock();
-                let maps = load_registry(&file)?;
-                let original_len = maps.len();
-                let next: Vec<Map<String, Value>> = maps
+                let rows = load_for_write(&file)?;
+                let original_len = rows.len();
+                let next: Vec<JsValue> = rows
                     .into_iter()
-                    .filter(|map| map.get("id").and_then(Value::as_str) != Some(id.as_str()))
+                    .filter(|row| js_str(row, "id") != Some(id.as_str()))
                     .collect();
                 if next.len() == original_len {
                     return Ok(false);
@@ -188,19 +196,17 @@ impl AgentPresetStore for FileAgentPresetStore {
 }
 
 fn assert_name_available(
-    maps: &[Map<String, Value>],
+    rows: &[JsValue],
     name: &str,
     except_id: Option<&str>,
 ) -> Result<(), PresetError> {
     let key = name_key(name);
-    let clash = maps.iter().any(|map| {
-        let id = map.get("id").and_then(Value::as_str);
+    let clash = rows.iter().any(|row| {
+        let id = js_str(row, "id");
         if except_id.is_some() && id == except_id {
             return false;
         }
-        map.get("name")
-            .and_then(Value::as_str)
-            .is_some_and(|stored| name_key(stored) == key)
+        js_str(row, "name").is_some_and(|stored| name_key(stored) == key)
     });
     if clash {
         return Err(PresetError::conflict(format!(
@@ -211,7 +217,7 @@ fn assert_name_available(
     Ok(())
 }
 
-async fn load_blocking(file: &str) -> Result<Vec<Map<String, Value>>, PresetError> {
+async fn load_blocking(file: &str) -> Result<Vec<JsValue>, PresetError> {
     let file = file.to_string();
     spawn_io(move || load_registry(&file)).await
 }
@@ -224,7 +230,12 @@ async fn spawn_io<T: Send + 'static>(
         .map_err(|err| PresetError::message(err.to_string()))?
 }
 
-fn load_registry(file: &str) -> Result<Vec<Map<String, Value>>, PresetError> {
+fn load_for_write(file: &str) -> Result<Vec<JsValue>, PresetError> {
+    let rows = load_registry(file)?;
+    rows.into_iter().map(|row| migrate_row(&row)).collect()
+}
+
+fn load_registry(file: &str) -> Result<Vec<JsValue>, PresetError> {
     if !Path::new(file).exists() {
         return Ok(Vec::new());
     }
@@ -235,14 +246,8 @@ fn load_registry(file: &str) -> Result<Vec<Map<String, Value>>, PresetError> {
             return Ok(Vec::new());
         }
     };
-    let text = match String::from_utf8(bytes) {
-        Ok(text) => text,
-        Err(_) => {
-            quarantine_message(file, "parse failed", "invalid utf-8");
-            return Ok(Vec::new());
-        }
-    };
-    let parsed: Value = match serde_json::from_str(&text) {
+    let text = String::from_utf8_lossy(&bytes).into_owned();
+    let parsed = match parse(&text) {
         Ok(value) => value,
         Err(_) => {
             quarantine_message(file, "parse failed", "invalid json");
@@ -253,48 +258,74 @@ fn load_registry(file: &str) -> Result<Vec<Map<String, Value>>, PresetError> {
         quarantine_message(file, "shape invalid", "root");
         return Ok(Vec::new());
     };
-    let Some(agents) = root.get("agents").and_then(Value::as_array) else {
+    let Some(agents) = root.get("agents").and_then(JsValue::as_array) else {
         quarantine_message(file, "shape invalid", "agents");
         return Ok(Vec::new());
     };
     let mut kept = Vec::new();
     for row in agents {
-        let Some(cleaned) = without_invalid_sort_order(row) else {
+        let Some(cleaned) = without_invalid_sort_order(row)? else {
             continue;
         };
-        if is_agent_preset(&Value::Object(cleaned.clone())) {
+        if is_agent_preset_value(&cleaned) {
             kept.push(cleaned);
         }
     }
     Ok(kept)
 }
 
-fn without_invalid_sort_order(row: &Value) -> Option<Map<String, Value>> {
-    let map = row.as_object()?.clone();
-    let Some(sort_order) = map.get("sortOrder") else {
-        return Some(map);
+fn without_invalid_sort_order(row: &JsValue) -> Result<Option<JsValue>, PresetError> {
+    let Some(object) = row.as_object() else {
+        return Ok(None);
     };
-    if sort_order
-        .as_number()
-        .is_some_and(crate::validate::json_is_integer)
-    {
-        return Some(map);
+    let Some(sort_order) = object.get("sortOrder") else {
+        return Ok(Some(row.clone()));
+    };
+    if is_js_integer(sort_order) {
+        return Ok(Some(row.clone()));
     }
-    let mut next = map;
-    next.remove("sortOrder");
-    Some(next)
+    let mut entries = entries_of(row)?;
+    remove_key(&mut entries, "sortOrder");
+    Ok(Some(object_from_entries(entries)?))
 }
 
-fn save_registry(file: &str, agents: &[Map<String, Value>]) -> Result<(), PresetError> {
-    let mut root = Map::new();
-    root.insert(
-        "agents".to_string(),
-        Value::Array(agents.iter().cloned().map(Value::Object).collect()),
-    );
-    let body = serde_json::to_string_pretty(&Value::Object(root))
-        .map_err(|err| PresetError::message(err.to_string()))?;
-    write_atomic(file, &body)?;
-    Ok(())
+fn is_agent_preset_value(value: &JsValue) -> bool {
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+    if let Some(harness) = object.get("harnessId") {
+        match harness.as_str() {
+            Some(text) if crate::validate::is_harness_id(text) => {}
+            _ => return false,
+        }
+    }
+    if let Some(sort_order) = object.get("sortOrder")
+        && !is_js_integer(sort_order)
+    {
+        return false;
+    }
+    let Some(id) = object.get("id").and_then(JsValue::as_str) else {
+        return false;
+    };
+    if id.is_empty() {
+        return false;
+    }
+    object.get("name").is_some_and(JsValue::is_string)
+        && object.get("color").is_some_and(JsValue::is_string)
+        && object.get("model").is_some_and(JsValue::is_string)
+        && object
+            .get("effort")
+            .and_then(JsValue::as_str)
+            .is_some_and(is_effort)
+        && object.get("systemPrompt").is_some_and(JsValue::is_string)
+        && object.get("nodeBaseUrl").is_some_and(JsValue::is_string)
+        && object.get("createdAt").and_then(js_f64).is_some()
+        && object.get("updatedAt").and_then(js_f64).is_some()
+}
+
+fn save_registry(file: &str, agents: &[JsValue]) -> Result<(), PresetError> {
+    let root = object_from_pairs(vec![("agents", JsValue::Array(agents.to_vec()))])?;
+    write_atomic(file, &stringify_pretty(&root))
 }
 
 fn write_atomic(file: &str, body: &str) -> Result<(), PresetError> {
@@ -304,16 +335,29 @@ fn write_atomic(file: &str, body: &str) -> Result<(), PresetError> {
     {
         mkdir_p_700(parent)?;
     }
-    let tmp = format!("{file}.tmp-{}", std::process::id());
+    let tmp = format!("{file}.tmp-{}", Uuid::new_v4());
     {
         let mut options = std::fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true).mode(0o600);
+        options.write(true).create_new(true).mode(0o600);
         let mut handle = options.open(&tmp)?;
         handle.write_all(body.as_bytes())?;
     }
     set_mode(Path::new(&tmp), 0o600)?;
     std::fs::rename(&tmp, path)?;
     Ok(())
+}
+
+fn lock_for(file: &str) -> Arc<Mutex<()>> {
+    static LOCKS: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
+    let locks = LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
+    let key = file_identity(file);
+    let mut guard = locks.lock();
+    if let Some(existing) = guard.get(&key) {
+        return Arc::clone(existing);
+    }
+    let created = Arc::new(Mutex::new(()));
+    guard.insert(key, Arc::clone(&created));
+    created
 }
 
 fn quarantine(file: &str, reason: &str, err: &std::io::Error) {

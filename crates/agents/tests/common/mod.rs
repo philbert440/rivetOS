@@ -50,6 +50,7 @@ pub fn preset(id: &str, name: &str) -> AgentPreset {
         sort_order: None,
         created_at: JsNumber::from(1),
         updated_at: JsNumber::from(1),
+        document: None,
     }
 }
 

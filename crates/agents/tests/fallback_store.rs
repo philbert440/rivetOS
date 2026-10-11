@@ -561,9 +561,16 @@ async fn imports_a_fallback_create_that_was_in_flight_when_the_primary_flipped()
     assert!(!announced.load(Ordering::SeqCst));
     ready.store(true, Ordering::SeqCst);
     clock.store(1_000, Ordering::SeqCst);
+    let (drain_tx, drain_rx) = oneshot::channel();
+    let drain_slot = Arc::new(Mutex::new(Some(drain_tx)));
+    store.on_fallback_drain(Arc::new(move || {
+        if let Some(sender) = drain_slot.lock().unwrap().take() {
+            let _ = sender.send(());
+        }
+    }));
     let flipping_store = Arc::clone(&store);
     let flipping = tokio::spawn(async move { flipping_store.list(None).await });
-    tokio::time::sleep(Duration::from_millis(20)).await;
+    drain_rx.await.unwrap();
     assert!(!announced.load(Ordering::SeqCst));
     assert!(imported.lock().unwrap().is_empty());
     release_tx.send(()).unwrap();
