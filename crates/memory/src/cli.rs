@@ -1,8 +1,11 @@
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::process::ExitCode;
 
 use clap::{Args, Subcommand};
+use protocol::host::Env;
 
+use crate::env_file::{load_rivet_env, overlay_var};
 use crate::{MigrationStatus, format_applied_at, migrate_database, migration_status};
 
 #[derive(Args, Debug)]
@@ -69,8 +72,7 @@ pub fn reject_bad_config(args: impl IntoIterator<Item = String>) -> Result<(), S
     let mut index = 2;
     while index < args.len() {
         if args[index] == "--config" || args[index] == "-c" {
-            let next = args.get(index + 1);
-            if next.is_none() || next.is_some_and(|value| value.starts_with('-')) {
+            if missing_config_path(args.get(index + 1).map(String::as_str)) {
                 return Err("db: --config requires a path".to_string());
             }
             index += 2;
@@ -108,6 +110,15 @@ pub fn migrate_url_error(args: impl IntoIterator<Item = String>) -> Result<(), S
 }
 
 pub async fn run(args: DbArgs) -> ExitCode {
+    run_with(args, &protocol::host::ProcessEnv).await
+}
+
+async fn run_with(args: DbArgs, env: &dyn Env) -> ExitCode {
+    if let Some(message) = empty_config_message(args.config.as_deref()) {
+        eprintln!("{message}");
+        return ExitCode::from(1);
+    }
+    let file = load_rivet_env(env);
     let _embedded_config_deferred = args.config;
     match args.action {
         None => {
@@ -118,14 +129,14 @@ pub async fn run(args: DbArgs) -> ExitCode {
             url,
             baseline,
             extra: _,
-        }) => match migrate(url, baseline).await {
+        }) => match migrate(url.as_deref(), baseline, env, &file).await {
             Ok(code) => code,
             Err(message) => {
                 eprintln!("[migrate] fatal: {message}");
                 ExitCode::from(1)
             }
         },
-        Some(DbAction::Status { extra: _ }) => match status().await {
+        Some(DbAction::Status { extra: _ }) => match status(env, &file).await {
             Ok(code) => code,
             Err(message) => {
                 eprintln!("[migrate] fatal: {message}");
@@ -139,15 +150,36 @@ pub async fn run(args: DbArgs) -> ExitCode {
     }
 }
 
-async fn migrate(url_flag: Option<String>, baseline: bool) -> Result<ExitCode, String> {
-    let url = match url_flag {
-        Some(url) if !url.is_empty() => Some(url),
+fn missing_config_path(next: Option<&str>) -> bool {
+    match next {
+        None => true,
+        Some(value) => value.is_empty() || value.starts_with('-'),
+    }
+}
+
+fn empty_config_message(config: Option<&str>) -> Option<&'static str> {
+    if config.is_some_and(str::is_empty) {
+        Some("db: --config requires a path")
+    } else {
+        None
+    }
+}
+
+fn pg_url(flag: Option<&str>, env: &dyn Env, file: &BTreeMap<String, String>) -> Option<String> {
+    match flag {
+        Some(url) if !url.is_empty() => Some(url.to_string()),
         Some(_) => None,
-        None => std::env::var("RIVETOS_PG_URL")
-            .ok()
-            .filter(|value| !value.is_empty()),
-    };
-    let Some(url) = url else {
+        None => overlay_var(env, file, "RIVETOS_PG_URL").filter(|value| !value.is_empty()),
+    }
+}
+
+async fn migrate(
+    url_flag: Option<&str>,
+    baseline: bool,
+    env: &dyn Env,
+    file: &BTreeMap<String, String>,
+) -> Result<ExitCode, String> {
+    let Some(url) = pg_url(url_flag, env, file) else {
         eprintln!("[migrate] RIVETOS_PG_URL not set (or pass --url <pg-url>)");
         return Ok(ExitCode::from(1));
     };
@@ -157,11 +189,8 @@ async fn migrate(url_flag: Option<String>, baseline: bool) -> Result<ExitCode, S
     Ok(ExitCode::SUCCESS)
 }
 
-async fn status() -> Result<ExitCode, String> {
-    let url = std::env::var("RIVETOS_PG_URL")
-        .ok()
-        .filter(|value| !value.is_empty());
-    let Some(url) = url else {
+async fn status(env: &dyn Env, file: &BTreeMap<String, String>) -> Result<ExitCode, String> {
+    let Some(url) = pg_url(None, env, file) else {
         eprintln!("[db status] RIVETOS_PG_URL not set");
         return Ok(ExitCode::from(1));
     };
@@ -206,9 +235,28 @@ Usage:
 
 #[cfg(test)]
 mod tests {
-    use clap::{Parser, Subcommand};
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
-    use super::{DbAction, DbArgs, migrate_url_error, reject_bad_config};
+    use clap::{Parser, Subcommand};
+    use protocol::host::MapEnv;
+
+    use super::{
+        DbAction, DbArgs, empty_config_message, migrate_url_error, pg_url, reject_bad_config,
+    };
+    use crate::env_file::load_rivet_env;
+
+    fn temp_dir() -> PathBuf {
+        static N: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "rr2a-db-env-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&dir).expect("temp dir");
+        dir
+    }
 
     #[derive(Parser)]
     #[command(name = "rivetos")]
@@ -304,5 +352,112 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    #[test]
+    fn empty_config_is_rejected_before_database_work() {
+        let cases: &[&[&str]] = &[
+            &["rivetos", "db", "migrate", "--config", ""],
+            &["rivetos", "db", "migrate", "-c", ""],
+            &["rivetos", "db", "--config", "", "migrate"],
+            &["rivetos", "db", "-c", "", "status"],
+        ];
+        for args in cases {
+            let err = reject_bad_config(args.iter().copied().map(str::to_string))
+                .expect_err("empty config");
+            assert_eq!(err, "db: --config requires a path");
+        }
+        assert_eq!(
+            empty_config_message(Some("")),
+            Some("db: --config requires a path")
+        );
+        assert_eq!(empty_config_message(Some("c.yaml")), None);
+        assert_eq!(empty_config_message(None), None);
+        assert!(
+            reject_bad_config(
+                ["rivetos", "db", "--config", " ", "status"]
+                    .into_iter()
+                    .map(str::to_string)
+            )
+            .is_ok()
+        );
+        assert!(
+            reject_bad_config(
+                ["rivetos", "db", "migrate", "--config", "c.yaml"]
+                    .into_iter()
+                    .map(str::to_string)
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn pg_url_uses_the_env_file_unless_the_process_already_set_it() {
+        let dir = temp_dir();
+        let home = dir.join("home");
+        fs::create_dir_all(home.join(".rivetos")).expect("home");
+        fs::write(
+            home.join(".rivetos/.env"),
+            "export RIVETOS_PG_URL=postgres://from-file/db\nOTHER=from-file\n",
+        )
+        .expect("write");
+        let mut env = MapEnv::new();
+        env.set("HOME", home.to_string_lossy().as_ref());
+        let file = load_rivet_env(&env);
+        assert_eq!(
+            pg_url(None, &env, &file).as_deref(),
+            Some("postgres://from-file/db")
+        );
+        assert_eq!(file.get("OTHER").map(String::as_str), Some("from-file"));
+
+        let explicit = dir.join("explicit.env");
+        fs::write(&explicit, "RIVETOS_PG_URL=postgres://explicit/db\n").expect("write");
+        env.set(
+            "RIVETOS_ENV_FILE",
+            format!("  {}  ", explicit.to_string_lossy()),
+        );
+        let file = load_rivet_env(&env);
+        assert_eq!(
+            pg_url(None, &env, &file).as_deref(),
+            Some("postgres://explicit/db")
+        );
+
+        let tilde = home.join("tilde.env");
+        fs::write(&tilde, "RIVETOS_PG_URL=postgres://tilde/db\n").expect("write");
+        env.set("RIVETOS_ENV_FILE", "~/tilde.env");
+        let file = load_rivet_env(&env);
+        assert_eq!(
+            pg_url(None, &env, &file).as_deref(),
+            Some("postgres://tilde/db")
+        );
+
+        env.set("RIVETOS_PG_URL", "postgres://exported/db");
+        let file = load_rivet_env(&env);
+        assert_eq!(
+            pg_url(None, &env, &file).as_deref(),
+            Some("postgres://exported/db")
+        );
+        assert!(!file.contains_key("RIVETOS_PG_URL"));
+
+        env.set("RIVETOS_PG_URL", "");
+        let file = load_rivet_env(&env);
+        assert_eq!(pg_url(None, &env, &file), None);
+
+        assert_eq!(
+            pg_url(Some("postgres://flag/db"), &env, &file).as_deref(),
+            Some("postgres://flag/db")
+        );
+        assert_eq!(pg_url(Some(""), &env, &file), None);
+
+        env.set("RIVETOS_ENV_FILE", "   ");
+        let mut cleared = MapEnv::new();
+        cleared.set("HOME", home.to_string_lossy().as_ref());
+        cleared.set("RIVETOS_ENV_FILE", "   ");
+        let file = load_rivet_env(&cleared);
+        assert_eq!(
+            pg_url(None, &cleared, &file).as_deref(),
+            Some("postgres://from-file/db")
+        );
+        let _ = fs::remove_dir_all(dir);
     }
 }

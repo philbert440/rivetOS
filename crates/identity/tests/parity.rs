@@ -294,6 +294,100 @@ fn invalid_shared_file_fails_closed() {
     let _ = fs::remove_dir_all(dir);
 }
 
+fn write_home_ada(home: &std::path::Path) {
+    fs::create_dir_all(home.join(".rivetos")).expect("home");
+    fs::write(
+        home.join(".rivetos/users.json"),
+        json!({
+            "ownerUserId": "owner",
+            "unmappedIsOwner": true,
+            "users": {
+                "owner": { "devices": [], "pgUrl": owner_db().pg_url },
+                "ada": { "devices": ["ada-device"], "pgUrl": "postgres://ada@db/ada" }
+            }
+        })
+        .to_string(),
+    )
+    .expect("write");
+}
+
+#[test]
+fn invalid_utf8_shared_registry_fails_closed() {
+    let dir = temp_dir();
+    fs::create_dir_all(dir.join("rivetos")).expect("dir");
+    let mut bytes = b"{\xE9".to_vec();
+    bytes.extend_from_slice(
+        br#""ownerUserId":"owner","unmappedIsOwner":false,"users":{"owner":{"devices":[]},"coco":{"devices":["win-coco"],"pgUrl":"postgres://coco@db/coco_memory"}}}"#,
+    );
+    fs::write(dir.join("rivetos/users.json"), bytes).expect("write");
+    let home = dir.join("home");
+    write_home_ada(&home);
+    let shared = dir.to_string_lossy().to_string();
+    let home_s = home.to_string_lossy().to_string();
+    let reg = load_users_registry(
+        &env(&[
+            ("RIVETOS_SHARED_DIR", &shared),
+            ("RIVETOS_PG_URL", &owner_db().pg_url),
+        ]),
+        LoadOptions {
+            path: None,
+            read_file: None,
+            homedir: Some(&|| home_s.clone()),
+        },
+    )
+    .expect("reg");
+    assert!(!reg.unmapped_is_owner);
+    assert!(reg.users.get("coco").is_none());
+    assert!(reg.users.get("ada").is_none());
+    assert!(matches!(
+        resolve_user(&reg, Some("win-coco")),
+        ResolveUserResult::Err(_)
+    ));
+    assert!(matches!(
+        resolve_user(&reg, Some("ada-device")),
+        ResolveUserResult::Err(_)
+    ));
+    assert!(matches!(resolve_user(&reg, None), ResolveUserResult::Ok(_)));
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn legacy_byte_inside_persona_keeps_tenancy() {
+    let dir = temp_dir();
+    fs::create_dir_all(dir.join("rivetos")).expect("dir");
+    let mut bytes = br#"{"ownerUserId":"owner","unmappedIsOwner":false,"users":{"owner":{"devices":[],"persona":"caf"#.to_vec();
+    bytes.push(0xE9);
+    bytes.extend_from_slice(
+        br#""},"coco":{"devices":["win-coco"],"pgUrl":"postgres://coco@db/coco_memory"}}}"#,
+    );
+    fs::write(dir.join("rivetos/users.json"), bytes).expect("write");
+    let home = dir.join("home");
+    write_home_ada(&home);
+    let shared = dir.to_string_lossy().to_string();
+    let home_s = home.to_string_lossy().to_string();
+    let reg = load_users_registry(
+        &env(&[("RIVETOS_SHARED_DIR", &shared)]),
+        LoadOptions {
+            path: None,
+            read_file: None,
+            homedir: Some(&|| home_s.clone()),
+        },
+    )
+    .expect("reg");
+    assert!(!reg.unmapped_is_owner);
+    assert_eq!(reg.users["owner"].persona.as_deref(), Some("caf\u{FFFD}"));
+    assert!(reg.users.get("ada").is_none());
+    assert!(matches!(
+        resolve_user(&reg, Some("win-coco")),
+        ResolveUserResult::Ok(_)
+    ));
+    assert!(matches!(
+        resolve_user(&reg, Some("ada-device")),
+        ResolveUserResult::Err(_)
+    ));
+    let _ = fs::remove_dir_all(dir);
+}
+
 #[test]
 fn absent_shared_falls_through_home() {
     let dir = temp_dir();

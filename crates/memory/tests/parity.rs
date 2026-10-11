@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::fmt;
+use std::fs;
 use std::path::PathBuf;
 
 use chrono::{
@@ -283,6 +284,17 @@ async fn migration_ordering_retry_and_lock_literal() {
         ["0001_aaa.sql", "0002_zzz.sql"]
     );
     assert_eq!(listed[0].sql, "-- first\n");
+    let lossy = std::env::temp_dir().join(format!("rr2a-mig-lossy-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&lossy);
+    fs::create_dir_all(&lossy).expect("dir");
+    let mut latin = b"-- caf".to_vec();
+    latin.push(0xE9);
+    latin.extend_from_slice(b"\n");
+    fs::write(lossy.join("0001_latin1.sql"), &latin).expect("write");
+    let listed_lossy = list_migrations_dir(&lossy).expect("lossy list");
+    assert_eq!(listed_lossy.len(), 1);
+    assert_eq!(listed_lossy[0].sql, "-- caf\u{FFFD}\n");
+    let _ = fs::remove_dir_all(&lossy);
     let embedded = embedded_as_migrations();
     assert!(embedded.len() >= 20);
     assert_eq!(embedded[0].name, "0001_baseline.sql");

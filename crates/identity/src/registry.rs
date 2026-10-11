@@ -1,5 +1,4 @@
 use std::collections::BTreeMap;
-use std::fs;
 use std::path::Path;
 
 use indexmap::IndexMap;
@@ -203,10 +202,11 @@ pub fn parse_users_registry(raw: Option<&str>) -> Option<UsersRegistry> {
 }
 
 fn default_read_file(path: &str) -> Option<String> {
-    if !Path::new(path).exists() {
+    let file = Path::new(path);
+    if !file.exists() {
         return None;
     }
-    match fs::read_to_string(path) {
+    match protocol::host::read_text(file) {
         Ok(text) => Some(text),
         Err(_) => {
             eprintln!("[rivetos] users registry \"{path}\" unreadable");

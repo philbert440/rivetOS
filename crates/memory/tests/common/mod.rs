@@ -250,7 +250,7 @@ pub fn migrations_dir() -> std::path::PathBuf {
 }
 
 pub fn read_migration(name: &str) -> Result<String, String> {
-    std::fs::read_to_string(migrations_dir().join(name)).map_err(|err| err.to_string())
+    protocol::host::read_text(&migrations_dir().join(name)).map_err(|err| err.to_string())
 }
 
 pub async fn apply_file(conn: &mut PgConnection, sql: &str) -> Result<(), String> {

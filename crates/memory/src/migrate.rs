@@ -148,7 +148,7 @@ pub fn list_migrations_dir(dir: &Path) -> Result<Vec<Migration>, MigrateFault> {
     for name in names {
         let path = dir.join(&name);
         let sql =
-            std::fs::read_to_string(&path).map_err(|err| MigrateFault::new(err.to_string()))?;
+            protocol::host::read_text(&path).map_err(|err| MigrateFault::new(err.to_string()))?;
         out.push(Migration {
             name,
             path: path.to_string_lossy().to_string(),
