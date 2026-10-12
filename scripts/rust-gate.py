@@ -9,7 +9,7 @@ import os, re, sys, tomllib
 root = sys.argv[1]
 LAYER = {'wire': 0, 'config': 0, 'kernel': 1, 'testkit': 1,
          'memory-postgres': 2, 'memory-sqlite': 2, 'providers': 2, 'harness-acp': 2, 'terminal': 2, 'mcp': 2,
-         'capture': 2, 'mesh': 2, 'workflows': 2, 'tasks': 2,
+         'capture': 2, 'mesh': 2, 'tasks': 2,
          'gateway': 3, 'agent-loop': 3, 'workers': 3,
          'cli': 4, 'rivetos': 4}
 ADAPTER, SERVICE, COMPOSITION = 2, 3, 4
