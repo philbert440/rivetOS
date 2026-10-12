@@ -9,9 +9,11 @@ export const DIALOG_NOTE =
   'not sent: the Terminal has a picker or prompt open. Answer it or press Esc there'
 
 /** den refused the paste because the Terminal's input box holds unsent text,
- *  which the paste would be appended to (`reason: 'harness_draft'`). */
+ *  which the paste would be appended to (`reason: 'harness_draft'`). Says
+ *  where to look: a stuck earlier message sits on the input line, not in a
+ *  menu, and is easy to miss. */
 export const DRAFT_NOTE =
-  'not sent: the Terminal has unsent text in its input. The turn stays queued; press the inject button again once that draft is sent or cleared'
+  "not sent: the Terminal's input box already has unsent text (an earlier message may be stuck there). The turn stays queued; send or clear that text in the Terminal, then press the inject button again"
 
 /** The note for a refused send, or undefined when the error carries no known reason. */
 export function sendBlockNote(err: unknown): string | undefined {
