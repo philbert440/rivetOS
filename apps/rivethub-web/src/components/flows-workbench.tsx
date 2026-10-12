@@ -50,7 +50,7 @@ function Field(props: {
     'mt-0.5 w-full rounded border border-line bg-panel-2 px-2 py-1 font-mono text-xs text-ink'
   return (
     <label className="mb-2 block">
-      <span className="font-mono text-[10px] uppercase tracking-wide text-ink-dim">
+      <span className="text-[11px] uppercase tracking-wider font-medium text-ink-dim classic:font-normal classic:text-[10px] classic:tracking-wide">
         {props.label}
       </span>
       {props.multiline ? (
@@ -91,14 +91,14 @@ function NodeInspector(props: {
   }
   return (
     <div className="mb-4">
-      <p className="mb-2 font-mono text-[10px] uppercase tracking-wide text-ink-dim">{node.kind}</p>
+      <p className="mb-2 text-[11px] uppercase tracking-wider font-medium text-ink-dim classic:font-normal classic:text-[10px] classic:tracking-wide">
+        {node.kind}
+      </p>
       {node.kind !== 'start' && (
         <Field label="Name" value={node.label} onChange={(label) => patch({ label })} />
       )}
       {props.status && (
-        <p
-          className={`mb-2 font-mono text-xs ${props.status === 'failed' ? 'text-red' : 'text-em'}`}
-        >
+        <p className={`mb-2 text-xs ${props.status === 'failed' ? 'text-red' : 'text-em'}`}>
           {GRAPH_NODE_STATUS_LABELS[props.status]}
         </p>
       )}
@@ -194,14 +194,16 @@ function NodeInspector(props: {
         <button
           type="button"
           onClick={() => props.onOpenChildRun?.(props.childRunId!)}
-          className="mb-2 block font-mono text-[11px] text-em hover:underline"
+          className="mb-2 block text-xs text-em hover:underline classic:text-[11px]"
         >
           Open child run
         </button>
       )}
       {props.editable && incomingIds(props.graph, node.id).length > 0 && (
         <div className="mb-2">
-          <p className="font-mono text-[10px] uppercase tracking-wide text-ink-dim">Wires in</p>
+          <p className="text-[11px] uppercase tracking-wider font-medium text-ink-dim classic:font-normal classic:text-[10px] classic:tracking-wide">
+            Wires in
+          </p>
           {props.graph.edges
             .filter((e) => e.to === node.id)
             .map((e) => {
@@ -211,7 +213,7 @@ function NodeInspector(props: {
                   key={e.id}
                   type="button"
                   onClick={() => props.onChange?.(disconnectFlowEdge(props.graph, e.id))}
-                  className="mt-1 block font-mono text-[11px] text-ink-dim hover:text-red"
+                  className="mt-1 block text-xs text-ink-dim hover:text-red classic:text-[11px]"
                 >
                   disconnect {src?.label ?? e.from}
                 </button>
@@ -223,7 +225,7 @@ function NodeInspector(props: {
         <button
           type="button"
           onClick={() => props.onChange?.(deleteFlowNode(props.graph, node.id))}
-          className="mt-2 font-mono text-[11px] text-red hover:underline"
+          className="mt-2 text-xs text-red hover:underline classic:text-[11px]"
         >
           Delete node
         </button>
@@ -268,7 +270,7 @@ export function FlowsWorkbench(props: FlowsWorkbenchProps): JSX.Element {
         >
           {props.editable && (
             <>
-              <p className="px-3 py-2 font-mono text-[10px] uppercase tracking-wide text-ink-dim">
+              <p className="px-3 py-2 text-[11px] uppercase tracking-wider font-medium text-ink-dim classic:font-normal classic:text-[10px] classic:tracking-wide">
                 Add
               </p>
               {FLOW_PALETTE.map((p) => (
@@ -276,7 +278,7 @@ export function FlowsWorkbench(props: FlowsWorkbenchProps): JSX.Element {
                   key={p.kind}
                   type="button"
                   onClick={() => add(p.kind)}
-                  className="px-3 py-1.5 text-left font-mono text-xs text-ink-dim hover:bg-panel-2 hover:text-em"
+                  className="px-3 py-1.5 text-left text-xs text-ink-dim hover:bg-panel-2 hover:text-em"
                 >
                   {p.label}
                   {p.kind === 'run' ? (
@@ -286,7 +288,7 @@ export function FlowsWorkbench(props: FlowsWorkbenchProps): JSX.Element {
               ))}
             </>
           )}
-          <p className="px-3 py-2 font-mono text-[10px] uppercase tracking-wide text-ink-dim">
+          <p className="px-3 py-2 text-[11px] uppercase tracking-wider font-medium text-ink-dim classic:font-normal classic:text-[10px] classic:tracking-wide">
             Nodes
           </p>
           {props.graph.nodes.map((n) => (
@@ -297,7 +299,7 @@ export function FlowsWorkbench(props: FlowsWorkbenchProps): JSX.Element {
                 setSelectedEdgeId(null)
                 props.onSelect(n.id)
               }}
-              className={`px-3 py-1.5 text-left font-mono text-xs ${
+              className={`px-3 py-1.5 text-left text-xs ${
                 props.selectedId === n.id ? 'bg-panel-2 text-em' : 'text-ink-dim hover:text-ink'
               }`}
             >
@@ -332,11 +334,11 @@ export function FlowsWorkbench(props: FlowsWorkbenchProps): JSX.Element {
         />
 
         <aside className="flex w-72 shrink-0 flex-col overflow-y-auto border-l border-line bg-panel p-3">
-          <h2 className="mb-3 font-mono text-[10px] font-semibold uppercase tracking-wide text-ink-dim">
+          <h2 className="mb-3 text-[11px] font-semibold uppercase tracking-wider font-medium text-ink-dim classic:text-[10px] classic:tracking-wide">
             Properties
           </h2>
           {props.statusById && (
-            <p className="mb-3 font-mono text-[10px] uppercase tracking-wide text-ink-dim">
+            <p className="mb-3 text-[11px] uppercase tracking-wider font-medium text-ink-dim classic:font-normal classic:text-[10px] classic:tracking-wide">
               Live run overlay
             </p>
           )}

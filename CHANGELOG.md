@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### RivetHub
+
+- Material style for an explicit Light or Dark theme: tonal surfaces from the emerald seed, rounded shapes, Roboto Flex for UI text (JetBrains Mono stays for code and the terminal), pill navigation, message bubbles and soft cards. System and Omarchy keep the classic square, monospace look unchanged. The style follows the preference through `html[data-style]`; see `apps/rivethub-web/AGENT.md` → Material style.
+
 ### Grok Bot member kit
 
 - rivethub-grokbot mesh handoff uses the plugin MCP tools `list_agents` and `delegate_task` (den task API). The curl recipe is gone. Step 3 (den live stream) stays parked.

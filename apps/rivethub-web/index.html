@@ -41,10 +41,15 @@
             pref === 'dark' ||
             (pref !== 'light' && window.matchMedia('(prefers-color-scheme: dark)').matches)
         }
+        // Explicit Light/Dark render the rounded Material style; System and
+        // Omarchy keep classic (lib/theme.ts uiStyleFor).
+        var material = pref === 'light' || pref === 'dark'
         document.documentElement.dataset.theme = dark ? 'dark' : 'light'
+        document.documentElement.dataset.style = material ? 'material' : 'classic'
+        var canvas = material ? (dark ? '#0f1512' : '#e9f0eb') : dark ? '#0d1117' : '#f6f4ee'
         document
           .querySelector('meta[name="theme-color"]')
-          .setAttribute('content', themeColor || (dark ? '#0d1117' : '#f6f4ee'))
+          .setAttribute('content', themeColor || canvas)
       })()
     </script>
   </head>

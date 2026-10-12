@@ -76,7 +76,7 @@ export function Select(props: {
           title={props.title}
           aria-label={props['aria-label']}
           className={cn(
-            'h-8 min-w-[7rem] justify-between gap-2 font-mono text-xs font-normal',
+            'h-8 min-w-[7rem] justify-between gap-2 text-xs font-normal',
             props.className,
           )}
         >
@@ -87,14 +87,14 @@ export function Select(props: {
       <PopoverContent align={props.align ?? 'start'} className="min-w-[12rem] p-0">
         {(props.label || props.title) && (
           <PopoverHeader className="border-b border-line px-3 py-2">
-            <div className="font-mono text-xs text-ink-dim">{props.label ?? props.title}</div>
+            <div className="text-xs text-ink-dim">{props.label ?? props.title}</div>
           </PopoverHeader>
         )}
         <div className="max-h-72 overflow-y-auto p-1.5">
           {sections.map((sec) => (
             <div key={sec.group || '__flat'}>
               {sec.group ? (
-                <div className="px-2.5 py-1.5 font-mono text-[10px] uppercase tracking-wide text-ink-dim">
+                <div className="px-2.5 py-1.5 text-[11px] uppercase tracking-wider font-medium text-ink-dim classic:font-normal classic:text-[10px] classic:tracking-wide">
                   {sec.group}
                 </div>
               ) : null}
@@ -112,15 +112,15 @@ export function Select(props: {
                       setOpen(false)
                     }}
                     className={cn(
-                      'flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm transition-colors',
+                      'flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm transition-colors classic:px-2.5',
                       o.disabled
                         ? 'cursor-not-allowed text-ink-dim opacity-50'
                         : active
-                          ? 'bg-panel text-ink'
-                          : 'text-ink-dim hover:bg-panel hover:text-ink',
+                          ? 'bg-em-container text-on-em-container classic:bg-panel classic:text-ink'
+                          : 'text-ink-dim hover:bg-ink/8 hover:text-ink classic:hover:bg-panel',
                     )}
                   >
-                    <span className="min-w-0 flex-1 truncate font-mono text-xs">{o.label}</span>
+                    <span className="min-w-0 flex-1 truncate text-xs">{o.label}</span>
                     {active && <Check className="size-3.5 shrink-0 text-em" />}
                   </button>
                 )
