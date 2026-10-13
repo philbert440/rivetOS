@@ -44,6 +44,7 @@ import {
 import { createSyncLog, syncLogReducer, type SyncCause } from '../lib/session-sync-log.js'
 import { useIsNarrow } from '../lib/use-narrow.js'
 import {
+  acceptedTagOptions,
   filterRowsByTag,
   groupRowsByTag,
   tagIdentity,
@@ -194,18 +195,7 @@ export function SessionsPage(): JSX.Element {
     () => (groupKey ? groupRowsByTag(tagged, tagMap, groupKey) : null),
     [tagged, tagMap, groupKey],
   )
-  const tagFilterOptions = useMemo(() => {
-    const seen = new Map<string, string>()
-    for (const tags of tagMap.values())
-      for (const t of tags)
-        if (t.state === 'accepted') seen.set(tagIdentity(t), `${t.key}:${t.display || t.value}`)
-    return [
-      { value: '', label: 'any tag' },
-      ...[...seen.entries()]
-        .sort((a, b) => a[1].localeCompare(b[1]))
-        .map(([value, label]) => ({ value, label })),
-    ]
-  }, [tagMap])
+  const tagFilterOptions = useMemo(() => acceptedTagOptions(tagMap), [tagMap])
   // A filter whose tag is gone (removed, or datahub dropped) would leave an
   // empty list with no way back: settleTagFilters says what to keep.
   const hasTagEndpoint = tagEndpoint !== null

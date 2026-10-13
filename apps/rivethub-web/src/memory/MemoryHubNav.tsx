@@ -136,15 +136,24 @@ function MemoryHomeHeader(props: {
         ))}
       </div>
       <span className="grow" />
-      {toReview > 0 && (
+      {gateway && baseUrl && (
         <button
           type="button"
           onClick={() => go('tags')}
           aria-current={props.tab === 'tags' ? 'page' : undefined}
-          className="inline-flex items-center gap-1.5 rounded-pill bg-em-container px-3 py-1 text-sm text-on-em-container classic:rounded-none classic:border classic:border-em classic:bg-transparent classic:text-em"
+          className={cn(
+            'inline-flex items-center gap-1.5 rounded-pill px-3 py-1 text-sm classic:rounded-none',
+            toReview > 0
+              ? 'bg-em-container text-on-em-container classic:border classic:border-em classic:bg-transparent classic:text-em'
+              : props.tab === 'tags'
+                ? 'bg-panel-2 text-em'
+                : 'text-ink-dim hover:bg-panel-2 hover:text-ink',
+          )}
         >
           <Tags className="size-3.5" aria-hidden />
-          {toReview} {toReview === 1 ? 'tag' : 'tags'} to review
+          {toReview > 0
+            ? `${String(toReview)} ${toReview === 1 ? 'tag' : 'tags'} to review`
+            : 'Tags'}
         </button>
       )}
       {gateway && baseUrl && (

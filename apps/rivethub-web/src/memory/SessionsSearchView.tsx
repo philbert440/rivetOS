@@ -12,6 +12,7 @@ import { ChevronLeft, X } from 'lucide-react'
 import type { MemorySearchHit } from '@rivetos/types'
 import type { RivetGateway } from '@rivetos/gateway-client'
 import { Select } from '../components/select.js'
+import { TagChips } from '../components/tag-chips.js'
 import { HarnessBadge, StatusPill, sessionPathParam } from '../pages/sessions.js'
 import { shortNativeId } from '../lib/harness-chat.js'
 import {
@@ -21,7 +22,17 @@ import {
   type SessionListRow,
   type SessionStatusFilter,
 } from '../lib/session-list.js'
+import {
+  acceptedTagOptions,
+  filterRowsByTag,
+  sessionKeysOf,
+  sortTagsForChips,
+  tagIdentity,
+  tagsForRow,
+  type AnyTag,
+} from '../lib/session-tags.js'
 import { useSessionRows } from '../lib/use-session-rows.js'
+import { useSessionTagsLookup, useTagEndpoint, useTagMutations } from '../lib/use-session-tags.js'
 import { preview, relativeTime } from './format.js'
 import {
   excerpt,
@@ -62,6 +73,11 @@ function SessionCard(props: {
   expanded: boolean
   onToggle: () => void
   onOpen: (() => void) | undefined
+  tags: readonly AnyTag[]
+  onTagClick: (tag: AnyTag) => void
+  onAccept: (id: string) => void
+  onReject: (id: string) => void
+  tagsBusy: boolean
 }): JSX.Element {
   const { row, hits } = props.result
   const first = hits[0] as MemorySearchHit | undefined
@@ -106,6 +122,18 @@ function SessionCard(props: {
           </span>
         ))}
       </button>
+      {props.tags.length > 0 && (
+        <div className="mt-1.5">
+          <TagChips
+            tags={props.tags}
+            max={4}
+            onClick={props.onTagClick}
+            onAccept={props.onAccept}
+            onReject={props.onReject}
+            busy={props.tagsBusy}
+          />
+        </div>
+      )}
       {extra > 0 && (
         <button type="button" className="mt-1 text-xs text-em" onClick={props.onToggle}>
           {props.expanded ? 'Show fewer' : `+${String(extra)} more in this session`}
@@ -126,6 +154,7 @@ export function SessionsSearchView(props: {
   const [query, setQuery] = useState('')
   const [harnessFilter, setHarnessFilter] = useState('')
   const [statusFilter, setStatusFilter] = useState<SessionStatusFilter>('all')
+  const [tagFilter, setTagFilter] = useState('')
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set())
 
   useEffect(() => {
@@ -134,10 +163,13 @@ export function SessionsSearchView(props: {
   }, [input])
 
   const search = useQuery({
-    queryKey: ['memory-home-search', props.baseUrl, query],
+    queryKey: ['memory-home-search', props.baseUrl, query, tagFilter],
     enabled: query !== '',
     queryFn: ({ signal }) =>
-      props.gateway.memorySearch({ q: query, scope: 'both', limit: 50 }, signal),
+      props.gateway.memorySearch(
+        { q: query, scope: 'both', limit: 50, ...(tagFilter ? { tag: tagFilter } : {}) },
+        signal,
+      ),
   })
   const topics = useQuery({
     queryKey: ['memory-home-topics', props.baseUrl, query],
@@ -145,29 +177,51 @@ export function SessionsSearchView(props: {
     queryFn: ({ signal }) => props.gateway.wikiIndex({ q: query, limit: 3 }, signal),
   })
 
-  const filtersOn = harnessFilter !== '' || statusFilter !== 'all'
-  const filtered = useMemo(
+  // Tags live on datahub, not the node: look them up for every listed row.
+  const tagEndpoint = useTagEndpoint()
+  const sessionKeys = useMemo(() => sessionKeysOf(rows), [rows])
+  const { map: tagMap } = useSessionTagsLookup(tagEndpoint, sessionKeys)
+  const tagMutations = useTagMutations(tagEndpoint)
+  const tagOptions = useMemo(() => acceptedTagOptions(tagMap), [tagMap])
+
+  // Harness and status are known only for node rows; search hits outside the
+  // node are dropped when either is set. The tag filter also goes to search.
+  const narrowed = harnessFilter !== '' || statusFilter !== 'all'
+  const filtersOn = narrowed || tagFilter !== ''
+  const base = useMemo(
     () => filterSessionList(rows, { harnessId: harnessFilter, status: statusFilter, text: '' }),
     [rows, harnessFilter, statusFilter],
+  )
+  const filtered = useMemo(
+    () => filterRowsByTag(base, tagMap, tagFilter),
+    [base, tagMap, tagFilter],
   )
   const titleMatches = useMemo(
     () =>
       input.trim()
-        ? filterSessionList(rows, { harnessId: harnessFilter, status: statusFilter, text: input })
+        ? filterRowsByTag(
+            filterSessionList(rows, {
+              harnessId: harnessFilter,
+              status: statusFilter,
+              text: input,
+            }),
+            tagMap,
+            tagFilter,
+          )
         : [],
-    [rows, harnessFilter, statusFilter, input],
+    [rows, harnessFilter, statusFilter, input, tagMap, tagFilter],
   )
   const results = useMemo(
     () =>
       sessionResults(
         query === input.trim() ? (search.data?.results ?? []) : [],
-        filtered,
+        base,
         titleMatches,
         {
-          onlyKnownRows: filtersOn,
+          onlyKnownRows: narrowed,
         },
       ),
-    [search.data, filtered, titleMatches, filtersOn, query, input],
+    [search.data, base, titleMatches, narrowed, query, input],
   )
   const groups = useMemo(() => groupRowsByDay(filtered), [filtered])
   const harnessOptions = useMemo(
@@ -183,6 +237,7 @@ export function SessionsSearchView(props: {
     setQuery('')
     setHarnessFilter('')
     setStatusFilter('all')
+    setTagFilter('')
     setExpanded(new Set())
   }
   function toggle(key: string): void {
@@ -201,6 +256,22 @@ export function SessionsSearchView(props: {
     }
     const sessionId = r.hits[0]?.sessionId
     return sessionId ? () => props.onOpenSession(sessionId) : undefined
+  }
+
+  function cardTagProps(r: SessionResult): {
+    tags: AnyTag[]
+    onTagClick: (t: AnyTag) => void
+    onAccept: (id: string) => void
+    onReject: (id: string) => void
+    tagsBusy: boolean
+  } {
+    return {
+      tags: r.row ? sortTagsForChips(tagsForRow(tagMap, r.row)) : [],
+      onTagClick: (t) => setTagFilter(tagIdentity(t)),
+      onAccept: (id) => void tagMutations.decide([id], 'accepted'),
+      onReject: (id) => void tagMutations.decide([id], 'rejected'),
+      tagsBusy: tagMutations.busy,
+    }
   }
 
   const typing = input.trim() !== ''
@@ -245,6 +316,15 @@ export function SessionsSearchView(props: {
             { value: 'ended', label: 'Ended' },
           ]}
         />
+        {tagOptions.length > 1 && (
+          <Select
+            value={tagFilter}
+            title="tag filter"
+            label="Tag"
+            onChange={setTagFilter}
+            options={tagOptions}
+          />
+        )}
       </div>
 
       <div className="flex flex-wrap items-center gap-3 text-sm text-ink-dim" role="status">
@@ -313,6 +393,7 @@ export function SessionsSearchView(props: {
                 expanded={expanded.has(r.key)}
                 onToggle={() => toggle(r.key)}
                 onOpen={openerFor(r)}
+                {...cardTagProps(r)}
               />
             ))}
           </ul>
@@ -343,6 +424,7 @@ export function SessionsSearchView(props: {
                     expanded={false}
                     onToggle={() => undefined}
                     onOpen={openerFor(r)}
+                    {...cardTagProps(r)}
                   />
                 )
               })}
