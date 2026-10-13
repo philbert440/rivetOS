@@ -1,7 +1,7 @@
 import { memo, useEffect, useMemo, useRef, useState, type JSX, type ReactNode } from 'react'
 import { ArrowDown, ArrowUp, Check, Clock3, Copy, Zap } from 'lucide-react'
 import type { HarnessTranscriptTool, MessageUsage, SessionMessage } from '@rivetos/types'
-import type { LiveTurn, LiveToolEntry } from '../lib/fold-stream.js'
+import { storedToolStatus, type LiveTurn, type LiveToolEntry } from '../lib/fold-stream.js'
 import { humanToolTitle, type ToolArgs } from '../lib/tool-titles.js'
 import { formatSpinnerMeta, parseSpinnerMeta } from '../lib/spinner-meta.js'
 import { copyTextToClipboard } from '../lib/clipboard.js'
@@ -9,9 +9,15 @@ import { Markdown } from './markdown.js'
 import { SpeakMessage } from './speak-message.js'
 
 /** Transcript-sourced tool → the live stack's entry shape (same renderer). */
-function toLiveTool(t: HarnessTranscriptTool, id: string): LiveToolEntry {
+function toLiveTool(t: HarnessTranscriptTool, id: string, over: boolean): LiveToolEntry {
   const args: ToolArgs = t.args
-  return { id, name: t.name, title: humanToolTitle(t.name, args), status: t.status, args }
+  return {
+    id,
+    name: t.name,
+    title: humanToolTitle(t.name, args),
+    status: storedToolStatus(t.status, over),
+    args,
+  }
 }
 
 /** Time-only stamp; cold-backfilled messages carry ts:0 (timestamp lost on
@@ -35,7 +41,7 @@ function NerdLine(props: { usage: MessageUsage; durationMs?: number }): JSX.Elem
   const secs = props.durationMs && props.durationMs > 0 ? props.durationMs / 1000 : 0
   const tps = secs > 0 && completionTokens > 0 ? completionTokens / secs : 0
   return (
-    <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 px-1 font-mono text-[10px] text-ink-dim/70">
+    <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 px-1 text-[11px] text-ink-dim/70 classic:text-[10px]">
       <span className="inline-flex items-center gap-1" title="prompt tokens">
         <ArrowUp className="size-3" />
         {fmt(promptTokens)}
@@ -68,7 +74,7 @@ function ToolStack(props: { tools: LiveToolEntry[] }): JSX.Element | null {
       {props.tools.map((t) => (
         <div
           key={t.id}
-          className="flex items-center gap-2 rounded border border-line bg-bg/60 px-2 py-1 font-mono text-[11px] text-ink-dim"
+          className="flex items-center gap-2.5 rounded-xl bg-panel-2 px-3 py-2 font-mono text-[11px] text-ink-dim classic:bg-bg/60 classic:border classic:border-line classic:gap-2 classic:px-2 classic:py-1"
         >
           <span
             className={
@@ -80,7 +86,9 @@ function ToolStack(props: { tools: LiveToolEntry[] }): JSX.Element | null {
             }
           />
           <span className="truncate text-ink">{t.title}</span>
-          <span className="ml-auto shrink-0 text-[10px] opacity-70">{t.status}</span>
+          <span className="ml-auto shrink-0 font-sans text-[11px] opacity-70 classic:text-[10px]">
+            {t.status}
+          </span>
         </div>
       ))}
     </div>
@@ -127,17 +135,17 @@ function ReasoningBlock(props: { text: string; open?: boolean }): JSX.Element | 
   const display = useSpinnerTick(props.text)
   if (!props.text.trim()) return null
   return (
-    <div className="mb-2 rounded border border-line/80 bg-bg/40">
+    <div className="mb-2 overflow-hidden rounded-xl bg-panel-2 classic:bg-bg/40 classic:border classic:border-line/80">
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
-        className="flex w-full items-center gap-2 px-2 py-1 font-mono text-[11px] text-ink-dim hover:text-ink"
+        className="flex w-full items-center gap-2 px-3 py-2 text-xs font-medium text-ink-dim hover:bg-ink/5 hover:text-ink classic:font-normal classic:hover:bg-transparent classic:px-2 classic:py-1 classic:text-[11px]"
       >
         <span>{open ? '▾' : '▸'}</span>
         <span>thinking</span>
       </button>
       {open && (
-        <div className="border-t border-line/60 px-2 py-1.5 font-mono text-[11px] leading-relaxed text-ink-dim whitespace-pre-wrap">
+        <div className="border-t border-line/50 px-3 py-2 font-mono text-[11px] leading-relaxed text-ink-dim whitespace-pre-wrap classic:border-line/60 classic:px-2 classic:py-1.5">
           {display}
         </div>
       )}
@@ -145,9 +153,11 @@ function ReasoningBlock(props: { text: string; open?: boolean }): JSX.Element | 
   )
 }
 
-/** Name + model + timestamp row above a message: a mono `rivet ›` label for
- *  the assistant (no avatar), `you ›` right-aligned for the user. `accent`
- *  colors the label per harness (claude clay / grok grey / emerald). */
+/** Name + model + timestamp row above a message. Material: an accent dot and
+ *  `rivet` for the assistant, a quiet `You` right-aligned over the user's
+ *  bubble. Classic: a mono `rivet ›` label (no avatar), `you ›` for the
+ *  user. `accent` colors the label per harness (claude clay / grok grey /
+ *  emerald). */
 function AvatarRow(props: {
   mine: boolean
   ts?: number
@@ -158,25 +168,34 @@ function AvatarRow(props: {
   if (props.mine) {
     return (
       <div className="flex items-center justify-end gap-2 px-1">
-        <span className="font-mono text-sm font-bold text-em">you ›</span>
-        {time && <span className="font-mono text-[10px] text-ink-dim">{time}</span>}
+        <span className="text-xs font-medium text-ink-dim classic:hidden">You</span>
+        <span className="text-sm font-bold text-em material:hidden">you ›</span>
+        {time && <span className="text-[11px] text-ink-dim classic:text-[10px]">{time}</span>}
       </div>
     )
   }
   return (
     <div className="flex items-center gap-2 px-1">
       <span
-        className="font-mono text-sm font-bold"
-        style={{ color: props.accent ?? 'var(--color-em, #34d399)' }}
+        className="size-2.5 shrink-0 rounded-full classic:hidden"
+        style={{ background: props.accent ?? 'var(--color-em)' }}
+        aria-hidden
+      />
+      <span
+        className="text-[13px] font-semibold classic:font-bold classic:text-sm"
+        style={{ color: props.accent ?? 'var(--color-em)' }}
       >
-        rivet ›
+        rivet<span className="material:hidden"> ›</span>
       </span>
       {props.model && (
-        <span className="truncate font-mono text-[10px] text-ink-dim" title={props.model}>
+        <span
+          className="truncate font-mono text-[11px] text-ink-dim classic:text-[10px]"
+          title={props.model}
+        >
           {props.model}
         </span>
       )}
-      {time && <span className="font-mono text-[10px] text-ink-dim">{time}</span>}
+      {time && <span className="text-[11px] text-ink-dim classic:text-[10px]">{time}</span>}
     </div>
   )
 }
@@ -234,7 +253,7 @@ function CopyMessage(props: { text: string }): JSX.Element {
       }}
       // opacity, not visibility: a visibility-hidden control drops out of the
       // tab order, so keyboard users could never reach copy at all
-      className="absolute top-0 right-1 rounded border border-line bg-panel/90 p-1 text-ink-dim opacity-0 transition-opacity group-hover/msg:opacity-100 focus-visible:opacity-100 [@media(pointer:coarse)]:opacity-100 hover:text-em"
+      className="absolute top-0 right-1 rounded-pill border border-line bg-surface/90 p-1.5 text-ink-dim opacity-0 transition-opacity group-hover/msg:opacity-100 focus-visible:opacity-100 [@media(pointer:coarse)]:opacity-100 hover:text-em classic:bg-panel/90 classic:p-1"
     >
       {state === 'copied' ? (
         <Check className="size-3 text-em" />
@@ -254,14 +273,17 @@ const Bubble = memo(function Bubble(props: {
   outboundStatus?: 'sending' | 'failed'
   /** Why a failed send didn't land (lib/send-block-note.ts); replaces "send failed". */
   outboundNote?: string
+  /** This message's turn has ended (see `Transcript` `idle`). */
+  over?: boolean
 }): JSX.Element {
   const mine = props.msg.role === 'user'
+  const over = props.over === true
   const tools = useMemo(
     () =>
       props.msg.tools && props.msg.tools.length > 0
-        ? props.msg.tools.map((t, i) => toLiveTool(t, `${props.msg.id}:${String(i)}`))
+        ? props.msg.tools.map((t, i) => toLiveTool(t, `${props.msg.id}:${String(i)}`, over))
         : undefined,
-    [props.msg],
+    [props.msg, over],
   )
   return (
     <Row
@@ -274,12 +296,12 @@ const Bubble = memo(function Bubble(props: {
       {mine ? (
         // User text is plain — right-aligned bubble, no markdown.
         <div className="relative max-w-[85%]">
-          <div className="whitespace-pre-wrap rounded-lg border border-em-dim/40 bg-em-dim/10 px-4 py-2.5 text-sm">
+          <div className="whitespace-pre-wrap rounded-2xl rounded-br-md bg-em-container px-4 py-2.5 text-sm text-on-em-container classic:text-ink classic:bg-em-dim/10 classic:border classic:border-em-dim/40">
             {props.msg.text}
           </div>
           {props.msg.text && <CopyMessage text={props.msg.text} />}
           {props.outboundStatus && (
-            <div className="mt-1 flex items-center justify-end gap-2 px-1 font-mono text-[10px] text-ink-dim">
+            <div className="mt-1 flex items-center justify-end gap-2 px-1 text-[11px] text-ink-dim classic:text-[10px]">
               <span>
                 {props.outboundStatus === 'failed'
                   ? `${props.outboundNote ?? 'send failed'} — retry below`
@@ -310,7 +332,7 @@ const Bubble = memo(function Bubble(props: {
 /** Status line when the agent is blocked/prompting with no live turn yet. */
 export function AgentStatusLine(props: { text: string; tool?: string }): JSX.Element {
   return (
-    <div className="flex items-center gap-2 px-1 font-mono text-[11px] text-ink-dim">
+    <div className="flex items-center gap-2 px-1 text-xs text-ink-dim classic:text-[11px]">
       <span className="relative flex size-2">
         <span className="absolute inline-flex size-full animate-ping rounded-full bg-em opacity-60" />
         <span className="relative inline-flex size-2 rounded-full bg-em" />
@@ -355,7 +377,7 @@ function LiveBubble(props: { turn: LiveTurn; accent?: string }): JSX.Element {
             )}
           </div>
         ) : null}
-        <div className="mt-1.5 flex items-center gap-2 font-mono text-[11px] text-ink-dim">
+        <div className="mt-1.5 flex items-center gap-2 text-xs text-ink-dim classic:text-[11px]">
           <span className="relative flex size-2">
             <span className="absolute inline-flex size-full animate-ping rounded-full bg-em opacity-60" />
             <span className="relative inline-flex size-2 rounded-full bg-em" />
@@ -389,6 +411,9 @@ export function Transcript(props: {
   statusLine?: { text: string; tool?: string }
   /** per-harness bot accent (claude clay / grok grey / local emerald) */
   accent?: string
+  /** The session is idle: no turn is running, so none of these messages is
+   *  still being written. Unset = unknown (tools render as stored). */
+  idle?: boolean
 }): JSX.Element {
   const scrollRef = useRef<HTMLDivElement>(null)
   const endRef = useRef<HTMLDivElement>(null)
@@ -448,6 +473,7 @@ export function Transcript(props: {
               offscreenSkip={i < props.messages.length - CV_EDGE_ROWS}
               outboundStatus={props.outbound?.[m.id]}
               outboundNote={props.outboundNotes?.[m.id]}
+              over={props.idle === true || i < props.messages.length - 1}
             />
           ))}
           {props.live && <LiveBubble turn={props.live} accent={props.accent} />}
@@ -461,7 +487,7 @@ export function Transcript(props: {
         <button
           type="button"
           onClick={jumpToLatest}
-          className="absolute bottom-4 left-1/2 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-em-dim/50 bg-panel px-3 py-1.5 font-mono text-[11px] text-em shadow-lg shadow-bg/50 hover:bg-em-dim/20"
+          className="absolute bottom-4 left-1/2 flex -translate-x-1/2 items-center gap-1.5 rounded-pill bg-em-container px-4 py-2 text-xs font-medium text-on-em-container shadow-pop hover:bg-em-container/85 classic:bg-panel classic:border classic:border-em-dim/50 classic:font-normal classic:hover:bg-em-dim/20 classic:px-3 classic:py-1.5 classic:text-[11px] classic:text-em"
         >
           <ArrowDown className="size-3.5" />
           latest

@@ -148,7 +148,12 @@ export function appXtermTheme(resolved: ResolvedTheme, ansi?: TerminalPalette['a
   } else {
     const css = getComputedStyle(document.documentElement)
     const v = (name: string): string => css.getPropertyValue(name).trim()
-    const background = v('--color-bg')
+    // Material: the terminal sits on the rounded page tile, so it takes the
+    // tile's surface. Classic keeps the canvas color.
+    // Partial: test doubles stand in a bare documentElement.
+    const root: Partial<HTMLElement> = document.documentElement
+    const material = root.dataset?.style === 'material'
+    const background = (material && v('--color-surface')) || v('--color-bg')
     const foreground = v('--color-ink')
     const cursor = v('--color-em')
     theme =

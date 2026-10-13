@@ -174,6 +174,29 @@ describe('createTranscriptWatcher', () => {
     expect(real.turns.map((t) => t.text)).toEqual(['first ever turn'])
   })
 
+  it('sync() starts watching a store that appeared between resolve polls', async () => {
+    const { dir } = claudeStore()
+    const id = 'aaaaaaaa-0000-0000-0000-000000000007'
+    const file = join(dir, `${id}.jsonl`)
+
+    const frames: SessionWsFrame[] = []
+    // A resolve poll that never fires inside the test: only sync() can find it.
+    watcher = createTranscriptWatcher((f) => frames.push(f), { ...FAST, resolvePollMs: 60_000 })
+    watcher.watch(id)
+    await until(() => transcripts(frames).find((f) => f.command === ''))
+
+    writeFileSync(file, userLine('first turn'))
+    watcher.sync(id)
+    await until(() => transcripts(frames).find((f) => f.command === 'claude'))
+
+    // Watched now: the next write arrives without another sync.
+    appendFileSync(file, assistantLine('reply'))
+    const grown = await until(() =>
+      transcripts(frames).find((f) => f.turns.some((t) => t.text === 'reply')),
+    )
+    expect(grown.total).toBe(2)
+  })
+
   it('sync() re-emits a full snapshot; unwatch stops the flow', async () => {
     const { dir } = claudeStore()
     const id = 'aaaaaaaa-0000-0000-0000-000000000004'

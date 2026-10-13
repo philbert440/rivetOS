@@ -64,7 +64,7 @@ function SavedNodesSection(): JSX.Element {
 
   return (
     <>
-      <h2 className="mt-10 mb-3 border-t border-line pt-6 font-mono text-sm font-semibold text-em">
+      <h2 className="mt-10 mb-3 border-t border-line/60 pt-6 text-base font-semibold text-ink classic:border-line classic:text-em classic:text-sm">
         Saved nodes
       </h2>
       {roster.length === 0 && <p className="text-xs text-ink-dim">No saved nodes yet.</p>}
@@ -75,24 +75,24 @@ function SavedNodesSection(): JSX.Element {
               value={draftName}
               onChange={(e) => setDraftName(e.target.value)}
               placeholder="Name"
-              className="mb-1 w-full rounded border border-line bg-panel-2 px-2 py-1 font-mono text-xs outline-none focus:border-em"
+              className="mb-1 w-full rounded-lg border border-line bg-panel-2 px-2 py-1 font-mono text-xs outline-none focus:border-em"
             />
             <input
               value={draftNodeUrl}
               onChange={(e) => setDraftNodeUrl(e.target.value)}
               placeholder="https://node-host:5174"
-              className="mb-2 w-full rounded border border-line bg-panel-2 px-2 py-1 font-mono text-xs outline-none focus:border-em"
+              className="mb-2 w-full rounded-lg border border-line bg-panel-2 px-2 py-1 font-mono text-xs outline-none focus:border-em"
             />
             <div className="flex gap-2">
               <button
                 onClick={commitEdit}
-                className="rounded bg-em-dim px-3 py-1 text-xs font-medium text-bg hover:bg-em"
+                className="rounded-pill bg-em px-3 py-1 text-xs font-medium text-on-em hover:bg-em-dim classic:bg-em-dim classic:hover:bg-em classic:text-bg"
               >
                 Save
               </button>
               <button
                 onClick={() => setEditing(null)}
-                className="rounded border border-line px-3 py-1 text-xs hover:border-em"
+                className="rounded-pill border border-line px-3 py-1 text-xs hover:bg-ink/6 classic:hover:bg-transparent classic:hover:border-em"
               >
                 Cancel
               </button>
@@ -107,14 +107,14 @@ function SavedNodesSection(): JSX.Element {
             </span>
             <button
               onClick={() => beginEdit(n.name, n.baseUrl)}
-              className="rounded border border-line px-2 py-0.5 text-xs text-ink-dim hover:border-em hover:text-ink"
+              className="rounded-pill border border-line px-2 py-0.5 text-xs text-ink-dim hover:bg-ink/6 hover:text-ink classic:hover:bg-transparent classic:hover:border-em"
               aria-label={`edit ${n.name}`}
             >
               Edit
             </button>
             <button
               onClick={() => removeNode(n.baseUrl)}
-              className="rounded border border-line px-2 py-0.5 text-xs text-ink-dim hover:border-em hover:text-red"
+              className="rounded-pill border border-line px-2 py-0.5 text-xs text-ink-dim hover:bg-ink/6 hover:text-red classic:hover:bg-transparent classic:hover:border-em"
               aria-label={`remove ${n.name}`}
             >
               Remove
@@ -122,7 +122,7 @@ function SavedNodesSection(): JSX.Element {
           </div>
         ),
       )}
-      {notice && <p className="mt-1 font-mono text-[10px] text-ink-dim">{notice}</p>}
+      {notice && <p className="mt-1 text-[11px] text-ink-dim classic:text-[10px]">{notice}</p>}
     </>
   )
 }
@@ -141,12 +141,12 @@ function AgentsSettingsBlock(): JSX.Element {
   const row = (label: string, value: string | undefined): JSX.Element => (
     <div className="mb-1 flex gap-2 text-xs">
       <span className="w-32 shrink-0 text-ink-dim">{label}</span>
-      <span className="min-w-0 break-all font-mono text-ink">{value || '—'}</span>
+      <span className="min-w-0 break-all text-ink">{value || '—'}</span>
     </div>
   )
   return (
     <>
-      <h2 className="mt-10 mb-3 border-t border-line pt-6 font-mono text-sm font-semibold text-em">
+      <h2 className="mt-10 mb-3 border-t border-line/60 pt-6 text-base font-semibold text-ink classic:border-line classic:text-em classic:text-sm">
         Agents
       </h2>
       <p className="mb-3 text-xs text-ink-dim">
@@ -231,14 +231,16 @@ export function SettingsPage(): JSX.Element {
 
   return (
     <div className="mx-auto max-w-xl px-4 py-8 md:px-6">
-      <h1 className="mb-6 font-mono text-lg font-semibold text-em">Settings</h1>
+      <h1 className="mb-6 text-[22px] font-semibold text-ink classic:text-em classic:text-lg">
+        Settings
+      </h1>
 
       <label className="mb-1 block text-xs text-ink-dim">Gateway URL (origin only)</label>
       <input
         value={draftUrl}
         onChange={(e) => setDraftUrl(e.target.value)}
         placeholder="https://node-host:5174"
-        className="mb-2 w-full rounded border border-line bg-panel px-3 py-2 font-mono text-sm outline-none focus:border-em"
+        className="mb-2 w-full rounded-lg border border-line bg-panel px-3 py-2 font-mono text-sm outline-none focus:border-em"
       />
       <p className="mb-6 text-xs text-ink-dim">
         Auth is a Rivet CA <span className="font-mono">device:</span> client certificate installed
@@ -249,19 +251,19 @@ export function SettingsPage(): JSX.Element {
       <div className="flex items-center gap-3">
         <button
           onClick={() => void test()}
-          className="rounded border border-line bg-panel-2 px-4 py-2 text-sm hover:border-em"
+          className="rounded-pill border border-line bg-panel-2 px-4 py-2 text-sm hover:bg-ink/6 classic:hover:border-em"
         >
           Test connection
         </button>
         <button
           onClick={save}
-          className="rounded bg-em-dim px-4 py-2 text-sm font-medium text-bg hover:bg-em"
+          className="rounded-pill bg-em px-4 py-2 text-sm font-medium text-on-em hover:bg-em-dim classic:bg-em-dim classic:hover:bg-em classic:text-bg"
         >
           Save
         </button>
       </div>
 
-      <div className="mt-4 min-h-6 font-mono text-sm">
+      <div className="mt-4 min-h-6 text-sm">
         {probe.kind === 'testing' && <span className="text-ink-dim">probing…</span>}
         {probe.kind === 'ok' && (
           <span className="text-em">
@@ -271,7 +273,7 @@ export function SettingsPage(): JSX.Element {
         {probe.kind === 'fail' && <span className="text-red">✗ {probe.message}</span>}
       </div>
 
-      <h2 className="mt-10 mb-3 border-t border-line pt-6 font-mono text-sm font-semibold text-em">
+      <h2 className="mt-10 mb-3 border-t border-line/60 pt-6 text-base font-semibold text-ink classic:border-line classic:text-em classic:text-sm">
         Appearance
       </h2>
       <div className="flex items-center gap-3">
@@ -296,8 +298,8 @@ export function SettingsPage(): JSX.Element {
               }}
               className={
                 themePreference === value
-                  ? 'rounded bg-em-dim px-4 py-2 text-sm font-medium text-bg'
-                  : 'rounded border border-line bg-panel-2 px-4 py-2 text-sm hover:border-em'
+                  ? 'rounded-pill bg-em px-4 py-2 text-sm font-medium text-on-em classic:bg-em-dim classic:text-bg'
+                  : 'rounded-pill border border-line bg-panel-2 px-4 py-2 text-sm hover:bg-ink/6 classic:hover:border-em'
               }
             >
               {label}
@@ -335,7 +337,7 @@ export function SettingsPage(): JSX.Element {
 
       <TerminalSection />
 
-      <h2 className="mt-10 mb-3 border-t border-line pt-6 font-mono text-sm font-semibold text-em">
+      <h2 className="mt-10 mb-3 border-t border-line/60 pt-6 text-base font-semibold text-ink classic:border-line classic:text-em classic:text-sm">
         Experimental features
       </h2>
       <p className="mb-3 text-xs text-ink-dim">These are unfinished — turn them on to try them.</p>
@@ -358,7 +360,7 @@ export function SettingsPage(): JSX.Element {
 
       <AgentsSettingsBlock />
 
-      <h2 className="mt-10 mb-3 border-t border-line pt-6 font-mono text-sm font-semibold text-em">
+      <h2 className="mt-10 mb-3 border-t border-line/60 pt-6 text-base font-semibold text-ink classic:border-line classic:text-em classic:text-sm">
         Memory wiki (datahub)
       </h2>
       <p className="mb-3 text-xs text-ink-dim">
@@ -374,7 +376,7 @@ export function SettingsPage(): JSX.Element {
         value={draftWiki}
         onChange={(e) => setDraftWiki(e.target.value)}
         placeholder="https://datahub-host:5174"
-        className="mb-3 w-full rounded border border-line bg-panel px-3 py-2 font-mono text-sm outline-none focus:border-em"
+        className="mb-3 w-full rounded-lg border border-line bg-panel px-3 py-2 font-mono text-sm outline-none focus:border-em"
       />
       <div className="flex items-center gap-3">
         <button
@@ -391,13 +393,11 @@ export function SettingsPage(): JSX.Element {
               saved ? '✓ saved datahub origin' : '✓ cleared — will discover datahub from mesh',
             )
           }}
-          className="rounded bg-em-dim px-4 py-2 text-sm font-medium text-bg hover:bg-em"
+          className="rounded-pill bg-em px-4 py-2 text-sm font-medium text-on-em hover:bg-em-dim classic:bg-em-dim classic:hover:bg-em classic:text-bg"
         >
           Save datahub URL
         </button>
-        <span
-          className={`font-mono text-sm ${wikiNotice.startsWith('✗') ? 'text-red' : 'text-em'}`}
-        >
+        <span className={`text-sm ${wikiNotice.startsWith('✗') ? 'text-red' : 'text-em'}`}>
           {wikiNotice}
         </span>
       </div>
@@ -410,7 +410,7 @@ export function SettingsPage(): JSX.Element {
 
       {/* Build stamp — the desktop shell bakes this dist in at build time, so
           this line is how you tell whether a binary has gone stale. */}
-      <div className="mt-10 border-t border-line pt-3 font-mono text-[11px] text-ink-dim">
+      <div className="mt-10 border-t border-line pt-3 text-xs text-ink-dim classic:text-[11px]">
         RivetHub v{BUILD_INFO.version} · dist {BUILD_INFO.sha} · built {BUILD_INFO.builtAt}
       </div>
     </div>
@@ -423,7 +423,7 @@ function ConversationsSection(): JSX.Element {
   const setDefaultView = useConversationView((s) => s.setDefaultView)
   return (
     <>
-      <h2 className="mt-10 mb-3 border-t border-line pt-6 font-mono text-sm font-semibold text-em">
+      <h2 className="mt-10 mb-3 border-t border-line/60 pt-6 text-base font-semibold text-ink classic:border-line classic:text-em classic:text-sm">
         Conversations
       </h2>
       <div className="flex items-center gap-3">
@@ -442,8 +442,8 @@ function ConversationsSection(): JSX.Element {
               onClick={() => setDefaultView(value)}
               className={
                 defaultView === value
-                  ? 'rounded bg-em-dim px-4 py-2 text-sm font-medium text-bg'
-                  : 'rounded border border-line bg-panel-2 px-4 py-2 text-sm hover:border-em'
+                  ? 'rounded-pill bg-em px-4 py-2 text-sm font-medium text-on-em classic:bg-em-dim classic:text-bg'
+                  : 'rounded-pill border border-line bg-panel-2 px-4 py-2 text-sm hover:bg-ink/6 classic:hover:border-em'
               }
             >
               {label}

@@ -30,7 +30,7 @@ import {
   overlayEdgeKind,
   type CanvasSceneColors,
 } from '../lib/workflow-runs/flow-overlay.js'
-import { useResolvedTheme } from '../stores/theme.js'
+import { useResolvedTheme, useUiStyle } from '../stores/theme.js'
 import { GRAPH_NODE_STATUS_LABELS, type GraphNodeStatus } from '../lib/workflow-runs/status.js'
 
 const FAMILY_FILL: Record<FlowNodeFamily, string> = {
@@ -338,6 +338,7 @@ export function FlowsCanvas(props: FlowsCanvasProps): JSX.Element {
   } | null>(null)
   const [pulse, setPulse] = useState(0)
   const resolvedTheme = useResolvedTheme()
+  const uiStyle = useUiStyle()
   const liveOverlay = Boolean(
     statusById && Object.values(statusById).some((s) => isLiveNodeStatus(s)),
   )
@@ -369,9 +370,20 @@ export function FlowsCanvas(props: FlowsCanvasProps): JSX.Element {
       selectedEdgeId ?? undefined,
       cssW,
       cssH,
-      canvasSceneColors(resolvedTheme),
+      canvasSceneColors(resolvedTheme, uiStyle),
     )
-  }, [graph, pan, selectedId, hover, connecting, statusById, pulse, selectedEdgeId, resolvedTheme])
+  }, [
+    graph,
+    pan,
+    selectedId,
+    hover,
+    connecting,
+    statusById,
+    pulse,
+    selectedEdgeId,
+    resolvedTheme,
+    uiStyle,
+  ])
 
   useEffect(() => {
     paint()
