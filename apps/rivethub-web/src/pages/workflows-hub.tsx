@@ -1,34 +1,28 @@
 /**
- * Workflows hub (slices C + H) — defs list, contract trigger form, run detail
- * with journal timeline / graph projection, gate resume, kill, and child-run tree.
+ * Workflows hub (slices C + H) — home (search, needs-you, workflow cards,
+ * runs) and run detail with journal timeline / graph projection, gate
+ * resume, kill, and child-run tree. The per-workflow page is workflow-page.tsx.
  *
  * Live updates: 3s polling on run detail while status is live; 5s on hub list.
  * Graph is a flows workbench (canvas + inspector) projecting outline + journal.
  * Files remain source of truth. WS deltas deferred.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState, type JSX } from 'react'
+import { useEffect, useMemo, useRef, useState, type JSX } from 'react'
 import { Link, useNavigate, useParams } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import type {
-  WorkflowField,
-  WorkflowOpenGate,
-  WorkflowRunDetail,
-  WorkflowRunStatus,
-  WorkflowRunSummary,
-} from '@rivetos/types'
+import type { WorkflowDefSummary, WorkflowOpenGate, WorkflowRunDetail } from '@rivetos/types'
 import { GatewayError } from '@rivetos/gateway-client'
 import { useConnection } from '../stores/connection.js'
-import { useIsNarrow } from '../lib/use-narrow.js'
 import { joinRel } from '../lib/files-ui.js'
-import { useWorkflowDirtyGuard } from '../lib/workflow-dirty-guard.js'
 import { NotConnected, useGatewayReady } from '../components/not-connected.js'
 import { SegmentedControl } from '../components/segmented-control.js'
+import { Select } from '../components/select.js'
 import { useConfirmDialog } from '../components/confirm-dialog.js'
 import { WorkflowContractForm } from '../components/workflow-contract-form.js'
-import { WorkflowEditPanel } from '../components/workflow-edit-panel.js'
-import { FlowsAuthor } from '../components/flows-author.js'
 import { FlowsWorkbench } from '../components/flows-workbench.js'
+import { NewWorkflowDialog } from '../components/new-workflow-dialog.js'
+import { RunListRow, StatusChip } from '../components/workflow-run-ui.js'
 import {
   authorGraphFromProjection,
   emptyFormValues,
@@ -41,12 +35,15 @@ import {
   parseFlowsFile,
   parseFormValues,
   projectGraph,
-  RUN_STATUS_COLORS,
-  RUN_STATUS_LABELS,
   childRunIdByIdForCanvas,
+  matchesWorkflowQuery,
+  relativeTime,
+  RUN_STATUS_FILTERS,
+  runDisplayName,
   statusByIdForCanvas,
   type FieldFormValues,
   type FieldIssues,
+  type RunStatusFilter,
 } from '../lib/workflow-runs/index.js'
 
 const LIST_POLL_MS = 5_000
@@ -60,14 +57,55 @@ const DETAIL_POLL_MS = 3_000
 const LATCH_FAILSAFE_MS = 30_000
 
 // ---------------------------------------------------------------------------
-// Hub list — defs + recent runs
+// Hub home — search, needs-you strip, workflow cards, filterable runs
 // ---------------------------------------------------------------------------
+
+const RUN_LIST_LIMIT = 100
+const SEARCH_DEBOUNCE_MS = 250
+
+const STATUS_FILTER_OPTIONS: { value: RunStatusFilter; label: string }[] = [
+  { value: 'all', label: 'All' },
+  { value: 'live', label: 'Live' },
+  { value: 'waiting', label: 'Waiting' },
+  { value: 'failed', label: 'Failed' },
+  { value: 'done', label: 'Done' },
+]
+
+function useDebounced<T>(value: T, ms: number): T {
+  const [debounced, setDebounced] = useState(value)
+  useEffect(() => {
+    const t = setTimeout(() => setDebounced(value), ms)
+    return () => clearTimeout(t)
+  }, [value, ms])
+  return debounced
+}
 
 export function WorkflowsHubPage(): JSX.Element {
   const baseUrl = useConnection((s) => s.baseUrl)
   const navigate = useNavigate()
   const connected = useGatewayReady()
 
+  const [query, setQuery] = useState('')
+  const [statusFilter, setStatusFilter] = useState<RunStatusFilter>('all')
+  const [workflowFilter, setWorkflowFilter] = useState('')
+  /** undefined = closed; '' = blank; an id = duplicate that def. */
+  const [creating, setCreating] = useState<string | undefined>()
+  const searchRef = useRef<HTMLInputElement>(null)
+  const q = useDebounced(query.trim(), SEARCH_DEBOUNCE_MS)
+
+  // `/` focuses search, unless the user is already typing somewhere.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key !== '/' || e.metaKey || e.ctrlKey || e.altKey) return
+      const t = e.target as HTMLElement | null
+      if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return
+      e.preventDefault()
+      searchRef.current?.focus()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
   const defs = useQuery({
     queryKey: ['workflows', baseUrl],
     enabled: connected,
@@ -75,439 +113,296 @@ export function WorkflowsHubPage(): JSX.Element {
     refetchInterval: LIST_POLL_MS,
   })
 
+  const runsQuery = {
+    limit: RUN_LIST_LIMIT,
+    workflowId: workflowFilter || undefined,
+    status: RUN_STATUS_FILTERS[statusFilter],
+    q: q || undefined,
+  }
   const runs = useQuery({
-    queryKey: ['workflow-runs', baseUrl],
+    queryKey: ['workflow-runs', baseUrl, runsQuery],
+    enabled: connected,
+    queryFn: ({ signal }) => useConnection.getState().gateway.listWorkflowRuns(runsQuery, signal),
+    refetchInterval: LIST_POLL_MS,
+    placeholderData: (prev) => prev,
+  })
+
+  const waiting = useQuery({
+    queryKey: ['workflow-runs', baseUrl, 'waiting'],
     enabled: connected,
     queryFn: ({ signal }) =>
-      useConnection.getState().gateway.listWorkflowRuns({ limit: 50 }, signal),
+      useConnection
+        .getState()
+        .gateway.listWorkflowRuns({ status: ['paused_human'], limit: 20 }, signal),
     refetchInterval: LIST_POLL_MS,
   })
+
+  const allDefs = defs.data?.workflows ?? []
+  const defNameById = useMemo(() => new Map(allDefs.map((w) => [w.id, w.name])), [allDefs])
+  const shownDefs = allDefs.filter((w) => matchesWorkflowQuery(w, query))
+  const workflowOptions = [
+    { value: '', label: 'All workflows' },
+    ...allDefs.map((w) => ({ value: w.id, label: w.name })),
+  ]
+  const createRoots = defs.data?.createRoots ?? []
+  const canCreate = createRoots.length > 0
+  const openRun = (runId: string): void =>
+    void navigate({ to: '/workflows/runs/$runId', params: { runId } })
 
   if (!connected) return <NotConnected />
 
   return (
-    <div className="mx-auto max-w-4xl px-4 py-8 md:px-6">
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+    <div className="mx-auto max-w-5xl px-4 py-8 md:px-6">
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
         <h1 className="font-mono text-lg font-semibold text-em">Workflows</h1>
+        <div className="flex w-full items-center gap-2 sm:w-auto">
+          <label className="relative min-w-0 flex-1 sm:w-72 sm:flex-none">
+            <span className="sr-only">Search workflows and runs</span>
+            <input
+              ref={searchRef}
+              type="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') {
+                  setQuery('')
+                  e.currentTarget.blur()
+                }
+              }}
+              placeholder="Search workflows and runs"
+              className="w-full rounded border border-line bg-panel px-3 py-1.5 pr-8 font-mono text-xs text-ink placeholder:text-ink-dim focus:border-em focus:outline-none"
+            />
+            <kbd className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 rounded border border-line px-1 font-mono text-[10px] text-ink-dim">
+              /
+            </kbd>
+          </label>
+          <button
+            type="button"
+            disabled={!canCreate}
+            title={
+              canCreate
+                ? undefined
+                : 'No workflows root inside this node’s files root — creating here is unavailable'
+            }
+            onClick={() => setCreating('')}
+            className="shrink-0 rounded bg-em-dim px-3 py-1.5 font-mono text-xs font-medium text-bg hover:bg-em disabled:opacity-40"
+          >
+            New workflow
+          </button>
+        </div>
       </div>
 
-      <p className="mb-6 max-w-2xl text-sm text-ink-dim">
-        Trigger durable workflows from their input contract. Runs are state — journal timeline,
-        human gates, and resume live on the run detail page.
-      </p>
+      {defs.data && !canCreate && (
+        <p className="-mt-3 mb-6 font-mono text-[11px] text-ink-dim">
+          Creating workflows is unavailable on this node: none of its workflows roots
+          (workflows.defs_roots) sit inside the files root.
+        </p>
+      )}
+
+      <NewWorkflowDialog
+        open={creating !== undefined}
+        onOpenChange={(o) => {
+          if (!o) setCreating(undefined)
+        }}
+        workflows={allDefs}
+        createRoots={createRoots}
+        duplicateFrom={creating || undefined}
+        onCreated={(id) =>
+          void navigate({
+            to: '/workflows/$workflowId',
+            params: { workflowId: id },
+            search: { view: 'canvas' },
+          })
+        }
+      />
+
+      {(waiting.data?.runs.length ?? 0) > 0 && (
+        <section className="mb-8 rounded border border-em/40 bg-panel p-3" aria-label="Needs you">
+          <h2 className="mb-2 font-mono text-xs font-semibold uppercase tracking-wide text-em">
+            Needs you · {String(waiting.data?.runs.length ?? 0)}
+          </h2>
+          <ul className="flex flex-col gap-1">
+            {waiting.data?.runs.map((r) => (
+              <li key={r.id}>
+                <button
+                  type="button"
+                  onClick={() => openRun(r.id)}
+                  className="flex w-full items-center justify-between gap-3 rounded px-2 py-1.5 text-left hover:bg-panel-2"
+                >
+                  <span className="min-w-0 truncate text-sm">
+                    {runDisplayName(r, defNameById)}
+                    {r.current && (
+                      <span className="ml-2 font-mono text-[11px] text-ink-dim">
+                        at {r.current}
+                      </span>
+                    )}
+                  </span>
+                  <span className="shrink-0 font-mono text-[11px] text-em">review →</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
 
       <section className="mb-10">
         <h2 className="mb-3 font-mono text-xs font-semibold uppercase tracking-wide text-ink-dim">
-          Definitions
+          Workflows{defs.data ? ` · ${String(shownDefs.length)}` : ''}
         </h2>
         {defs.isError && (
           <div className="mb-2 font-mono text-sm text-red">{defs.error.message}</div>
         )}
         {defs.isLoading && <p className="text-sm text-ink-dim">loading…</p>}
-        <ul className="flex flex-col gap-2">
-          {defs.data?.workflows.map((w) => (
+        <ul className="grid gap-3 sm:grid-cols-2">
+          {shownDefs.map((w) => (
             <li key={w.id}>
-              <button
-                type="button"
-                onClick={() =>
-                  void navigate({ to: '/workflows/$workflowId', params: { workflowId: w.id } })
+              <WorkflowCard
+                def={w}
+                onOpen={(mode) =>
+                  void navigate({
+                    to: '/workflows/$workflowId',
+                    params: { workflowId: w.id },
+                    search:
+                      mode === 'edit' ? { view: 'canvas' } : mode === 'run' ? { run: true } : {},
+                  })
                 }
-                className="flex w-full items-center justify-between gap-4 rounded border border-line bg-panel px-4 py-3 text-left hover:border-em"
-              >
-                <span className="min-w-0">
-                  <span className="block truncate text-sm font-medium">{w.name}</span>
-                  <span className="mt-0.5 block font-mono text-[11px] text-ink-dim">
-                    {w.id} · v{w.version}
-                    {w.input.length > 0 ? ` · ${String(w.input.length)} input fields` : ''}
-                  </span>
-                  {w.description && (
-                    <span className="mt-1 block truncate text-xs text-ink-dim">
-                      {w.description}
-                    </span>
-                  )}
-                </span>
-                <span className="shrink-0 font-mono text-[11px] text-em">run →</span>
-              </button>
+                onOpenRun={openRun}
+                onDuplicate={canCreate ? () => setCreating(w.id) : undefined}
+              />
             </li>
           ))}
-          {defs.data?.workflows.length === 0 && (
-            <li className="text-sm text-ink-dim">
-              no workflow definitions on this node (check workflows.defs_roots)
-            </li>
-          )}
         </ul>
+        {allDefs.length === 0 && defs.data && (
+          <p className="text-sm text-ink-dim">
+            no workflow definitions on this node (check workflows.defs_roots)
+          </p>
+        )}
+        {allDefs.length > 0 && shownDefs.length === 0 && (
+          <p className="text-sm text-ink-dim">no workflows match “{query.trim()}”</p>
+        )}
       </section>
 
       <section>
-        <h2 className="mb-3 font-mono text-xs font-semibold uppercase tracking-wide text-ink-dim">
-          Recent runs
-        </h2>
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <h2 className="font-mono text-xs font-semibold uppercase tracking-wide text-ink-dim">
+            Runs
+          </h2>
+          <div className="flex flex-wrap items-center gap-2">
+            <SegmentedControl
+              ariaLabel="Run status filter"
+              value={statusFilter}
+              onChange={setStatusFilter}
+              options={STATUS_FILTER_OPTIONS}
+            />
+            <Select
+              aria-label="Workflow filter"
+              value={workflowFilter}
+              options={workflowOptions}
+              onChange={setWorkflowFilter}
+              align="end"
+            />
+          </div>
+        </div>
         {runs.isError && (
           <div className="mb-2 font-mono text-sm text-red">{runs.error.message}</div>
         )}
-        <ul className="flex flex-col gap-2">
+        <ul className="flex flex-col divide-y divide-line rounded border border-line bg-panel">
           {runs.data?.runs.map((r) => (
             <li key={r.id}>
               <RunListRow
                 run={r}
-                onClick={() =>
-                  void navigate({ to: '/workflows/runs/$runId', params: { runId: r.id } })
-                }
+                name={runDisplayName(r, defNameById)}
+                onClick={() => openRun(r.id)}
               />
             </li>
           ))}
-          {runs.data?.runs.length === 0 && <li className="text-sm text-ink-dim">no runs yet</li>}
+          {runs.data?.runs.length === 0 && (
+            <li className="px-4 py-3 text-sm text-ink-dim">
+              {q || statusFilter !== 'all' || workflowFilter ? 'no matching runs' : 'no runs yet'}
+            </li>
+          )}
         </ul>
       </section>
     </div>
   )
 }
 
-function RunListRow(props: { run: WorkflowRunSummary; onClick: () => void }): JSX.Element {
-  const { run, onClick } = props
-  const status = run.status
+function WorkflowCard(props: {
+  def: WorkflowDefSummary
+  onOpen: (target: 'overview' | 'run' | 'edit') => void
+  onOpenRun: (runId: string) => void
+  onDuplicate?: () => void
+}): JSX.Element {
+  const { def, onOpen, onOpenRun, onDuplicate } = props
+  const stats = def.stats
+  const last = stats?.lastRun
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="flex w-full items-center justify-between gap-4 rounded border border-line bg-panel px-4 py-3 text-left hover:border-em"
-    >
-      <span className="min-w-0">
-        <span className="block truncate font-mono text-sm">{run.workflowId}</span>
+    <div className="flex h-full flex-col rounded border border-line bg-panel p-4 hover:border-em/60">
+      <button type="button" onClick={() => onOpen('overview')} className="min-w-0 text-left">
+        <span className="block truncate text-sm font-medium">{def.name}</span>
         <span className="mt-0.5 block font-mono text-[11px] text-ink-dim">
-          {run.id}
-          {run.current ? ` · ${run.current}` : ''}
-          {run.startedAt ? ` · ${new Date(run.startedAt).toLocaleString()}` : ''}
-          {run.nested ? ' · child' : ''}
+          {def.id} · v{def.version}
         </span>
-      </span>
-      <StatusChip status={status} />
-    </button>
-  )
-}
+        {def.description && (
+          <span className="mt-2 line-clamp-2 block text-xs text-ink-dim">{def.description}</span>
+        )}
+      </button>
 
-function StatusChip(props: { status: string }): JSX.Element {
-  const status = props.status as WorkflowRunStatus
-  const color =
-    (RUN_STATUS_COLORS as Partial<Record<WorkflowRunStatus, string>>)[status] ?? 'text-ink-dim'
-  const label =
-    (RUN_STATUS_LABELS as Partial<Record<WorkflowRunStatus, string>>)[status] ?? props.status
-  return <span className={`shrink-0 font-mono text-xs ${color}`}>{label}</span>
-}
-
-// ---------------------------------------------------------------------------
-// Trigger form
-// ---------------------------------------------------------------------------
-
-export function WorkflowTriggerPage(): JSX.Element {
-  const { workflowId } = useParams({ from: '/workflows/$workflowId' })
-  const baseUrl = useConnection((s) => s.baseUrl)
-  const navigate = useNavigate()
-  const connected = useGatewayReady()
-  const narrow = useIsNarrow()
-
-  const def = useQuery({
-    queryKey: ['workflow', baseUrl, workflowId],
-    enabled: connected && Boolean(workflowId),
-    queryFn: ({ signal }) => useConnection.getState().gateway.getWorkflow(workflowId, signal),
-  })
-
-  const [values, setValues] = useState<FieldFormValues>({})
-  const [issues, setIssues] = useState<FieldIssues>({})
-  const [formError, setFormError] = useState<string | undefined>()
-  const [submitting, setSubmitting] = useState(false)
-  /** Run | Edit — Edit only when the def exposes editPath (under files root). */
-  const [pageMode, setPageMode] = useState<'run' | 'edit'>('run')
-  const {
-    markDirty: setEditDirty,
-    confirmDiscard: confirmEditDiscard,
-    element: discardDialogElement,
-  } = useWorkflowDirtyGuard()
-  const switchMode = useCallback(
-    async (next: 'run' | 'edit') => {
-      // Clicking the already-active chip must be a pure no-op — clearing the
-      // dirty ref here would disarm the guard without any re-render to
-      // re-report dirty (same-value setState bails).
-      if (next === pageMode) return
-      if (!(await confirmEditDiscard())) return
-      setPageMode(next)
-    },
-    [pageMode, confirmEditDiscard],
-  )
-
-  const fields: WorkflowField[] = def.data?.workflow.input ?? []
-  const defId = def.data?.workflow.id
-  const defVersion = def.data?.workflow.version
-  const editPath = def.data?.workflow.editPath
-
-  const defs = useQuery({
-    queryKey: ['workflows', baseUrl],
-    enabled: connected,
-    queryFn: ({ signal }) => useConnection.getState().gateway.listWorkflows(signal),
-  })
-  const workflowOptions = (defs.data?.workflows ?? []).map((w) => ({
-    value: w.id,
-    label: w.name,
-  }))
-
-  // Seed form when def loads (or workflowId / version changes) — avoid wipe on refetch.
-  useEffect(() => {
-    if (!def.data?.workflow) return
-    setValues(emptyFormValues(def.data.workflow.input))
-    setIssues({})
-    setFormError(undefined)
-    // def.data.workflow.input is replaced with defId/defVersion identity
-  }, [workflowId, defId, defVersion])
-
-  // If editPath disappears (refetch), drop out of edit mode.
-  useEffect(() => {
-    if (!editPath && pageMode === 'edit') setPageMode('run')
-  }, [editPath, pageMode])
-
-  const onChange = useCallback((name: string, value: string) => {
-    setValues((v) => ({ ...v, [name]: value }))
-    setIssues((prev) => {
-      if (!prev[name]) return prev
-      const { [name]: _cleared, ...next } = prev
-      return next
-    })
-  }, [])
-
-  const onSubmit = async (): Promise<void> => {
-    setFormError(undefined)
-    const parsed = parseFormValues(fields, values)
-    if (!parsed.ok) {
-      setIssues(parsed.issues)
-      return
-    }
-    setSubmitting(true)
-    try {
-      const result = await useConnection.getState().gateway.startWorkflowRun(workflowId, {
-        input: parsed.value,
-      })
-      void navigate({ to: '/workflows/runs/$runId', params: { runId: result.run.id } })
-    } catch (err) {
-      if (isContractError(err)) {
-        setIssues(issuesFromGatewayError(err))
-        setFormError(err instanceof Error ? err.message : 'validation failed')
-      } else {
-        setFormError(err instanceof Error ? err.message : String(err))
-      }
-    } finally {
-      setSubmitting(false)
-    }
-  }
-
-  if (!connected) return <NotConnected />
-
-  const runWithCanvas =
-    pageMode === 'run' && (Boolean(editPath) || (def.data?.workflow.outline?.length ?? 0) > 0)
-
-  return (
-    <div
-      className={
-        runWithCanvas
-          ? ''
-          : `mx-auto px-4 py-8 md:px-6 ${pageMode === 'edit' ? 'max-w-5xl' : 'max-w-3xl'}`
-      }
-    >
-      {discardDialogElement}
-      {!runWithCanvas && (
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
-          {/* No click handler: leaving is a route change, and the dirty guard's
-              router blocker asks about unsaved edits for every route change. */}
-          <Link
-            to="/workflows"
-            className="font-mono text-[11px] text-ink-dim hover:text-em hover:underline"
+      <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11px] text-ink-dim">
+        {last ? (
+          <button
+            type="button"
+            onClick={() => onOpenRun(last.id)}
+            className="flex items-center gap-1.5 hover:text-ink"
+            title={last.label ?? last.id}
           >
-            ← workflows
-          </Link>
-          {def.data && (
-            <SegmentedControl
-              ariaLabel="Workflow page mode"
-              value={pageMode}
-              onChange={(v) => void switchMode(v)}
-              options={[
-                { value: 'run', label: 'Run' },
-                {
-                  value: 'edit',
-                  label: 'Edit',
-                  disabled: !editPath,
-                  title: editPath
-                    ? `Edit files under ${editPath}`
-                    : 'Def is not under the files root — edit disabled',
-                },
-              ]}
-            />
-          )}
-        </div>
-      )}
+            <span>last</span>
+            <StatusChip status={last.status} />
+            <span>{relativeTime(last.startedAt)}</span>
+          </button>
+        ) : (
+          <span>never run</span>
+        )}
+        {stats && stats.recent > 0 && (
+          <span>
+            {String(stats.recent)} run{stats.recent === 1 ? '' : 's'} / 7d
+            {stats.recentFailed > 0 && (
+              <span className="text-red"> · {String(stats.recentFailed)} failed</span>
+            )}
+          </span>
+        )}
+        {stats && stats.waiting > 0 && (
+          <span className="text-em">{String(stats.waiting)} waiting</span>
+        )}
+      </div>
 
-      {def.isError && <div className="font-mono text-sm text-red">{def.error.message}</div>}
-      {def.isLoading && <p className="text-sm text-ink-dim">loading definition…</p>}
-
-      {def.data && pageMode === 'edit' && editPath && (
-        <>
-          <h1 className="mb-1 font-mono text-lg font-semibold text-em">{def.data.workflow.name}</h1>
-          <p className="mb-4 font-mono text-[11px] text-ink-dim">
-            {def.data.workflow.id} · v{def.data.workflow.version}
-          </p>
-          {/* key: remount per def — router param navigation reuses this component,
-              and the panel seeds `selected` in a mount-only initializer. */}
-          <WorkflowEditPanel
-            key={editPath}
-            workflowId={workflowId}
-            editPath={editPath}
-            onDirtyChange={setEditDirty}
-          />
-        </>
-      )}
-
-      {def.data && pageMode === 'run' && runWithCanvas && (
-        <div
-          className={
-            narrow
-              ? 'fixed bottom-0 right-0 top-12 flex flex-col bg-bg'
-              : 'fixed flex flex-col bg-bg'
-          }
-          style={
-            narrow
-              ? { left: 'var(--hub-rail, 14rem)' }
-              : {
-                  left: 'var(--hub-rail, 14rem)',
-                  top: 'var(--hub-top, 0px)',
-                  right: 'var(--hub-inset, 0px)',
-                  bottom: 'var(--hub-inset, 0px)',
-                }
-          }
+      <div className="mt-auto flex gap-2 pt-3">
+        <button
+          type="button"
+          onClick={() => onOpen('run')}
+          className="rounded bg-em-dim px-3 py-1 font-mono text-xs font-medium text-bg hover:bg-em"
         >
-          <FlowsAuthor
-            workflowId={workflowId}
-            editPath={editPath}
-            name={def.data.workflow.name}
-            version={def.data.workflow.version}
-            description={def.data.workflow.description}
-            outline={def.data.workflow.outline}
-            input={def.data.workflow.input}
-            output={def.data.workflow.output}
-            workflowOptions={workflowOptions}
-            onDirtyChange={setEditDirty}
-            onWorkflowChange={(id) => {
-              void (async () => {
-                if (!(await confirmEditDiscard())) return
-                void navigate({ to: '/workflows/$workflowId', params: { workflowId: id } })
-              })()
-            }}
-            toolbarLeft={
-              <Link
-                to="/workflows"
-                className="font-mono text-[11px] text-ink-dim hover:text-em hover:underline"
-              >
-                ← workflows
-              </Link>
-            }
-            toolbarRight={
-              <SegmentedControl
-                ariaLabel="Workflow page mode"
-                value={pageMode}
-                onChange={(v) => void switchMode(v)}
-                options={[
-                  { value: 'run', label: 'Run' },
-                  {
-                    value: 'edit',
-                    label: 'Edit',
-                    disabled: !editPath,
-                    title: editPath
-                      ? `Edit files under ${editPath}`
-                      : 'Def is not under the files root — edit disabled',
-                  },
-                ]}
-              />
-            }
-            inspectorExtra={
-              <>
-                <p className="mb-3 font-mono text-[11px] text-ink-dim">
-                  {def.data.workflow.id} · v{def.data.workflow.version}
-                </p>
-                {def.data.workflow.description && (
-                  <p className="mb-4 text-sm text-ink-dim">{def.data.workflow.description}</p>
-                )}
-                <form
-                  onSubmit={(e) => {
-                    e.preventDefault()
-                    void onSubmit()
-                  }}
-                  className="flex flex-col gap-3"
-                >
-                  <WorkflowContractForm
-                    fields={fields}
-                    values={values}
-                    issues={issues}
-                    disabled={submitting}
-                    onChange={onChange}
-                    idPrefix="trigger"
-                  />
-                  {formError && <p className="font-mono text-sm text-red">{formError}</p>}
-                  <button
-                    type="submit"
-                    disabled={submitting}
-                    className="rounded bg-em-dim px-4 py-2 text-sm font-medium text-bg hover:bg-em disabled:opacity-40"
-                  >
-                    {submitting ? 'Starting…' : 'Start run'}
-                  </button>
-                </form>
-              </>
-            }
-          />
-        </div>
-      )}
-
-      {def.data && pageMode === 'run' && !runWithCanvas && (
-        <>
-          <h1 className="font-mono text-lg font-semibold text-em">{def.data.workflow.name}</h1>
-          <p className="mt-1 font-mono text-[11px] text-ink-dim">
-            {def.data.workflow.id} · v{def.data.workflow.version}
-          </p>
-          {def.data.workflow.description && (
-            <p className="mt-2 text-sm text-ink-dim">{def.data.workflow.description}</p>
-          )}
-
-          <form
-            onSubmit={(e) => {
-              e.preventDefault()
-              void onSubmit()
-            }}
-            className="mt-6 flex max-w-xl flex-col gap-4"
+          Run
+        </button>
+        {def.editPath && (
+          <button
+            type="button"
+            onClick={() => onOpen('edit')}
+            className="rounded border border-line px-3 py-1 font-mono text-xs text-ink-dim hover:border-em hover:text-ink"
           >
-            <WorkflowContractForm
-              fields={fields}
-              values={values}
-              issues={issues}
-              disabled={submitting}
-              onChange={onChange}
-              idPrefix="trigger"
-            />
-            {formError && <p className="font-mono text-sm text-red">{formError}</p>}
-            <div className="flex gap-2">
-              <button
-                type="submit"
-                disabled={submitting}
-                className="rounded bg-em-dim px-4 py-2 text-sm font-medium text-bg hover:bg-em disabled:opacity-40"
-              >
-                {submitting ? 'Starting…' : 'Start run'}
-              </button>
-              <button
-                type="button"
-                disabled={submitting}
-                onClick={() => void navigate({ to: '/workflows' })}
-                className="rounded border border-line px-4 py-2 text-sm text-ink-dim hover:border-em hover:text-ink"
-              >
-                Cancel
-              </button>
-            </div>
-          </form>
-        </>
-      )}
+            Edit
+          </button>
+        )}
+        {onDuplicate && (
+          <button
+            type="button"
+            onClick={onDuplicate}
+            className="ml-auto rounded px-2 py-1 font-mono text-xs text-ink-dim hover:text-ink"
+          >
+            Duplicate
+          </button>
+        )}
+      </div>
     </div>
   )
 }
@@ -671,8 +566,21 @@ export function WorkflowRunDetailPage(): JSX.Element {
         <>
           <header className="mb-6 flex flex-wrap items-start justify-between gap-3 border-b border-line pb-4">
             <div className="min-w-0">
-              <h1 className="truncate font-mono text-lg font-semibold text-em">{run.workflowId}</h1>
-              <p className="mt-1 font-mono text-[11px] text-ink-dim">{run.id}</p>
+              <RunTitle
+                runId={run.id}
+                label={run.label}
+                fallback={run.workflowId}
+                onRenamed={async () => {
+                  await queryClient.invalidateQueries({
+                    queryKey: ['workflow-run', baseUrl, runId],
+                  })
+                  await queryClient.invalidateQueries({ queryKey: ['workflow-runs', baseUrl] })
+                }}
+              />
+              <p className="mt-1 font-mono text-[11px] text-ink-dim">
+                {run.label ? `${run.workflowId} · ` : ''}
+                {run.id}
+              </p>
               {run.current && (
                 <p className="mt-1 font-mono text-xs text-ink">current: {run.current}</p>
               )}
@@ -752,6 +660,7 @@ export function WorkflowRunDetailPage(): JSX.Element {
                       className="flex w-full items-center justify-between gap-3 rounded border border-line bg-panel px-3 py-2 text-left hover:border-em"
                     >
                       <span className="min-w-0 truncate font-mono text-xs">
+                        {c.label ? `${c.label} · ` : ''}
                         {c.workflowId} · {c.id}
                       </span>
                       <StatusChip status={c.status} />
@@ -856,6 +765,99 @@ export function WorkflowRunDetailPage(): JSX.Element {
         </>
       )}
     </div>
+  )
+}
+
+/** Run title — the label, else the workflow id; click to rename (blank clears). */
+function RunTitle(props: {
+  runId: string
+  label?: string
+  fallback: string
+  onRenamed: () => Promise<void>
+}): JSX.Element {
+  const { runId, label, fallback, onRenamed } = props
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | undefined>()
+
+  const save = async (): Promise<void> => {
+    if (draft.trim() === (label ?? '')) {
+      setEditing(false)
+      return
+    }
+    setSaving(true)
+    setError(undefined)
+    try {
+      await useConnection.getState().gateway.renameWorkflowRun(runId, draft)
+      await onRenamed()
+      setEditing(false)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (!editing) {
+    return (
+      <button
+        type="button"
+        onClick={() => {
+          setDraft(label ?? '')
+          setError(undefined)
+          setEditing(true)
+        }}
+        title="Rename run"
+        className="group flex max-w-full items-baseline gap-2 text-left"
+      >
+        <h1 className="truncate font-mono text-lg font-semibold text-em">{label ?? fallback}</h1>
+        <span className="font-mono text-[11px] text-ink-dim opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100">
+          rename
+        </span>
+      </button>
+    )
+  }
+
+  return (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault()
+        void save()
+      }}
+      className="flex flex-wrap items-center gap-2"
+    >
+      <input
+        autoFocus
+        type="text"
+        value={draft}
+        maxLength={120}
+        disabled={saving}
+        placeholder={fallback}
+        aria-label="Run name"
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') setEditing(false)
+        }}
+        className="min-w-0 flex-1 rounded border border-line bg-panel-2 px-2 py-1 font-mono text-base text-ink outline-none focus:border-em"
+      />
+      <button
+        type="submit"
+        disabled={saving}
+        className="rounded bg-em-dim px-3 py-1 font-mono text-xs text-bg hover:bg-em disabled:opacity-40"
+      >
+        {saving ? 'Saving…' : 'Save'}
+      </button>
+      <button
+        type="button"
+        disabled={saving}
+        onClick={() => setEditing(false)}
+        className="rounded border border-line px-3 py-1 font-mono text-xs text-ink-dim hover:text-ink"
+      >
+        Cancel
+      </button>
+      {error && <p className="w-full font-mono text-[11px] text-red">{error}</p>}
+    </form>
   )
 }
 

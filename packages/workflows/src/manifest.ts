@@ -25,8 +25,19 @@ export function parseManifest(raw: unknown): WorkflowManifest {
   const output = parseFields(o.output ?? [], 'output')
   const outline = parseOutline(o.outline)
   const budgets = parseBudgets(o.budgets)
+  const runLabel = optionalString(o, 'runLabel')
 
-  return { id, version, name, description, input, output, outline, budgets }
+  return {
+    id,
+    version,
+    name,
+    description,
+    input,
+    output,
+    outline,
+    budgets,
+    ...(runLabel !== undefined ? { runLabel } : {}),
+  }
 }
 
 export async function loadManifestFile(workflowDir: string): Promise<WorkflowManifest> {

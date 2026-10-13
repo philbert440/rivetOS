@@ -1454,6 +1454,21 @@ export interface WorkflowDefSummary {
    * (e.g. install-tree recipes) and edit is disabled.
    */
   editPath?: string
+  /** Display-label template for runs (`workflow.yaml` `runLabel`). */
+  runLabel?: string
+  /** Run health — present on GET /api/workflows (list), not on single-def GET. */
+  stats?: WorkflowDefStats
+}
+
+/** Per-workflow run health over top-level runs. */
+export interface WorkflowDefStats {
+  lastRun?: { id: string; status: WorkflowRunStatus; startedAt?: string; label?: string }
+  /** Runs started in the last 7 days. */
+  recent: number
+  /** Of `recent`, how many failed. */
+  recentFailed: number
+  /** Runs currently parked at a human gate. */
+  waiting: number
 }
 
 /** Severity for workflow validate diagnostics. */
@@ -1476,6 +1491,27 @@ export interface WorkflowValidateResponse {
 
 export interface WorkflowsListResponse {
   workflows: WorkflowDefSummary[]
+  /**
+   * Files-root-relative defs roots a new workflow can be created under
+   * (POST /api/workflows `root`). Empty ⇒ no root sits inside the files
+   * root, so creating from RivetHub is unavailable on this node.
+   */
+  createRoots?: string[]
+}
+
+/** POST /api/workflows — create a blank def, or duplicate `from`. */
+export interface WorkflowCreateRequest {
+  id: string
+  name: string
+  description?: string
+  /** One of `createRoots`; default the first. */
+  root?: string
+  /** Workflow id to duplicate. */
+  from?: string
+}
+
+export interface WorkflowCreateResponse {
+  workflow: WorkflowDefSummary
 }
 
 export type WorkflowRunStatus = 'running' | 'paused_human' | 'done' | 'failed' | 'killed'
@@ -1490,6 +1526,23 @@ export interface WorkflowRunSummary {
   version?: string
   nested?: boolean
   parentRunId?: string
+  /** User-facing run name (explicit, or rendered from the def's `runLabel`). */
+  label?: string
+}
+
+/** Query for GET /api/workflow-runs — filters apply before `limit`. */
+export interface WorkflowRunsListQuery {
+  limit?: number
+  workflowId?: string
+  /** Comma-separated statuses on the wire. */
+  status?: WorkflowRunStatus[]
+  /** Case-insensitive substring over label, run id, workflow id. */
+  q?: string
+}
+
+/** PATCH /api/workflow-runs/:id — empty / blank label clears it. */
+export interface WorkflowRunPatchRequest {
+  label: string
 }
 
 export interface WorkflowRunsListResponse {
@@ -1533,6 +1586,8 @@ export interface WorkflowStartRunRequest {
   input?: Record<string, unknown>
   /** Optional human id for startedBy provenance. */
   startedById?: string
+  /** Optional run name; defaults to the def's `runLabel` template. */
+  label?: string
 }
 
 export interface WorkflowStartRunResponse {

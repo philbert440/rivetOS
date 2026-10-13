@@ -64,8 +64,13 @@ import type {
   PhonePairingInfo,
   PhonePairingStatus,
   WorkflowsListResponse,
+  WorkflowCreateRequest,
+  WorkflowCreateResponse,
   WorkflowDefSummary,
   WorkflowRunsListResponse,
+  WorkflowRunsListQuery,
+  WorkflowRunPatchRequest,
+  WorkflowRunSummary,
   WorkflowRunDetailResponse,
   WorkflowStartRunRequest,
   WorkflowStartRunResponse,
@@ -225,6 +230,14 @@ export class RivetGateway {
     return request(this.config, '/api/workflows', { signal })
   }
 
+  /** Create a blank workflow def, or duplicate `body.from`. 409 when the id is taken. */
+  createWorkflow(
+    body: WorkflowCreateRequest,
+    signal?: AbortSignal,
+  ): Promise<WorkflowCreateResponse> {
+    return request(this.config, '/api/workflows', { method: 'POST', body, signal })
+  }
+
   getWorkflow(workflowId: string, signal?: AbortSignal): Promise<{ workflow: WorkflowDefSummary }> {
     return request(this.config, `/api/workflows/${encodeURIComponent(workflowId)}`, { signal })
   }
@@ -255,11 +268,30 @@ export class RivetGateway {
   }
 
   listWorkflowRuns(
-    query: { limit?: number } = {},
+    query: WorkflowRunsListQuery = {},
     signal?: AbortSignal,
   ): Promise<WorkflowRunsListResponse> {
     return request(this.config, '/api/workflow-runs', {
-      query: query,
+      query: {
+        limit: query.limit,
+        workflowId: query.workflowId,
+        status: query.status?.length ? query.status.join(',') : undefined,
+        q: query.q || undefined,
+      },
+      signal,
+    })
+  }
+
+  /** Rename a run; a blank label clears it. */
+  renameWorkflowRun(
+    runId: string,
+    label: string,
+    signal?: AbortSignal,
+  ): Promise<{ run: WorkflowRunSummary }> {
+    const body: WorkflowRunPatchRequest = { label }
+    return request(this.config, `/api/workflow-runs/${encodeURIComponent(runId)}`, {
+      method: 'PATCH',
+      body,
       signal,
     })
   }

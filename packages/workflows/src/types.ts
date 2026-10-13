@@ -41,6 +41,8 @@ export interface WorkflowManifest {
   output: Field[]
   outline?: OutlineStep[]
   budgets?: WorkflowBudgets
+  /** Display-label template for runs, e.g. `"{{repo}}#{{pr}}"` (see run-meta.ts). */
+  runLabel?: string
 }
 
 /** Loaded workflow directory. */

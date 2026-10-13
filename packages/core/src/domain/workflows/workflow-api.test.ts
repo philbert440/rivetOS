@@ -185,6 +185,127 @@ describe('workflow API', () => {
     expect(d.run.journal.length).toBeGreaterThan(0)
   })
 
+  it('labels runs, filters the list, renames finished runs, and reports stats', async () => {
+    const { base } = await startApi()
+    const startLabelled = async (label?: unknown): Promise<{ id: string; label?: string }> => {
+      const res = await fetch(`${base}/api/workflows/demo/runs?wait=true`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          input: { message: 'hi' },
+          ...(label !== undefined ? { label } : {}),
+        }),
+      })
+      expect(res.status).toBe(201)
+      return ((await res.json()) as { run: { id: string; label?: string } }).run
+    }
+    const named = await startLabelled('  Fix   login ')
+    expect(named.label).toBe('Fix login')
+    const unnamed = await startLabelled()
+    expect(unnamed.label).toBeUndefined()
+
+    const bad = await fetch(`${base}/api/workflows/demo/runs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ input: { message: 'hi' }, label: 7 }),
+    })
+    expect(bad.status).toBe(400)
+
+    const listIds = async (qs: string): Promise<string[]> => {
+      const res = await fetch(`${base}/api/workflow-runs?${qs}`)
+      expect(res.status).toBe(200)
+      return ((await res.json()) as { runs: Array<{ id: string }> }).runs.map((r) => r.id)
+    }
+    expect(await listIds('q=login')).toEqual([named.id])
+    expect(await listIds('status=failed,bogus')).toEqual([])
+    expect((await listIds('workflowId=demo&status=done')).sort()).toEqual(
+      [named.id, unnamed.id].sort(),
+    )
+
+    // Finished run: case.json is frozen, rename must still land.
+    const patch = await fetch(`${base}/api/workflow-runs/${unnamed.id}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ label: 'Renamed' }),
+    })
+    expect(patch.status).toBe(200)
+    expect(((await patch.json()) as { run: { label?: string } }).run.label).toBe('Renamed')
+    const detail = (await (await fetch(`${base}/api/workflow-runs/${unnamed.id}`)).json()) as {
+      run: { run: { label?: string } }
+    }
+    expect(detail.run.run.label).toBe('Renamed')
+
+    const missing = await fetch(`${base}/api/workflow-runs/nope`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ label: 'x' }),
+    })
+    expect(missing.status).toBe(404)
+
+    const defs = (await (await fetch(`${base}/api/workflows`)).json()) as {
+      workflows: Array<{ id: string; stats?: { recent: number; waiting: number } }>
+    }
+    expect(defs.workflows.find((w) => w.id === 'demo')?.stats).toMatchObject({
+      recent: 2,
+      waiting: 0,
+    })
+  })
+
+  it('POST /api/workflows creates blank and duplicate defs under a creatable root', async () => {
+    const { base } = await startApi()
+    const create = (body: Record<string, unknown>): Promise<Response> =>
+      fetch(`${base}/api/workflows`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+
+    const listed = (await (await fetch(`${base}/api/workflows`)).json()) as {
+      createRoots: string[]
+    }
+    expect(listed.createRoots).toEqual(['defs'])
+
+    const blank = await create({ id: 'fresh', name: 'Fresh flow' })
+    expect(blank.status).toBe(201)
+    expect(((await blank.json()) as { workflow: unknown }).workflow).toMatchObject({
+      id: 'fresh',
+      name: 'Fresh flow',
+      editPath: 'defs/fresh',
+      input: [],
+    })
+
+    const dup = await create({ id: 'demo-copy', name: 'Demo copy', from: 'demo' })
+    expect(dup.status).toBe(201)
+    const dupDef = ((await dup.json()) as { workflow: { input: Array<{ name: string }> } })
+      .workflow
+    expect(dupDef.input.map((f) => f.name)).toEqual(['message', 'count'])
+
+    const ids = (
+      (await (await fetch(`${base}/api/workflows`)).json()) as { workflows: Array<{ id: string }> }
+    ).workflows.map((w) => w.id)
+    expect(ids.sort()).toEqual(['demo', 'demo-copy', 'fresh'])
+
+    expect((await create({ id: 'demo', name: 'Dup id' })).status).toBe(409)
+    expect((await create({ id: 'Bad Id', name: 'x' })).status).toBe(400)
+    expect((await create({ id: 'x', name: 'x', from: 'missing' })).status).toBe(404)
+    expect((await create({ id: 'x', name: 'x', root: 'elsewhere' })).status).toBe(400)
+    expect((await create({ id: 7, name: 'x' })).status).toBe(400)
+  })
+
+  it('POST /api/workflows refuses when no defs root is inside the files root', async () => {
+    const { base } = await startApi({ filesRoot: join(defsRoot, '..', 'unrelated') })
+    const listed = (await (await fetch(`${base}/api/workflows`)).json()) as {
+      createRoots: string[]
+    }
+    expect(listed.createRoots).toEqual([])
+    const res = await fetch(`${base}/api/workflows`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id: 'nope', name: 'Nope' }),
+    })
+    expect(res.status).toBe(400)
+  })
+
   it('POST start returns 422 on bad contract', async () => {
     const { base } = await startApi()
     const res = await fetch(`${base}/api/workflows/demo/runs`, {
