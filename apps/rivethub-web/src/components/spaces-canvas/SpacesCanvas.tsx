@@ -1559,7 +1559,7 @@ export function SpacesCanvas(props: {
             type="button"
             data-crumb="everything"
             aria-current={altitude === 'everything' ? 'location' : undefined}
-            className={crumbChip(altitude === 'everything')}
+            className={`${crumbChip(altitude === 'everything')} shrink-0`}
             onClick={() => leaveTo('everything')}
           >
             <LayoutGrid aria-hidden="true" className="size-3.5 shrink-0" />
@@ -1578,7 +1578,7 @@ export function SpacesCanvas(props: {
                   leaveTo('space')
                 }}
               >
-                {crumbSpace}
+                <span className="truncate">{crumbSpace}</span>
               </button>
             </>
           ) : null}
@@ -2070,7 +2070,9 @@ function RemoveDialog(props: {
 
 /** Breadcrumb step as a tonal chip, so it reads as a button. The step for the
  *  current altitude is the filled accent chip; classic paints em-container as
- *  panel-2, the same as the other chips, so it adds an accent outline there. */
+ *  panel-2, the same as the other chips, so it adds an accent outline there.
+ *  The nav is capped at 60% width and classic's monospace runs wide, so chips
+ *  that may shrink wrap their label in a truncating span. */
 function crumbChip(here: boolean): string {
   return [
     'flex min-w-0 items-center gap-1.5 rounded-pill px-3 py-1 transition-colors',
