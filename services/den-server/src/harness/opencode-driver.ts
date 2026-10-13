@@ -28,7 +28,13 @@
  */
 
 import { formatSessionId, type SessionId } from '@rivetos/types'
-import { AdoptingPtyHarnessDriver } from './adopting-harness-driver.js'
+import {
+  ADOPT_FAST_WINDOW_MS,
+  ADOPT_POLL_MS,
+  ADOPT_QUICK_MS,
+  ADOPT_SLOW_MS,
+  AdoptingPtyHarnessDriver,
+} from './adopting-harness-driver.js'
 import {
   type DenAgentEventLike,
   type HarnessPtyHost,
@@ -55,6 +61,8 @@ export interface OpencodeStoreHost extends HarnessStoreHost {
    * `harnessSession`. Optional so existing test fakes still typecheck.
    */
   newestAfter?(cwd: string, sinceMs: number): string | undefined
+  /** Newest-first ids for `cwd` created at or after `sinceMs`, children excluded. */
+  candidatesAfter?(cwd: string, sinceMs: number): readonly string[]
 }
 
 export type OpencodeDriverDeps = PtyHarnessDriverDeps<OpencodeStoreHost>
@@ -111,15 +119,21 @@ export class OpencodeDriver extends AdoptingPtyHarnessDriver<OpencodeStoreHost> 
 
   /**
    * Fresh roster spawn: den emits a synthetic `rivetos` session.start with
-   * no `harnessSession` (OpenCode has no den hook). Learn the native id from
-   * the newest session row for the room's cwd created after spawn, then bind
-   * as if the hook had stamped it.
+   * no `harnessSession`. With the rivet-den plugin installed
+   * (integrations/opencode/rivet-den) the plugin's own events stamp the id
+   * and bind the room exactly. Without it, learn the native id from the
+   * newest session row for the room's cwd created after spawn, then bind as
+   * if the hook had stamped it.
    */
   protected override nativeFor(ev: DenAgentEventLike): string | undefined {
     const existing = super.nativeFor(ev)
     if (existing) return existing
     const room = ev.session
     if (!room) return undefined
+    if (ev.type === 'session.end') {
+      this.stopAdopt(room)
+      return undefined
+    }
     const isRoster =
       ev.harness === 'rivetos' &&
       typeof ev.name === 'string' &&
@@ -128,6 +142,7 @@ export class OpencodeDriver extends AdoptingPtyHarnessDriver<OpencodeStoreHost> 
     if (ev.type === 'session.start') this.pendingSpawn.set(room, this.now())
     const native = this.adoptFromStore(room)
     if (native) {
+      this.stopAdopt(room)
       this.bindRoom(room, native)
       return native
     }
@@ -136,8 +151,56 @@ export class OpencodeDriver extends AdoptingPtyHarnessDriver<OpencodeStoreHost> 
   }
 
   private readonly pendingSpawn = new Map<string, number>()
+  /** Rooms whose pane this poll has already observed. A later miss means it exited. */
+  private readonly seenPane = new Set<string>()
+  private adoptClosed = false
+
+  override close(): void {
+    this.adoptClosed = true
+    for (const room of [...this.pendingSpawn.keys()]) this.stopAdopt(room)
+    super.close()
+  }
+
+  private adoptCwds(room: string): string[] {
+    const recorded = this.deps.sessionCwd?.(this.rosterCommand, room)
+    const rosterCwd = this.deps.cwd?.() ?? ''
+    const out: string[] = []
+    for (const cwd of [recorded, rosterCwd]) {
+      if (cwd && !out.includes(cwd)) out.push(cwd)
+    }
+    return out
+  }
+
+  /** Two unbound panes in one directory cannot be told apart by "newest row". */
+  private storeAdoptAmbiguous(room: string): boolean {
+    const mine = new Set(this.adoptCwds(room))
+    for (const other of this.pendingSpawn.keys()) {
+      if (other === room || this.roomNative.has(other)) continue
+      for (const cwd of this.adoptCwds(other)) {
+        if (mine.has(cwd)) return true
+      }
+    }
+    return false
+  }
+
+  private async paneStillThere(room: string): Promise<boolean> {
+    if (!this.deps.pty) return true
+    let host: OpencodePtyHost | null | undefined
+    try {
+      host = await this.deps.pty()
+    } catch {
+      return true
+    }
+    if (!host) return false
+    if (host.ptyForSession(room)) {
+      this.seenPane.add(room)
+      return true
+    }
+    return !this.seenPane.has(room)
+  }
 
   private adoptFromStore(room: string): string | undefined {
+    if (this.storeAdoptAmbiguous(room)) return undefined
     // A preset directory is not the roster cwd. The session store is keyed
     // by the directory the process was spawned in, which the cwd store
     // recorded under the den room. Try that first, then the roster cwd.
@@ -148,20 +211,71 @@ export class OpencodeDriver extends AdoptingPtyHarnessDriver<OpencodeStoreHost> 
     for (const cwd of [recorded, rosterCwd]) {
       if (cwd === undefined || tried.has(cwd)) continue
       tried.add(cwd)
-      const id = this.deps.store.newestAfter?.(cwd, since)
-      if (id && OPENCODE_NATIVE_RE.test(id)) return id
+      const ids =
+        this.deps.store.candidatesAfter?.(cwd, since) ??
+        [this.deps.store.newestAfter?.(cwd, since)].filter((id): id is string => !!id)
+      for (const id of ids) {
+        if (OPENCODE_NATIVE_RE.test(id) && !this.claimedElsewhere(id, room)) return id
+      }
     }
     return undefined
   }
 
-  private scheduleAdopt(room: string): void {
-    for (const ms of [250, 1_000, 3_000]) {
-      const t = setTimeout(() => {
-        if (this.roomNative.has(room)) return
-        const native = this.adoptFromStore(room)
-        if (native) this.bindRoom(room, native)
-      }, ms)
-      t.unref()
+  /** A native already bound to another room is that room's session, not this one's. */
+  private claimedElsewhere(native: string, room: string): boolean {
+    const owner = this.nativeRoom.get(native)
+    return owner !== undefined && owner !== room
+  }
+
+  private readonly adoptTimers = new Map<string, NodeJS.Timeout>()
+
+  /**
+   * The session row appears when the first prompt is submitted, not at spawn —
+   * a roster spawn can sit at an empty prompt for seconds or hours. Keep
+   * looking until the room binds or its pane ends: quick tries first, then
+   * every ADOPT_POLL_MS for ADOPT_FAST_WINDOW_MS, then every ADOPT_SLOW_MS.
+   */
+  private scheduleAdopt(room: string, attempt = 0): void {
+    const pending = this.adoptTimers.get(room)
+    if (pending) clearTimeout(pending)
+    const spawnedAt = this.pendingSpawn.get(room) ?? this.now()
+    const ms =
+      attempt < ADOPT_QUICK_MS.length
+        ? ADOPT_QUICK_MS[attempt]
+        : this.now() - spawnedAt < ADOPT_FAST_WINDOW_MS
+          ? ADOPT_POLL_MS
+          : ADOPT_SLOW_MS
+    const t = setTimeout(() => {
+      void this.tickAdopt(room, attempt)
+    }, ms)
+    t.unref()
+    this.adoptTimers.set(room, t)
+  }
+
+  private async tickAdopt(room: string, attempt: number): Promise<void> {
+    this.adoptTimers.delete(room)
+    if (this.adoptClosed || this.roomNative.has(room) || !this.pendingSpawn.has(room)) return
+    if (!(await this.paneStillThere(room))) {
+      if (!this.adoptClosed) this.stopAdopt(room)
+      return
     }
+    if (this.adoptClosed || !this.pendingSpawn.has(room) || this.roomNative.has(room)) return
+    const native = this.adoptFromStore(room)
+    if (native) {
+      this.pendingSpawn.delete(room)
+      this.seenPane.delete(room)
+      this.bindRoom(room, native)
+      return
+    }
+    if (this.adoptClosed || !this.pendingSpawn.has(room)) return
+    this.scheduleAdopt(room, attempt + 1)
+  }
+
+  private stopAdopt(room: string): void {
+    const t = this.adoptTimers.get(room)
+    if (t) clearTimeout(t)
+    this.adoptTimers.delete(room)
+    this.pendingSpawn.delete(room)
+    this.seenPane.delete(room)
   }
 }
