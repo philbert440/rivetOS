@@ -2,7 +2,7 @@
  * Load / save a flows graph for a workflow def under the files root.
  */
 
-import { useCallback, useEffect, useRef, useState, type JSX, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type JSX, type ReactNode } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { parse as parseYaml } from 'yaml'
 import { GatewayError, type RivetGateway } from '@rivetos/gateway-client'
@@ -23,7 +23,19 @@ import {
   authorGraphFromOutline,
   stepBindingsFromRunTs,
 } from '../lib/workflow-runs/flow-hydrate.js'
-import { emptyFlowGraph, type FlowAuthorGraph } from '../lib/workflow-runs/flow-graph.js'
+import {
+  emptyFlowGraph,
+  FLOW_START_ID,
+  type FlowAuthorGraph,
+} from '../lib/workflow-runs/flow-graph.js'
+import {
+  createHistory,
+  pushHistory,
+  redoHistory,
+  undoHistory,
+} from '../lib/workflow-runs/flow-history.js'
+import { autoLayoutAuthorGraph } from '../lib/workflow-runs/flow-layout.js'
+import { flowIssues } from '../lib/workflow-runs/flow-compile.js'
 import { FlowsWorkbench } from './flows-workbench.js'
 import { useConfirmDialog } from './confirm-dialog.js'
 
@@ -46,10 +58,17 @@ export function FlowsAuthor(props: {
   const editable = Boolean(props.editPath)
   const queryClient = useQueryClient()
   const confirmDialog = useConfirmDialog()
-  const [graph, setGraph] = useState<FlowAuthorGraph>(emptyFlowGraph)
+  const [history, setHistory] = useState(() => createHistory<FlowAuthorGraph>(emptyFlowGraph()))
+  const graph = history.present
+  /** Graph as last loaded or saved — unsaved means "differs from this". */
+  const [savedGraph, setSavedGraph] = useState<FlowAuthorGraph>(graph)
+  /** Bumped per load and per Tidy so the canvas re-fits the graph. */
+  const [fitSeq, setFitSeq] = useState(0)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [loaded, setLoaded] = useState(false)
-  const [dirty, setDirty] = useState(false)
+  // Identity, not deep equality: every edit makes a new graph, and undo back
+  // to the saved one returns that exact object — so undoing all edits is clean.
+  const dirty = graph !== savedGraph
   const [saveMsg, setSaveMsg] = useState<string | undefined>()
   const [saving, setSaving] = useState(false)
   const hadFlowsJson = useRef(false)
@@ -82,6 +101,13 @@ export function FlowsAuthor(props: {
     return () => window.removeEventListener('beforeunload', onUnload)
   }, [dirty])
 
+  /** Fresh history at a loaded graph: nothing to undo, nothing unsaved. */
+  const resetTo = (g: FlowAuthorGraph): void => {
+    setHistory(createHistory(g))
+    setSavedGraph(g)
+    setFitSeq((n) => n + 1)
+  }
+
   // Key only on the def identity. `props.outline` is an unstable array from
   // query data — depending on it re-hydrated from disk on every refetch and
   // wiped unsaved edits. While dirty, a later run of this effect (def switch
@@ -91,7 +117,6 @@ export function FlowsAuthor(props: {
     setLoaded(false)
     setSaveMsg(undefined)
     setSelectedId(null)
-    setDirty(false)
     const gw = useConnection.getState().gateway
     const path = props.editPath ? joinRel(props.editPath, FLOWS_FILE) : ''
     void (async () => {
@@ -101,7 +126,7 @@ export function FlowsAuthor(props: {
           if (!cancelRef.cancelled) {
             hadFlowsJson.current = true
             setCodeOwned(false)
-            setGraph(parseFlowsFile(text))
+            resetTo(parseFlowsFile(text))
             setLoaded(true)
             return
           }
@@ -119,7 +144,7 @@ export function FlowsAuthor(props: {
       // The cleanup can set `cancelled` during the await above.
       // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
       if (!cancelRef.cancelled) {
-        setGraph(hydrated)
+        resetTo(hydrated)
         setLoaded(true)
       }
     })()
@@ -128,14 +153,27 @@ export function FlowsAuthor(props: {
     }
   }, [props.editPath, props.workflowId])
 
-  const onChange = useCallback((next: FlowAuthorGraph) => {
-    setGraph(next)
-    setDirty(true)
+  const onChange = useCallback((next: FlowAuthorGraph, coalesceKey?: string) => {
+    setHistory((h) => pushHistory(h, next, coalesceKey))
     setSaveMsg(undefined)
   }, [])
+  const undo = useCallback(() => setHistory(undoHistory), [])
+  const redo = useCallback(() => setHistory(redoHistory), [])
+  const tidy = useCallback(() => {
+    setHistory((h) => pushHistory(h, autoLayoutAuthorGraph(h.present, FLOW_START_ID)))
+    setFitSeq((n) => n + 1)
+  }, [])
+
+  const knownIds = props.workflowOptions.map((o) => o.value).join('\n')
+  const issues = useMemo(
+    () => flowIssues(graph, { knownWorkflowIds: knownIds ? knownIds.split('\n') : [] }),
+    [graph, knownIds],
+  )
+  const blocking = issues.some((i) => i.severity === 'error')
 
   const onSave = async (): Promise<void> => {
     if (!props.editPath) return
+    const savingGraph = graph
     if (!hadFlowsJson.current && (props.outline?.length ?? 0) > 1) {
       const ok = await confirmDialog.confirm(
         'This definition has no flows.json yet, so its run.ts was written by hand. Saving replaces run.ts with code generated from the canvas: the outline is linearized, and step prompts, declared outputs, and any other logic in the old script are discarded. Existing agent files and scripts are kept. Continue?',
@@ -173,7 +211,7 @@ export function FlowsAuthor(props: {
       } catch {
         // New def or unreadable yaml — compile with props.
       }
-      const { files, createOnly, owned } = compileFlow(graph, {
+      const { files, createOnly, owned } = compileFlow(savingGraph, {
         id: props.workflowId,
         name,
         version,
@@ -242,7 +280,7 @@ export function FlowsAuthor(props: {
       }
       hadFlowsJson.current = true
       setCodeOwned(false)
-      setDirty(false)
+      setSavedGraph(savingGraph)
       setSaveMsg(removed.length > 0 ? `Saved (removed ${removed.join(', ')})` : 'Saved')
       await queryClient.invalidateQueries({ queryKey: ['workflow'] })
       await queryClient.invalidateQueries({ queryKey: ['workflows'] })
@@ -254,6 +292,36 @@ export function FlowsAuthor(props: {
   }
 
   const saveOk = Boolean(saveMsg?.startsWith('Saved'))
+  const canEdit = editable && loaded
+
+  // ⌘S saves; ⌘Z / ⇧⌘Z / ⌘Y undo and redo — except inside text fields, which
+  // keep their own native undo (field edits are still one step on the canvas).
+  const keys = useRef({ save: onSave, undo, redo, canEdit, saving })
+  keys.current = { save: onSave, undo, redo, canEdit, saving }
+  useEffect(() => {
+    const onKey = (e: globalThis.KeyboardEvent): void => {
+      if (!(e.metaKey || e.ctrlKey) || e.altKey) return
+      const k = keys.current
+      if (!k.canEdit) return
+      const key = e.key.toLowerCase()
+      if (key === 's') {
+        e.preventDefault()
+        if (!k.saving) void k.save()
+        return
+      }
+      const t = e.target as HTMLElement | null
+      if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return
+      if (key === 'z' && !e.shiftKey) {
+        e.preventDefault()
+        k.undo()
+      } else if ((key === 'z' && e.shiftKey) || key === 'y') {
+        e.preventDefault()
+        k.redo()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -268,7 +336,9 @@ export function FlowsAuthor(props: {
         <FlowsWorkbench
           graph={graph}
           onChange={editable ? onChange : undefined}
-          editable={editable && loaded}
+          editable={canEdit}
+          issues={editable ? issues : undefined}
+          fitKey={`${props.workflowId}:${String(fitSeq)}`}
           workflowOptions={props.workflowOptions}
           workflowId={props.workflowId}
           onWorkflowChange={props.onWorkflowChange}
@@ -278,8 +348,40 @@ export function FlowsAuthor(props: {
           toolbarRight={
             <>
               {editable && (
+                <div className="flex items-center gap-0.5 rounded border border-line p-0.5 font-mono text-xs text-ink-dim">
+                  <button
+                    type="button"
+                    disabled={!canEdit || history.past.length === 0}
+                    onClick={undo}
+                    title="Undo (⌘Z)"
+                    className="rounded px-2 py-0.5 hover:bg-panel-2 hover:text-ink disabled:opacity-40"
+                  >
+                    Undo
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!canEdit || history.future.length === 0}
+                    onClick={redo}
+                    title="Redo (⇧⌘Z)"
+                    className="rounded px-2 py-0.5 hover:bg-panel-2 hover:text-ink disabled:opacity-40"
+                  >
+                    Redo
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!canEdit}
+                    onClick={tidy}
+                    title="Lay nodes out left to right by step order"
+                    className="rounded px-2 py-0.5 hover:bg-panel-2 hover:text-ink disabled:opacity-40"
+                  >
+                    Tidy
+                  </button>
+                </div>
+              )}
+              {editable && (
                 <button
                   type="button"
+                  title={blocking ? 'Fix the problems marked ✕ to save' : 'Save (⌘S)'}
                   disabled={saving || !loaded}
                   onClick={() => void onSave()}
                   className="rounded bg-em-dim px-3 py-1 font-mono text-xs font-medium text-bg hover:bg-em disabled:opacity-40"
