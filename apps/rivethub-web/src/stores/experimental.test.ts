@@ -27,7 +27,7 @@ describe('setExperimentalFlag', () => {
 
   it('sets one flag without touching the others', () => {
     const next = setExperimentalFlag(EXPERIMENTAL_DEFAULTS, 'tasks', true)
-    expect(next).toEqual({ files: false, tasks: true, workflows: false })
+    expect(next).toEqual({ files: false, tasks: true, workflows: false, memoryHome: false })
     expect(EXPERIMENTAL_DEFAULTS.tasks).toBe(false)
   })
 })
@@ -43,6 +43,7 @@ describe('experimental store', () => {
       files: false,
       tasks: false,
       workflows: false,
+      memoryHome: false,
     })
   })
 
@@ -52,10 +53,12 @@ describe('experimental store', () => {
     expect(useExperimental.getState().experimental.tasks).toBe(false)
     useExperimental.getState().setTasks(true)
     useExperimental.getState().setWorkflows(true)
+    useExperimental.getState().setMemoryHome(true)
     expect(useExperimental.getState().experimental).toEqual({
       files: true,
       tasks: true,
       workflows: true,
+      memoryHome: true,
     })
     useExperimental.getState().setFiles(false)
     expect(useExperimental.getState().experimental.files).toBe(false)
@@ -68,9 +71,14 @@ describe('experimental store', () => {
     const raw = localStorage.getItem('rivethub.experimental')
     expect(raw).toBeTruthy()
     const parsed = JSON.parse(raw ?? '') as {
-      state: { experimental: { files: boolean; tasks: boolean; workflows: boolean } }
+      state: { experimental: Record<string, boolean> }
     }
-    expect(parsed.state.experimental).toEqual({ files: true, tasks: false, workflows: true })
+    expect(parsed.state.experimental).toEqual({
+      files: true,
+      tasks: false,
+      workflows: true,
+      memoryHome: false,
+    })
     expect(parsed.state).not.toHaveProperty('setFiles')
 
     useExperimental.setState({ experimental: { ...EXPERIMENTAL_DEFAULTS } })
@@ -81,19 +89,24 @@ describe('experimental store', () => {
       files: true,
       tasks: false,
       workflows: true,
+      memoryHome: false,
     })
   })
 
   it('treats a missing or truthy-but-not-true blob as all off except true booleans', async () => {
     localStorage.setItem(
       'rivethub.experimental',
-      JSON.stringify({ state: { experimental: { files: 'yes', tasks: true } }, version: 0 }),
+      JSON.stringify({
+        state: { experimental: { files: 'yes', tasks: true, memoryHome: 1 } },
+        version: 0,
+      }),
     )
     await useExperimental.persist.rehydrate()
     expect(useExperimental.getState().experimental).toEqual({
       files: false,
       tasks: true,
       workflows: false,
+      memoryHome: false,
     })
   })
 })

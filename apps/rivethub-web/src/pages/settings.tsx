@@ -428,6 +428,7 @@ function ExperimentalSection(): JSX.Element {
   const setFiles = useExperimental((s) => s.setFiles)
   const setTasks = useExperimental((s) => s.setTasks)
   const setWorkflows = useExperimental((s) => s.setWorkflows)
+  const setMemoryHome = useExperimental((s) => s.setMemoryHome)
   const canvasEnabled = useConversationView((s) => s.canvasEnabled)
   const setCanvasEnabled = useConversationView((s) => s.setCanvasEnabled)
   return (
@@ -445,6 +446,12 @@ function ExperimentalSection(): JSX.Element {
           ['exp-files', 'Files', experimental.files, setFiles],
           ['exp-tasks', 'Tasks', experimental.tasks, setTasks],
           ['exp-workflows', 'Workflows', experimental.workflows, setWorkflows],
+          [
+            'exp-memory-home',
+            'Memory home — sessions and search on one screen, with the Wiki beside it',
+            experimental.memoryHome,
+            setMemoryHome,
+          ],
         ] as const
       ).map(([id, label, value, onChange]) => (
         <div key={id} className="mb-2 flex items-center justify-between gap-3">

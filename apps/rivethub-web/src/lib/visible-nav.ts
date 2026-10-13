@@ -8,12 +8,15 @@ export type ExperimentalFlags = {
   files: boolean
   tasks: boolean
   workflows: boolean
+  /** Memory home: one screen for sessions + search, with Wiki beside it. Not a nav gate. */
+  memoryHome: boolean
 }
 
 export const EXPERIMENTAL_DEFAULTS: ExperimentalFlags = {
   files: false,
   tasks: false,
   workflows: false,
+  memoryHome: false,
 }
 
 const GATED: Partial<Record<string, keyof ExperimentalFlags>> = {

@@ -17,6 +17,7 @@ interface ExperimentalState {
   setFiles: (files: boolean) => void
   setTasks: (tasks: boolean) => void
   setWorkflows: (workflows: boolean) => void
+  setMemoryHome: (memoryHome: boolean) => void
 }
 
 type Persisted = Pick<ExperimentalState, 'experimental'>
@@ -35,6 +36,7 @@ function normalizeFlags(raw: Partial<ExperimentalFlags> | undefined): Experiment
     files: raw?.files === true,
     tasks: raw?.tasks === true,
     workflows: raw?.workflows === true,
+    memoryHome: raw?.memoryHome === true,
   }
 }
 
@@ -48,6 +50,10 @@ export const useExperimental = create<ExperimentalState>()(
         set((s) => ({ experimental: setExperimentalFlag(s.experimental, 'tasks', tasks) })),
       setWorkflows: (workflows) =>
         set((s) => ({ experimental: setExperimentalFlag(s.experimental, 'workflows', workflows) })),
+      setMemoryHome: (memoryHome) =>
+        set((s) => ({
+          experimental: setExperimentalFlag(s.experimental, 'memoryHome', memoryHome),
+        })),
     }),
     {
       name: KEY,
