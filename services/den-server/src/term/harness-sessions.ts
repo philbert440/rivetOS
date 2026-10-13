@@ -19,7 +19,16 @@
 // harness yields [] — the drawer just shows nothing for it rather than breaking.
 
 import { readdir, stat, open, readFile } from 'node:fs/promises'
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import {
+  closeSync,
+  existsSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+  readSync,
+  statSync,
+} from 'node:fs'
+import { StringDecoder } from 'node:string_decoder'
 import { basename, dirname, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
 import { type DelegatedSessionLink, type HarnessTranscriptTurn } from '@rivetos/types'
@@ -1862,7 +1871,7 @@ async function readQwenSession(
     return undefined
   }
   const title = (await qwenTitleFromTranscript(transcript).catch(() => '')) || id
-  const cwd = qwenCwdFromFile(transcript)
+  const cwd = cwdFromJsonl(transcript)
   return {
     id,
     command: 'qwen',
@@ -1873,24 +1882,56 @@ async function readQwenSession(
   }
 }
 
-/** First `cwd` stamped on a qwen jsonl line. Sync — term spawn is sync. */
-function qwenCwdFromFile(file: string): string | undefined {
+/** A single JSONL record larger than this is not a cwd we can trust. Stop
+ *  rather than read a later line: that later line may be a `cd`. */
+const CWD_LINE_MAX = 8 * 1024 * 1024
+
+function cwdOnLine(line: string): string | undefined {
+  if (!line.trim()) return undefined
   try {
-    const text = readFileSync(file, 'utf8')
-    const window = text.length > 64 * 1024 ? text.slice(0, 64 * 1024) : text
-    for (const line of window.split('\n')) {
-      if (!line.trim()) continue
-      try {
-        const obj: unknown = JSON.parse(line)
-        if (isRecord(obj) && typeof obj.cwd === 'string' && obj.cwd.trim()) return obj.cwd.trim()
-      } catch {
-        continue
-      }
-    }
+    const obj: unknown = JSON.parse(line)
+    if (isRecord(obj) && typeof obj.cwd === 'string' && obj.cwd.trim()) return obj.cwd.trim()
   } catch {
-    /* skip */
+    /* not a complete record */
   }
   return undefined
+}
+
+/** First `cwd` in a JSONL transcript — the session's start directory.
+ *  Sync, because term spawn is sync. Reads complete records only, and stops
+ *  at the first one that carries a cwd, so a later `cd` is never the answer
+ *  and a multi-megabyte transcript is not loaded up front. */
+function cwdFromJsonl(file: string): string | undefined {
+  let fd: number | undefined
+  try {
+    fd = openSync(file, 'r')
+    const buf = Buffer.alloc(64 * 1024)
+    const dec = new StringDecoder('utf8')
+    let carry = ''
+    for (;;) {
+      const n = readSync(fd, buf, 0, buf.length, null)
+      if (n <= 0) return cwdOnLine(carry + dec.end())
+      carry += dec.write(buf.subarray(0, n))
+      let nl = carry.indexOf('\n')
+      while (nl >= 0) {
+        const cwd = cwdOnLine(carry.slice(0, nl))
+        if (cwd) return cwd
+        carry = carry.slice(nl + 1)
+        nl = carry.indexOf('\n')
+      }
+      if (carry.length > CWD_LINE_MAX) return undefined
+    }
+  } catch {
+    return undefined
+  } finally {
+    if (fd !== undefined) {
+      try {
+        closeSync(fd)
+      } catch {
+        /* already closed */
+      }
+    }
+  }
 }
 
 /**
@@ -1901,7 +1942,50 @@ export function qwenSessionCwd(id: string): string | undefined {
   if (!id || id.includes('/') || id.includes('..')) return undefined
   const path = qwenTranscriptPath(id)
   if (!path) return undefined
-  return qwenCwdFromFile(path)
+  return cwdFromJsonl(path)
+}
+
+/**
+ * Start directory of a Claude Code session, from its transcript. Claude files
+ * sessions under a slug of the directory they began in, and `claude --resume
+ * <id>` only finds ones whose slug matches the spawn cwd — so resuming a
+ * session started outside RivetHub (no recorded cwd) from the roster default
+ * ($HOME) fails with "No conversation found". The first `cwd` line is the
+ * start directory; later lines follow the agent's `cd`s and are not.
+ */
+export function claudeSessionCwd(id: string): string | undefined {
+  if (!claudeIdSafe(id) || !CLAUDE_SESSION_UUID_RE.test(id)) return undefined
+  const dir = claudeProjectsDir()
+  let slugs: string[]
+  try {
+    slugs = readdirSync(dir)
+  } catch {
+    return undefined
+  }
+  // Same rule as findClaudeJsonl: the newest real file, not whichever
+  // slug readdir happens to return first. A copied project dir must not
+  // resume into the stale copy.
+  let best: { file: string; mtime: number } | undefined
+  for (const slug of slugs) {
+    if (!claudeIdSafe(slug)) continue
+    const file = join(dir, slug, `${id}.jsonl`)
+    try {
+      const st = statSync(file)
+      if (!st.isFile()) continue
+      if (!best || st.mtimeMs > best.mtime) best = { file, mtime: st.mtimeMs }
+    } catch {
+      /* miss */
+    }
+  }
+  return best ? cwdFromJsonl(best.file) : undefined
+}
+
+/** Start directory a harness recorded in its own store, for harnesses whose
+ *  `--resume` is cwd-scoped. Undefined for the rest. */
+export function harnessSessionCwd(command: string, id: string): string | undefined {
+  if (command === 'qwen') return qwenSessionCwd(id)
+  if (command === 'claude') return claudeSessionCwd(id)
+  return undefined
 }
 
 async function collectQwenSessionFiles(): Promise<
