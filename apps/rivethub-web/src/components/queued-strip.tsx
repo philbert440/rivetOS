@@ -17,7 +17,10 @@ export function QueuedStrip(props: {
     <div className="border-t border-line bg-panel-2/40 px-4 py-1.5">
       <div className="mx-auto flex max-w-3xl flex-col gap-1.5">
         {queued.map((item) => (
-          <div key={item.id} className="flex items-start gap-2 font-mono text-[11px] text-ink-dim">
+          <div
+            key={item.id}
+            className="flex items-start gap-2 text-xs text-ink-dim classic:text-[11px]"
+          >
             <span className="min-w-0 flex-1 whitespace-pre-wrap break-words text-ink">
               {item.text}
               {item.note && <span className="block text-ink-dim">{item.note}</span>}

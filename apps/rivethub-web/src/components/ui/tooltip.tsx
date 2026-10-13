@@ -35,7 +35,7 @@ export function Tooltip(props: {
       <span
         aria-hidden
         className={cn(
-          'pointer-events-none absolute z-50 whitespace-nowrap rounded border border-line bg-panel-2 px-2 py-1 font-mono text-[11px] text-ink opacity-0 shadow-lg transition-opacity group-hover/tip:opacity-100 group-focus-within/tip:opacity-100',
+          'pointer-events-none absolute z-50 whitespace-nowrap rounded-lg bg-ink px-2.5 py-1 text-xs font-medium text-surface opacity-0 shadow-pop transition-opacity group-hover/tip:opacity-100 group-focus-within/tip:opacity-100 classic:bg-panel-2 classic:border classic:border-line classic:font-normal classic:px-2 classic:text-[11px] classic:text-ink',
           pos,
         )}
       >

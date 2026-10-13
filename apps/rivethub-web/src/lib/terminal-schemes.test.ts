@@ -166,6 +166,20 @@ describe('appXtermTheme', () => {
     })
   })
 
+  it('takes the page surface for the background in the material style', () => {
+    vi.stubGlobal('document', { documentElement: { dataset: { style: 'material' } } })
+    vi.stubGlobal('getComputedStyle', () => ({
+      getPropertyValue: (name: string) =>
+        ({
+          '--color-bg': '#111111',
+          '--color-surface': '#444444',
+          '--color-ink': '#222222',
+          '--color-em': '#333333',
+        })[name] ?? '',
+    }))
+    expect(appXtermTheme('dark').background).toBe('#444444')
+  })
+
   it('spreads a given ANSI ramp onto the xterm theme', () => {
     const ansi = XTERM_DEFAULT_ANSI
     const theme = appXtermTheme('dark', ansi)

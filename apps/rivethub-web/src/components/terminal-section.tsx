@@ -85,7 +85,7 @@ function NumberField(props: {
           e.currentTarget.blur()
         }
       }}
-      className="w-20 rounded border border-line bg-panel-2 px-2 py-1 text-right font-mono text-xs outline-none focus:border-em"
+      className="w-20 rounded-lg border border-line bg-panel-2 px-2 py-1 text-right text-xs outline-none focus:border-em"
     />
   )
 }
@@ -151,7 +151,7 @@ function TerminalPreview(props: { settings: TerminalSettings; theme: XtermTheme 
   const { settings, theme } = props
   return (
     <div
-      className="mt-2 overflow-x-auto rounded border border-line p-3 font-mono"
+      className="mt-2 overflow-x-auto rounded border border-line p-3"
       style={{
         fontFamily: settings.fontFamily,
         fontSize: settings.fontSize,
@@ -331,7 +331,7 @@ function TerminalImportRow(props: {
                     type="button"
                     title={file.path}
                     onClick={() => previewConfig(file)}
-                    className="rounded border border-line bg-panel-2 px-3 py-1 text-xs hover:border-em"
+                    className="rounded-pill border border-line bg-panel-2 px-3 py-1 text-xs hover:bg-ink/6 classic:hover:border-em"
                   >
                     {label}
                   </button>
@@ -355,7 +355,7 @@ function TerminalImportRow(props: {
         spellCheck={false}
         onChange={(e) => setPaste(e.target.value)}
         placeholder={'palette = 0=#45475a\n…\nforeground = #cdd6f4\nbackground = #1e1e2e'}
-        className="w-full rounded border border-line bg-panel px-3 py-2 font-mono text-xs outline-none focus:border-em"
+        className="w-full rounded-lg border border-line bg-panel px-3 py-2 text-xs outline-none focus:border-em"
       />
       <p className="mt-1 text-xs text-ink-dim">
         Ghostty <code>palette =</code> lines, kitty <code>colorN</code> lines, a plain list of 16
@@ -366,7 +366,7 @@ function TerminalImportRow(props: {
         type="button"
         disabled={!paste.trim()}
         onClick={() => preview('Pasted palette', parsePastedPalette(paste))}
-        className="mt-2 rounded border border-line px-3 py-1 text-xs hover:border-em disabled:cursor-not-allowed disabled:opacity-40"
+        className="mt-2 rounded-pill border border-line px-3 py-1 text-xs hover:bg-ink/6 disabled:cursor-not-allowed disabled:opacity-40 classic:hover:bg-transparent classic:hover:border-em"
       >
         Preview paste
       </button>
@@ -399,14 +399,14 @@ function TerminalImportRow(props: {
               type="button"
               disabled={!canApplyPending}
               onClick={applyPending}
-              className="rounded bg-em-dim px-3 py-1 text-xs font-medium text-bg disabled:cursor-not-allowed disabled:opacity-40"
+              className="rounded-pill bg-em px-3 py-1 text-xs font-medium text-on-em disabled:cursor-not-allowed disabled:opacity-40 classic:bg-em-dim classic:text-bg"
             >
               Apply
             </button>
             <button
               type="button"
               onClick={() => setPending(null)}
-              className="rounded border border-line px-3 py-1 text-xs hover:border-em"
+              className="rounded-pill border border-line px-3 py-1 text-xs hover:bg-ink/6 classic:hover:bg-transparent classic:hover:border-em"
             >
               Discard
             </button>
@@ -423,7 +423,7 @@ function TerminalImportRow(props: {
         <button
           type="button"
           onClick={() => settings.update({ imported: undefined, themeSource: 'app' })}
-          className="mt-3 rounded border border-line px-3 py-1 text-xs hover:border-em"
+          className="mt-3 rounded-pill border border-line px-3 py-1 text-xs hover:bg-ink/6 classic:hover:bg-transparent classic:hover:border-em"
         >
           Clear imported palette
         </button>
@@ -447,7 +447,7 @@ export function TerminalSection(): JSX.Element {
 
   return (
     <>
-      <h2 className="mt-10 mb-3 border-t border-line pt-6 font-mono text-sm font-semibold text-em">
+      <h2 className="mt-10 mb-3 border-t border-line/60 pt-6 text-base font-semibold text-ink classic:border-line classic:text-em classic:text-sm">
         Terminal
       </h2>
 
@@ -471,8 +471,8 @@ export function TerminalSection(): JSX.Element {
               onClick={() => update({ themeSource: value })}
               className={
                 settings.themeSource === value
-                  ? 'rounded bg-em-dim px-4 py-2 text-sm font-medium text-bg'
-                  : 'rounded border border-line bg-panel-2 px-4 py-2 text-sm hover:border-em disabled:cursor-not-allowed disabled:opacity-40'
+                  ? 'rounded-pill bg-em px-4 py-2 text-sm font-medium text-on-em classic:bg-em-dim classic:text-bg'
+                  : 'rounded-pill border border-line bg-panel-2 px-4 py-2 text-sm hover:bg-ink/6 disabled:cursor-not-allowed disabled:opacity-40 classic:hover:border-em'
               }
             >
               {label}
@@ -514,7 +514,7 @@ export function TerminalSection(): JSX.Element {
           value={settings.fontFamily}
           onCommit={(v) => update({ fontFamily: v })}
           placeholder="'JetBrains Mono', monospace"
-          className="mb-2 w-full rounded border border-line bg-panel px-3 py-2 font-mono text-sm outline-none focus:border-em"
+          className="mb-2 w-full rounded-lg border border-line bg-panel px-3 py-2 text-sm outline-none focus:border-em"
         />
       </div>
 
@@ -642,7 +642,7 @@ export function TerminalSection(): JSX.Element {
         <button
           type="button"
           onClick={() => settings.resetToDefaults()}
-          className="rounded border border-line px-3 py-1 text-xs hover:border-em"
+          className="rounded-pill border border-line px-3 py-1 text-xs hover:bg-ink/6 classic:hover:bg-transparent classic:hover:border-em"
         >
           Reset to defaults
         </button>

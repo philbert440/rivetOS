@@ -17,7 +17,7 @@ export function NotConnected(): JSX.Element {
       <div className="text-sm text-ink-dim">No node connected.</div>
       <Link
         to="/settings"
-        className="rounded bg-em-dim px-4 py-2 text-sm font-medium text-bg hover:bg-em"
+        className="rounded-pill bg-em px-4 py-2 text-sm font-medium text-on-em hover:bg-em-dim classic:bg-em-dim classic:hover:bg-em classic:text-bg"
       >
         Connect to a node
       </Link>

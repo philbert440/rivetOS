@@ -58,7 +58,7 @@ function PairingCard(props: { code: PhonePairingCode; onDone: () => void }): JSX
   return (
     <div className="mt-4 border border-line bg-panel p-4 text-center">
       {state === 'paired' ? (
-        <p className="py-8 font-mono text-sm text-em">
+        <p className="py-8 text-sm text-em">
           Paired ✓ {code.deviceId}. RivetHub on the phone is connecting.
         </p>
       ) : state === 'expired' ? (
@@ -71,7 +71,7 @@ function PairingCard(props: { code: PhonePairingCode; onDone: () => void }): JSX
           </p>
           <button
             onClick={() => void status.refetch()}
-            className="mt-3 border border-line px-3 py-1 text-xs hover:border-em hover:text-em"
+            className="rounded-pill mt-3 border border-line px-3 py-1 text-xs hover:bg-ink/6 hover:text-em classic:hover:bg-transparent classic:hover:border-em"
           >
             Check again
           </button>
@@ -81,7 +81,7 @@ function PairingCard(props: { code: PhonePairingCode; onDone: () => void }): JSX
           <canvas ref={canvasRef} className="mx-auto bg-white p-1" aria-label="Pairing QR code" />
           <p className="mt-3 text-sm text-ink">
             Scan it with the phone&apos;s camera — it opens RivetHub — or open RivetHub and tap{' '}
-            <span className="font-mono text-em">Scan pairing QR</span>.
+            <span className="text-em">Scan pairing QR</span>.
           </p>
           <p className="mt-1 text-xs text-ink-dim">
             {code.deviceId} · reaches this computer at <span className="font-mono">{host}</span> ·
@@ -95,7 +95,7 @@ function PairingCard(props: { code: PhonePairingCode; onDone: () => void }): JSX
       )}
       <button
         onClick={onDone}
-        className="mt-3 border border-line px-3 py-1 text-xs text-ink-dim hover:border-em hover:text-em"
+        className="rounded-pill mt-3 border border-line px-3 py-1 text-xs text-ink-dim hover:bg-ink/6 hover:text-em classic:hover:bg-transparent classic:hover:border-em"
       >
         {state === 'paired' || state === 'expired' ? 'Close' : 'Cancel'}
       </button>
@@ -145,7 +145,7 @@ export function PhonePairingSection(): JSX.Element | null {
   }
   return (
     <section>
-      <h2 className="mt-10 mb-3 border-t border-line pt-6 font-mono text-sm font-semibold text-em">
+      <h2 className="mt-10 mb-3 border-t border-line/60 pt-6 text-base font-semibold text-ink classic:border-line classic:text-em classic:text-sm">
         Pair a phone
       </h2>
       {info.data.available ? (
@@ -185,7 +185,7 @@ export function PhonePairingSection(): JSX.Element | null {
             <button
               onClick={submit}
               disabled={!valid || create.isPending}
-              className="bg-em px-3 py-2 text-sm font-semibold text-bg hover:opacity-90 disabled:opacity-50"
+              className="rounded-pill bg-em px-3 py-2 text-sm font-medium text-on-em hover:bg-em-dim disabled:opacity-50 classic:font-semibold classic:text-bg"
             >
               {create.isPending ? 'Preparing…' : 'Show pairing code'}
             </button>

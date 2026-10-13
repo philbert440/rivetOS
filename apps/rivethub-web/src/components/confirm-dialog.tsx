@@ -114,10 +114,10 @@ export function useConfirmDialog(): {
     >
       {current && (
         <Dialog.Portal>
-          <Dialog.Overlay className="fixed inset-0 z-50 bg-bg/70" />
+          <Dialog.Overlay className="fixed inset-0 z-50 bg-black/40 classic:bg-bg/70" />
           <Dialog.Content
             key={seq}
-            className="fixed left-1/2 top-1/2 z-50 w-80 -translate-x-1/2 -translate-y-1/2 rounded-md border border-line bg-panel p-4 shadow-lg outline-none"
+            className="fixed left-1/2 top-1/2 z-50 w-[22rem] max-w-[calc(100vw-2rem)] -translate-x-1/2 -translate-y-1/2 rounded-3xl bg-surface p-6 shadow-pop outline-none classic:bg-panel classic:border classic:border-line classic:p-4 classic:w-80"
             onOpenAutoFocus={(e) => {
               // Preserve the old keyboard flow: prompt focuses the input,
               // confirm/choice focus the submit/danger button — Enter confirms
@@ -151,20 +151,22 @@ export function useConfirmDialog(): {
               }}
             >
               <Dialog.Title asChild>
-                <p className="mb-3 text-sm text-ink">{current.message}</p>
+                <p className="mb-5 text-sm leading-relaxed text-ink-dim classic:mb-3 classic:text-ink">
+                  {current.message}
+                </p>
               </Dialog.Title>
               {current.kind === 'prompt' && (
                 <input
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
-                  className="mb-3 w-full rounded border border-line bg-bg px-2 py-1.5 text-sm text-ink outline-none focus:border-em"
+                  className="mb-4 w-full rounded-lg border border-line bg-surface px-3 py-2 text-sm text-ink outline-none focus:border-em classic:bg-bg classic:mb-3 classic:px-2 classic:py-1.5"
                 />
               )}
               <div className="flex justify-end gap-2">
                 <button
                   type="button"
                   onClick={() => queue.settle(cancelValue)}
-                  className="rounded border border-line px-3 py-1.5 text-xs text-ink-dim hover:text-ink"
+                  className="rounded-pill border border-line px-3 py-1.5 text-xs text-ink-dim hover:text-ink hover:bg-ink/6 classic:hover:bg-transparent"
                 >
                   Cancel
                 </button>
@@ -172,8 +174,8 @@ export function useConfirmDialog(): {
                   type="submit"
                   className={
                     current.danger
-                      ? 'rounded border border-red/40 px-3 py-1.5 text-xs text-red hover:border-red'
-                      : 'rounded bg-em-dim px-3 py-1.5 text-xs font-medium text-bg hover:bg-em'
+                      ? 'rounded-pill border border-red/40 px-3 py-1.5 text-xs text-red hover:bg-red/10 classic:hover:bg-transparent classic:hover:border-red'
+                      : 'rounded-pill bg-em px-3 py-1.5 text-xs font-medium text-on-em hover:bg-em-dim classic:bg-em-dim classic:hover:bg-em classic:text-bg'
                   }
                 >
                   {current.kind === 'choice'
@@ -184,7 +186,7 @@ export function useConfirmDialog(): {
                   <button
                     type="button"
                     onClick={() => queue.settle('reset')}
-                    className="rounded border border-red/40 px-3 py-1.5 text-xs text-red hover:border-red"
+                    className="rounded-pill border border-red/40 px-3 py-1.5 text-xs text-red hover:bg-red/10 classic:hover:bg-transparent classic:hover:border-red"
                   >
                     {current.resetLabel ?? 'Start over'}
                   </button>

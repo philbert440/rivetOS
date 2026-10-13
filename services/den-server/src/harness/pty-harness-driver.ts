@@ -275,9 +275,10 @@ export interface PtyHarnessDriverDeps<S extends HarnessStoreHost = HarnessStoreH
   transcript?: Pick<TranscriptWatcher, 'subscribe' | 'sync'>
   /**
    * herdr screen capture for the den room (native id for pinning harnesses,
-   * room key for adopting ones). Empty / omitted under tmux.
+   * room key for adopting ones). Empty / omitted under tmux. `ansi` keeps
+   * SGR so the pre-send read can tell dim ghost text from a typed draft.
    */
-  screen?: (native: string) => Promise<string> | string
+  screen?: (native: string, opts?: { ansi?: boolean }) => Promise<string> | string
 }
 
 /** Per-driver identity, supplied by the subclass's constructor. */
@@ -296,13 +297,6 @@ const DEFAULT_DELIVERY_FALLBACK_MS = 10_000
 const DEFAULT_DELIVERY_PEEK_MS = 1_500
 /** Prefix compared between a turn and its hook echo. Slice before collapsing. */
 const DELIVERY_KEY_CHARS = 80
-/**
- * Claude Code collapses a paste into `[Pasted text #N]` once it is too big for
- * the composer (several lines, or at least this many characters). A shorter
- * turn cannot own that placeholder.
- */
-const PASTE_COLLAPSE_MIN_CHARS = 160
-const PASTE_COLLAPSE_MIN_LINES = 4
 /** Re-read grok/kimi sheets at most this often (`verifyCapabilities` is hot). */
 const SHEET_TTL_MS = 60_000
 /** Fresh PTYs get a sane default geometry; a real attach resizes immediately. */
@@ -443,9 +437,15 @@ function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
-/** Whitespace-collapsed prefix. Sliced before the collapse so a large paste is not rewritten whole. */
+/** Whitespace-collapsed prefix. Sliced before the collapse so a large paste is not rewritten whole.
+ *  Echo matching only. A draft compare uses `turnIdentity` — an 80-character prefix is not the message. */
 function deliveryKey(text: string): string {
   return unwrapDeliveryText(text).slice(0, DELIVERY_KEY_CHARS).replace(/\s+/g, ' ').trim()
+}
+
+/** The whole turn, whitespace-collapsed, wrappers stripped. No prefix cut. */
+function turnIdentity(text: string): string {
+  return unwrapDeliveryText(text).replace(/\s+/g, ' ').trim()
 }
 
 /** True when `echo` contains `key` with flexible whitespace, without collapsing the whole echo. */
@@ -457,10 +457,22 @@ function deliveryEchoHasKey(echo: string, key: string): boolean {
   return new RegExp(pattern).test(unwrapDeliveryText(echo))
 }
 
-function pasteWouldCollapse(text: string): boolean {
-  return (
-    text.split('\n').length >= PASTE_COLLAPSE_MIN_LINES || text.length >= PASTE_COLLAPSE_MIN_CHARS
-  )
+/** The Enter keystroke, written raw (not as a paste) so the TUI submits. */
+const SUBMIT_KEY = '\r'
+
+/**
+ * The input box already holds this turn: an earlier paste of it whose Enter
+ * the TUI swallowed, now being retried. Submitting what is there delivers it
+ * once; pasting again would glue a second copy on. A collapsed
+ * `[Pasted text #N]` placeholder is never matched — nothing on screen says
+ * which paste it is.
+ */
+function draftIsTurn(draft: string, turnTexts: readonly string[]): boolean {
+  // A `[Pasted text #N]` placeholder does not say which paste it is.
+  if (/\[Pasted text #\d+/.test(draft)) return false
+  const box = turnIdentity(draft)
+  if (!box) return false
+  return turnTexts.some((text) => turnIdentity(text) === box)
 }
 
 /** Fallback AskUserQuestion answer: labels joined by ", "; multi-question
@@ -902,11 +914,32 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
       // `undefined` (not false) keeps the recorded interrupt flag absent on
       // the ordinary path.
       const bypassDialogGate = turn.bypassDialogGate === true
-      const { dialog, draft } = await this.preSendBlock(native)
-      if (dialog && !bypassDialogGate) throw dialogRejection(dialog)
-      if (draft) throw draftRejection()
+      const { dialog, draft, draftText } = await this.preSendBlock(native)
+      if (dialog && !bypassDialogGate) {
+        this.logSendRefusal(native, dialog)
+        throw dialogRejection(dialog)
+      }
+      // Our own earlier paste of this turn, stuck unsent: submit it rather
+      // than refuse every retry of it.
+      const resubmit =
+        draft === true && draftText !== undefined && draftIsTurn(draftText, [turn.text, injected])
+      if (draft && !resubmit) {
+        this.logSendRefusal(native)
+        throw draftRejection()
+      }
       dismissedDialog = Boolean(dialog)
-      if (!pty.inject(ptyId, injected, true, dialog ? true : undefined)) {
+      if (resubmit) {
+        this.log(
+          `[den-server] harness: ${this.harnessId}:${native} input already holds this turn; submitting it`,
+        )
+        if (!pty.inject(ptyId, SUBMIT_KEY, false)) {
+          throw new HarnessError(
+            'turn_in_flight',
+            `${this.harnessId} ${native} is not accepting input yet`,
+            { harnessId: this.harnessId, sessionId },
+          )
+        }
+      } else if (!pty.inject(ptyId, injected, true, dialog ? true : undefined)) {
         // The term manager keeps its session→pty mapping until the EXITED
         // record is reaped (exitLingerMs), so a harness that just died still
         // resolves to a pty that refuses writes. Answering
@@ -920,8 +953,14 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
         ptyId = await this.spawnFor(pty, native, true)
         const retry = await this.preSendBlock(native)
         const retryDialog = retry.dialog
-        if (retryDialog && !bypassDialogGate) throw dialogRejection(retryDialog)
-        if (retry.draft) throw draftRejection()
+        if (retryDialog && !bypassDialogGate) {
+          this.logSendRefusal(native, retryDialog)
+          throw dialogRejection(retryDialog)
+        }
+        if (retry.draft) {
+          this.logSendRefusal(native)
+          throw draftRejection()
+        }
         dismissedDialog = Boolean(retryDialog)
         if (!pty.inject(ptyId, injected, true, retryDialog ? true : undefined)) {
           // A live-but-unwritable harness means its pre-ready inject buffer is
@@ -1812,10 +1851,22 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
    * instead of `sendUserTurn`. They are answering the dialog; running the gate
    * there would 409 the answer.
    */
+  /**
+   * A refused send is otherwise silent on the node: the client gets the 409,
+   * the log gets nothing, and a false positive cannot be traced. Pane text is
+   * not logged — only the dialog's title and option count.
+   */
+  protected logSendRefusal(native: string, dialog?: BlockingDialog): void {
+    const why = dialog
+      ? `a dialog is open (${JSON.stringify(dialog.title.slice(0, 60))}, ${String(dialog.options.length)} options)`
+      : 'the input box holds unsent text'
+    this.log(`[den-server] harness: send refused for ${this.harnessId}:${native}: ${why}`)
+  }
+
   protected async preSendBlock(native: string): Promise<PreSendBlock> {
     if (!this.dialogGate) return {}
     try {
-      const raw = await this.deps.screen?.(this.room(native))
+      const raw = await this.deps.screen?.(this.room(native), { ansi: true })
       return parsePreSendBlock(raw ?? '')
     } catch (err) {
       this.log(
@@ -1938,20 +1989,12 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
     this.endTurn(native, 'undelivered')
   }
 
-  protected inputHoldsTurn(raw: string, key: string, turnText: string): boolean {
+  protected inputHoldsTurn(raw: string, _key: string, turnText: string): boolean {
     const input = parseComposerInput(raw)
     if (input === undefined) return false
-    if (/\[Pasted text #\d+/.test(input)) {
-      const marks = input.match(/\[Pasted text #\d+/g) ?? []
-      const sole = marks.length === 1 && /^\s*\[Pasted text #\d+[^\]]*\]\s*$/.test(input)
-      // A placeholder is this paste only when the turn was long enough for the
-      // TUI to collapse it and no other paste is sitting in the box. Anything
-      // else falls through to the deadline instead of failing the peek.
-      if (sole && pasteWouldCollapse(turnText)) return true
-      if (sole) return false
-    }
-    if (!key) return false
-    return deliveryKey(input).includes(key.slice(0, 30))
+    // Exact text, not a prefix. `raw` must be an ANSI capture: a dim
+    // suggestion that happens to equal this turn is not the user's draft.
+    return draftIsTurn(input, [turnText])
   }
 
   protected async peekDelivery(native: string): Promise<void> {
@@ -1965,7 +2008,10 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
     const turnText = delivery.text
     let raw: string
     try {
-      raw = (await this.deps.screen?.(this.room(native))) ?? ''
+      // ANSI, not a plain read. The Enter below is only legal when the
+      // non-dim text in the box is this turn. A plain capture cannot tell a
+      // dim suggestion from typed text.
+      raw = (await this.deps.screen?.(this.room(native), { ansi: true })) ?? ''
     } catch (err) {
       this.log(
         `[den-server] harness: delivery screen capture failed for ${this.harnessId}:${native}: ` +
@@ -1986,6 +2032,11 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
     if (this.inputHoldsTurn(raw, key, turnText)) {
       if (!delivery.stuckOnce) {
         delivery.stuckOnce = true
+        // The paste landed but its Enter was swallowed (it reached the TUI
+        // while the paste was still being taken in). Press it once more; the
+        // next peek fails the delivery if that did not submit either.
+        await this.pressSubmit(native)
+        if (this.live.get(native)?.delivery !== delivery) return
         const peek = setTimeout(() => {
           void this.peekDelivery(native)
         }, 1_000)
@@ -1997,6 +2048,23 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
       this.failDelivery(
         native,
         `${this.productName} didn't submit the message (it's still in the input box); check the terminal`,
+      )
+    }
+  }
+
+  /** Raw Enter into the session's pane. Best-effort: a missing pty is a no-op. */
+  protected async pressSubmit(native: string): Promise<void> {
+    let pty: HarnessPtyHost | null | undefined
+    try {
+      pty = await this.deps.pty?.()
+    } catch {
+      return
+    }
+    const ptyId = pty?.ptyForSession(this.room(native))
+    if (!pty || !ptyId) return
+    if (pty.inject(ptyId, SUBMIT_KEY, false)) {
+      this.log(
+        `[den-server] harness: ${this.harnessId}:${native} paste still in the input box; pressed Enter again`,
       )
     }
   }

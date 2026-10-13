@@ -111,6 +111,7 @@ import {
   resolveHerdrAgentPane,
   HerdrCommandError,
   HerdrUnavailableError,
+  type HerdrCaptureOpts,
   type HerdrCreateOpts,
   type HerdrCtl,
   type HerdrStatusHub,
@@ -442,7 +443,7 @@ export interface TermManager {
    * the record is not herdr-backed, capture is missing, or it throws. Tmux
    * is never scraped.
    */
-  screen(id: string, lines?: number): Promise<string>
+  screen(id: string, lines?: number, opts?: HerdrCaptureOpts): Promise<string>
   /** Resize the child and record the new dimensions (hello frames report them). */
   resize(id: string, cols: number, rows: number): boolean
   /** Flow control for saturated viewers — no-op on backends without pause. */
@@ -2982,13 +2983,13 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       return true
     },
 
-    screen(id, lines = 40): Promise<string> {
+    screen(id, lines = 40, opts): Promise<string> {
       const r = records.get(id)
       if (!r || r.muxKind !== 'herdr' || !r.tmuxName || !herdr) return Promise.resolve('')
-      if (herdr.captureAsync) return herdr.captureAsync(r.tmuxName, lines).catch(() => '')
+      if (herdr.captureAsync) return herdr.captureAsync(r.tmuxName, lines, opts).catch(() => '')
       if (!herdr.capture) return Promise.resolve('')
       try {
-        return Promise.resolve(herdr.capture(r.tmuxName, lines) ?? '')
+        return Promise.resolve(herdr.capture(r.tmuxName, lines, opts) ?? '')
       } catch {
         return Promise.resolve('')
       }

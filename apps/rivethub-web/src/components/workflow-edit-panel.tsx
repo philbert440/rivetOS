@@ -228,13 +228,13 @@ export function WorkflowEditPanel(props: {
           type="button"
           disabled={validating}
           onClick={() => void onValidate()}
-          className="ml-auto rounded border border-line px-2 py-0.5 font-mono text-[11px] hover:border-em disabled:opacity-40"
+          className="ml-auto rounded-pill border border-line px-2 py-0.5 text-xs hover:bg-ink/6 disabled:opacity-40 classic:hover:bg-transparent classic:hover:border-em classic:text-[11px]"
         >
           {validating ? 'Validating…' : 'Validate'}
         </button>
         {validateMsg && (
           <span
-            className={`font-mono text-[11px] ${
+            className={`text-xs ${
               diagnostics.some((d) => d.severity === 'error') ? 'text-red' : 'text-em'
             }`}
           >
@@ -301,11 +301,11 @@ export function WorkflowEditPanel(props: {
           )}
 
           {loadError ? (
-            <div className="px-3 py-2 font-mono text-xs text-red">
+            <div className="px-3 py-2 text-xs text-red">
               load error: {loadError} — editing disabled for this file.
             </div>
           ) : textLoading ? (
-            <div className="px-3 py-2 font-mono text-xs text-ink-dim">loading…</div>
+            <div className="px-3 py-2 text-xs text-ink-dim">loading…</div>
           ) : viewMode === 'raw' || !showFormToggle ? (
             <FileEditor
               key={`${selected}:${String(textEpoch)}:raw`}
@@ -447,10 +447,8 @@ function ManifestFormOverlay(props: {
   if (initial.error) {
     return (
       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto p-3">
-        <p className="mb-2 font-mono text-xs text-red">
-          workflow.yaml does not parse: {initial.error}
-        </p>
-        <p className="font-mono text-xs text-ink-dim">
+        <p className="mb-2 text-xs text-red">workflow.yaml does not parse: {initial.error}</p>
+        <p className="text-xs text-ink-dim">
           Fix it in the Raw view — the form editor is disabled until the file parses.
         </p>
       </div>
@@ -492,17 +490,19 @@ function ManifestFormOverlay(props: {
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-y-auto p-3">
       <div className="mb-3 flex items-center gap-2">
-        <span className="font-mono text-xs text-ink-dim">manifest form</span>
-        {props.dirty && <span className="font-mono text-[11px] text-ink-dim">• modified</span>}
+        <span className="text-xs text-ink-dim">manifest form</span>
+        {props.dirty && (
+          <span className="text-xs text-ink-dim classic:text-[11px]">• modified</span>
+        )}
         <button
           type="button"
           onClick={props.onSave}
-          className="ml-auto rounded border border-line px-2 py-0.5 font-mono text-[11px] hover:border-em"
+          className="ml-auto rounded-pill border border-line px-2 py-0.5 text-xs hover:bg-ink/6 classic:hover:bg-transparent classic:hover:border-em classic:text-[11px]"
         >
           Save
         </button>
       </div>
-      {parseError && <p className="mb-2 font-mono text-xs text-red">parse error: {parseError}</p>}
+      {parseError && <p className="mb-2 text-xs text-red">parse error: {parseError}</p>}
       <div className="grid max-w-xl gap-3">
         <Field label="id">
           <input
@@ -550,7 +550,7 @@ function ManifestFormOverlay(props: {
         />
 
         <div>
-          <h3 className="mb-1 font-mono text-[11px] uppercase text-ink-dim">budgets</h3>
+          <h3 className="mb-1 text-xs uppercase text-ink-dim classic:text-[11px]">budgets</h3>
           <div className="grid grid-cols-3 gap-2">
             <NumField
               label="maxTokens"
@@ -579,7 +579,7 @@ function ManifestFormOverlay(props: {
 function Field(props: { label: string; children: ReactNode }): JSX.Element {
   return (
     <label className="block">
-      <span className="mb-0.5 block font-mono text-[11px] text-ink-dim">{props.label}</span>
+      <span className="mb-0.5 block text-xs text-ink-dim classic:text-[11px]">{props.label}</span>
       {props.children}
     </label>
   )
@@ -592,10 +592,12 @@ function NumField(props: {
 }): JSX.Element {
   return (
     <label className="block">
-      <span className="mb-0.5 block font-mono text-[10px] text-ink-dim">{props.label}</span>
+      <span className="mb-0.5 block text-[11px] text-ink-dim classic:text-[10px]">
+        {props.label}
+      </span>
       <input
         type="number"
-        className="w-full rounded border border-line bg-panel-2 px-2 py-1 font-mono text-xs"
+        className="w-full rounded border border-line bg-panel-2 px-2 py-1 text-xs"
         value={props.value ?? ''}
         onChange={(e) => {
           const t = e.target.value
@@ -616,11 +618,11 @@ function FieldTable(props: {
   return (
     <div>
       <div className="mb-1 flex items-center gap-2">
-        <h3 className="font-mono text-[11px] uppercase text-ink-dim">{props.title}</h3>
+        <h3 className="text-xs uppercase text-ink-dim classic:text-[11px]">{props.title}</h3>
         <button
           type="button"
           onClick={props.onAdd}
-          className="font-mono text-[10px] text-em hover:underline"
+          className="text-[11px] text-em hover:underline classic:text-[10px]"
         >
           + add
         </button>
@@ -629,7 +631,7 @@ function FieldTable(props: {
         {props.fields.map((f, i) => (
           <div key={i} className="grid grid-cols-[1fr_5rem_4rem_1fr_auto] items-center gap-1">
             <input
-              className="rounded border border-line bg-panel-2 px-1 py-0.5 font-mono text-xs"
+              className="rounded border border-line bg-panel-2 px-1 py-0.5 text-xs"
               value={f.name}
               onChange={(e) => props.onChange(i, { name: e.target.value })}
               placeholder="name"
@@ -644,7 +646,7 @@ function FieldTable(props: {
                 label: t,
               }))}
             />
-            <label className="flex items-center gap-1 font-mono text-[10px] text-ink-dim">
+            <label className="flex items-center gap-1 text-[11px] text-ink-dim classic:text-[10px]">
               <input
                 type="checkbox"
                 checked={f.required !== false}
@@ -661,7 +663,7 @@ function FieldTable(props: {
             <button
               type="button"
               onClick={() => props.onRemove(i)}
-              className="font-mono text-[10px] text-red hover:underline"
+              className="text-[11px] text-red hover:underline classic:text-[10px]"
             >
               ✕
             </button>
@@ -712,10 +714,10 @@ function AgentCardOverlay(props: {
   if (initial.error) {
     return (
       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto p-3">
-        <p className="mb-2 font-mono text-xs text-red">
+        <p className="mb-2 text-xs text-red">
           {props.fileName} frontmatter does not parse: {initial.error}
         </p>
-        <p className="font-mono text-xs text-ink-dim">
+        <p className="text-xs text-ink-dim">
           Fix it in the Raw view — the card editor is disabled until the frontmatter parses.
         </p>
       </div>
@@ -746,17 +748,19 @@ function AgentCardOverlay(props: {
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-y-auto p-3">
       <div className="mb-3 flex items-center gap-2">
-        <span className="font-mono text-xs text-em">{agentName}</span>
-        {props.dirty && <span className="font-mono text-[11px] text-ink-dim">• modified</span>}
+        <span className="text-xs text-em">{agentName}</span>
+        {props.dirty && (
+          <span className="text-xs text-ink-dim classic:text-[11px]">• modified</span>
+        )}
         <button
           type="button"
           onClick={props.onSave}
-          className="ml-auto rounded border border-line px-2 py-0.5 font-mono text-[11px] hover:border-em"
+          className="ml-auto rounded-pill border border-line px-2 py-0.5 text-xs hover:bg-ink/6 classic:hover:bg-transparent classic:hover:border-em classic:text-[11px]"
         >
           Save
         </button>
       </div>
-      {parseError && <p className="mb-2 font-mono text-xs text-red">parse error: {parseError}</p>}
+      {parseError && <p className="mb-2 text-xs text-red">parse error: {parseError}</p>}
       <div className="mb-3 grid max-w-xl grid-cols-2 gap-3">
         <Field label="model">
           <input
