@@ -46,14 +46,14 @@ describe('workflows dirty-guard wiring', () => {
 
   it('the hook returns the dialog element and the page renders it', () => {
     expect(read('./workflow-dirty-guard.ts')).toContain('element: discardDialog.element')
-    const page = read('../pages/workflows-hub.tsx')
+    const page = read('../pages/workflow-page.tsx')
     expect(page).toContain('element: discardDialogElement')
     expect(page).toContain('{discardDialogElement}')
   })
 
   it('the back links leave the prompt to the blocker (one prompt, not two)', () => {
-    const page = read('../pages/workflows-hub.tsx')
-    expect(page.match(/to="\/workflows"/g)?.length).toBeGreaterThanOrEqual(2)
+    const page = read('../pages/workflow-page.tsx')
+    expect(page.match(/to="\/workflows"/g)?.length).toBeGreaterThanOrEqual(1)
     expect(page).not.toContain('if (editIsDirty()) return')
   })
 
