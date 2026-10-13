@@ -237,6 +237,32 @@ Residual: Hermes/claude-cli adapters may still omit tool args; chips degrade cle
   automatically (`effectivePreference`); the `index.html` boot script mirrors
   that rule.
 
+### Material style (explicit Light / Dark)
+
+- **Two UI styles, one token vocabulary.** `html[data-style]` is `material`
+  for an explicit Light or Dark choice and `classic` for System, Omarchy and
+  the unset default (`lib/theme.ts` `uiStyleFor`; set by `stores/theme.ts`
+  and the `index.html` boot script — keep them in sync). Classic is the
+  Omarchy look above, unchanged.
+- **Tokens:** `theme.css` keeps the classic tokens as the `@theme` default
+  and redefines palette, radius, type and elevation under
+  `html[data-style='material']` (and `[data-theme='light']` for its light
+  palette). Material is Material 3 tonal surfaces from the emerald seed,
+  Roboto Flex for UI text (`@fontsource-variable/roboto-flex`), JetBrains
+  Mono kept for code, paths, ids and the terminal.
+- **New tokens:** `--color-surface` (the page tile), `--color-em-container` /
+  `--color-on-em-container` (selected pills, your message bubble),
+  `--color-on-em` (ink on a filled accent), `--radius-pill` (round only in
+  material), `--shadow-tile` / `--shadow-pop`. In classic the colour ones are
+  `var()` references to existing tokens, so an Omarchy palette flows through
+  them and `omarchyAppTokens` does not emit them.
+- **Layout differences beyond tokens** use the `classic:` / `material:`
+  Tailwind variants (`@custom-variant` in `theme.css`). New UI written in
+  the material idiom adds `classic:` overrides that restore the square,
+  bordered look; content differences (e.g. `rivet ›` vs `rivet`) render per
+  style. Canvas-scene and terminal colours pick a palette per style
+  (`canvasSceneColors(theme, style)`, `appXtermTheme`).
+
 ### Responsive
 
 Below 768px (`md`) the left rail is an off-canvas drawer (`w-64`, never the

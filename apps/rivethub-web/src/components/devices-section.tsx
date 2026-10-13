@@ -66,7 +66,7 @@ function QrCard({ open, onDone }: { open: DeviceOpenResponse; onDone: () => void
       )}
       <button
         onClick={onDone}
-        className="mt-3 rounded border border-line px-3 py-1 text-xs text-ink-dim hover:border-em hover:text-em"
+        className="mt-3 rounded-pill border border-line px-3 py-1 text-xs text-ink-dim hover:bg-ink/6 hover:text-em classic:hover:bg-transparent classic:hover:border-em"
       >
         {expired ? 'Close' : 'Done'}
       </button>
@@ -118,7 +118,9 @@ export function DevicesSection(): JSX.Element | null {
   return (
     <section className="mt-10">
       {revokeDialog.element}
-      <h2 className="mb-1 font-mono text-base font-semibold text-em">Devices</h2>
+      <h2 className="mb-1 text-lg font-semibold text-ink classic:text-base classic:text-em">
+        Devices
+      </h2>
       <p className="mb-4 text-xs text-ink-dim">
         Phones and other devices enrolled on the mesh through this node.
         {list.data && !list.data.relayConfigured && (
@@ -182,7 +184,7 @@ export function DevicesSection(): JSX.Element | null {
           value={name}
           onChange={(e) => setName(e.target.value)}
           placeholder="device name (e.g. My phone)"
-          className="w-64 rounded border border-line bg-panel px-3 py-2 text-sm outline-none focus:border-em"
+          className="w-64 rounded-lg border border-line bg-panel px-3 py-2 text-sm outline-none focus:border-em"
         />
         <button
           onClick={() => add.mutate(name.trim() || 'device')}

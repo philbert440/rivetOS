@@ -62,21 +62,23 @@ export function Toasts(): JSX.Element {
       {toasts.map((e) => (
         <div
           key={e.id}
-          className={`pointer-events-auto rounded-lg border bg-panel-2 px-4 py-3 shadow-lg ${
-            severity(e.frame) === 'red' ? 'border-red/50' : 'border-em/50'
+          className={`pointer-events-auto rounded-2xl border bg-panel-2 px-4 py-3 shadow-pop ${
+            severity(e.frame) === 'red'
+              ? 'border-red/40 classic:border-red/50'
+              : 'border-em/30 classic:border-em/50'
           }`}
         >
           <div className="flex items-start justify-between gap-3">
             <button className="min-w-0 text-left" onClick={() => open(e)}>
               <div
-                className={`font-mono text-xs font-semibold ${
+                className={`text-xs font-semibold ${
                   severity(e.frame) === 'red' ? 'text-red' : 'text-em'
                 }`}
               >
                 {frameTitle(e.frame)}
               </div>
               <div className="mt-1 truncate text-sm text-ink">{frameBody(e.frame)}</div>
-              <div className="mt-1 font-mono text-[10px] text-ink-dim">
+              <div className="mt-1 text-[11px] text-ink-dim classic:text-[10px]">
                 {new Date(e.frame.ts).toLocaleTimeString()}
                 {e.frame.kind === 'workflow.gate'
                   ? ' · resume from run detail'

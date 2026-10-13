@@ -10,7 +10,10 @@ import { cn } from '../lib/utils.js'
 export function Wordmark(props: { className?: string }): JSX.Element {
   return (
     <span
-      className={cn('font-mono font-extrabold tracking-tight select-none', props.className)}
+      className={cn(
+        'font-sans font-bold tracking-tight select-none classic:font-extrabold',
+        props.className,
+      )}
       aria-label="RivetHub"
     >
       <span className="text-em" aria-hidden>
@@ -32,7 +35,7 @@ export function RhMark(props: { className?: string; title?: string }): JSX.Eleme
   return (
     <span
       className={cn(
-        'shrink-0 font-mono font-extrabold leading-none tracking-tight select-none',
+        'shrink-0 font-sans font-bold leading-none tracking-tight select-none classic:font-extrabold',
         props.className,
       )}
       role={props.title ? 'img' : undefined}

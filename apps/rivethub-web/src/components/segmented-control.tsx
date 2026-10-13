@@ -8,8 +8,9 @@ export interface SegmentedOption<T extends string> {
 }
 
 /**
- * The one chip-style segment toggle — hub mono idiom: bordered group,
- * `aria-pressed`, emerald active segment. Replaces the four copy-pasted
+ * The one segment toggle: bordered group, `aria-pressed`, accent active
+ * segment — square and mono in classic, an outlined pill group with a
+ * tonal-filled active segment in material. Replaces the four copy-pasted
  * implementations (chat mode toggle, run view toggle, workflow Run/Edit,
  * memory topic view).
  */
@@ -21,7 +22,7 @@ export function SegmentedControl<T extends string>(props: {
 }): JSX.Element {
   return (
     <div
-      className="inline-flex gap-0.5 rounded border border-line p-0.5"
+      className="inline-flex gap-0.5 rounded-pill border border-line p-0.5"
       role="group"
       aria-label={props.ariaLabel}
     >
@@ -35,8 +36,10 @@ export function SegmentedControl<T extends string>(props: {
             disabled={o.disabled}
             title={o.title}
             onClick={() => props.onChange(o.value)}
-            className={`rounded px-2.5 py-1 font-mono text-[11px] disabled:opacity-40 ${
-              active ? 'bg-panel-2 text-em' : 'text-ink-dim hover:text-ink'
+            className={`rounded-pill px-3 py-1 text-xs font-medium transition-colors disabled:opacity-40 classic:px-2.5 classic:text-[11px] classic:font-normal ${
+              active
+                ? 'bg-em-container text-on-em-container classic:bg-panel-2 classic:text-em'
+                : 'text-ink-dim hover:bg-ink/6 hover:text-ink classic:hover:bg-transparent'
             }`}
           >
             {o.label}

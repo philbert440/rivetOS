@@ -2,7 +2,8 @@ import { forwardRef, type ButtonHTMLAttributes } from 'react'
 import { cn } from '../../lib/utils.js'
 
 /**
- * shadcn-style Button, remapped to the Rivet tokens (emerald-on-dark, mono).
+ * shadcn-style Button, remapped to the Rivet tokens (emerald, mono, square in
+ * classic; filled / text / outlined pills in material).
  * A small variant/size set — enough for the composer + pickers ported from the
  * android web-ui. No class-variance-authority; the maps are inline.
  */
@@ -10,14 +11,16 @@ type Variant = 'default' | 'ghost' | 'outline'
 type Size = 'default' | 'sm' | 'icon' | 'icon-xs'
 
 const VARIANTS: Record<Variant, string> = {
-  default: 'bg-em-dim text-bg hover:bg-em disabled:opacity-40',
-  ghost: 'text-ink-dim hover:bg-panel-2 hover:text-ink',
-  outline: 'border border-line bg-panel-2 text-ink hover:border-em/60',
+  default:
+    'bg-em text-on-em hover:bg-em-dim disabled:opacity-40 classic:bg-em-dim classic:hover:bg-em classic:text-bg',
+  ghost: 'text-ink-dim hover:bg-ink/8 hover:text-ink classic:hover:bg-panel-2',
+  outline:
+    'border border-line text-ink hover:bg-ink/6 classic:bg-panel-2 classic:hover:border-em/60',
 }
 
 const SIZES: Record<Size, string> = {
-  default: 'h-9 px-4 py-2 text-sm',
-  sm: 'h-8 px-3 text-sm',
+  default: 'h-10 px-5 py-2 text-sm classic:h-9 classic:px-4',
+  sm: 'h-8 px-3.5 text-sm classic:px-3',
   icon: 'h-9 w-9',
   'icon-xs': 'h-6 w-6',
 }
@@ -36,7 +39,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
       ref={ref}
       type={type}
       className={cn(
-        'inline-flex select-none items-center justify-center gap-1.5 rounded-md font-medium outline-none transition-colors focus-visible:ring-1 focus-visible:ring-em disabled:pointer-events-none',
+        'inline-flex select-none items-center justify-center gap-1.5 rounded-pill font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-em focus-visible:ring-offset-2 focus-visible:ring-offset-surface disabled:pointer-events-none classic:font-medium classic:focus-visible:ring-1 classic:focus-visible:ring-offset-0',
         VARIANTS[variant],
         SIZES[size],
         className,

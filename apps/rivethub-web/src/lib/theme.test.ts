@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  canvasColorFor,
   effectivePreference,
   loadStoredThemePreference,
   loadThemePreference,
@@ -7,6 +8,7 @@ import {
   resolveTheme,
   saveThemePreference,
   THEME_STORAGE_KEY,
+  uiStyleFor,
 } from './theme.js'
 
 describe('parseThemePreference', () => {
@@ -89,5 +91,26 @@ describe('effectivePreference', () => {
   it('with no choice, follows Omarchy when a palette is available', () => {
     expect(effectivePreference(null, true)).toBe('omarchy')
     expect(effectivePreference(null, false)).toBe('system')
+  })
+})
+
+describe('uiStyleFor', () => {
+  it('gives explicit Light and Dark the material style', () => {
+    expect(uiStyleFor('light')).toBe('material')
+    expect(uiStyleFor('dark')).toBe('material')
+  })
+
+  it('keeps System and Omarchy on the classic style', () => {
+    expect(uiStyleFor('system')).toBe('classic')
+    expect(uiStyleFor('omarchy')).toBe('classic')
+  })
+})
+
+describe('canvasColorFor', () => {
+  it("matches each style's --color-bg", () => {
+    expect(canvasColorFor('classic', 'dark')).toBe('#0d1117')
+    expect(canvasColorFor('classic', 'light')).toBe('#f6f4ee')
+    expect(canvasColorFor('material', 'dark')).toBe('#0f1512')
+    expect(canvasColorFor('material', 'light')).toBe('#e9f0eb')
   })
 })

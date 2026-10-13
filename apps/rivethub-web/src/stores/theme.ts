@@ -11,12 +11,15 @@
 
 import { create } from 'zustand'
 import {
+  canvasColorFor,
   effectivePreference,
   loadStoredThemePreference,
   resolveTheme,
   saveThemePreference,
+  uiStyleFor,
   type ResolvedTheme,
   type ThemePreference,
+  type UiStyle,
 } from '../lib/theme.js'
 import {
   applyOmarchyTokens,
@@ -132,12 +135,18 @@ export function useResolvedTheme(): ResolvedTheme {
   return useTheme(resolvedThemeOf)
 }
 
+/** The UI style the current preference renders in (lib/theme.ts uiStyleFor). */
+export function useUiStyle(): UiStyle {
+  return useTheme((s) => uiStyleFor(s.preference))
+}
+
 function applyDom(
   resolved: ResolvedTheme,
   omarchy: OmarchySnapshot | null,
   preference: ThemePreference,
 ): void {
   document.documentElement.dataset.theme = resolved
+  document.documentElement.dataset.style = uiStyleFor(preference)
   if (preference === 'omarchy' && omarchy) {
     applyOmarchyTokens(document.documentElement, omarchyAppTokens(omarchy.colors))
     document
@@ -150,7 +159,7 @@ function applyDom(
   // token before first paint, and meta theme-color takes a literal).
   document
     .querySelector('meta[name="theme-color"]')
-    ?.setAttribute('content', resolved === 'dark' ? '#0d1117' : '#f6f4ee')
+    ?.setAttribute('content', canvasColorFor(uiStyleFor(preference), resolved))
 }
 
 if (typeof document !== 'undefined') {
