@@ -40,6 +40,8 @@ data class Prefs(
     val omarchyPalette: String = DEFAULT_OMARCHY_PRESET,
     val fontScale: Float = 1.0f,
     val sessionModes: Map<String, String> = emptyMap(),
+    /** sessionId → per-turn model/effort override (plane/TurnPick.kt encodeTurnPick). */
+    val turnPicks: Map<String, String> = emptyMap(),
     /** Settings → Conversations → Default view (`chat` | `terminal`); see plane/SessionMode.kt. */
     val defaultView: String = MODE_CHAT,
     val archived: Set<String> = emptySet(),
@@ -88,6 +90,7 @@ class Settings(context: Context) {
             omarchyPalette = p[OMARCHY_PALETTE] ?: DEFAULT_OMARCHY_PRESET,
             fontScale = nearestFontScale(p[FONT_SCALE] ?: 1.0f),
             sessionModes = decodeMap(p[SESSION_MODES]),
+            turnPicks = decodeMap(p[TURN_PICKS]),
             defaultView = p[DEFAULT_VIEW] ?: MODE_CHAT,
             archived = p[ARCHIVED] ?: emptySet(),
             titleOverrides = decodeMap(p[TITLES]),
@@ -158,6 +161,20 @@ class Settings(context: Context) {
     suspend fun setSessionMode(sessionId: String, mode: String) = ds.edit {
         it[SESSION_MODES] = encodeMap(decodeMap(it[SESSION_MODES]) + (sessionId to mode))
     }
+    /** Per-turn model/effort override; null removes it. */
+    suspend fun setTurnPick(sessionId: String, encoded: String?) = ds.edit {
+        val cur = decodeMap(it[TURN_PICKS])
+        it[TURN_PICKS] = encodeMap(if (encoded == null) cur - sessionId else cur + (sessionId to encoded))
+    }
+
+    /** Draft → canonical: the pick follows the thread; an existing canonical entry wins. */
+    suspend fun rekeyTurnPick(from: String, to: String) = ds.edit {
+        val cur = decodeMap(it[TURN_PICKS])
+        val moved = cur[from] ?: return@edit
+        val next = if (cur[to] != null) cur - from else cur - from + (to to moved)
+        it[TURN_PICKS] = encodeMap(next)
+    }
+
     suspend fun rekeySessionMode(from: String, to: String) = ds.edit {
         val cur = decodeMap(it[SESSION_MODES])
         val moved = cur[from] ?: return@edit
@@ -214,6 +231,7 @@ class Settings(context: Context) {
         private val THEME = stringPreferencesKey("themeMode")
         private val OMARCHY_PALETTE = stringPreferencesKey("omarchyPalette")
         private val SESSION_MODES = stringPreferencesKey("sessionModes")
+        private val TURN_PICKS = stringPreferencesKey("turnPicks")
         private val DEFAULT_VIEW = stringPreferencesKey("defaultView")
         private val ARCHIVED = stringSetPreferencesKey("archived")
         private val TITLES = stringPreferencesKey("titleOverrides")

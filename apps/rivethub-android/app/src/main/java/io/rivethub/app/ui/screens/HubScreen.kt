@@ -59,6 +59,7 @@ import io.rivethub.app.plane.inboxRoute
 import io.rivethub.app.plane.LocatedChatItem
 import io.rivethub.app.plane.NodeSheetInput
 import io.rivethub.app.plane.buildNodeSheet
+import io.rivethub.app.plane.shouldHideNodePickers
 import io.rivethub.app.plane.ExperimentalFlags
 import io.rivethub.app.plane.drawerFooterDest
 import io.rivethub.app.plane.drawerOpensMemoryScreen
@@ -180,6 +181,15 @@ fun HubDrawer(
         ?: st.nodes.find { it.denUrl.trimEnd('/') == st.prefs.entryUrl.trim().trimEnd('/') }
         ?: st.nodes.firstOrNull()
     val currentName = currentNode?.name?.ifBlank { currentNode.id } ?: st.prefs.entryUrl.ifBlank { "—" }
+    // Single-node setup (#800/#813): no node footer. The mesh roster counts only
+    // once discover() answered for this entry; pending or failed keeps it hidden.
+    val entryAnswered = entryAnsweredFor(st.entryAnswer, st.prefs.entryUrl, st.identityGen)
+    val nodePickerHidden = shouldHideNodePickers(
+        entryUrl = st.prefs.entryUrl,
+        extraUrls = st.prefs.extraNodes,
+        activeUrl = st.nodes.find { it.id == st.prefs.viewNodeId }?.denUrl ?: st.prefs.entryUrl,
+        meshNodeUrls = if (entryAnswered == true) st.nodes.filter { it.fromMesh }.map { it.denUrl } else null,
+    )
     val dots = nodeDots(
         entryNodeId = statusEntryNodeId(st.nodes, st.prefs.entryUrl),
         nodes = st.nodes,
@@ -206,6 +216,7 @@ fun HubDrawer(
                     dots = dots,
                     currentNodeName = currentName,
                     nodeSheet = nodeSheet,
+                    nodePickerHidden = nodePickerHidden,
                     exp = exp,
                     onClose = { closeDrawer() },
                     onNav = { dest -> navTo(dest) },

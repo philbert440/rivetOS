@@ -242,6 +242,9 @@
     <string name="error_image_unsupported">The selected model does not accept image inputs.</string>
     <string name="harness_native_model">Model</string>
     <string name="harness_native_effort">Effort</string>
+    <string name="turn_model_session_default">Session default (%1$s)</string>
+    <string name="turn_model_harness_default">Harness default</string>
+    <string name="turn_effort_default">Default effort</string>
     <string name="ws_disconnected">disconnected</string>
     <string name="jump_latest">latest</string>
     <string name="ask_user_free">Or type a reply</string>
