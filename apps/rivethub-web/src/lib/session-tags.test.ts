@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { PendingTagWire } from '@rivetos/types'
 import type { SessionListRow } from './session-list.js'
 import {
+  acceptedTagOptions,
   filterRowsByTag,
   groupPendingBySession,
   groupRowsByTag,
@@ -14,11 +15,23 @@ import {
 } from './session-tags.js'
 
 function tag(over: Partial<AnyTag> & Pick<AnyTag, 'key' | 'value'>): AnyTag {
-  return { id: `${over.key}:${over.value}`, display: '', state: 'accepted', source: 'user', ...over }
+  return {
+    id: `${over.key}:${over.value}`,
+    display: '',
+    state: 'accepted',
+    source: 'user',
+    ...over,
+  }
 }
 
 function row(key: string, sessionId?: string): SessionListRow {
-  return { key, kind: 'harness', title: key, updatedAt: 1, ...(sessionId ? { sessionId } : {}) } as SessionListRow
+  return {
+    key,
+    kind: 'harness',
+    title: key,
+    updatedAt: 1,
+    ...(sessionId ? { sessionId } : {}),
+  } as SessionListRow
 }
 
 describe('tagLabel / sortTagsForChips', () => {
@@ -36,19 +49,33 @@ describe('tagLabel / sortTagsForChips', () => {
 describe('tagsBySession / sessionKeysOf / tagKeyOptions', () => {
   it('maps a lookup response and lists accepted keys', () => {
     const map = tagsBySession({
-      'claude:a': [tag({ key: 'project', value: 'p' }), tag({ key: 'topic', value: 't', state: 'suggested' })],
+      'claude:a': [
+        tag({ key: 'project', value: 'p' }),
+        tag({ key: 'topic', value: 't', state: 'suggested' }),
+      ],
       'codex:b': [tag({ key: 'repo', value: 'r' })],
     })
     expect([...map.keys()]).toEqual(['claude:a', 'codex:b'])
     expect(tagKeyOptions(map)).toEqual(['project', 'repo'])
-    expect(sessionKeysOf([row('k1', 'claude:a'), row('k2'), row('k3', 'claude:a')])).toEqual(['claude:a', 'k2'])
+    expect(sessionKeysOf([row('k1', 'claude:a'), row('k2'), row('k3', 'claude:a')])).toEqual([
+      'claude:a',
+      'k2',
+    ])
   })
 })
 
 describe('groupRowsByTag / filterRowsByTag', () => {
-  const rows = [row('r1', 'claude:a'), row('r2', 'claude:b'), row('r3', 'claude:c'), row('r4', 'claude:d')]
+  const rows = [
+    row('r1', 'claude:a'),
+    row('r2', 'claude:b'),
+    row('r3', 'claude:c'),
+    row('r4', 'claude:d'),
+  ]
   const map = tagsBySession({
-    'claude:a': [tag({ key: 'project', value: 'acmeapp', display: 'AcmeApp' }), tag({ key: 'project', value: 'rivetos' })],
+    'claude:a': [
+      tag({ key: 'project', value: 'acmeapp', display: 'AcmeApp' }),
+      tag({ key: 'project', value: 'rivetos' }),
+    ],
     'claude:b': [tag({ key: 'project', value: 'rivetos' })],
     'claude:c': [tag({ key: 'project', value: 'rivetos', state: 'suggested' })],
   })
@@ -71,8 +98,18 @@ describe('groupRowsByTag / filterRowsByTag', () => {
 describe('groupPendingBySession', () => {
   const pending = (over: Partial<PendingTagWire>): PendingTagWire =>
     ({
-      id: 'x', entityType: 'conversation', entityId: 'c', key: 'topic', value: 'v', display: '',
-      source: 'model', state: 'suggested', proposedBy: 'm', reason: '', createdAt: '', updatedAt: '',
+      id: 'x',
+      entityType: 'conversation',
+      entityId: 'c',
+      key: 'topic',
+      value: 'v',
+      display: '',
+      source: 'model',
+      state: 'suggested',
+      proposedBy: 'm',
+      reason: '',
+      createdAt: '',
+      updatedAt: '',
       ...over,
     }) as PendingTagWire
 
@@ -82,16 +119,30 @@ describe('groupPendingBySession', () => {
       pending({ id: '2', sessionKey: null, conversationId: 'c9' }),
       pending({ id: '3', sessionKey: 'claude:a' }),
     ])
-    expect(groups.map((g) => [g.sessionKey, g.title, g.openable, g.tags.map((t) => t.id)])).toEqual([
-      ['claude:a', 'A', true, ['1', '3']],
-      ['c9', null, false, ['2']],
-    ])
+    expect(groups.map((g) => [g.sessionKey, g.title, g.openable, g.tags.map((t) => t.id)])).toEqual(
+      [
+        ['claude:a', 'A', true, ['1', '3']],
+        ['c9', null, false, ['2']],
+      ],
+    )
   })
 
   it('two conversations sharing a session key (two agents) are two groups with distinct ids', () => {
     const groups = groupPendingBySession([
-      pending({ id: '1', entityId: 'c1', conversationId: 'c1', sessionKey: 'codex:shared', agent: 'rivet' }),
-      pending({ id: '2', entityId: 'c2', conversationId: 'c2', sessionKey: 'codex:shared', agent: 'grok' }),
+      pending({
+        id: '1',
+        entityId: 'c1',
+        conversationId: 'c1',
+        sessionKey: 'codex:shared',
+        agent: 'rivet',
+      }),
+      pending({
+        id: '2',
+        entityId: 'c2',
+        conversationId: 'c2',
+        sessionKey: 'codex:shared',
+        agent: 'grok',
+      }),
     ])
     expect(groups.map((g) => [g.id, g.sessionKey, g.agent])).toEqual([
       ['c1', 'codex:shared', 'rivet'],
@@ -102,12 +153,37 @@ describe('groupPendingBySession', () => {
   it('puts a session and its summaries in one group, openable when any tag knows the session key', () => {
     const groups = groupPendingBySession([
       // Summary suggestion first: it knows only the conversation.
-      pending({ id: '1', entityType: 'summary', entityId: 's1', sessionKey: null, conversationId: 'c1' }),
-      pending({ id: '2', entityId: 'c1', sessionKey: 'claude:a', conversationId: 'c1', title: 'A', agent: 'rivet' }),
-      pending({ id: '3', entityType: 'summary', entityId: 's2', sessionKey: null, conversationId: 'c1' }),
+      pending({
+        id: '1',
+        entityType: 'summary',
+        entityId: 's1',
+        sessionKey: null,
+        conversationId: 'c1',
+      }),
+      pending({
+        id: '2',
+        entityId: 'c1',
+        sessionKey: 'claude:a',
+        conversationId: 'c1',
+        title: 'A',
+        agent: 'rivet',
+      }),
+      pending({
+        id: '3',
+        entityType: 'summary',
+        entityId: 's2',
+        sessionKey: null,
+        conversationId: 'c1',
+      }),
     ])
     expect(groups).toHaveLength(1)
-    expect(groups[0]).toMatchObject({ id: 'c1', sessionKey: 'claude:a', openable: true, title: 'A', agent: 'rivet' })
+    expect(groups[0]).toMatchObject({
+      id: 'c1',
+      sessionKey: 'claude:a',
+      openable: true,
+      title: 'A',
+      agent: 'rivet',
+    })
     expect(groups[0].tags.map((t) => t.id)).toEqual(['1', '2', '3'])
   })
 })
@@ -140,7 +216,9 @@ describe('chip click target', () => {
     expect(isFilterableChip({ state: 'suggested' })).toBe(false)
     expect(isFilterableChip({ state: 'rejected' })).toBe(false)
     const rows = [row('r1', 'claude:a')]
-    const map = tagsBySession({ 'claude:a': [tag({ key: 'topic', value: 'x', state: 'suggested' })] })
+    const map = tagsBySession({
+      'claude:a': [tag({ key: 'topic', value: 'x', state: 'suggested' })],
+    })
     expect(filterRowsByTag(rows, map, 'topic:x')).toEqual([])
   })
 })
@@ -157,11 +235,19 @@ describe('lookup rules', () => {
 
   it('a lookup is in flight on first load or while a stand-in is being replaced, not when disabled', async () => {
     const { lookupInFlight } = await import('./session-tags.js')
-    expect(lookupInFlight({ isLoading: true, isPlaceholderData: false, isFetching: true })).toBe(true)
-    expect(lookupInFlight({ isLoading: false, isPlaceholderData: true, isFetching: true })).toBe(true)
+    expect(lookupInFlight({ isLoading: true, isPlaceholderData: false, isFetching: true })).toBe(
+      true,
+    )
+    expect(lookupInFlight({ isLoading: false, isPlaceholderData: true, isFetching: true })).toBe(
+      true,
+    )
     // A disabled query holding a placeholder is not loading and never will be.
-    expect(lookupInFlight({ isLoading: false, isPlaceholderData: true, isFetching: false })).toBe(false)
-    expect(lookupInFlight({ isLoading: false, isPlaceholderData: false, isFetching: true })).toBe(false)
+    expect(lookupInFlight({ isLoading: false, isPlaceholderData: true, isFetching: false })).toBe(
+      false,
+    )
+    expect(lookupInFlight({ isLoading: false, isPlaceholderData: false, isFetching: true })).toBe(
+      false,
+    )
   })
 
   it('settleTagFilters: keeps while loading, clears what no longer exists, clears all without a datahub', async () => {
@@ -189,7 +275,10 @@ describe('lookup rules', () => {
       tagFilter: '',
       groupKey: '',
     })
-    expect(settleTagFilters({ ...base, tagFilter: '', groupKey: '' })).toEqual({ tagFilter: '', groupKey: '' })
+    expect(settleTagFilters({ ...base, tagFilter: '', groupKey: '' })).toEqual({
+      tagFilter: '',
+      groupKey: '',
+    })
   })
 })
 
@@ -207,9 +296,9 @@ describe('isTagLiteral', () => {
 describe('chipLabel', () => {
   it('marks a removal suggestion and leaves an addition alone', async () => {
     const { chipLabel } = await import('./session-tags.js')
-    expect(chipLabel({ key: 'project', value: 'rivetos', display: 'rivetOS', action: 'remove' })).toBe(
-      'suggest remove project:rivetOS',
-    )
+    expect(
+      chipLabel({ key: 'project', value: 'rivetos', display: 'rivetOS', action: 'remove' }),
+    ).toBe('suggest remove project:rivetOS')
     expect(chipLabel({ key: 'topic', value: 'wiki', display: '' })).toBe('topic:wiki')
   })
 })
@@ -219,5 +308,31 @@ describe('pending review helpers', () => {
     const { pendingCountLabel } = await import('./session-tags.js')
     expect(pendingCountLabel(3, 200)).toBe('3 pending')
     expect(pendingCountLabel(200, 200)).toBe('first 200 pending')
+  })
+})
+
+describe('acceptedTagOptions', () => {
+  it('lists each accepted tag once, sorted by label, after "any tag"', () => {
+    const map = new Map<string, AnyTag[]>([
+      [
+        'a',
+        [
+          tag({ key: 'project', value: 'rivethub' }),
+          tag({ key: 'area', value: 'ui', state: 'suggested' }),
+        ],
+      ],
+      [
+        'b',
+        [
+          tag({ key: 'project', value: 'rivethub' }),
+          tag({ key: 'area', value: 'mtls', display: 'mTLS' }),
+        ],
+      ],
+    ])
+    expect(acceptedTagOptions(map)).toEqual([
+      { value: '', label: 'any tag' },
+      { value: 'area:mtls', label: 'area:mTLS' },
+      { value: 'project:rivethub', label: 'project:rivethub' },
+    ])
   })
 })
