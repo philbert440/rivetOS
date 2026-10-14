@@ -19,7 +19,7 @@ import {
   type ReactNode,
 } from 'react'
 import * as Dialog from '@radix-ui/react-dialog'
-import { History as HistoryIcon, Keyboard, Pencil } from 'lucide-react'
+import { History as HistoryIcon, Keyboard, LayoutGrid, Pencil } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import type { HarnessDescriptor } from '@rivetos/types'
 import type { ChatItem } from '../../lib/harness-chat.js'
@@ -1558,9 +1558,11 @@ export function SpacesCanvas(props: {
           <button
             type="button"
             data-crumb="everything"
-            className="px-2 py-1 hover:text-ink"
+            aria-current={altitude === 'everything' ? 'location' : undefined}
+            className={`${crumbChip(altitude === 'everything')} shrink-0`}
             onClick={() => leaveTo('everything')}
           >
+            <LayoutGrid aria-hidden="true" className="size-3.5 shrink-0" />
             Everything
           </button>
           {crumbSpace ? (
@@ -1569,20 +1571,25 @@ export function SpacesCanvas(props: {
               <button
                 type="button"
                 data-crumb="space"
-                className="px-2 py-1 hover:text-ink"
+                aria-current={altitude === 'space' ? 'location' : undefined}
+                className={crumbChip(altitude === 'space')}
                 onClick={() => {
                   if (framedRegionId !== undefined) setSpaceFocus(framedRegionId)
                   leaveTo('space')
                 }}
               >
-                {crumbSpace}
+                <span className="truncate">{crumbSpace}</span>
               </button>
             </>
           ) : null}
           {crumbThread ? (
             <>
               <span aria-hidden="true">›</span>
-              <ThreadCrumb item={crumbThread} onOpen={() => beginThread(crumbThread.key)} />
+              <ThreadCrumb
+                item={crumbThread}
+                here={altitude === 'thread'}
+                onOpen={() => beginThread(crumbThread.key)}
+              />
             </>
           ) : null}
         </nav>
@@ -2061,8 +2068,22 @@ function RemoveDialog(props: {
   )
 }
 
+/** Breadcrumb step as a tonal chip, so it reads as a button. The step for the
+ *  current altitude is the filled accent chip; classic paints em-container as
+ *  panel-2, the same as the other chips, so it adds an accent outline there.
+ *  The nav is capped at 60% width and classic's monospace runs wide, so chips
+ *  that may shrink wrap their label in a truncating span. */
+function crumbChip(here: boolean): string {
+  return [
+    'flex min-w-0 items-center gap-1.5 rounded-pill px-3 py-1 transition-colors',
+    here
+      ? 'bg-em-container font-medium text-on-em-container hover:bg-em-container/85 classic:ring-1 classic:ring-inset classic:ring-em'
+      : 'bg-panel-2 text-ink hover:bg-em/18 active:bg-em/28',
+  ].join(' ')
+}
+
 /** Breadcrumb's thread: click opens it; the pencil or a double-click renames. */
-function ThreadCrumb(props: { item: ChatItem; onOpen: () => void }): JSX.Element {
+function ThreadCrumb(props: { item: ChatItem; here: boolean; onOpen: () => void }): JSX.Element {
   const { title, nameKey } = useSessionTitle(props.item)
   const [renaming, setRenaming] = useState(false)
   if (renaming) {
@@ -2080,12 +2101,13 @@ function ThreadCrumb(props: { item: ChatItem; onOpen: () => void }): JSX.Element
       <button
         type="button"
         data-crumb-thread=""
-        className="truncate px-2 py-1 text-ink hover:text-ink"
+        aria-current={props.here ? 'location' : undefined}
+        className={crumbChip(props.here)}
         title="Double-click to rename"
         onClick={props.onOpen}
         onDoubleClick={() => setRenaming(true)}
       >
-        {title}
+        <span className="truncate">{title}</span>
       </button>
       <button
         type="button"
