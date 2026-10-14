@@ -245,6 +245,8 @@ class HarnessChatViewModel(
         val termFontSp: Int = 13,
         val codeLineNumbers: Boolean = false,
         val codeWrap: Boolean = false,
+        /** Settings → General "Jump to the newest message" (arrival jump). */
+        val autoScroll: Boolean = true,
         val termCtrl: Boolean = false,
         val termAlt: Boolean = false,
         /** Session den is not the transport entry node. */
@@ -1147,7 +1149,7 @@ class HarnessChatViewModel(
             terminalOnly = terminalOnly,
         )
         val turnPick = decodeTurnPick(prefs.turnPicks[_state.value.sessionId])
-        _state.update { it.copy(mode = mode, turnPick = turnPick, termFontSp = prefs.terminalFontSp, codeLineNumbers = prefs.codeLineNumbers, codeWrap = prefs.codeWrap, termRemote = terminalNodeIsRemote(nodeDenUrl, prefs.entryUrl)) }
+        _state.update { it.copy(mode = mode, turnPick = turnPick, termFontSp = prefs.terminalFontSp, codeLineNumbers = prefs.codeLineNumbers, codeWrap = prefs.codeWrap, autoScroll = prefs.autoScroll, termRemote = terminalNodeIsRemote(nodeDenUrl, prefs.entryUrl)) }
         if (c.identity.generation() != identityGen) return
         try {
             val hg = c.harness(nodeDenUrl)

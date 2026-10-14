@@ -89,7 +89,7 @@ whose Conversations tab is the launch surface until the pick/new resolution open
 | Hub | `ui/screens/HubScreen.kt` | `HubViewModel` (activity-scoped `key=hub`) | Content only; hosted by `HubDrawer` (same file) — the ONE left drawer (`RivetDrawerHost`) shared with Chat; Forget calls `shutdown()` on the same instance. Conversations tab = `ChatLaunchScreen` (launch/loading surface, NOT a list); Settings tab = Settings |
 | ~~Conversations~~ | `ui/screens/ConversationsScreen.kt` | — | DELETED 2026-09-04 (emptied file, delete list) — the list is not an app screen; `ConversationsPane` moved to `ui/screens/ConversationsPane.kt` and is hosted only by the left drawer (`HubDrawer`, U2b) |
 | Chat launch | `ui/screens/ChatLaunchScreen.kt` | HubViewModel | TopBar (☰ + wordmark) + centered rh mark with "Loading most recent conversation…" and a New-conversation button (web `ChatLaunchLoading`) while the launch resolution (instant resume / pick / new draft) lands — never the list, never a blank, no spinner |
-| Settings | `ui/screens/SettingsScreen.kt` | HubViewModel + container | TopBar (☰ + `Settings` title) + desktop settings chrome; identity, theme, terminal font, mesh-feed Updates; title long-press → gallery |
+| Settings | `ui/screens/SettingsScreen.kt` | HubViewModel + container | TopBar (☰ + `Settings` title) + desktop settings chrome; title long-press → gallery. Tabs (`plane/SettingsTabs.kt` ← web `lib/settings-tabs.ts`; square-chip `SettingsTabRow`, `rememberSaveable`, General first; each tab's first `SettingsH2` is `first = true`): **General** = New conversations (default agent) · Conversations (default view, "Jump to the newest message") · Messages · Code · Notifications (task, agent-finished, "Sound and style…" → Android channel settings); **Appearance** = theme/palette/font size · Terminal; **Node & Mesh** = Gateway (entry URL, strict, test/save); **Device** = identity, p12 import, Forget; **Advanced** = Experimental · Updates · build stamp. No Keyboard tab (desktop shortcuts) |
 | Chat | `ui/screens/HarnessChatScreen.kt` | `HarnessChatViewModel` via `ScreenStores` | ONE 48dp chat header row owns the status inset (☰ · title block · Stop · Terminal chip · search · +); title tap = rename after a turn, long-press title = history drawer until U2b; search replaces the transcript with message hits and tap jumps to the turn; full-width 1dp context track — no TopBar, no back; `HistoryDrawer` (right, same file as HubDrawer, state lifted to MainActivity) = ConversationsPane; ONE unified edge-swipe layer on HubDrawer's root (decision `plane/DrawerSwipe.kt`, finger-following edge swipe, see "Drawer gestures" under Design system) opens AND closes each drawer; transcript pinned to bottom + `↓ latest` pill; Terminal chip selects the same session; Terminal header retains its segment until U6 (`ModePager swipe = false`); VT attach |
 | Chat | `ui/screens/HarnessChatScreen.kt` | `HarnessChatViewModel` via `ScreenStores` | ONE session header row owns the status inset (☰ · id · ctx % · Stop · Terminal\|Chat · history) — no TopBar, no back; ☰ AND history both open the ONE left drawer (U2b: there is no right drawer; `HistoryDrawer` deleted); ONE edge-swipe layer on HubDrawer's root (decision `plane/DrawerSwipe.kt`, finger-following edge swipe, see "Drawer gestures" under Design system) opens it from the left bezel and closes it on a leftward drag that STARTS ON THE SCRIM (right of the open sheet — a drag starting on the sheet is left to the rows, so swipe-to-archive works; fix1); the right bezel is inert; transcript pinned to bottom + `↓ latest` pill; Terminal\|Chat segment only (`ModePager swipe = false`); VT attach |
 | Memory | `ui/screens/MemoryScreen.kt` | `MemoryViewModel` (activity-scoped `key=memory`) | NATIVE wiki hub over datahub `GET /api/wiki` (mirror of the merged responsive web Memory hub: MemoryHubPage + pages/memory.tsx): TopBar (☰ + `Memory`) + Search/Wiki/Browse/Stats tab row + search field + compact topic rows (title + staleness badge). Pure layer `plane/MemoryWiki.kt` (tabs, rows, stats, TOC, staleness, datahub-node pick) mirrors web `lib/memory-hub.ts` + `lib/wiki-base.ts`; wire shapes in `gateway/Wire.kt`, calls `Gateway.wikiPages/wikiSearch/wikiTopic`. Datahub = mesh node named datahub, else `transport.entry()`; load failure = the web "Point RivetHub at datahub" pointer copy, never a spinner |
@@ -121,6 +121,11 @@ button and edge-swipe opens both scroll the open row into view. fix1: the scroll
 row's SECTION HEADER (`plane/ActiveScroll.kt activeScrollTarget`) and falls back to the row only when
 the row is then not fully visible, so "Today" / "Pinned" stay on screen above it (scrolling straight
 to the row had pushed the header off the top — the "no section headers" screenshot).
+
+**Single-node footer (#800/#813, `plane/NodeSheet.kt shouldHideNodePickers`).** `NodeSwitcherFooter`
+is hidden when the entry URL is the only saved node and the active view, while `discover()` has not
+answered for this entry (`entryAnsweredFor` ≠ true — no flash on load), and once the mesh roster
+(`fromMesh` nodes) holds no other node; a discovered peer or a second saved node shows it again.
 
 **Back ordering rule (fix1).** Back with the drawer open (or opening: `targetValue == Open`)
 closes the drawer and does nothing else. `HubDrawer` composes a `PredictiveBackHandler` AFTER the
@@ -253,7 +258,14 @@ setters are gone.
 model ids — the composer model sheet's Favourites group, U5). Leftover Grok-Bot keys (`handle`,
 `expWorkflows` (experimental drawer sections, default false). `taskNotifications` (Settings → Notifications → "Task notifications (system)", default false; slice D3). Leftover Grok-Bot keys (`handle`,
 `expWorkflows` (experimental drawer sections, default false), `showStats` / `actionRowAlways`
-(Settings → Messages, default false). Leftover Grok-Bot keys (`handle`,
+(Settings → Messages, default false). `turnPicks` (sessionId → `harnessId\tmodel\teffort`, #805),
+`defaultAgentId` (General → New conversations; `newConversationAction` falls back to it after the
+session and current agent), `autoScroll` (General "Jump to the newest message", default true — gates
+`plane/TranscriptPin.kt arrivalJump`), `agentFinishedNotifications` (General, default false;
+`HubViewModel` feeds every registry `session-created`/`session-updated` status into
+`plane/FinishedTurns.kt FinishedTurnTracker` and posts through the `tasks` channel on an active → idle
+edge, skipping the chat on screen — `MainActivity` hands over `openSessionKey`; tap opens the app, not
+the conversation, and nothing is posted after process death). Leftover Grok-Bot keys (`handle`,
 `pinned`, `hidden`, `sessionOverrides`, `lastSeen`, `desktopUrl`) are still decoded so a wipe is
 not required; their setters are gone.
 
@@ -502,8 +514,15 @@ Attachments are `[attached: uri]` lines after streaming
 `POST /api/uploads` on the session's node (1 GiB cap, den-server), except
 protocol-owned Codex sessions (`transport: protocol` + `imageAttachments`):
 those send staged PNG/JPEG/WebP/GIF as `UserTurn.attachments` with the
-catalog model/effort on the turn body. Native Model/Effort sit above the
-composer (web `chat.tsx` nativeModels row) and hide the spawn-flag pickers.
+explicit per-turn pick on the turn body. Per-turn Model/Effort (#805,
+`plane/TurnPick.kt` ← web `lib/conversation-model-options.ts`) sit above the
+composer and hide the spawn-flag pickers: offered only when ownership is
+settled-true (summary + registry loaded, gate bound, `transport: protocol`)
+and the sheet has `turnOptions`; the first option is "" = "Session default
+(X)" / "Harness default" and sends nothing. The pick is persisted per
+conversation (`turnPicks` pref, rekeyed with `sessionModes` on adopt), never
+feeds spawn flags, and is cleared when the harness changes, ownership settles
+false, or the settled sheet stops offering it — unknown ownership keeps it.
 A failed attachment chip blocks send on **every** session, PTY included
 (parity with web `composer.tsx`); remove the chip to retry. Gallery pick
 and share (`ACTION_SEND` / `ACTION_SEND_MULTIPLE` `image/*`) land on the
@@ -727,8 +746,12 @@ first, the one post-enroll screen HubDrawer does not host. Also set
 - Build host: the fleet's Android build box (JDK 21 + SDK 37 + warm Gradle cache) — host names and
   paths are ops notes in Rivet's memory, not here. `./gradlew :app:assembleDebug :app:testDebugUnitTest`.
   Full-suite test counts only — a `--tests` filter can match nothing and still print green; CI
-  (`.github/workflows/android.yml`) enforces a floor of 572 (ux-u0: +2 `@Test` on the 571-test tree;
-  FLOOR = real count − 1).
+  (`.github/workflows/android.yml`) enforces a floor of 1047 (desktop-parity settings slice: +28
+  `@Test` on the 1019-floor tree; FLOOR = real count − 1).
+- No SDK on the box? The android-free core (`gateway/`, `transport/`, `plane/` + their tests, minus
+  `HubReducersTest`) builds as a plain Kotlin/JVM Gradle project with those dirs as sources (run it with
+  a UTF-8 locale — test names contain em dashes). Fast compile+test loop for plane logic; `ui/`/`data/`
+  still need the SDK or CI (`workflow_dispatch` on `android.yml` builds any branch).
 - CI `FLOOR` in `.github/workflows/android.yml` = real full-suite count − 1; bump it in every PR that adds tests.
 - Nx targets in `project.json`: `check` → `:app:testDebugUnitTest`, `apk` → `:app:assembleDebug`,
   `verify` → dependsOn check+apk (command `true`), `lint-android` → `:app:lintDebug`. There are no

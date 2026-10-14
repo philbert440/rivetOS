@@ -76,7 +76,9 @@ import io.rivethub.app.plane.SpawnConflict
 import io.rivethub.app.plane.TermStatus
 import io.rivethub.app.plane.modelDisplayLabel
 import io.rivethub.app.plane.terminalTitle
+import io.rivethub.app.plane.TranscriptEdge
 import io.rivethub.app.plane.TranscriptPin
+import io.rivethub.app.plane.arrivalJump
 import io.rivethub.app.plane.accentFor
 import io.rivethub.app.plane.composerCanSend
 import io.rivethub.app.plane.composerIsEnabled
@@ -723,6 +725,25 @@ private fun ChatTranscript(
             pinned = false
             list.animateScrollToItem(jumpToTurn)
             onJumpConsumed()
+        }
+    }
+    // Arrival jump (plane/TranscriptPin.kt arrivalJump, Settings → General
+    // "Jump to the newest message"): a new last message, a finished turn, or
+    // thinking giving way to text re-pins and scrolls even when scrolled up.
+    val lastTurn = st.turns.lastOrNull()
+    val edge = TranscriptEdge(
+        lastId = lastTurn?.let { "${it.role}:${it.text.hashCode()}" },
+        live = st.inFlight,
+        reasoning = st.liveReasoning.isNotEmpty() && st.liveText.isEmpty(),
+    )
+    var lastEdge by remember(pin) { mutableStateOf<TranscriptEdge?>(null) }
+    LaunchedEffect(edge) {
+        val prev = lastEdge
+        lastEdge = edge
+        if (prev != null && st.autoScroll && jumpToTurn == null && arrivalJump(prev, edge)) {
+            pin.jump()
+            pinned = true
+            runCatching { list.scrollToItem(count) }
         }
     }
     LaunchedEffect(count, st.liveText.length, st.liveReasoning.length, st.liveTools.size, jumpToTurn) {

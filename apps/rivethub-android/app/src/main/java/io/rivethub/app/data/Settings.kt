@@ -66,6 +66,12 @@ data class Prefs(
     val favouriteModels: Set<String> = emptySet(),
     /** Post an OS notification when a task completes while the app is in the background. Off by default. */
     val taskNotifications: Boolean = false,
+    /** Settings → General: OS notification when an agent finishes a reply you are not looking at. Off by default. */
+    val agentFinishedNotifications: Boolean = false,
+    /** Settings → General: bring the transcript to the newest message on arrival (plane/TranscriptPin.kt arrivalJump). */
+    val autoScroll: Boolean = true,
+    /** Settings → General: agent `+ new` falls back to when neither the open chat nor the current agent decides. */
+    val defaultAgentId: String = "",
     /** Chat message display (UX-SPEC §7): token stats under assistant turns, action row always shown. */
     val showStats: Boolean = false,
     val actionRowAlways: Boolean = false,
@@ -108,6 +114,9 @@ class Settings(context: Context) {
             codeWrap = p[CODE_WRAP] ?: false,
             favouriteModels = p[FAVOURITE_MODELS] ?: emptySet(),
             taskNotifications = p[TASK_NOTIFICATIONS] ?: false,
+            agentFinishedNotifications = p[AGENT_FINISHED_NOTIFICATIONS] ?: false,
+            autoScroll = p[AUTO_SCROLL] ?: true,
+            defaultAgentId = p[DEFAULT_AGENT] ?: "",
             showStats = p[SHOW_STATS] ?: false,
             actionRowAlways = p[ACTION_ROW_ALWAYS] ?: false,
         )
@@ -131,6 +140,9 @@ class Settings(context: Context) {
     suspend fun setExpTasks(v: Boolean) = ds.edit { it[EXP_TASKS] = v }
     suspend fun setExpWorkflows(v: Boolean) = ds.edit { it[EXP_WORKFLOWS] = v }
     suspend fun setTaskNotifications(v: Boolean) = ds.edit { it[TASK_NOTIFICATIONS] = v }
+    suspend fun setAgentFinishedNotifications(v: Boolean) = ds.edit { it[AGENT_FINISHED_NOTIFICATIONS] = v }
+    suspend fun setAutoScroll(v: Boolean) = ds.edit { it[AUTO_SCROLL] = v }
+    suspend fun setDefaultAgentId(id: String) = ds.edit { it[DEFAULT_AGENT] = id }
     suspend fun setShowStats(v: Boolean) = ds.edit { it[SHOW_STATS] = v }
     suspend fun setActionRowAlways(v: Boolean) = ds.edit { it[ACTION_ROW_ALWAYS] = v }
     suspend fun setTerminalFontSp(sp: Int) = ds.edit { it[TERM_FONT] = sp.coerceIn(10, 22) }
@@ -249,6 +261,9 @@ class Settings(context: Context) {
         private val EXP_WORKFLOWS = booleanPreferencesKey("expWorkflows")
         private val FAVOURITE_MODELS = stringSetPreferencesKey("favouriteModels")
         private val TASK_NOTIFICATIONS = booleanPreferencesKey("taskNotifications")
+        private val AGENT_FINISHED_NOTIFICATIONS = booleanPreferencesKey("agentFinishedNotifications")
+        private val AUTO_SCROLL = booleanPreferencesKey("autoScroll")
+        private val DEFAULT_AGENT = stringPreferencesKey("defaultAgentId")
         private val SHOW_STATS = booleanPreferencesKey("showStats")
         private val ACTION_ROW_ALWAYS = booleanPreferencesKey("actionRowAlways")
 

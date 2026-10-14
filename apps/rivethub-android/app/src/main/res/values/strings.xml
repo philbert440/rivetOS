@@ -418,4 +418,23 @@
     <string name="footer_memory">Memory</string>
     <string name="footer_settings">Settings</string>
     <string name="agents_picker_title">Start a conversation with</string>
+    <!-- Settings tabs (plane/SettingsTabs.kt) and General settings (desktop parity) -->
+    <string name="settings_tab_general">General</string>
+    <string name="settings_tab_appearance">Appearance</string>
+    <string name="settings_tab_node">Node &amp; Mesh</string>
+    <string name="settings_tab_device">Device</string>
+    <string name="settings_tab_advanced">Advanced</string>
+    <string name="section_gateway">Gateway</string>
+    <string name="section_new_conversations">New conversations</string>
+    <string name="default_agent">Default agent</string>
+    <string name="default_agent_none">None</string>
+    <string name="default_agent_helper">Used by + new when the open chat and the current agent don\'t pick one. An agent that has left the roster is skipped.</string>
+    <string name="settings_auto_scroll">Jump to the newest message</string>
+    <string name="settings_auto_scroll_helper">Scroll down when a reply arrives, a turn ends or the agent starts writing, even if you had scrolled up.</string>
+    <string name="settings_agent_finished">When an agent finishes a reply</string>
+    <string name="settings_agent_finished_helper">Notify when a conversation you are not looking at goes quiet. Needs the app to be running.</string>
+    <string name="action_system_notification_settings">Sound and style…</string>
+    <string name="settings_system_notifications_helper">Sound, vibration and priority are set in Android\'s notification settings for RivetHub.</string>
+    <string name="notif_agent_finished_title">Agent finished replying</string>
+    <string name="settings_build_stamp">RivetHub %1$s · build %2$d</string>
 </resources>

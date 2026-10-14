@@ -256,7 +256,7 @@ fun ConversationsPane(
             }
             NewConversationButton(
                 onClick = {
-                    when (val action = newConversationAction(st.prefs.currentAgentId, st.agents.map { it.agentId })) {
+                    when (val action = newConversationAction(st.prefs.currentAgentId, st.agents.map { it.agentId }, defaultAgentId = st.prefs.defaultAgentId)) {
                         is NewConversationAction.ForAgent -> {
                             val row = st.agents.find { it.agentId == action.agentId }
                             if (row != null) vm.openAgentAction(row, AgentAction.Plus)?.let(onOpenChat)

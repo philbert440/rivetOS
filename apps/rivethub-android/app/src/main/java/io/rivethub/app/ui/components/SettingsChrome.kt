@@ -1,14 +1,27 @@
 package io.rivethub.app.ui.components
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.sizeIn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import io.rivethub.app.ui.theme.Dimens
 import io.rivethub.app.ui.theme.RivetTheme
 import io.rivethub.app.ui.theme.RivetType
 
@@ -54,3 +67,41 @@ private fun Modifier.drawTopPad(color: Color): Modifier =
             stroke,
         )
     }
+
+/**
+ * Settings tab row — rivethub-web `pages/settings.tsx` narrow layout (a
+ * horizontally scrolling row of tabs above the content). Square chips per the
+ * Omarchy shape rule: the active tab is `panel2` + `em`, the rest `inkDim`.
+ */
+@Composable
+fun SettingsTabRow(
+    labels: List<String>,
+    selected: Int,
+    onSelect: (Int) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val colors = RivetTheme.colors
+    Row(
+        modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        labels.forEachIndexed { i, label ->
+            val active = i == selected
+            Box(
+                Modifier
+                    .sizeIn(minHeight = Dimens.touchTarget)
+                    .then(if (active) Modifier.background(colors.panel2) else Modifier)
+                    .semantics {
+                        this.selected = active
+                    }
+                    .clickable(role = Role.Tab) { onSelect(i) }
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(label, color = if (active) colors.em else colors.inkDim, style = RivetType.sm)
+            }
+        }
+    }
+}

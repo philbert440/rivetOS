@@ -326,6 +326,7 @@ fun App(
         taskDoneStatusFallback = stringResource(R.string.inbox_task_done_status_fallback),
     )
     val hubVm: HubViewModel = viewModel(key = "hub") { HubViewModel(c, inboxLabels) }
+    val agentFinishedTitle = stringResource(R.string.notif_agent_finished_title)
     val tasksVm: io.rivethub.app.ui.TasksViewModel = viewModel(key = "tasks") { io.rivethub.app.ui.TasksViewModel(c) }
     hubVm.onTaskDone = { tasksVm.refresh() } // D3 → D2 seam: a task.done frame refetches the Tasks list
     val memoryVm: MemoryViewModel = viewModel(key = "memory") { MemoryViewModel(c) }
@@ -334,6 +335,8 @@ fun App(
         hubVm.inboxLabels = inboxLabels
         hubVm.systemNotifier = c.taskNotifier
         hubVm.appResumed = { c.visibility.resumed }
+        hubVm.agentFinishedTitle = agentFinishedTitle
+        hubVm.openSessionKey = { (nav.current as? Screen.Chat)?.sessionKey }
     }
     // Task detail seam: this tree has no Tasks screen yet (slice D2 adds
     // Screen.TaskDetail). The integrator sets this to push it — and sets
@@ -437,7 +440,7 @@ fun App(
     // resolution below and the launch surface's New-conversation button.
     fun openNewDraft() {
         val st = hubVm.state.value
-        when (val act = newConversationAction(st.prefs.currentAgentId, st.agents.map { it.agentId })) {
+        when (val act = newConversationAction(st.prefs.currentAgentId, st.agents.map { it.agentId }, defaultAgentId = st.prefs.defaultAgentId)) {
             is NewConversationAction.ForAgent -> {
                 val agent = st.agents.find { it.agentId == act.agentId } ?: return
                 val open = hubVm.openAgentAction(agent, AgentAction.Tap) ?: return
@@ -666,6 +669,7 @@ fun App(
                                 currentAgentId = current.prefs.currentAgentId,
                                 agentIds = current.agents.map { it.agentId },
                                 sessionAgentId = sessionAgentId,
+                                defaultAgentId = current.prefs.defaultAgentId,
                             )) {
                                 is NewConversationAction.ForAgent -> {
                                     val agent = current.agents.first { it.agentId == action.agentId }

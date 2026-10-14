@@ -58,6 +58,10 @@ import io.rivethub.app.plane.nodeErrorBadge
 import io.rivethub.app.plane.InboxEntry
 import io.rivethub.app.plane.InboxLabels
 import io.rivethub.app.plane.SystemNotifier
+import io.rivethub.app.plane.FinishedTurnTracker
+import io.rivethub.app.plane.INBOX_KIND_AGENT_FINISHED
+import io.rivethub.app.plane.agentFinishedBody
+import io.rivethub.app.plane.shouldNotifyAgentFinished
 import io.rivethub.app.plane.inboxEntryFor
 import io.rivethub.app.plane.markRead
 import io.rivethub.app.plane.NotificationsWatch
@@ -178,6 +182,15 @@ class HubViewModel(private val c: AppContainer, inboxLabels: InboxLabels) : View
 
     /** True while the app is on screen; read per frame (see notify/AppVisibility). */
     @Volatile var appResumed: () -> Boolean = { true }
+
+    /** The session key of the chat on screen, if any — its own finished reply is not notified. */
+    @Volatile var openSessionKey: () -> String? = { null }
+
+    /** "Agent finished replying" notice title (strings.xml; MainActivity hands it over). */
+    @Volatile var agentFinishedTitle: String = ""
+
+    /** active → idle edges from every node's registry stream (plane/FinishedTurns.kt). */
+    private val finishedTurns = FinishedTurnTracker()
 
     init {
         viewModelScope.launch {
@@ -725,6 +738,7 @@ class HubViewModel(private val c: AppContainer, inboxLabels: InboxLabels) : View
         if (c.identity.generation() != identityGen) return
         when (event) {
             is HarnessEvent.SessionCreated -> {
+                finishedTurns.onStatus(event.sessionId, event.summary.status, event.supersedes)
                 val hid = event.summary.harnessId
                 val bucket = plane.getOrPut(nodeUrl) { HashMap() }
                 val prev = bucket[hid]?.getOrNull()
@@ -746,6 +760,9 @@ class HubViewModel(private val c: AppContainer, inboxLabels: InboxLabels) : View
                 rebuildItems()
             }
             is HarnessEvent.SessionUpdated -> {
+                if (finishedTurns.onStatus(event.sessionId, event.status, event.previousSessionId)) {
+                    notifyAgentFinished(event.sessionId)
+                }
                 val buckets = plane[nodeUrl] ?: return
                 var changed = false
                 for ((hid, result) in buckets.toList()) {
@@ -858,6 +875,28 @@ class HubViewModel(private val c: AppContainer, inboxLabels: InboxLabels) : View
                     systemNotifier?.post(entry)
                 }
             }
+        }
+    }
+
+    /** Settings → General "When an agent finishes a reply" (rivethub-web lib/turn-finished.ts). */
+    private fun notifyAgentFinished(sessionId: String) {
+        runNotificationHook(onError = { logHookFailure("agent finished", it) }) {
+            val st = _state.value
+            if (!shouldNotifyAgentFinished(st.prefs.agentFinishedNotifications, appResumed(), sessionId, openSessionKey())) {
+                return@runNotificationHook
+            }
+            val item = io.rivethub.app.plane.findChatItem(st.items.map { it.item }, sessionId)
+            val title = item?.let { io.rivethub.app.plane.displayTitle(it, st.titleOverrides) }
+            systemNotifier?.post(
+                InboxEntry(
+                    // One notice per conversation: a later reply replaces it (systemNotificationId).
+                    id = "$INBOX_KIND_AGENT_FINISHED:$sessionId",
+                    kind = INBOX_KIND_AGENT_FINISHED,
+                    title = agentFinishedTitle,
+                    body = agentFinishedBody(title, sessionId),
+                    atMs = System.currentTimeMillis(),
+                ),
+            )
         }
     }
 
