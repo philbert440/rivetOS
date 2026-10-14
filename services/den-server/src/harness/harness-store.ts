@@ -28,6 +28,8 @@ import {
   listHarnessSessions,
   newestOpencodeSessionAfter,
   newestCursorSessionAfter,
+  opencodeSessionsAfter,
+  cursorSessionsAfter,
   readClaudeTranscript,
   readCodexTranscript,
   readGrokTranscript,
@@ -145,9 +147,11 @@ export function createHarnessStore<N extends HarnessStoreName>(
   host.exists = (nativeId) => harnessSessionExists(roster, nativeId)
   if (name === 'opencode') {
     ;(host as OpencodeStoreHost).newestAfter = newestOpencodeSessionAfter
+    ;(host as OpencodeStoreHost).candidatesAfter = opencodeSessionsAfter
   }
   if (name === 'cursor') {
     ;(host as CursorStoreHost).newestAfter = newestCursorSessionAfter
+    ;(host as CursorStoreHost).candidatesAfter = cursorSessionsAfter
   }
   return host as StoreByName[N]
 }
