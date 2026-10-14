@@ -116,18 +116,25 @@ fun SettingsScreen(
     val askNotifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) scope.launch { c.settings.setTaskNotifications(true) }
     }
-    val askAgentNotifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) scope.launch { c.settings.setAgentFinishedNotifications(true) }
+    // Session notices (agent finished, needs you) need POST_NOTIFICATIONS on
+    // API 33+; the toggle only sticks once granted. The launcher remembers
+    // which setting asked.
+    var pendingNotice by remember { mutableStateOf<(suspend () -> Unit)?>(null) }
+    val askSessionNotifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        val enable = pendingNotice
+        pendingNotice = null
+        if (granted && enable != null) scope.launch { enable() }
     }
-    fun setAgentFinishedNotifications(on: Boolean) {
+    fun setSessionNotice(on: Boolean, write: suspend (Boolean) -> Unit) {
         val needsGrant = on &&
             android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU &&
             androidx.core.content.ContextCompat.checkSelfPermission(ctx, android.Manifest.permission.POST_NOTIFICATIONS) !=
             android.content.pm.PackageManager.PERMISSION_GRANTED
         if (needsGrant) {
-            askAgentNotifications.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+            pendingNotice = { write(true) }
+            askSessionNotifications.launch(android.Manifest.permission.POST_NOTIFICATIONS)
         } else {
-            scope.launch { c.settings.setAgentFinishedNotifications(on) }
+            scope.launch { write(on) }
         }
     }
     fun setTaskNotifications(on: Boolean) {
@@ -291,10 +298,21 @@ fun SettingsScreen(
                         ToggleRow(
                             label = stringResource(R.string.settings_agent_finished),
                             checked = prefs.agentFinishedNotifications,
-                            onChange = { v -> setAgentFinishedNotifications(v) },
+                            onChange = { v -> setSessionNotice(v) { c.settings.setAgentFinishedNotifications(it) } },
                         )
                         Text(
                             stringResource(R.string.settings_agent_finished_helper),
+                            color = colors.inkDim,
+                            style = RivetType.xs,
+                            modifier = Modifier.padding(top = 4.dp),
+                        )
+                        ToggleRow(
+                            label = stringResource(R.string.settings_needs_you),
+                            checked = prefs.needsYouNotifications,
+                            onChange = { v -> setSessionNotice(v) { c.settings.setNeedsYouNotifications(it) } },
+                        )
+                        Text(
+                            stringResource(R.string.settings_needs_you_helper),
                             color = colors.inkDim,
                             style = RivetType.xs,
                             modifier = Modifier.padding(top = 4.dp),

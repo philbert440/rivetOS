@@ -30,22 +30,13 @@ class FinishedTurnTracker {
 
 const val INBOX_KIND_AGENT_FINISHED = "agent.finished"
 
-/**
- * Post only with the setting on, and never for the conversation already on
- * screen: with the app in front and that session open, the transcript is the
- * notice. Any other session (or the app in the background) notifies.
- */
+/** Agent-finished notice gate — see [shouldNotifySession]. */
 fun shouldNotifyAgentFinished(
     enabled: Boolean,
     appResumed: Boolean,
     sessionId: String,
     openSessionKey: String?,
-): Boolean {
-    if (!enabled) return false
-    if (!appResumed) return true
-    if (openSessionKey.isNullOrBlank()) return true
-    return !(sessionMatchesNative(sessionId, openSessionKey) || sessionMatchesNative(openSessionKey, sessionId))
-}
+): Boolean = shouldNotifySession(enabled, appResumed, sessionId, openSessionKey)
 
 /** Body of the notice: the conversation's title, else its id. */
 fun agentFinishedBody(title: String?, sessionId: String): String =

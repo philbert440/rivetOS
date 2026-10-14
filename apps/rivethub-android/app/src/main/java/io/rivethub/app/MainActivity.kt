@@ -327,6 +327,7 @@ fun App(
     )
     val hubVm: HubViewModel = viewModel(key = "hub") { HubViewModel(c, inboxLabels) }
     val agentFinishedTitle = stringResource(R.string.notif_agent_finished_title)
+    val needsYouTitle = stringResource(R.string.notif_needs_you_title)
     val tasksVm: io.rivethub.app.ui.TasksViewModel = viewModel(key = "tasks") { io.rivethub.app.ui.TasksViewModel(c) }
     hubVm.onTaskDone = { tasksVm.refresh() } // D3 → D2 seam: a task.done frame refetches the Tasks list
     val memoryVm: MemoryViewModel = viewModel(key = "memory") { MemoryViewModel(c) }
@@ -336,6 +337,7 @@ fun App(
         hubVm.systemNotifier = c.taskNotifier
         hubVm.appResumed = { c.visibility.resumed }
         hubVm.agentFinishedTitle = agentFinishedTitle
+        hubVm.needsYouTitle = needsYouTitle
         hubVm.openSessionKey = { (nav.current as? Screen.Chat)?.sessionKey }
     }
     // Task detail seam: this tree has no Tasks screen yet (slice D2 adds

@@ -68,6 +68,8 @@ data class Prefs(
     val taskNotifications: Boolean = false,
     /** Settings → General: OS notification when an agent finishes a reply you are not looking at. Off by default. */
     val agentFinishedNotifications: Boolean = false,
+    /** Settings → General: OS notification when a conversation starts waiting on you. Off by default. */
+    val needsYouNotifications: Boolean = false,
     /** Settings → General: bring the transcript to the newest message on arrival (plane/TranscriptPin.kt arrivalJump). */
     val autoScroll: Boolean = true,
     /** Settings → General: agent `+ new` falls back to when neither the open chat nor the current agent decides. */
@@ -115,6 +117,7 @@ class Settings(context: Context) {
             favouriteModels = p[FAVOURITE_MODELS] ?: emptySet(),
             taskNotifications = p[TASK_NOTIFICATIONS] ?: false,
             agentFinishedNotifications = p[AGENT_FINISHED_NOTIFICATIONS] ?: false,
+            needsYouNotifications = p[NEEDS_YOU_NOTIFICATIONS] ?: false,
             autoScroll = p[AUTO_SCROLL] ?: true,
             defaultAgentId = p[DEFAULT_AGENT] ?: "",
             showStats = p[SHOW_STATS] ?: false,
@@ -141,6 +144,7 @@ class Settings(context: Context) {
     suspend fun setExpWorkflows(v: Boolean) = ds.edit { it[EXP_WORKFLOWS] = v }
     suspend fun setTaskNotifications(v: Boolean) = ds.edit { it[TASK_NOTIFICATIONS] = v }
     suspend fun setAgentFinishedNotifications(v: Boolean) = ds.edit { it[AGENT_FINISHED_NOTIFICATIONS] = v }
+    suspend fun setNeedsYouNotifications(v: Boolean) = ds.edit { it[NEEDS_YOU_NOTIFICATIONS] = v }
     suspend fun setAutoScroll(v: Boolean) = ds.edit { it[AUTO_SCROLL] = v }
     suspend fun setDefaultAgentId(id: String) = ds.edit { it[DEFAULT_AGENT] = id }
     suspend fun setShowStats(v: Boolean) = ds.edit { it[SHOW_STATS] = v }
@@ -262,6 +266,7 @@ class Settings(context: Context) {
         private val FAVOURITE_MODELS = stringSetPreferencesKey("favouriteModels")
         private val TASK_NOTIFICATIONS = booleanPreferencesKey("taskNotifications")
         private val AGENT_FINISHED_NOTIFICATIONS = booleanPreferencesKey("agentFinishedNotifications")
+        private val NEEDS_YOU_NOTIFICATIONS = booleanPreferencesKey("needsYouNotifications")
         private val AUTO_SCROLL = booleanPreferencesKey("autoScroll")
         private val DEFAULT_AGENT = stringPreferencesKey("defaultAgentId")
         private val SHOW_STATS = booleanPreferencesKey("showStats")

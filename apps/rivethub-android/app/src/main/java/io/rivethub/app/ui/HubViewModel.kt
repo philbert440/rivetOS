@@ -59,6 +59,11 @@ import io.rivethub.app.plane.InboxEntry
 import io.rivethub.app.plane.InboxLabels
 import io.rivethub.app.plane.SystemNotifier
 import io.rivethub.app.plane.FinishedTurnTracker
+import io.rivethub.app.plane.INBOX_KIND_NEEDS_YOU
+import io.rivethub.app.plane.NeedsEpisodes
+import io.rivethub.app.plane.WaitingRow
+import io.rivethub.app.plane.shouldNotifySession
+import io.rivethub.app.plane.waitingRows
 import io.rivethub.app.plane.INBOX_KIND_AGENT_FINISHED
 import io.rivethub.app.plane.agentFinishedBody
 import io.rivethub.app.plane.shouldNotifyAgentFinished
@@ -134,6 +139,8 @@ class HubViewModel(private val c: AppContainer, inboxLabels: InboxLabels) : View
          * which yields null for another entry URL / identity generation.
          */
         val entryAnswer: EntryAnswer? = null,
+        /** Conversations waiting on you, oldest first (plane/NeedsYou.kt). */
+        val needsYou: List<WaitingRow> = emptyList(),
     )
 
     private val _state = MutableStateFlow(UiState())
@@ -191,6 +198,13 @@ class HubViewModel(private val c: AppContainer, inboxLabels: InboxLabels) : View
 
     /** active → idle edges from every node's registry stream (plane/FinishedTurns.kt). */
     private val finishedTurns = FinishedTurnTracker()
+
+    /** "Needs you" notice title (strings.xml; MainActivity hands it over). */
+    @Volatile var needsYouTitle: String = ""
+
+    /** Waiting episodes (plane/NeedsYou.kt); primed until the first full refresh lands. */
+    private val needsEpisodes = NeedsEpisodes()
+    private var rosterSettled = false
 
     init {
         viewModelScope.launch {
@@ -584,6 +598,7 @@ class HubViewModel(private val c: AppContainer, inboxLabels: InboxLabels) : View
             }
             if (gen != refreshLatch.gen) return
             if (c.identity.generation() != identityGen) return
+            rosterSettled = true
             publishAgents()
             rebuildItems()
             startWatches(_state.value.nodes, identityGen)
@@ -773,6 +788,7 @@ class HubViewModel(private val c: AppContainer, inboxLabels: InboxLabels) : View
                         event.sessionId,
                         previousSessionId = event.previousSessionId,
                         status = event.status,
+                        blocked = event.blocked,
                     ) ?: continue
                     if (next !== list) {
                         buckets[hid] = Result.success(next)
@@ -822,7 +838,35 @@ class HubViewModel(private val c: AppContainer, inboxLabels: InboxLabels) : View
             val items = chatItems(emptyMap(), emptyList(), listOf(d.id), mapOf(d.id to d.createdAt), pins)
             for (item in items) located += locate(item, d.nodeId, d.nodeName, d.nodeDenUrl)
         }
-        _state.update { it.copy(items = sortLocatedByRecency(located)) }
+        val sorted = sortLocatedByRecency(located)
+        // Needs you: every rebuild reconciles the waiting set. Until the first
+        // full refresh has landed, sessions already waiting are primed, not
+        // announced (no burst of notices at launch).
+        val waitingItems = sorted.map { it.item }.filter { it.blocked }
+        val fresh = needsEpisodes.reconcile(waitingItems.map { it.key }.toSet(), System.currentTimeMillis(), rosterSettled)
+        _state.update { it.copy(items = sorted, needsYou = waitingRows(waitingItems, needsEpisodes.since)) }
+        fresh.forEach(::notifyNeedsYou)
+    }
+
+    /** Settings → General "When an agent needs you": a conversation started waiting. */
+    private fun notifyNeedsYou(sessionId: String) {
+        runNotificationHook(onError = { logHookFailure("needs you", it) }) {
+            val st = _state.value
+            if (!shouldNotifySession(st.prefs.needsYouNotifications, appResumed(), sessionId, openSessionKey())) {
+                return@runNotificationHook
+            }
+            val item = io.rivethub.app.plane.findChatItem(st.items.map { it.item }, sessionId)
+            val title = item?.let { io.rivethub.app.plane.displayTitle(it, st.titleOverrides) }
+            systemNotifier?.post(
+                InboxEntry(
+                    id = "$INBOX_KIND_NEEDS_YOU:$sessionId",
+                    kind = INBOX_KIND_NEEDS_YOU,
+                    title = needsYouTitle,
+                    body = agentFinishedBody(title, sessionId),
+                    atMs = System.currentTimeMillis(),
+                ),
+            )
+        }
     }
 
     /**

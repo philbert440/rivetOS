@@ -109,4 +109,13 @@ class RegistryTest {
     private fun assertNullTitle(s: HarnessSessionSummary) {
         org.junit.Assert.assertNull(s.title)
     }
+
+    @Test fun `session-updated sets and clears blocked`() {
+        val list = listOf(summary(uuidA, status = "active"))
+        val waiting = patchSessionUpdated(list, SessionUpdatedPatch("claude-code:$uuidA", "active", blocked = true))
+        assertEquals(true, waiting.single().blocked)
+        val answered = patchSessionUpdated(waiting, SessionUpdatedPatch("claude-code:$uuidA", "active"))
+        assertEquals(null, answered.single().blocked)
+        assertSame(answered, patchSessionUpdated(answered, SessionUpdatedPatch("claude-code:$uuidA", "active")))
+    }
 }

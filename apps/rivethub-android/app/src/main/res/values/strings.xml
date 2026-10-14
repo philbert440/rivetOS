@@ -437,4 +437,10 @@
     <string name="settings_system_notifications_helper">Sound, vibration and priority are set in Android\'s notification settings for RivetHub.</string>
     <string name="notif_agent_finished_title">Agent finished replying</string>
     <string name="settings_build_stamp">RivetHub %1$s · build %2$d</string>
+    <!-- Needs you (plane/NeedsYou.kt) -->
+    <string name="needs_you_count">Needs you · %1$d</string>
+    <string name="needs_you_next">Open next</string>
+    <string name="notif_needs_you_title">An agent needs you</string>
+    <string name="settings_needs_you">When an agent needs you</string>
+    <string name="settings_needs_you_helper">Notify when a conversation stops to wait for your answer or approval. Needs the app to be running.</string>
 </resources>

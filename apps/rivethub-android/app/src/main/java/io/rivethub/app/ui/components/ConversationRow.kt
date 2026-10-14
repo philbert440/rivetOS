@@ -30,7 +30,8 @@ import io.rivethub.app.ui.theme.RivetTheme
 import io.rivethub.app.ui.theme.RivetType
 import io.rivethub.app.ui.theme.Shape
 
-enum class ConversationRowStatus { None, InFlight, Alive }
+/** [NeedsYou] = waiting on the user (plane/NeedsYou.kt); it wins over the turn state. */
+enum class ConversationRowStatus { None, InFlight, Alive, NeedsYou }
 
 @Composable
 fun ConversationRowChrome(
@@ -86,6 +87,7 @@ fun ConversationRowChrome(
             )
             when (status) {
                 ConversationRowStatus.InFlight -> PulseDot(colors.em)
+                ConversationRowStatus.NeedsYou -> PulseDot(colors.warn)
                 ConversationRowStatus.Alive -> Box(
                     Modifier
                         .size(6.dp)

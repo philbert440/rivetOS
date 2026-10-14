@@ -53,6 +53,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import io.rivethub.app.R
+import io.rivethub.app.plane.nextWaitingId
 import io.rivethub.app.plane.agentRowSubtitle
 import io.rivethub.app.plane.AgentAction
 import io.rivethub.app.plane.AgentOpen
@@ -269,6 +270,17 @@ fun ConversationsPane(
                             }
                         }
                     }
+                },
+            )
+        }
+        // Needs you (plane/NeedsYou.kt): each tap opens the next waiting
+        // conversation, oldest first, cycling from the one on screen.
+        if (st.needsYou.isNotEmpty()) {
+            NeedsYouStrip(
+                count = st.needsYou.size,
+                onClick = {
+                    val id = nextWaitingId(st.needsYou, currentSessionKey)
+                    st.items.find { it.item.key == id }?.let(onOpenRow)
                 },
             )
         }
@@ -681,6 +693,7 @@ private fun EmptyLine(text: String) {
 
 @Composable
 private fun rowStatus(row: LocatedChatItem): RowStatus = when {
+    row.item.blocked -> RowStatus.NeedsYou
     isActiveStatus(row.item.status) -> RowStatus.InFlight
     row.item.status?.equals("idle", ignoreCase = true) == true -> RowStatus.Alive
     else -> RowStatus.None
@@ -729,3 +742,26 @@ private fun Modifier.drawArchivedBorder(color: androidx.compose.ui.graphics.Colo
             stroke,
         )
     }
+
+/** "Needs you · N" — tap opens the next conversation waiting on you. */
+@Composable
+private fun NeedsYouStrip(count: Int, onClick: () -> Unit) {
+    val colors = RivetTheme.colors
+    val label = stringResource(R.string.needs_you_count, count)
+    val action = stringResource(R.string.needs_you_next)
+    androidx.compose.foundation.layout.Row(
+        Modifier
+            .padding(start = 8.dp, end = 8.dp, bottom = 8.dp)
+            .fillMaxWidth()
+            .sizeIn(minHeight = 44.dp)
+            .background(colors.panel2)
+            .clickable(onClickLabel = action, role = androidx.compose.ui.semantics.Role.Button, onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp),
+    ) {
+        io.rivethub.app.ui.components.PulseDot(colors.warn)
+        Text(label, color = colors.warn, style = RivetType.sm, modifier = Modifier.weight(1f))
+        Text(action, color = colors.inkDim, style = RivetType.xs)
+    }
+}

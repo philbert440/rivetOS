@@ -127,6 +127,19 @@ is hidden when the entry URL is the only saved node and the active view, while `
 answered for this entry (`entryAnsweredFor` ≠ true — no flash on load), and once the mesh roster
 (`fromMesh` nodes) holds no other node; a discovered peer or a second saved node shows it again.
 
+**Needs you (`plane/NeedsYou.kt` ← web spaces-canvas `canvas-commands.ts`).** A session waits on the
+user when the den marks it `blocked` (permission prompt / question): `HarnessSessionSummary.blocked`
+and `HarnessEvent.SessionUpdated.blocked` (each `session-updated` is the current truth — absent means
+not waiting; `patchSessionUpdated` sets and clears it) → `ChatItem.blocked` (never on an `ended` row).
+`HubViewModel.rebuildItems` reconciles the waiting set into `NeedsEpisodes` (since-stamps; primes —
+announces nothing — until the first full refresh lands, so sessions already waiting at launch do not
+notify) and publishes `UiState.needsYou` (oldest first). The drawer's `ConversationsPane` shows a
+"Needs you · N" strip (warn dot) above the filter while N > 0; a tap opens `nextWaitingId` — the oldest,
+or the next after the open chat, wrapping. Waiting rows get a warn `PulseDot`
+(`ConversationRowStatus.NeedsYou`, wins over in-flight). Settings → General "When an agent needs you"
+(`needsYouNotifications`, default off, asks POST_NOTIFICATIONS) posts a fresh episode through the
+`tasks` channel, skipping the chat on screen while the app is in front (`shouldNotifySession`).
+
 **Back ordering rule (fix1).** Back with the drawer open (or opening: `targetValue == Open`)
 closes the drawer and does nothing else. `HubDrawer` composes a `PredictiveBackHandler` AFTER the
 drawer (`RivetDrawerHost`) (so after every handler its content registers) inside `key(openTick)`, so
@@ -746,8 +759,8 @@ first, the one post-enroll screen HubDrawer does not host. Also set
 - Build host: the fleet's Android build box (JDK 21 + SDK 37 + warm Gradle cache) — host names and
   paths are ops notes in Rivet's memory, not here. `./gradlew :app:assembleDebug :app:testDebugUnitTest`.
   Full-suite test counts only — a `--tests` filter can match nothing and still print green; CI
-  (`.github/workflows/android.yml`) enforces a floor of 1047 (desktop-parity settings slice: +28
-  `@Test` on the 1019-floor tree; FLOOR = real count − 1).
+  (`.github/workflows/android.yml`) enforces a floor of 1055 (needs-you: +8 `@Test` on the
+  1047-floor tree; FLOOR = real count − 1).
 - No SDK on the box? The android-free core (`gateway/`, `transport/`, `plane/` + their tests, minus
   `HubReducersTest`) builds as a plain Kotlin/JVM Gradle project with those dirs as sources (run it with
   a UTF-8 locale — test names contain em dashes). Fast compile+test loop for plane logic; `ui/`/`data/`
