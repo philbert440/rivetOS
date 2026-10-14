@@ -101,6 +101,32 @@ socket `open`; these pages make that reconnect → restore step visible.
 - Rail entry sits after Conversations (History icon). No composer in this
   slice; no server changes; Chat behaviour unchanged beyond the deep link.
 
+### Memory home (2026-10-12, experimental)
+
+One screen for sessions and search, behind Settings → Experimental →
+"Memory home" (`memoryHome` in `stores/experimental.ts`, persisted, default
+**off**). With it off, the Memory hub and Sessions page are unchanged.
+
+- **Header** (`MemoryHubNav` renders `MemoryHomeHeader` when the flag is on,
+  so `/memory`, `/memory/$slug` and `/sessions` share it): Sessions | Wiki,
+  a Tags entry that becomes "N tags to review" when suggestions are pending,
+  and the health tile as the way into Stats. Tags and Stats stay their
+  existing pages (`?tab=tags`, `?tab=stats`).
+- **Sessions view** (`memory/SessionsSearchView.tsx`, mounted for
+  `?tab=search`): empty box lists every node session grouped by day
+  (`groupRowsByDay`), live/blocked rows pinned as "Active now". Typing
+  filters title/cwd at once; after 350 ms datahub search runs and hits are
+  grouped under their session (`sessionResults`), with up to three wiki
+  topics above. Harness, status and tag filters; the tag filter is also
+  sent to search. "All sessions" clears text and every filter.
+- **Rows** come from `lib/use-session-rows.ts`, the Sessions page's own
+  loading moved out verbatim (do not fork it). Hits join rows on the
+  **native** session id (`joinKey` → `nativeIdOf`): datahub returns both bare
+  native ids and canonical `claude-code:<native>` ids, node rows carry the
+  canonical one. Bare `[tool call] Name` hits are dropped from excerpts.
+- Deferred: the wiki Activity timeline (needs per-topic source dates on
+  `GET /api/wiki`), a side preview panel, and match-reason labels.
+
 ### Harness control plane binding (2026-08-08)
 
 Chat now speaks the node's harness control plane
@@ -297,7 +323,7 @@ cd apps/rivethub-electron && npm install && npm run dist   # or: npm run dev
 - `src/pages/chat.tsx` — seamless session, terminal/den modes, queue pump
 - `src/pages/sessions.tsx` — session index + read-only detail (connection strip)
 - `src/lib/session-route-id.ts`, `session-sync-log.ts`, `session-list.ts`, `session-transcript.ts` — session page pure helpers
-- `src/memory/` — Search / Browse / Stats hub
+- `src/memory/` — Search / Browse / Stats hub; `SessionsSearchView.tsx` + `memory-home.ts` = Memory home
 - `src/pages/memory.tsx` — wiki encyclopedia (Wiki tab + `/memory/$slug`)
 - `src/pages/tasks.tsx` — list + create form + detail
 - `src/lib/task-create.ts` — criteria lines + agent options (local+mesh)
