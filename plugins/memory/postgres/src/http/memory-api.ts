@@ -571,7 +571,7 @@ async function handleStats(res: ServerResponse, pool: pg.Pool): Promise<void> {
              COUNT(m.id)::text AS messages
         FROM ros_conversations c
         LEFT JOIN ros_messages m ON m.conversation_id = c.id
-       GROUP BY c.id
+       GROUP BY c.id, c.session_key, c.title, c.agent, c.updated_at
        ORDER BY c.updated_at DESC
        LIMIT 12
     `),
