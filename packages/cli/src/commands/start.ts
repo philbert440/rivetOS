@@ -13,6 +13,7 @@ import { spawn } from 'node:child_process'
 import { migrateEmbedded } from '@rivetos/boot'
 import { findRivetConfigPath, readEmbeddedConfig, withEmbeddedPg } from '../lib/embedded.js'
 import { loadRivetEnv } from '../lib/env-file.js'
+import { printRivethubNotice } from '../lib/rivethub-notice.js'
 import { resolveMemoryMigrateScript } from '../paths.js'
 
 type Role = 'agent' | 'migrate'
@@ -121,6 +122,7 @@ export default async function start(): Promise<void> {
   loadRivetEnv()
   const { configPath: explicit, role } = parseArgs()
 
+  printRivethubNotice()
   console.log(`[start] role=${role}`)
 
   switch (role) {

@@ -39,6 +39,7 @@ import {
   type DeploymentMode,
 } from './update/detect-deployment.js'
 import { healLocalMeshHosts } from './update/mesh-hosts.js'
+import { printRivethubNotice } from '../lib/rivethub-notice.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(__dirname, '..', '..', '..', '..')
@@ -255,6 +256,7 @@ function ensureMainBranchSafe(version?: string): void {
 
 export default async function update(): Promise<void> {
   const opts = parseArgs()
+  printRivethubNotice()
 
   // Mesh rolling update — update all peers in sequence
   if (opts.mesh) {
