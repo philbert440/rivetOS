@@ -724,7 +724,7 @@ export function ChatPage(): JSX.Element {
               type="button"
               tabIndex={-1}
               aria-hidden={true}
-              aria-label="Close conversations"
+              aria-label="Close workspace"
               className="fixed inset-0 z-30 bg-black/40 classic:bg-bg/70"
               onClick={() => setHistoryOpen(false)}
             />
@@ -733,7 +733,7 @@ export function ChatPage(): JSX.Element {
             id="hub-history"
             role="dialog"
             aria-modal={historyOpen ? true : undefined}
-            aria-label="Conversations"
+            aria-label="Workspace"
             tabIndex={-1}
             inert={!historyOpen ? true : undefined}
             className={cn(
@@ -900,7 +900,7 @@ function SessionDrawer(props: {
       {material ? (
         <div className="flex items-center justify-between gap-2 px-4 pb-3 pt-4">
           <span className="flex min-w-0 items-center gap-2 truncate text-base font-semibold text-ink">
-            Conversations
+            Workspace
             <span
               className={cn(
                 'size-2 shrink-0 rounded-full',
@@ -924,7 +924,7 @@ function SessionDrawer(props: {
       ) : (
         <div className="flex items-center justify-between px-3 py-3">
           <span className="min-w-0 truncate font-mono text-xs text-ink-dim">
-            conversations{' '}
+            workspace{' '}
             <span className={wsStatus === 'open' ? 'text-em' : 'text-red'}>
               {wsStatus === 'open' ? '●' : '○'}
             </span>{' '}
@@ -950,8 +950,8 @@ function SessionDrawer(props: {
             <span className="min-w-0 truncate">{agentFilter.name}</span>
             <button
               onClick={() => agentFilter.clear()}
-              aria-label="show all conversations"
-              title="show all conversations"
+              aria-label="show all sessions"
+              title="show all sessions"
               className="shrink-0 text-ink-dim hover:text-em"
             >
               <X className="size-3" />
@@ -967,8 +967,8 @@ function SessionDrawer(props: {
               <input
                 value={filter}
                 onChange={(e) => setFilter(e.target.value)}
-                placeholder="Search conversations"
-                aria-label="filter conversations"
+                placeholder="Search sessions"
+                aria-label="filter sessions"
                 className="w-full min-w-0 bg-transparent text-[13px] text-ink outline-none placeholder:text-ink-dim/80"
               />
             </label>
@@ -977,7 +977,7 @@ function SessionDrawer(props: {
               value={filter}
               onChange={(e) => setFilter(e.target.value)}
               placeholder="filter…"
-              aria-label="filter conversations"
+              aria-label="filter sessions"
               className="w-full rounded border border-line bg-panel px-2 py-1 font-mono text-[11px] text-ink outline-none placeholder:text-ink-dim/60 focus:border-em"
             />
           )}
@@ -996,8 +996,8 @@ function SessionDrawer(props: {
           {agentItems.length === 0 && !props.error && (
             <div className="px-3 py-2 text-xs text-ink-dim">
               {agentFilter.name
-                ? `no conversations with ${agentFilter.name} yet — + new starts one`
-                : 'no conversations yet'}
+                ? `no sessions with ${agentFilter.name} yet — + new starts one`
+                : 'no sessions yet'}
             </div>
           )}
         </div>
@@ -1153,7 +1153,7 @@ function ActiveSession(props: {
   const customName = useSessionNames((s) =>
     persisted(s.byKey, nameBase, item?.key ?? props.sessionId),
   )
-  const headerTitle = customName ?? item?.title ?? 'new conversation'
+  const headerTitle = customName ?? item?.title ?? 'new session'
   const headerId = canonicalId ?? props.sessionId
   const { mode, setMode } = useSessionView(
     storageKey(sessionBase, props.sessionId),
@@ -1474,6 +1474,7 @@ function ActiveSession(props: {
         // the settled roster is sent anyway so the 404 recovery can show
         // DELETED_PRESET_NOTICE. An unknown roster keeps the omit.
         presetHasHarness: presetHasHarnessFlag(settings, settledRosterAgentIds(queryClient)),
+        directory: settings?.directory,
       })
       // An API-only agent has no roster command → fall back to the node default
       // rather than 404 (keeps session, model, and effort). That fallback is
@@ -1648,7 +1649,7 @@ function ActiveSession(props: {
     deliveryId?: string,
   ): Promise<void> => {
     if (remoteDead) {
-      throw new Error(`this thread's session no longer exists on ${urlLabel(sessionBase)}`)
+      throw new Error(`this session no longer exists on ${urlLabel(sessionBase)}`)
     }
     const gw = await sessionGateway()
     const prompt = peekSystemPrompt()
@@ -1970,7 +1971,7 @@ function ActiveSession(props: {
     <>
       {isRemote && (
         <span
-          title={`this conversation lives on ${remoteNodeName ?? urlLabel(sessionBase)} — the app stays connected to your node`}
+          title={`this session lives on ${remoteNodeName ?? urlLabel(sessionBase)} — the app stays connected to your node`}
           className="shrink-0 rounded-pill bg-em-container px-2.5 py-0.5 text-[11px] font-medium text-on-em-container classic:bg-em-dim/10 classic:border classic:border-em-dim/60 classic:font-normal classic:px-1.5 classic:text-[10px] classic:text-em"
         >
           @{remoteNodeName ?? urlLabel(sessionBase)}
@@ -2056,7 +2057,7 @@ function ActiveSession(props: {
             variant="ghost"
             size="icon"
             id="hub-history-toggle"
-            aria-label="Conversations"
+            aria-label="Workspace"
             aria-controls="hub-history"
             onClick={() => useSidebarPrefs.getState().setHistoryOpen(true)}
             className="size-11 shrink-0 p-0"
@@ -2113,8 +2114,8 @@ function ActiveSession(props: {
           )}
           {remoteDead && (
             <div className="mx-4 mt-2 rounded-xl classic:mx-0 classic:mt-0 bg-red/10 px-4 py-2 text-xs text-red classic:bg-panel-2/40 classic:border-line classic:border-t classic:py-1.5 classic:text-[11px]">
-              this conversation's session no longer exists on{' '}
-              {remoteNodeName ?? urlLabel(sessionBase)} — history stays readable; sends are disabled
+              this session no longer exists on {remoteNodeName ?? urlLabel(sessionBase)} — history
+              stays readable; sends are disabled
             </div>
           )}
           {streamError && (
@@ -2207,16 +2208,16 @@ function ChatLaunchLoading(): JSX.Element {
     <div
       className="flex flex-1 flex-col items-center justify-center gap-3"
       role="status"
-      aria-label="Loading most recent conversation"
+      aria-label="Loading most recent session"
     >
       <RhMark className="text-5xl opacity-90" />
-      <div className="text-sm text-ink-dim">Loading most recent conversation…</div>
+      <div className="text-sm text-ink-dim">Loading most recent session…</div>
       <button
         type="button"
         onClick={startNew}
         className="rounded-pill border border-line px-3 py-1.5 text-xs text-ink-dim hover:bg-ink/6 hover:text-em classic:hover:bg-transparent classic:hover:border-em"
       >
-        New conversation
+        New session
       </button>
     </div>
   )

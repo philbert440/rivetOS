@@ -79,6 +79,8 @@ export type ChooserAction =
        * the den's agent-not-found recovery and DELETED_PRESET_NOTICE.
        */
       missingPreset?: { agentId: string; harnessId?: HarnessId }
+      /** Session working directory: the project's, or one picked on the card. */
+      directory?: string
     }
   | {
       type: 'history'
@@ -153,6 +155,7 @@ function writeSettings(
   model: string | undefined,
   effort: ThinkingLevel | undefined,
   missingPreset?: { agentId: string; harnessId?: HarnessId },
+  directory?: string,
 ): void {
   // An explicit Plain draft does not copy a missing preset id; the space's
   // own deleted default (missingPreset, set by the dialog only when the user
@@ -178,6 +181,7 @@ function writeSettings(
     base.effort = effort
     base.harnessEffort = effort
   }
+  if (directory) base.directory = directory
   useChatSettings.getState().set(key, base)
 }
 
@@ -216,13 +220,15 @@ function writeSpaceSettings(
       patch.effort = defaults.effort
       patch.harnessEffort = defaults.effort
     }
-    useChatSettings.getState().set(key, patch)
+    useChatSettings
+      .getState()
+      .set(key, defaults?.directory ? { ...patch, directory: defaults.directory } : patch)
     return
   }
   // Missing preset: copy the id (and harness, when we stored one) so the
   // first spawn hits the den's agent-not-found recovery. Do not pin it.
   // Model and effort are the user's own defaults and still apply.
-  if (!defaults?.agentId && !defaults?.model && !defaults?.effort) return
+  if (!defaults?.agentId && !defaults?.model && !defaults?.effort && !defaults?.directory) return
   const patch: Partial<ChatSettings> = {}
   if (defaults?.agentId) {
     patch.agentId = defaults.agentId
@@ -236,6 +242,7 @@ function writeSpaceSettings(
     patch.effort = defaults.effort
     patch.harnessEffort = defaults.effort
   }
+  if (defaults?.directory) patch.directory = defaults.directory
   useChatSettings.getState().set(key, patch)
 }
 
@@ -290,6 +297,7 @@ export function startThreadWithDefaults(
       ? {
           model: defaults?.model ?? found.model,
           effort: defaults?.effort ?? asThinkingLevel(found.effort),
+          directory: defaults?.directory,
         }
       : defaults
   writeSpaceSettings(key, settingsDefaults, agent)
@@ -327,7 +335,14 @@ export function applyChooser(action: ChooserAction): string | undefined {
     setSessionNodeBinding(id, resolved.node, action.baseUrl)
   }
   const key = `${resolved.node}::${id}`
-  writeSettings(key, agent, action.model, action.effort, agent ? undefined : action.missingPreset)
+  writeSettings(
+    key,
+    agent,
+    action.model,
+    action.effort,
+    agent ? undefined : action.missingPreset,
+    action.directory,
+  )
   useSpaces.getState().place(key, action.spaceId)
   useChat.getState().enqueueOutbound(id, text)
   return id

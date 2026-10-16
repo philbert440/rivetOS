@@ -18,6 +18,7 @@ import {
   focusRect,
   insets,
   layout,
+  liveBand,
   neighbor,
   regH,
   zoomAround,
@@ -53,16 +54,43 @@ describe('fit', () => {
     }
   })
 
-  it('caps everything below LIVE_LO even when the rect is tiny', () => {
-    const cam = fit({ x: 0, y: 0, w: 10, h: 10 }, 'everything', { w: 1100, h: 700 })
-    expect(cam.z).toBeLessThan(LIVE_LO)
-    expect(cam.z).toBeCloseTo(LIVE_LO - 0.01)
+  it('caps everything below the live band even when the rect is tiny', () => {
+    const vp = { w: 1100, h: 700 }
+    const cam = fit({ x: 0, y: 0, w: 10, h: 10 }, 'everything', vp)
+    expect(cam.z).toBeLessThan(liveBand(vp).lo)
+    expect(cam.z).toBeCloseTo(liveBand(vp).lo - 0.01)
   })
 
-  it('fits a 2-tile region above LIVE_HI at 1100×700 in space', () => {
+  it('fits a 2-tile region above the live band at 1100×700 in space', () => {
+    const vp = { w: 1100, h: 700 }
     const rect = { x: 0, y: 0, w: REG_W, h: regH(2) }
-    const cam = fit(rect, 'space', { w: 1100, h: 700 })
-    expect(cam.z).toBeGreaterThan(LIVE_HI)
+    const cam = fit(rect, 'space', vp)
+    expect(cam.z).toBeGreaterThan(liveBand(vp).hi)
+  })
+
+  it('holds a too-tall space at the band top, framed from its top edge', () => {
+    const vp = { w: 1100, h: 700 }
+    const rect = { x: 0, y: 0, w: REG_W, h: regH(12) }
+    const cam = fit(rect, 'space', vp)
+    const band = liveBand(vp)
+    expect(cam.z).toBeCloseTo(band.hi)
+    const { ty, z } = apply(cam, vp)
+    expect(ty + rect.y * z).toBeCloseTo(insets('space', vp).t)
+  })
+})
+
+describe('liveBand', () => {
+  it('keeps the fixed band as a floor on a small screen', () => {
+    expect(liveBand({ w: 600, h: 500 })).toEqual({ lo: LIVE_LO, hi: LIVE_HI })
+  })
+
+  it('rises with a wide screen so Everything can frame a small canvas larger', () => {
+    const band = liveBand({ w: 1600, h: 1000 })
+    expect(band.lo).toBeGreaterThan(LIVE_LO)
+    expect(band.hi).toBeGreaterThan(band.lo)
+    expect(band.hi).toBeLessThan(
+      fit({ x: 0, y: 0, w: REG_W, h: regH(2) }, 'space', { w: 1600, h: 1000 }).z,
+    )
   })
 })
 

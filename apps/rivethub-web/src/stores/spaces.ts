@@ -7,8 +7,9 @@
  * `storageKey` / the archive store use. Object key order is recency: placing
  * a thread moves its key to the end, and the cap drops the oldest.
  *
- * `defaults` pre-fill a new thread. There is no directory field: the den
- * derives cwd from the preset id, and `node` is only a den base URL.
+ * `defaults` pre-fill a new thread. `directory` is the project's working
+ * directory — sent with each spawn, it wins over the agent's own; `node` is
+ * only a den base URL. Any other raw cwd field is dropped.
  *
  * There is always at least one space: an empty list (first run, or the last
  * space removed) is seeded with a fresh "General", which is deletable like
@@ -34,6 +35,9 @@ export interface SpaceDefaults {
   harnessId?: HarnessId
   /** Den base URL. Not a working directory. */
   node?: string
+  /** Working directory for sessions started here. Wins over the agent's own
+   *  directory; empty means the agent's directory. */
+  directory?: string
 }
 
 /**
@@ -159,7 +163,17 @@ export function normalizeSpaceDefaults(raw: unknown): SpaceDefaults | undefined 
   if (harnessId) next.harnessId = harnessId
   const node = nonEmpty(raw.node)
   if (node) next.node = node
+  const directory = asDirectory(raw.directory)
+  if (directory) next.directory = directory
   return Object.keys(next).length > 0 ? next : undefined
+}
+
+/** An absolute path, trailing slashes trimmed (the den checks it again). */
+export function asDirectory(value: unknown): string | undefined {
+  const trimmed = nonEmpty(value)
+  if (!trimmed?.startsWith('/') || trimmed.includes('\0')) return undefined
+  const clean = trimmed.replace(/\/+$/, '')
+  return clean.length > 0 ? clean : undefined
 }
 
 function applyDefaultsPatch(
@@ -184,6 +198,8 @@ function applyDefaultsPatch(
   if (harnessId) next.harnessId = harnessId
   const node = read('node')
   if (node) next.node = node
+  const directory = asDirectory(read('directory'))
+  if (directory) next.directory = directory
   return Object.keys(next).length > 0 ? next : undefined
 }
 

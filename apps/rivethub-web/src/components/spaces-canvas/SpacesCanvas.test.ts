@@ -36,6 +36,7 @@ import { clearSessionNodeBinding, setSessionNodeBinding } from '../../lib/sessio
 import { storageKey } from '../../lib/session-rekey.js'
 import { MINI_BACKFILL_DEBOUNCE_MS, MINI_BACKFILL_MAX_WAIT_MS } from './ThreadMini.js'
 import { resetSessionStreams } from '../../lib/use-session-stream.js'
+import { useCanvasDock } from '../../stores/canvas-dock.js'
 import { useAgentFilter } from '../../stores/agent-filter.js'
 import { useArchived } from '../../stores/archived.js'
 import { startNewConversation } from '../../lib/new-conversation.js'
@@ -93,13 +94,14 @@ beforeEach(() => {
   useSpaces.setState({ spaces: [], membership: {} })
   useArchived.setState({ keys: [] })
   useAgentFilter.getState().clear()
+  useCanvasDock.setState({ open: false, needs: 0 })
 })
 
-/** A dock button, opening the tucked dock first (it hides behind a toggle). */
+/** A dock button, opening the tucked dock first (the rail's Shortcuts
+ *  button opens it through the dock store). */
 function dockButton(name: string): Element | null {
   if (!document.querySelector('[data-dock-bar]')) {
-    const toggle = document.querySelector('[data-dock-toggle]')
-    if (toggle instanceof HTMLElement) act(() => toggle.click())
+    act(() => useCanvasDock.getState().setOpen(true))
   }
   return document.querySelector(`[data-dock="${name}"]`)
 }
@@ -153,7 +155,7 @@ const FLY_CLOCK = {
 } as const
 
 describe('SpacesCanvas', () => {
-  it('renders the seeded General space with no tiles; threads stay in History', () => {
+  it('renders the seeded General project with no tiles; sessions stay in History', () => {
     useSpaces.setState({ spaces: withDefaultSpace([]) })
     const html = markup(
       createElement(SpacesCanvas, {
@@ -164,9 +166,9 @@ describe('SpacesCanvas', () => {
     )
     expect(html).not.toContain('data-tile=')
     expect(html).not.toContain('Unplaced')
-    expect(html).not.toContain('No spaces yet')
+    expect(html).not.toContain('No projects yet')
     expect(html).toContain('<b class="text-ink" style="font-size:1.35em">General</b>')
-    expect(html).toContain('+ New space')
+    expect(html).toContain('+ New project')
     expect(html).toContain('data-altitude="everything"')
     expect(html).not.toContain('data-face="mini"')
     expect(html).not.toContain('id="conversations-pane"')
@@ -381,7 +383,7 @@ describe('SpacesCanvas mount', () => {
     expect(onOpen).not.toHaveBeenCalled()
   })
 
-  it('lands one thread after rows reorder mid-fly, and Ctrl+Space leaves it', async () => {
+  it('lands one session after rows reorder mid-fly, and Ctrl+Project leaves it', async () => {
     vi.useFakeTimers(FLY_CLOCK)
     const onOpen = vi.fn()
     placeOnHome(['a', 'b'])
@@ -426,7 +428,7 @@ describe('SpacesCanvas mount', () => {
     expect(host?.querySelector('[data-tile="d"]')?.getAttribute('data-selected')).toBe('true')
   })
 
-  it('a tile pencil and the breadcrumb pencil both rename the thread', () => {
+  it('a tile pencil and the breadcrumb pencil both rename the session', () => {
     placeOnHome(['a'])
     const base = useConnection.getState().baseUrl
     mount([row('a', 'Alpha')], vi.fn())
@@ -435,7 +437,7 @@ describe('SpacesCanvas mount', () => {
     expect(pencil.getAttribute('data-act')).toBe('')
     act(() => pencil.click())
     const input = host?.querySelector('[data-tile="a"]')?.querySelector('input')
-    expect(input?.getAttribute('aria-label')).toBe('Conversation name')
+    expect(input?.getAttribute('aria-label')).toBe('Session name')
     act(() => {
       input?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
     })
@@ -464,7 +466,7 @@ describe('SpacesCanvas mount', () => {
     mount([row('a', 'Alpha'), row('b', 'Beta')], onOpen)
     expect(host?.querySelector('[data-altitude]')?.getAttribute('data-altitude')).toBe('everything')
     const crumb = host?.querySelector('[aria-label="Location"]')?.querySelectorAll('button')[1]
-    if (!(crumb instanceof HTMLElement)) throw new Error('missing space crumb')
+    if (!(crumb instanceof HTMLElement)) throw new Error('missing project crumb')
     expect(crumb.textContent).toBe('Home')
     crumb.focus()
     act(() => {
@@ -474,7 +476,7 @@ describe('SpacesCanvas mount', () => {
     expect(host?.querySelector('[data-altitude]')?.getAttribute('data-altitude')).toBe('space')
   })
 
-  it('keeps the open thread mounted across a draft rekey and admits a new row', async () => {
+  it('keeps the open session mounted across a draft rekey and admits a new row', async () => {
     vi.useFakeTimers(FLY_CLOCK)
     const onOpen = vi.fn()
     const home = placeOnHome(['draft-1'])
@@ -544,7 +546,7 @@ describe('SpacesCanvas mount', () => {
     expect(onOpen).toHaveBeenCalledTimes(1)
   })
 
-  it('lands once under StrictMode when a thread is already active', async () => {
+  it('lands once under StrictMode when a session is already active', async () => {
     vi.useFakeTimers(FLY_CLOCK)
     const onOpen = vi.fn()
     placeOnHome(['a', 'b'])
@@ -629,7 +631,7 @@ describe('SpacesCanvas mount', () => {
     placeOnHome(rows.map((item) => item.key))
     mount(rows, onOpen, { descriptors: [CLAUDE] })
     const space = host?.querySelector('[data-crumb="space"]')
-    if (!(space instanceof HTMLElement)) throw new Error('missing space')
+    if (!(space instanceof HTMLElement)) throw new Error('missing project')
     act(() => {
       space.click()
     })
@@ -649,7 +651,7 @@ describe('SpacesCanvas mount', () => {
     expect(onOpen).toHaveBeenCalledTimes(1)
   })
 
-  it('holds the opening lease when the store selects a thread', async () => {
+  it('holds the opening lease when the store selects a session', async () => {
     vi.useFakeTimers(FLY_CLOCK)
     const closes = new Map<string, ReturnType<typeof vi.fn>[]>()
     vi.mocked(attachHarnessSession).mockImplementation((opts) => {
@@ -666,7 +668,7 @@ describe('SpacesCanvas mount', () => {
     placeOnHome(rows.map((item) => item.key))
     const { render } = mount(rows, onOpen, { descriptors: [CLAUDE] })
     const space = host?.querySelector('[data-crumb="space"]')
-    if (!(space instanceof HTMLElement)) throw new Error('missing space')
+    if (!(space instanceof HTMLElement)) throw new Error('missing project')
     act(() => {
       space.click()
     })
@@ -684,7 +686,7 @@ describe('SpacesCanvas mount', () => {
     expect(closes.get(target)?.[0]).not.toHaveBeenCalled()
   })
 
-  it('does not remount the open thread when its row is rekeyed', async () => {
+  it('does not remount the open session when its row is rekeyed', async () => {
     vi.useFakeTimers(FLY_CLOCK)
     let mounts = 0
     let unmounts = 0
@@ -763,7 +765,7 @@ describe('SpacesCanvas mount', () => {
     try {
       mount([remoteRow], onOpen, { descriptors: [CLAUDE] })
       const space = host?.querySelector('[data-crumb="space"]')
-      if (!(space instanceof HTMLElement)) throw new Error('missing space')
+      if (!(space instanceof HTMLElement)) throw new Error('missing project')
       act(() => {
         space.click()
       })
@@ -835,7 +837,7 @@ describe('SpacesCanvas mount', () => {
     try {
       const { render } = mount(rows, () => undefined, { descriptors: [CLAUDE] })
       const space = host?.querySelector('[data-crumb="space"]')
-      if (!(space instanceof HTMLElement)) throw new Error('missing space')
+      if (!(space instanceof HTMLElement)) throw new Error('missing project')
       act(() => {
         space.click()
       })
@@ -867,7 +869,7 @@ describe('SpacesCanvas mount', () => {
     }
   })
 
-  it('puts threads in their spaces and sends a removed space to History', () => {
+  it('puts sessions in their projects and sends a removed project to History', () => {
     const home = useSpaces.getState().addSpace('Home')
     const work = useSpaces.getState().addSpace('Work')
     const base = useConnection.getState().baseUrl
@@ -902,13 +904,13 @@ describe('SpacesCanvas mount', () => {
     expect(host?.querySelector('[data-history-row="c"]')).not.toBeNull()
   })
 
-  it('with only the seeded General space keeps unplaced threads in History', () => {
+  it('with only the seeded General project keeps unplaced sessions in History', () => {
     useSpaces.setState({ spaces: withDefaultSpace([]) })
     mount([row('a', 'Alpha'), row('b', 'Beta')], () => undefined)
     expect(host?.querySelector('[data-tile]')).toBeNull()
     expect(host?.querySelector('[data-empty-spaces]')).toBeNull()
     expect(host?.textContent).toContain('General')
-    expect(host?.textContent).toContain('+ New space')
+    expect(host?.textContent).toContain('+ New project')
     press({ key: 'h' })
     expect(host?.querySelector('[data-history-row="a"]')).not.toBeNull()
     expect(host?.querySelector('[data-history-row="b"]')).not.toBeNull()
@@ -931,7 +933,7 @@ describe('SpacesCanvas mount', () => {
     expect(escape.defaultPrevented).toBe(false)
   })
 
-  it('claims Ctrl+J at Everything and not at Thread', () => {
+  it('claims Ctrl+J at Everything and not at Session', () => {
     placeOnHome(['a'])
     mount([row('a', 'Alpha')], () => undefined)
     const claimed = press({ key: 'j', code: 'KeyJ', ctrlKey: true })
@@ -946,7 +948,7 @@ describe('SpacesCanvas mount', () => {
     expect(left.defaultPrevented).toBe(false)
   })
 
-  it('does not claim Ctrl+` at Thread when the session field is focused', async () => {
+  it('does not claim Ctrl+` at Session when the session field is focused', async () => {
     vi.useFakeTimers(FLY_CLOCK)
     placeOnHome(['a'])
     mount([row('a', 'Alpha')], () => undefined, {
@@ -1003,7 +1005,7 @@ describe('SpacesCanvas mount', () => {
     const child = { ...row('child', 'Child task'), parentKey: 'parent', updatedAt: 9 }
     mount([parent, child], () => undefined)
     press({ key: 'h' })
-    const expand = host?.querySelector('[aria-label="expand nested conversations"]')
+    const expand = host?.querySelector('[aria-label="expand nested sessions"]')
     if (!expand) throw new Error('missing expand')
     act(() => {
       expand.click()
@@ -1035,7 +1037,7 @@ describe('SpacesCanvas mount', () => {
     expect(host?.querySelector('[data-drag-ghost]')?.textContent).toBe('Child task')
   })
 
-  it('toasts a needs-you episode after the thread goes back to working', () => {
+  it('toasts a needs-you episode after the session goes back to working', () => {
     const rows = [row('a', 'Alpha'), row('b', 'Beta')]
     const { render } = mount(rows, () => undefined, {
       activeId: 'a',
@@ -1054,7 +1056,7 @@ describe('SpacesCanvas mount', () => {
     expect(toasts).not.toContain('Alpha needs you')
   })
 
-  it('treats membership in a missing space as History', () => {
+  it('treats membership in a missing project as History', () => {
     const base = useConnection.getState().baseUrl
     useSpaces.getState().addSpace('Home')
     useSpaces.setState({ membership: { [storageKey(base, 'a')]: 'missing' } })
@@ -1064,14 +1066,14 @@ describe('SpacesCanvas mount', () => {
     expect(host?.querySelector('[data-history-row="a"]')).not.toBeNull()
   })
 
-  it('targets the framed space, not the selected tile in another space', () => {
+  it('targets the framed project, not the selected tile in another project', () => {
     const home = placeOnHome(['a'])
     mount([row('a', 'Alpha')], () => undefined)
     // The only tile starts selected. Clicking it would open Thread, where N is not claimed.
     expect(host?.querySelector('[data-tile="a"]')?.getAttribute('data-selected')).toBe('true')
     press({ key: 'n' })
-    const input = document.querySelector('[aria-label="Space name"]')
-    if (!input) throw new Error('missing space name')
+    const input = document.querySelector('[aria-label="Project name"]')
+    if (!input) throw new Error('missing project name')
     const field = input as {
       type: string
       value: string
@@ -1093,34 +1095,34 @@ describe('SpacesCanvas mount', () => {
     expect(host?.querySelector('[data-tile="a"]')?.getAttribute('data-space')).toBe(home)
 
     press({ key: 'e' })
-    const rename = document.querySelector('[aria-label="Space name"]')
+    const rename = document.querySelector('[aria-label="Project name"]')
     expect((rename as { value?: string } | null)?.value).toBe('Empty')
     cancelDialog()
 
     press({ key: 'Delete', shiftKey: true })
     const remove = document.body.textContent ?? ''
     expect(remove).toContain('Remove “Empty”?')
-    expect(remove).toContain('It has no threads yet.')
+    expect(remove).toContain('It has no sessions yet.')
     cancelDialog()
 
     press({ key: 't' })
-    expect(document.body.textContent).toContain('Space ·')
+    expect(document.body.textContent).toContain('Project ·')
     expect(document.body.textContent).toContain('Empty')
-    expect(document.querySelector('[aria-label="Space"]')).toBeNull()
+    expect(document.querySelector('[aria-label="Project"]')).toBeNull()
     cancelDialog()
 
     press({ key: '0', code: 'Digit0', ctrlKey: true })
     expect(host?.querySelector('[data-altitude]')?.getAttribute('data-altitude')).toBe('everything')
     press({ key: 't' })
-    expect(document.querySelector('[aria-label="Space"]')).not.toBeNull()
+    expect(document.querySelector('[aria-label="Project"]')).not.toBeNull()
   })
 
-  it('does not mint a space thread while a dialog is open', () => {
+  it('does not mint a project session while a dialog is open', () => {
     const spaceId = placeOnHome(['a'])
     useSpaces.getState().setSpaceDefaults(spaceId, { model: 'opus', effort: 'high' })
     mount([row('a', 'Alpha')], () => undefined)
     const crumb = host?.querySelector('[aria-label="Location"]')?.querySelectorAll('button')[1]
-    if (!(crumb instanceof HTMLElement)) throw new Error('missing space crumb')
+    if (!(crumb instanceof HTMLElement)) throw new Error('missing project crumb')
     crumb.focus()
     act(() => {
       window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
@@ -1177,17 +1179,15 @@ describe('SpacesCanvas mount', () => {
     ).toBeNull()
   })
 
-  it('tucks the dock behind the corner toggle and shows it for Find', () => {
+  it('tucks the dock behind the rail toggle and shows it for Find', () => {
     placeOnHome(['a'])
     mount([row('a', 'Alpha')], () => undefined)
     expect(host?.querySelector('[data-dock-bar]')).toBeNull()
-    const toggle = host?.querySelector('[data-dock-toggle]')
-    if (!(toggle instanceof HTMLElement)) throw new Error('missing dock toggle')
-    expect(toggle.getAttribute('aria-expanded')).toBe('false')
-    act(() => toggle.click())
+    // The toggle lives in the rail now, not the canvas corner.
+    expect(host?.querySelector('[data-dock-toggle]')).toBeNull()
+    act(() => useCanvasDock.getState().toggle())
     expect(host?.querySelector('[data-dock-bar]')).not.toBeNull()
-    expect(toggle.getAttribute('aria-expanded')).toBe('true')
-    act(() => toggle.click())
+    act(() => useCanvasDock.getState().toggle())
     expect(host?.querySelector('[data-dock-bar]')).toBeNull()
     press({ key: '/' })
     expect(document.querySelector('[data-dock-bar]')).not.toBeNull()
@@ -1248,7 +1248,7 @@ describe('SpacesCanvas mount', () => {
     expect(document.getElementById('keys')).toBeNull()
   })
 
-  it('opens the keys panel from the dock at Thread, where ? is not claimed', async () => {
+  it('opens the keys panel from the dock at Session, where ? is not claimed', async () => {
     vi.useFakeTimers(FLY_CLOCK)
     placeOnHome(['a'])
     mount([row('a', 'Alpha')], () => undefined)
@@ -1272,13 +1272,13 @@ describe('SpacesCanvas mount', () => {
     expect(document.getElementById('keys')).not.toBeNull()
   })
 
-  it('does not let History pick mode claim Escape in a thread composer', async () => {
+  it('does not let History pick mode claim Escape in a session composer', async () => {
     vi.useFakeTimers(FLY_CLOCK)
     placeOnHome(['a'])
     const rows = [row('a', 'Alpha'), row('b', 'Beta')]
     const { render } = mount(rows, () => undefined)
     const thread = dockButton('thread')
-    if (!(thread instanceof HTMLElement)) throw new Error('missing new thread')
+    if (!(thread instanceof HTMLElement)) throw new Error('missing new session')
     act(() => {
       thread.click()
     })
@@ -1314,16 +1314,16 @@ describe('SpacesCanvas mount', () => {
     expect(bodyEscape.defaultPrevented).toBe(false)
   })
 
-  it('cancels History pick mode from the canvas at Space and not from a field', () => {
+  it('cancels History pick mode from the canvas at Project and not from a field', () => {
     placeOnHome(['a'])
     mount([row('a', 'Alpha'), row('b', 'Beta')], () => undefined)
     const space = host?.querySelector('[data-crumb="space"]')
-    if (!(space instanceof HTMLElement)) throw new Error('missing space')
+    if (!(space instanceof HTMLElement)) throw new Error('missing project')
     act(() => {
       space.click()
     })
     const thread = dockButton('thread')
-    if (!(thread instanceof HTMLElement)) throw new Error('missing new thread')
+    if (!(thread instanceof HTMLElement)) throw new Error('missing new session')
     act(() => {
       thread.click()
     })
@@ -1364,7 +1364,7 @@ describe('SpacesCanvas mount', () => {
     expect(document.querySelector('[data-history-mode="pick"]')).toBeNull()
   })
 
-  it('keeps one ActiveSession when the open thread moves to and from History', async () => {
+  it('keeps one ActiveSession when the open session moves to and from History', async () => {
     vi.useFakeTimers(FLY_CLOCK)
     let mounts = 0
     let unmounts = 0
@@ -1421,7 +1421,7 @@ describe('SpacesCanvas mount', () => {
     expect(host?.querySelector(`[data-tile="${item.key}"]`)?.getAttribute('data-space')).toBe(home)
   })
 
-  it('keeps one ActiveSession when an unplaced thread gains a space', async () => {
+  it('keeps one ActiveSession when an unplaced session gains a project', async () => {
     vi.useFakeTimers(FLY_CLOCK)
     let mounts = 0
     let unmounts = 0
@@ -1462,7 +1462,7 @@ describe('SpacesCanvas mount', () => {
     expect(host?.querySelector('[data-probe-session]')).not.toBeNull()
   })
 
-  it('announces altitude and centres an empty space', () => {
+  it('announces altitude and centres an empty project', () => {
     const code = useSpaces.getState().addSpace('Code')
     const base = useConnection.getState().baseUrl
     const rows = [row('a', 'One'), row('b', 'Two'), row('c', 'Three'), row('d', 'Four')]
@@ -1481,12 +1481,12 @@ describe('SpacesCanvas mount', () => {
     expect(selected?.getAttribute('tabindex')).toBe('0')
     expect(other?.getAttribute('tabindex')).toBe('-1')
     const space = host?.querySelector('[data-crumb="space"]')
-    if (!(space instanceof HTMLElement)) throw new Error('missing space')
+    if (!(space instanceof HTMLElement)) throw new Error('missing project')
     act(() => {
       space.click()
     })
     expect(host?.querySelector('[data-altitude-live]')?.textContent).toBe(
-      'Space: Code, 4 threads, 1 waiting on you',
+      'Project: Code, 4 sessions, 1 waiting on you',
     )
     let emptyId = ''
     act(() => {
@@ -1494,7 +1494,7 @@ describe('SpacesCanvas mount', () => {
     })
     const emptyThread = host?.querySelector(`[data-add-thread="${emptyId}"]`)
     expect(emptyThread?.getAttribute('data-empty-thread')).toBe('')
-    expect(emptyThread?.textContent).toContain('+ New thread')
+    expect(emptyThread?.textContent).toContain('+ New session')
     const region = host?.querySelector(`[data-region="${emptyId}"]`)
     const regionStyle = (region as HTMLElement | null)?.style
     const buttonStyle = (emptyThread as HTMLElement | null)?.style
@@ -1507,7 +1507,7 @@ describe('SpacesCanvas mount', () => {
   it('shows the shared empty copy when nothing is listed', () => {
     mount([], () => undefined)
     expect(host?.querySelector('[data-empty-conversations]')?.textContent).toContain(
-      'Pick a conversation or start a new one.',
+      'Pick a session or start a new one.',
     )
   })
 
@@ -1551,7 +1551,7 @@ describe('SpacesCanvas mount', () => {
       placeOnHome(['a'])
       mount([row('a', 'Alpha', 'active')], () => undefined, { descriptors: [CLAUDE] })
       const space = host?.querySelector('[data-crumb="space"]')
-      if (!(space instanceof HTMLElement)) throw new Error('missing space')
+      if (!(space instanceof HTMLElement)) throw new Error('missing project')
       act(() => {
         space.click()
       })
@@ -1577,7 +1577,7 @@ describe('SpacesCanvas mount', () => {
     })
     mount([row('a', 'Alpha')], () => undefined)
     const space = host?.querySelector('[data-crumb="space"]')
-    if (!(space instanceof HTMLElement)) throw new Error('missing space')
+    if (!(space instanceof HTMLElement)) throw new Error('missing project')
     act(() => {
       space.click()
     })
@@ -1594,7 +1594,7 @@ describe('SpacesCanvas mount', () => {
     expect(useSpaces.getState().membership[`${base}::${id}`]).toBe(spaceId)
   })
 
-  it('hides region controls from the keyboard while a thread is open', async () => {
+  it('hides region controls from the keyboard while a session is open', async () => {
     vi.useFakeTimers(FLY_CLOCK)
     placeOnHome(['a', 'b'])
     mount([row('a', 'Alpha'), row('b', 'Beta')], () => undefined, {
@@ -1612,7 +1612,7 @@ describe('SpacesCanvas mount', () => {
     const region = host?.querySelector('[data-region]')
     const add = host?.querySelector('[data-add-thread]')
     const edit = [...(region?.querySelectorAll('button') ?? [])].find(
-      (button) => button.textContent?.trim() === 'Edit',
+      (button) => button.getAttribute('title') === 'Edit project',
     )
     if (!(region instanceof HTMLElement) || !(add instanceof HTMLElement)) {
       throw new Error('missing hidden chrome')
@@ -1640,7 +1640,7 @@ describe('SpacesCanvas mount', () => {
     expect(document.activeElement).toBe(dock)
   })
 
-  it('enters Space in one commit and a stream frame repaints one mounted mini', async () => {
+  it('enters Project in one commit and a stream frame repaints one mounted mini', async () => {
     vi.useFakeTimers(FLY_CLOCK)
     const durations: number[] = []
     const rows = Array.from({ length: 60 }, (_, index) =>
@@ -1650,7 +1650,7 @@ describe('SpacesCanvas mount', () => {
     let spaceId = useSpaces.getState().addSpace('Home')
     rows.forEach((item, index) => {
       if (index > 0 && index % 5 === 0) {
-        spaceId = useSpaces.getState().addSpace(`Space ${String(index / 5)}`)
+        spaceId = useSpaces.getState().addSpace(`Project ${String(index / 5)}`)
       }
       useSpaces.getState().place(storageKey(base, item.key), spaceId)
     })
@@ -1661,7 +1661,7 @@ describe('SpacesCanvas mount', () => {
     })
     durations.length = 0
     const space = host?.querySelector('[data-crumb="space"]')
-    if (!(space instanceof HTMLElement)) throw new Error('missing space')
+    if (!(space instanceof HTMLElement)) throw new Error('missing project')
     act(() => {
       space.click()
     })
@@ -1798,7 +1798,7 @@ describe('useCamera fly carry', () => {
     vi.useRealTimers()
   })
 
-  it('lands once when a snap interrupts a fly toward a thread', () => {
+  it('lands once when a snap interrupts a fly toward a session', () => {
     vi.useFakeTimers(FLY_CLOCK)
     const onLand = vi.fn()
     const host = document.createElement('div')

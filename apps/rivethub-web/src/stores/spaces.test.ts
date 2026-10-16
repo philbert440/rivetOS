@@ -23,6 +23,16 @@ const { useSpaces, SPACES_STORAGE_KEY, SPACES_MEMBERSHIP_CAP, DEFAULT_SPACE_NAME
 const { useArchived } = await import('./archived.js')
 
 describe('spaces store', () => {
+  it('keeps an absolute project directory and drops a relative one', () => {
+    const id = useSpaces.getState().addSpace('App')
+    useSpaces.getState().setSpaceDefaults(id, { directory: '/srv/app/' })
+    expect(useSpaces.getState().spaces.find((x) => x.id === id)?.defaults).toEqual({
+      directory: '/srv/app',
+    })
+    useSpaces.getState().setSpaceDefaults(id, { directory: 'srv/app' })
+    expect(useSpaces.getState().spaces.find((x) => x.id === id)?.defaults).toBeUndefined()
+  })
+
   beforeEach(() => {
     store.clear()
     useSpaces.setState({ spaces: [], membership: {} })

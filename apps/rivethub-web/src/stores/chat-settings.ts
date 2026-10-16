@@ -43,6 +43,13 @@ export interface ChatSettings {
    * changes, the same way `model` is, unless this patch sets it.
    */
   agentId?: string
+  /**
+   * Working directory for this session — its project's, or one picked on the
+   * new-session card. Sent as `POST /term` `directory` on every spawn so a
+   * respawn stays in the directory the session started in. Omitted = the
+   * agent preset's directory (or the den's default).
+   */
+  directory?: string
 }
 
 /**

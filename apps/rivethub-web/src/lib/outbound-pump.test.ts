@@ -679,7 +679,7 @@ describe('onUndelivered', () => {
       {
         ...queued('a'),
         status: 'failed',
-        note: 'delivery unconfirmed: connection lost; check the conversation before retrying',
+        note: 'delivery unconfirmed: connection lost; check the session before retrying',
       },
     ])
     pump.dispose()

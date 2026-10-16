@@ -518,9 +518,9 @@ export function Composer(props: {
                 ...props.launchOptions.models,
               ]}
               onChange={(model) => props.onLaunchModel?.(model || undefined)}
-              label="Model for this conversation"
+              label="Model for this session"
               title={`Model: ${props.launchOptions.models.find((m) => m.value === props.launchOptions?.value)?.label ?? props.launchOptions.defaultModelLabel}`}
-              aria-label="Model for this conversation"
+              aria-label="Model for this session"
               className="max-w-[12rem] min-w-0 rounded-full"
             />
           )}

@@ -845,8 +845,8 @@ html[data-style='material'] .spaces-canvas .sc-region.border-dashed {
    status caps (Tile.tsx sizes each line with min(…, cap)). The caps sum to
    under the tile height with the face padding and gaps. */
 .spaces-canvas[data-altitude='everything'] [data-face='card'] {
-  --face-title-cap: 18cqh;
-  --face-name-cap: 13cqh;
+  --face-title-cap: 16cqh;
+  --face-name-cap: 11cqh;
   --face-pill-cap: 9cqh;
 }
 .spaces-canvas[data-altitude='everything'] [data-face-last] {

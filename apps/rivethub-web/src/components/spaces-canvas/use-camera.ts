@@ -261,7 +261,7 @@ export function useCamera(opts: {
       pendingLand.current = undefined
       detachedRef.current = true
       commit(next)
-      const altitude = altitudeFromZoom(next.z)
+      const altitude = altitudeFromZoom(next.z, vpRef.current)
       if (modeRef.current === 'thread' || modeRef.current !== altitude) {
         onHandRef.current(altitude)
       }

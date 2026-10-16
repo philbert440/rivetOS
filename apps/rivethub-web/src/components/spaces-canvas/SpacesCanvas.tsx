@@ -19,7 +19,7 @@ import {
   type ReactNode,
 } from 'react'
 import * as Dialog from '@radix-ui/react-dialog'
-import { History as HistoryIcon, Keyboard, LayoutGrid, Pencil } from 'lucide-react'
+import { Bot, History as HistoryIcon, LayoutGrid, Pencil } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import type { HarnessDescriptor } from '@rivetos/types'
 import type { ChatItem } from '../../lib/harness-chat.js'
@@ -28,6 +28,7 @@ import {
   CANVAS_KEYS,
   focusInForeignDialog,
   matchCanvasAction,
+  matchHubKey,
   matchCanvasChord,
   matchCanvasNav,
   type CanvasAction,
@@ -37,6 +38,8 @@ import { useKeyLabel } from '../../lib/use-key-label.js'
 import { storageKey } from '../../lib/session-rekey.js'
 import { useRosterAgents } from '../../lib/use-agent-roster.js'
 import { AGENT_DRAG_MIME, isAgentDrag } from '../../lib/agent-drag.js'
+import { useCanvasDock } from '../../stores/canvas-dock.js'
+import { AgentsSection } from '../agents-section.js'
 import { modelNamesFrom } from './tile-label.js'
 import { useArchived } from '../../stores/archived.js'
 import { useChat } from '../../stores/chat.js'
@@ -51,7 +54,8 @@ import {
   apply,
   focusRect,
   layout,
-  LIVE_LO,
+  liveBand,
+  NEW_SPACE_H,
   tileSlot,
   type Altitude,
   type NeighborTile,
@@ -187,6 +191,12 @@ interface PickState {
   title: string
 }
 
+/** The pop-out's pickable agent rows, top to bottom. */
+function agentRows(root: HTMLElement | null): HTMLButtonElement[] {
+  if (!root) return []
+  return [...root.querySelectorAll<HTMLButtonElement>('button[id^="agent-row-"]:not(:disabled)')]
+}
+
 function plainEscape(event: KeyboardEvent): boolean {
   return (
     event.key === 'Escape' && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey
@@ -209,7 +219,7 @@ function countLabel(active: number, waiting: number): JSX.Element {
 }
 
 function threadsPhrase(count: number): string {
-  return `${String(count)} ${count === 1 ? 'thread' : 'threads'}`
+  return `${String(count)} ${count === 1 ? 'session' : 'sessions'}`
 }
 
 function waitingPhrase(count: number): string {
@@ -227,10 +237,10 @@ export function altitudeLiveLabel(
   threadTitle: string | undefined,
 ): string {
   if (altitude === 'thread') {
-    return threadTitle ? `Thread: ${threadTitle}` : 'Thread'
+    return threadTitle ? `Session: ${threadTitle}` : 'Session'
   }
   if (altitude === 'space') {
-    return `Space: ${spaceName ?? 'Space'}, ${threadsPhrase(spaceThreads)}, ${waitingPhrase(spaceWaiting)}`
+    return `Project: ${spaceName ?? 'Project'}, ${threadsPhrase(spaceThreads)}, ${waitingPhrase(spaceWaiting)}`
   }
   return `Everything: ${threadsPhrase(placedCount)}, ${waitingPhrase(needsCount)}`
 }
@@ -303,10 +313,18 @@ export function SpacesCanvas(props: {
   const [mruStep, setMruStep] = useState(0)
   const [toasts, setToasts] = useState<NeedsToast[]>([])
   const [keysOpen, setKeysOpen] = useState(false)
-  // The dock is tucked behind a corner toggle and opens as a column upward,
-  // leaving the width to the thread. Find and Move live in it, so it shows
-  // while either is open even when tucked.
-  const [dockOpen, setDockOpen] = useState(false)
+  // The dock is tucked behind the rail's Shortcuts button and opens as a
+  // column in the bottom-left corner, leaving the width to the thread. Find
+  // and Move live in it, so it shows while either is open even when tucked.
+  const dockOpen = useCanvasDock((s) => s.open)
+  // The Agents pop-out beside History: drag an agent onto + New session.
+  // While a drag is under way it goes see-through so the slots it covers
+  // still take the drop.
+  const agentsOpen = useCanvasDock((s) => s.agentsOpen)
+  const agentsSeq = useCanvasDock((s) => s.agentsSeq)
+  const setAgentsOpen = useCanvasDock((s) => s.setAgentsOpen)
+  const [agentsDragging, setAgentsDragging] = useState(false)
+  const agentsRef = useRef<HTMLDivElement>(null)
   const label = useKeyLabel()
   const [rosterNotice, setRosterNotice] = useState<string | undefined>()
   const localOpen = useRef<string | undefined>(undefined)
@@ -509,7 +527,7 @@ export function SpacesCanvas(props: {
       name: region.name,
       count: region.rows.length,
     })),
-    { id: NEW_SPACE_ID, name: 'New space', count: 0 },
+    { id: NEW_SPACE_ID, name: 'New project', count: 0, h: NEW_SPACE_H },
   ]
   const laid = layout(layoutItems, view)
   const placed: { row: ChatItem; spaceId: string; slot: (typeof laid.slots)[number] }[] = []
@@ -633,7 +651,7 @@ export function SpacesCanvas(props: {
       row = {
         key: id,
         kind: 'draft',
-        title: 'new conversation',
+        title: 'new session',
         updatedAt: useChat.getState().draftCreatedAt[id] ?? 0,
       }
     }
@@ -719,6 +737,9 @@ export function SpacesCanvas(props: {
   // Space altitude: the framed space, even when the selection sits in another
   // region. Everything has no framed space, so the chooser keeps its selector.
   // Thread (dock only — letters are not claimed) uses the open thread's space.
+  // A project's directory wins over the dropped or clicked agent's own.
+  const projectDirectory = (spaceId: string): string | undefined =>
+    spaces.find((space) => space.id === spaceId)?.defaults?.directory
   const spaceYouAreIn = (): string | undefined => {
     if (altitude === 'space') return realSpace(framedRegionId)
     if (altitude === 'thread') {
@@ -789,6 +810,44 @@ export function SpacesCanvas(props: {
 
   const selectedPlaced = placed.find((item) => item.row.key === selectedId)
   if (moveOpen && selectedPlaced === undefined) setMoveOpen(false)
+
+  // The rail's Shortcuts button badges the count while the dock is shut.
+  useEffect(() => {
+    useCanvasDock.getState().setNeeds(needsCount)
+  }, [needsCount])
+  useEffect(() => () => useCanvasDock.getState().setNeeds(0), [])
+
+  // A press outside the Agents pop-out closes it — but not one inside a
+  // dialog it opened (the agent editor, a delete confirm).
+  useEffect(() => {
+    if (!agentsOpen) return
+    const onDown = (event: PointerEvent): void => {
+      const target = event.target
+      if (!(target instanceof Element)) return
+      if (agentsRef.current?.contains(target)) return
+      if (target.closest('[data-hud-agents], [role="dialog"], [role="alertdialog"]')) return
+      setAgentsOpen(false)
+    }
+    window.addEventListener('pointerdown', onDown, { capture: true })
+    return () => window.removeEventListener('pointerdown', onDown, { capture: true })
+  }, [agentsOpen, setAgentsOpen])
+
+  // Ctrl+Tab opens the pop-out with focus on an agent row, so ↑/↓ pick and
+  // Enter starts the session. Rows can land a frame or two after the open
+  // while the roster settles, so try for a few frames.
+  useEffect(() => {
+    if (agentsSeq === 0 || !useCanvasDock.getState().agentsOpen) return
+    let tries = 0
+    let frame = 0
+    const focusRow = (): void => {
+      const rows = agentRows(agentsRef.current)
+      const row = useCanvasDock.getState().agentsFrom === 'last' ? rows.at(-1) : rows[0]
+      if (row) row.focus()
+      else if (++tries < 20) frame = requestAnimationFrame(focusRow)
+    }
+    frame = requestAnimationFrame(focusRow)
+    return () => cancelAnimationFrame(frame)
+  }, [agentsSeq])
 
   useEffect(() => {
     if (altitude !== 'thread' && threadMounted) setThreadMounted(false)
@@ -921,6 +980,8 @@ export function SpacesCanvas(props: {
         }
       }
       if (modalRef.current) return
+      // The Agents pop-out handles its own keys (↑/↓, Enter, Esc).
+      if (document.activeElement?.closest('[data-agents-popout]')) return
       const findFocused = (): boolean => {
         const active = document.activeElement
         return active instanceof Element && active.getAttribute('data-dock') === 'find'
@@ -1175,7 +1236,7 @@ export function SpacesCanvas(props: {
   const crumbThread =
     rows.find((row) => row.key === (altitude === 'thread' ? openId : selectedId)) ??
     rows.find((row) => row.key === selectedId)
-  const paintMini = altitude === 'space' && cam.z >= LIVE_LO
+  const paintMini = altitude === 'space' && cam.z >= liveBand(vp).lo
   const selectedCanvas = placed.find((item) => item.row.key === selectedId)
   const openRow = openId !== undefined ? visibleRows.find((row) => row.key === openId) : undefined
   const showSynthetic =
@@ -1193,14 +1254,14 @@ export function SpacesCanvas(props: {
   const removeSpace = spaces.find((space) => space.id === removePrompt)
   const removeRows = regions.find((region) => region.id === removePrompt)?.rows ?? []
   const editing = editSpace ? spaces.find((space) => space.id === editSpace) : undefined
+  const hereDefaults = spaces.find((space) => space.id === spaceYouAreIn())?.defaults
   const dockStartsIn = startsInDirectory(
-    startablePreset(spaces.find((space) => space.id === spaceYouAreIn())?.defaults, rosterAgents)
-      ?.directory,
+    hereDefaults?.directory ?? startablePreset(hereDefaults, rosterAgents)?.directory,
   )
 
   const rowLabelFor = (spaceId: string | undefined): string => {
     if (!spaceId || spaceId === UNPLACED_ID) return 'History'
-    return regionName(regions, spaceId) ?? 'Space'
+    return regionName(regions, spaceId) ?? 'Project'
   }
   const paintedTiles: PaintedTile[] = placed.map((item) => {
     const isOpen = item.row.key === openId
@@ -1292,7 +1353,7 @@ export function SpacesCanvas(props: {
           id="world"
           ref={worldRef}
           role="grid"
-          aria-label="Conversations"
+          aria-label="Sessions"
           className="absolute top-0 left-0"
           style={{ transformOrigin: '0 0' }}
         >
@@ -1341,7 +1402,7 @@ export function SpacesCanvas(props: {
                     className="absolute inset-0 text-sm text-ink-dim hover:text-em"
                     onClick={() => setNamePrompt({ mode: 'create' })}
                   >
-                    + New space
+                    + New project
                   </button>
                 ) : (
                   <div
@@ -1361,22 +1422,22 @@ export function SpacesCanvas(props: {
                         {chip.directoryBase ? ` · ${chip.directoryBase}` : ''}
                       </span>
                     ) : null}
-                    {countLabel(active, waitingOn)}
                     {real ? (
                       <>
                         <button
                           type="button"
                           data-act=""
-                          aria-label={`Edit ${model?.name ?? 'space'}`}
-                          className="hover:text-ink"
+                          aria-label={`Edit ${model?.name ?? 'project'}`}
+                          title="Edit project"
+                          className="self-center hover:text-ink"
                           onClick={() => setEditSpace(region.id)}
                         >
-                          Edit
+                          <Pencil aria-hidden="true" style={{ width: '1em', height: '1em' }} />
                         </button>
                         <button
                           type="button"
                           data-act=""
-                          aria-label={`Remove ${model?.name ?? 'space'}`}
+                          aria-label={`Remove ${model?.name ?? 'project'}`}
                           className="hover:text-ink"
                           onClick={() => setRemovePrompt(region.id)}
                         >
@@ -1384,6 +1445,22 @@ export function SpacesCanvas(props: {
                         </button>
                       </>
                     ) : null}
+                  </div>
+                )}
+                {isNew ? null : (
+                  // Inside the box, in the top padding above the first row
+                  // of tiles. Capped so far out it never grows into them.
+                  <div
+                    data-region-count=""
+                    className="pointer-events-none absolute text-ink-dim"
+                    style={{
+                      left: 'min(calc(16px * var(--inv, 1)), 24px)',
+                      top: 'min(calc(12px * var(--inv, 1)), 22px)',
+                      fontSize: 'min(calc(13px * var(--inv, 1)), 44px)',
+                      lineHeight: 1.2,
+                    }}
+                  >
+                    {countLabel(active, waitingOn)}
                   </div>
                 )}
               </div>
@@ -1424,11 +1501,9 @@ export function SpacesCanvas(props: {
             const empty = region.rows.length === 0
             const slot = tileSlot(region.id, laidRegion.rect, region.rows.length)
             const hidden = altitude === 'thread'
+            const regionDefaults = spaces.find((space) => space.id === region.id)?.defaults
             const slotStartsIn = startsInDirectory(
-              startablePreset(
-                spaces.find((space) => space.id === region.id)?.defaults,
-                rosterAgents,
-              )?.directory,
+              regionDefaults?.directory ?? startablePreset(regionDefaults, rosterAgents)?.directory,
             )
             return (
               <button
@@ -1471,7 +1546,7 @@ export function SpacesCanvas(props: {
                   event.preventDefault()
                   const id = startThreadWithDefaults(
                     region.id,
-                    { agentId },
+                    { agentId, directory: projectDirectory(region.id) },
                     useConnection.getState().baseUrl,
                     rosterRef.current,
                   )
@@ -1482,7 +1557,7 @@ export function SpacesCanvas(props: {
                   }
                 }}
               >
-                + New thread
+                + New session
               </button>
             )
           })}
@@ -1501,6 +1576,8 @@ export function SpacesCanvas(props: {
           saveHistoryWidth(width)
         }}
         pick={pick ? { title: pick.title, onCancel: () => setPick(null) } : undefined}
+        // Same new-session card as a project's + New session.
+        onNew={() => setNewThread({ spaceId: spaceYouAreIn() })}
         onOpen={(id) => {
           if (consumedClickRef.current) {
             consumedClickRef.current = false
@@ -1552,7 +1629,7 @@ export function SpacesCanvas(props: {
         <nav
           data-hud=""
           aria-label="Location"
-          className="pointer-events-auto absolute top-4 flex max-w-[60%] items-center gap-1 border border-line bg-panel px-1 py-1 text-sm text-ink-dim material:rounded-2xl material:border-line/40 material:shadow-pop"
+          className="pointer-events-auto absolute top-4 flex max-w-[60%] flex-nowrap items-center gap-1 whitespace-nowrap border border-line bg-panel px-1 py-1 text-sm text-ink-dim material:rounded-2xl material:border-line/40 material:shadow-pop"
           style={{ left: '1rem' }}
         >
           <button
@@ -1567,11 +1644,14 @@ export function SpacesCanvas(props: {
           </button>
           {crumbSpace ? (
             <>
-              <span aria-hidden="true">›</span>
+              <span aria-hidden="true" className="shrink-0">
+                ›
+              </span>
               <button
                 type="button"
                 data-crumb="space"
                 aria-current={altitude === 'space' ? 'location' : undefined}
+                title={crumbSpace}
                 className={crumbChip(altitude === 'space')}
                 onClick={() => {
                   if (framedRegionId !== undefined) setSpaceFocus(framedRegionId)
@@ -1584,7 +1664,9 @@ export function SpacesCanvas(props: {
           ) : null}
           {crumbThread ? (
             <>
-              <span aria-hidden="true">›</span>
+              <span aria-hidden="true" className="shrink-0">
+                ›
+              </span>
               <ThreadCrumb
                 item={crumbThread}
                 here={altitude === 'thread'}
@@ -1593,15 +1675,29 @@ export function SpacesCanvas(props: {
             </>
           ) : null}
         </nav>
-        {/* Top right: History and the shortcuts dock. The breadcrumb is the
-            altitude control (Everything › space › thread), so there is no
-            separate zoom ladder. */}
+        {/* Top right: Agents and History. The breadcrumb is the altitude
+            control (Everything › project › session), so there is no
+            separate zoom ladder; the shortcuts dock opens from the rail. */}
         <div
           data-hud=""
           className="pointer-events-auto absolute top-4 flex items-center gap-2"
           // History opens on the right; the buttons step left of it.
           style={{ right: historyRight }}
         >
+          <button
+            type="button"
+            data-hud-agents=""
+            aria-expanded={agentsOpen}
+            aria-controls="canvas-agents"
+            title="Agents — drag one onto + New session"
+            className={`flex h-9 items-center gap-1.5 border border-line bg-panel px-3 text-sm hover:bg-em/15 material:rounded-pill material:border-line/40 material:shadow-pop ${
+              agentsOpen ? 'text-em' : 'text-ink-dim hover:text-ink'
+            }`}
+            onClick={() => setAgentsOpen(!agentsOpen)}
+          >
+            <Bot aria-hidden="true" className="size-4" />
+            Agents
+          </button>
           <button
             type="button"
             data-hud-history=""
@@ -1618,31 +1714,91 @@ export function SpacesCanvas(props: {
             <HistoryIcon aria-hidden="true" className="size-4" />
             History
           </button>
-          <button
-            type="button"
-            data-dock-toggle=""
-            aria-expanded={dockOpen}
-            aria-label={dockOpen ? 'Hide shortcuts' : 'Show shortcuts'}
-            title={dockOpen ? 'Hide shortcuts' : 'Show shortcuts'}
-            className={`flex h-9 items-center gap-1 border border-line bg-panel px-2.5 hover:bg-em/15 material:rounded-pill material:border-line/40 material:shadow-pop ${
-              dockOpen ? 'text-em' : 'text-ink-dim hover:text-ink'
-            }`}
-            onClick={() => setDockOpen((open) => !open)}
-          >
-            <Keyboard aria-hidden="true" className="size-4" />
-            {!dockOpen && needsCount > 0 ? (
-              <span data-dock-needs="" className="text-xs text-warn">
-                {needsCount}
-              </span>
-            ) : null}
-          </button>
         </div>
+        {agentsOpen ? (
+          <div
+            ref={agentsRef}
+            id="canvas-agents"
+            data-hud=""
+            data-agents-popout=""
+            role="region"
+            aria-label="Agents"
+            style={{
+              right: historyRight,
+              opacity: agentsDragging ? 0 : 1,
+              pointerEvents: agentsDragging ? 'none' : undefined,
+            }}
+            className="pointer-events-auto absolute top-15 flex max-h-[calc(100%-5rem)] w-80 flex-col overflow-y-auto border border-line bg-panel material:rounded-2xl material:border-line/40 material:shadow-pop"
+            onKeyDown={(event) => {
+              const hub = matchHubKey(event.nativeEvent)
+              const plain = !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey
+              if (event.key === 'Escape' && plain) {
+                event.preventDefault()
+                setAgentsOpen(false)
+                return
+              }
+              const step =
+                hub === 'agent-next' || (plain && event.key === 'ArrowDown')
+                  ? 1
+                  : hub === 'agent-prev' || (plain && event.key === 'ArrowUp')
+                    ? -1
+                    : 0
+              if (step === 0) return
+              const rows = agentRows(agentsRef.current)
+              if (rows.length === 0) return
+              event.preventDefault()
+              event.stopPropagation()
+              const at = rows.indexOf(document.activeElement as HTMLButtonElement)
+              const next = at < 0 ? (step > 0 ? 0 : rows.length - 1) : at + step
+              rows[(next + rows.length) % rows.length]?.focus()
+            }}
+            onDragStart={(event) => {
+              if (!isAgentDrag([...event.dataTransfer.types])) return
+              // Next tick: fading the source in the same tick blanks the
+              // drag image.
+              setTimeout(() => setAgentsDragging(true), 0)
+            }}
+            onDragEnd={(event) => {
+              setAgentsDragging(false)
+              // A drop that took starts a session; the pop-out has done its job.
+              if (event.dataTransfer.dropEffect !== 'none') setAgentsOpen(false)
+            }}
+          >
+            <AgentsSection
+              popout
+              onPick={(agentId) => {
+                // A click starts a fresh session like a drop does — never the
+                // agent's older one. It lands in the project you are in, else
+                // the selected session's, else the first project.
+                const spaceId =
+                  spaceYouAreIn() ??
+                  realSpace(selectedId !== undefined ? spaceByRow.get(selectedId) : undefined) ??
+                  spaces[0]?.id
+                setAgentsOpen(false)
+                if (spaceId === undefined) {
+                  setNewThread({ spaceId: undefined })
+                  return
+                }
+                const id = startThreadWithDefaults(
+                  spaceId,
+                  { agentId, directory: projectDirectory(spaceId) },
+                  useConnection.getState().baseUrl,
+                  rosterRef.current,
+                )
+                setRosterNotice(takeOffRosterNotice())
+                if (id) {
+                  setHistoryWanted(false)
+                  beginThread(id)
+                }
+              }}
+            />
+          </div>
+        ) : null}
         {dockOpen || findOpen || moveOpen ? (
           <div
             data-hud=""
             data-dock-bar=""
-            style={{ right: historyRight }}
-            className="pointer-events-auto absolute top-15 flex max-h-[calc(100%-5rem)] flex-col items-stretch gap-0.5 overflow-y-auto border border-line bg-panel p-1 [&>button]:flex [&>button]:items-baseline [&>button]:gap-2 [&>button]:text-left material:rounded-2xl material:border-line/40 material:shadow-pop"
+            className="pointer-events-auto absolute bottom-4 left-4 flex max-h-[calc(100%-5rem)] flex-col items-stretch gap-0.5 overflow-y-auto border border-line bg-panel p-1 [&>button]:flex [&>button]:items-baseline [&>button]:gap-2 [&>button]:text-left material:rounded-2xl material:border-line/40 material:shadow-pop"
           >
             <button
               type="button"
@@ -1692,7 +1848,7 @@ export function SpacesCanvas(props: {
               title={dockStartsIn}
               onClick={() => setNewThread({ spaceId: spaceYouAreIn() })}
             >
-              <DockKey label={label('new-thread')} />+ Thread
+              <DockKey label={label('new-thread')} />+ Session
             </button>
             {moveOpen && selectedPlaced ? (
               <Popover
@@ -1763,7 +1919,7 @@ export function SpacesCanvas(props: {
                 ref={findInputRef}
                 data-dock="find"
                 aria-label="Find an agent"
-                placeholder="Agent, thread or space"
+                placeholder="Agent, session or project"
                 value={findQuery}
                 onChange={(event) => setFindQuery(event.target.value)}
                 className="w-56 border border-line bg-bg px-2 py-1.5 text-sm text-ink outline-none placeholder:text-ink-dim material:rounded-lg"
@@ -1855,7 +2011,7 @@ export function SpacesCanvas(props: {
       </div>
       {namePrompt ? (
         <NameDialog
-          title="New space"
+          title="New project"
           initial=""
           confirm="Create"
           onCancel={() => setNamePrompt(null)}
@@ -1884,14 +2040,14 @@ export function SpacesCanvas(props: {
             >
               <Dialog.Title className="mb-1 text-sm text-ink">Keys</Dialog.Title>
               <Dialog.Description className="mb-3 text-xs text-ink-dim">
-                Thread altitude leaves most of these to the session. The dock buttons still work.
+                Session altitude leaves most of these to the session. The dock buttons still work.
               </Dialog.Description>
               <table className="w-full text-left text-xs">
                 <thead>
                   <tr className="text-ink-dim">
                     <th className="py-1 pr-3 font-medium">Key</th>
                     <th className="py-1 pr-3 font-medium">Does</th>
-                    <th className="py-1 font-medium">At Thread</th>
+                    <th className="py-1 font-medium">At Session</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1943,7 +2099,7 @@ export function SpacesCanvas(props: {
             beginThread(id)
           }}
           onPickHistory={(spaceId) => {
-            const name = spaces.find((space) => space.id === spaceId)?.name ?? 'space'
+            const name = spaces.find((space) => space.id === spaceId)?.name ?? 'project'
             setNewThread(null)
             setPick({ spaceId, title: `Add to ${name}` })
           }}
@@ -1996,10 +2152,10 @@ function NameDialog(props: {
           >
             <input
               autoFocus
-              aria-label="Space name"
+              aria-label="Project name"
               value={value}
               onChange={(event) => setValue(event.target.value)}
-              placeholder="Space name"
+              placeholder="Project name"
               className="mb-3 w-full border border-line bg-bg px-2 py-1.5 text-sm text-ink outline-none material:rounded-lg"
             />
             <div className="flex justify-end gap-2">
@@ -2041,7 +2197,7 @@ function RemoveDialog(props: {
         <Dialog.Overlay className="fixed inset-0 z-50 bg-black/40 classic:bg-bg/70" />
         <Dialog.Content className="fixed top-1/2 left-1/2 z-50 w-96 max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 border border-line bg-panel p-4 shadow-pop outline-none material:rounded-3xl material:border-transparent material:bg-surface material:p-6">
           <Dialog.Title className="mb-5 text-sm leading-relaxed text-ink-dim classic:mb-3 classic:text-ink">
-            Remove space
+            Remove project
           </Dialog.Title>
           <Dialog.Description className="mb-4 text-sm text-ink-dim">
             {props.message}

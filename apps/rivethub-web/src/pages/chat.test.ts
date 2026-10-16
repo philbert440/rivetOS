@@ -35,7 +35,7 @@ describe('narrow full-screen list is gone', () => {
 
   it('the list still renders in the narrow right history drawer', () => {
     expect(chat).toContain('id="hub-history"')
-    expect(chat).toContain('aria-label="Conversations"')
+    expect(chat).toContain('aria-label="Workspace"')
   })
 
   it('does not poll — no refetchInterval — and mounts QueuedStrip', () => {

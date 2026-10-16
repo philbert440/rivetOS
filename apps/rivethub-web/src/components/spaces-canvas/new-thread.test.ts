@@ -1,7 +1,7 @@
 import './test-dom.js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { GatewayError } from '@rivetos/gateway-client'
-import { agentForSession, getAgentPin } from '../../lib/agent-session.js'
+import { agentForSession, getAgentPin, setAgentLastSession } from '../../lib/agent-session.js'
 import type { ChatItem } from '../../lib/harness-chat.js'
 import {
   getSessionNodeBinding,
@@ -35,6 +35,7 @@ import {
   offRosterStartNotice,
   resolveRosterNode,
   startThreadInSpace,
+  startThreadWithDefaults,
   canStartThread,
   takeOffRosterNotice,
 } from './new-thread.js'
@@ -310,6 +311,23 @@ const PRESET = {
 }
 
 describe('new thread in a space', () => {
+  it('an agent dropped on + New session always mints a fresh session, never its older one', () => {
+    // The Agents pop-out drop: { agentId } as the defaults. The agent already
+    // has a pinned session; every drop must still start a new one.
+    const base = useConnection.getState().baseUrl
+    const spaceId = useSpaces.getState().addSpace('Home')
+    listOnRoster(PRESET.sourceNodeBaseUrl, 'den-a')
+    setAgentLastSession(PRESET.id, 'older-session', PRESET.sourceNodeBaseUrl)
+    const first = startThreadWithDefaults(spaceId, { agentId: PRESET.id }, base, [PRESET])
+    const second = startThreadWithDefaults(spaceId, { agentId: PRESET.id }, base, [PRESET])
+    expect(first).toBeTruthy()
+    expect(second).toBeTruthy()
+    expect(new Set([first, second, 'older-session']).size).toBe(3)
+    expect(useChat.getState().drafts).toEqual(expect.arrayContaining([first, second]))
+    expect(useChat.getState().active).toBe(second)
+    expect(agentForSession(second ?? '')).toBe(PRESET.id)
+  })
+
   it('preset default writes the rail fields and binds the preset node', () => {
     const base = useConnection.getState().baseUrl
     const spaceId = useSpaces.getState().addSpace('Home')
@@ -391,7 +409,7 @@ describe('new thread in a space', () => {
     expect(useSpaces.getState().spaceOf(`${remote}::${id}`)).toBe(spaceId)
     expect(sessionNodeFor(id, base, rosterUrls())).toBe(remote)
 
-    const draft: ChatItem = { key: id, kind: 'draft', title: 'new conversation', updatedAt: 0 }
+    const draft: ChatItem = { key: id, kind: 'draft', title: 'new session', updatedAt: 0 }
     const onCanvas = (rows: ChatItem[]): string[] => {
       const region = buildCanvasRegions({
         spaces: useSpaces.getState().spaces,

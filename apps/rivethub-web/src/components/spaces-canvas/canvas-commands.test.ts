@@ -15,12 +15,12 @@ describe('nextWaitingId', () => {
     { id: 'mid', since: 20 },
   ]
 
-  it('jumps to the oldest when not at thread altitude', () => {
+  it('jumps to the oldest when not at session altitude', () => {
     expect(nextWaitingId(waiting, 'new', false)).toBe('old')
     expect(nextWaitingId(waiting, undefined, true)).toBe('old')
   })
 
-  it('cycles forward from the current tile at thread altitude', () => {
+  it('cycles forward from the current tile at session altitude', () => {
     expect(nextWaitingId(waiting, 'old', true)).toBe('mid')
     expect(nextWaitingId(waiting, 'mid', true)).toBe('new')
     expect(nextWaitingId(waiting, 'new', true)).toBe('old')
@@ -67,7 +67,7 @@ describe('rankFindHits', () => {
 })
 
 describe('mru', () => {
-  it('moves a reopened thread to the front', () => {
+  it('moves a reopened session to the front', () => {
     expect(rememberThread(['a', 'b', 'c'], 'b')).toEqual(['b', 'a', 'c'])
     expect(rememberThread([], 'a')).toEqual(['a'])
   })
@@ -82,13 +82,13 @@ describe('mru', () => {
 })
 
 describe('removeSpaceMessage', () => {
-  it('uses the mock copy for empty and live spaces', () => {
+  it('uses the mock copy for empty and live projects', () => {
     expect(removeSpaceMessage('Home', 0, 0)).toContain(
-      "It has no threads yet. This can't be undone",
+      "It has no sessions yet. This can't be undone",
     )
-    expect(removeSpaceMessage('Home', 1, 0)).toContain('This moves its 1 thread to History.')
+    expect(removeSpaceMessage('Home', 1, 0)).toContain('This moves its 1 session to History.')
     expect(removeSpaceMessage('Home', 2, 1)).toContain(
-      'This moves its 2 threads to History, 1 of them still active.',
+      'This moves its 2 sessions to History, 1 of them still active.',
     )
   })
 })

@@ -1,7 +1,8 @@
 /**
- * Edit a space: name plus optional defaults for threads started here.
- * Running threads are not rewritten. The directory line is the preset's
- * own directory, shown read-only — the client never stores or sends a cwd.
+ * Edit a project: name, its working directory, and optional defaults for
+ * sessions started here. Running sessions are not rewritten. The project
+ * directory wins over every agent's own; left empty, each agent starts in
+ * its preset directory (the line under the agent picker).
  */
 
 import { useEffect, useRef, useState, type JSX } from 'react'
@@ -10,7 +11,7 @@ import type { HarnessDescriptor, HarnessId, ThinkingLevel } from '@rivetos/types
 import { launchModelOptions } from '../../lib/conversation-model-options.js'
 import { urlLabel } from '../../lib/node-name.js'
 import { useRosterAgents } from '../../lib/use-agent-roster.js'
-import { useSpaces, type SpaceDef } from '../../stores/spaces.js'
+import { asDirectory, useSpaces, type SpaceDef } from '../../stores/spaces.js'
 import { Select } from '../select.js'
 import { EffortPicker } from '../pickers/effort-picker.js'
 import { ModelPicker } from '../pickers/model-picker.js'
@@ -32,6 +33,8 @@ export function SpaceDefaultsDialog(props: {
   const [model, setModel] = useState(stored?.model ?? '')
   const [effort, setEffort] = useState<ThinkingLevel | undefined>(stored?.effort)
   const [node, setNode] = useState(stored?.node ?? '')
+  const [directory, setDirectory] = useState(stored?.directory ?? '')
+  const directoryBad = directory.trim() !== '' && asDirectory(directory) === undefined
   // A stored preset must not be saved as "none" while the roster query is
   // still in flight — that write clears agentId and harnessId.
   const [ready, setReady] = useState(!stored?.agentId)
@@ -75,7 +78,7 @@ export function SpaceDefaultsDialog(props: {
   const save = (): void => {
     if (!ready) return
     const trimmed = name.trim()
-    if (!trimmed) return
+    if (!trimmed || directoryBad) return
     let nextAgent: string | undefined
     let nextHarness: HarnessId | undefined
     let nextNode: string | undefined
@@ -98,12 +101,14 @@ export function SpaceDefaultsDialog(props: {
       effort?: ThinkingLevel
       harnessId?: HarnessId
       node?: string
+      directory?: string
     } = {
       agentId: nextAgent,
       model: model || undefined,
       effort,
       harnessId: nextHarness,
       node: nextNode,
+      directory: asDirectory(directory),
     }
     useSpaces.getState().renameSpace(props.space.id, trimmed)
     useSpaces.getState().setSpaceDefaults(props.space.id, patch)
@@ -121,10 +126,10 @@ export function SpaceDefaultsDialog(props: {
         <Dialog.Overlay className="fixed inset-0 z-50 bg-black/40 classic:bg-bg/70" />
         <Dialog.Content className="fixed top-1/2 left-1/2 z-50 w-[28rem] max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 border border-line bg-panel p-4 shadow-pop outline-none material:rounded-3xl material:border-transparent material:bg-surface material:p-6">
           <Dialog.Title className="mb-5 text-sm leading-relaxed text-ink-dim classic:mb-3 classic:text-ink">
-            Edit space
+            Edit project
           </Dialog.Title>
           <Dialog.Description className="mb-3 text-xs text-ink-dim">
-            New threads in this space start with these. Threads already running are not changed.
+            New sessions in this project start with these. Sessions already running are not changed.
           </Dialog.Description>
           <form
             onSubmit={(event) => {
@@ -138,12 +143,30 @@ export function SpaceDefaultsDialog(props: {
             <input
               id="space-name"
               autoFocus
-              aria-label="Space name"
+              aria-label="Project name"
               value={name}
               onChange={(event) => setName(event.target.value)}
-              placeholder="Space name"
+              placeholder="Project name"
               className="mb-3 w-full border border-line bg-bg px-2 py-1.5 text-sm text-ink outline-none material:rounded-lg"
             />
+            <label className="mb-1 block text-xs text-ink-dim" htmlFor="space-directory">
+              Directory
+            </label>
+            <input
+              id="space-directory"
+              aria-label="Project directory"
+              aria-invalid={directoryBad || undefined}
+              value={directory}
+              onChange={(event) => setDirectory(event.target.value)}
+              placeholder="Each agent's own directory"
+              spellCheck={false}
+              className="w-full border border-line bg-bg px-2 py-1.5 font-mono text-sm text-ink outline-none placeholder:font-sans placeholder:text-ink-dim aria-invalid:border-red material:rounded-lg"
+            />
+            <p className={`mb-3 mt-1 text-xs ${directoryBad ? 'text-red' : 'text-ink-dim'}`}>
+              {directoryBad
+                ? 'Use a full path that starts with /'
+                : 'Every agent started here works in this folder, unless you pick another for that session.'}
+            </p>
             <label className="mb-1 block text-xs text-ink-dim" htmlFor="space-agent">
               Agent
             </label>
@@ -233,7 +256,7 @@ export function SpaceDefaultsDialog(props: {
               </button>
               <button
                 type="submit"
-                disabled={!name.trim() || !ready}
+                disabled={!name.trim() || !ready || directoryBad}
                 className="bg-em px-3 py-1.5 text-xs font-medium text-on-em hover:bg-em-dim disabled:opacity-40 classic:bg-em-dim classic:hover:bg-em classic:text-bg"
               >
                 Save

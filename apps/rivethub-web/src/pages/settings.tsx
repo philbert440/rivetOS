@@ -447,7 +447,7 @@ function ExperimentalSection(): JSX.Element {
         [
           [
             'spaces-canvas',
-            'Spaces canvas — on a wide screen, conversations open on a zoomable canvas instead of the list',
+            'Workspace canvas — on a wide screen, sessions open on a zoomable canvas instead of the list',
             canvasEnabled,
             setCanvasEnabled,
           ],
@@ -534,7 +534,7 @@ function ConversationsSection(): JSX.Element {
   const setPrefs = usePreferences((s) => s.set)
   return (
     <>
-      <h2 className={H2}>Conversations</h2>
+      <h2 className={H2}>Workspace</h2>
       <div className="flex items-center gap-3">
         <span className="text-xs text-ink-dim">Default view</span>
         <div className="flex gap-2" role="group" aria-label="Default view">
@@ -561,9 +561,9 @@ function ConversationsSection(): JSX.Element {
         </div>
       </div>
       <p className="mt-2 pl-4 text-xs text-ink-dim">
-        Where a conversation opens: new ones, and older ones you have not switched. Switching
-        between Terminal and Chat inside a conversation is remembered for that conversation.
-        Sessions that only run in a terminal always open there.
+        Where a session opens: new ones, and older ones you have not switched. Switching between
+        Terminal and Chat inside a conversation is remembered for that conversation. Sessions that
+        only run in a terminal always open there.
       </p>
       <ToggleRow
         id="pref-autoscroll"
@@ -621,7 +621,7 @@ function NewConversationSection(): JSX.Element {
     !isLoading && newChat.agentId !== undefined && !agents.some((a) => a.id === newChat.agentId)
   return (
     <>
-      <h2 className={H2}>New conversations</h2>
+      <h2 className={H2}>New sessions</h2>
       <div className="flex items-center justify-between gap-3">
         <label htmlFor="pref-agent" className="text-xs text-ink-dim">
           Agent
@@ -655,7 +655,7 @@ function NewConversationSection(): JSX.Element {
         />
       </div>
       <p className="mt-2 pl-4 text-xs text-ink-dim">
-        Used by + new and Ctrl+T. An agent picked in the sidebar, or a canvas space with its own
+        Used by + new and Ctrl+T. An agent picked in the sidebar, or a canvas project with its own
         defaults, takes precedence.
         {missing ? ' The saved agent is not on any connected node, so new chats start plain.' : ''}
       </p>
@@ -694,7 +694,7 @@ function NotificationsSection(): JSX.Element {
         value={finished}
         disabled={!desktop}
         onChange={(on) => setPrefs({ notifyAgentFinished: on })}
-        hint="Not for the conversation you are looking at."
+        hint="Not for the session you are looking at."
       />
       <ToggleRow
         id="pref-notify-sound"

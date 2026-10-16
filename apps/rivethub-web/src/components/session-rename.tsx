@@ -52,7 +52,7 @@ export function RenameInput(props: {
     >
       <input
         autoFocus
-        aria-label="Conversation name"
+        aria-label="Session name"
         value={draft}
         onFocus={(e) => e.currentTarget.select()}
         onChange={(e) => setDraft(e.target.value)}
