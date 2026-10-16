@@ -33,6 +33,7 @@ import {
 import { useChat } from './stores/chat.js'
 import { useConnection } from './stores/connection.js'
 import { useNotifications } from './stores/notifications.js'
+import { useProjectTagSync } from './lib/use-project-tag-sync.js'
 
 function RootLayout(): JSX.Element {
   const baseUrl = useConnection((s) => s.baseUrl)
@@ -47,6 +48,8 @@ function RootLayout(): JSX.Element {
   const setHistoryOpen = useSidebarPrefs((s) => s.setHistoryOpen)
   const narrow = useIsNarrow()
   const active = useChat((s) => s.active)
+  // Tag every session placed in a project with `project:<name>` in memory.
+  useProjectTagSync()
   const pathname = useRouterState({
     select: (s) => s.location.pathname,
   })
