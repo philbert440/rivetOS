@@ -70,6 +70,10 @@
 #                              launchers run with cwd = the USER's project,
 #                              which is often an unrelated Nx repo whose
 #                              nx.json must never bind the install root.
+#   rivetos_rh_mcp_bin         Echo the RivetHub rh binary when `rh mcp`
+#                              should serve MCP (node has ~/.rivethub, rh at
+#                              ~/.local/bin or on PATH, RIVETOS_MCP_USE_TS
+#                              unset); return 1 otherwise.
 #   rivetos_mcp_cli <root>     Echo <root>/services/mcp-sidecar/dist/cli.js, or
 #                              print a build hint to stderr and return 1.
 #                              services/mcp-sidecar is the ONLY MCP server path —
@@ -955,12 +959,43 @@ rivetos_resolve_den() {
   fi
 }
 
-# Prints "checkout <abs-path-to-cli.js>" or "npx". Never prints secrets.
-# Built checkout ($RIVETOS_ROOT / walk-up / /opt/rivetos) wins unchanged.
-# An explicit RivetOS tree that is not built keeps the existing error
-# (do not silently fall through to npx). No tree at all → npx.
+# RivetHub's MCP server (`rh mcp`, stdio) replaces the TypeScript sidecar
+# on a node that runs RivetHub. Prints the rh binary to exec, or returns 1
+# when the TS sidecar should be used:
+#   - RIVETOS_MCP_USE_TS=1 (or true/yes) opts out explicitly;
+#   - the node must have RivetHub state (~/.rivethub). An rh binary alone is
+#     not enough: a node can carry rh before `rivetos migrate-to-rivethub`
+#     (or after `--rollback`, which moves the state back), and the TS
+#     runtime is still the one serving it then;
+#   - rh is taken from ~/.local/bin/rh (where the migration installs it),
+#     then from PATH.
+rivetos_rh_mcp_bin() {
+  case "${RIVETOS_MCP_USE_TS:-}" in
+    1|true|yes) return 1 ;;
+  esac
+  [ -d "${HOME:-}/.rivethub" ] || return 1
+  local rh=""
+  if [ -x "${HOME:-}/.local/bin/rh" ]; then
+    rh="$HOME/.local/bin/rh"
+  else
+    rh="$(command -v rh 2>/dev/null || true)"
+  fi
+  [ -n "$rh" ] && [ -x "$rh" ] || return 1
+  printf '%s\n' "$rh"
+}
+
+# Prints "rh <abs-path-to-rh>", "checkout <abs-path-to-cli.js>" or "npx".
+# Never prints secrets.
+# RivetHub (`rh mcp`) wins when rivetos_rh_mcp_bin selects it.
+# Otherwise a built checkout ($RIVETOS_ROOT / walk-up / /opt/rivetos) wins
+# unchanged. An explicit RivetOS tree that is not built keeps the existing
+# error (do not silently fall through to npx). No tree at all → npx.
 rivetos_resolve_mcp_launch() {
-  local root cli
+  local root cli rh
+  if rh="$(rivetos_rh_mcp_bin)"; then
+    printf 'rh %s\n' "$rh"
+    return 0
+  fi
   root="$(rivetos_find_root)"
   cli="$root/services/mcp-sidecar/dist/cli.js"
   if [ -f "$cli" ]; then
