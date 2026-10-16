@@ -42,6 +42,9 @@ data class LocalHubPrefs(
     /** Session key → project id. */
     val membership: Map<String, String> = emptyMap(),
     val defaultProjectId: String = "",
+    /** The phone's own last opened session (bare key) and when; blank / 0 = none. */
+    val lastSessionKey: String = "",
+    val lastSessionAt: Long = 0,
 )
 
 fun hubKey(nodeId: String, sessionKey: String): String = "$nodeId$HUB_KEY_SEP$sessionKey"
@@ -59,8 +62,8 @@ private fun HubState.perSessionKeys(): Sequence<String> =
         listOfNotNull(lastSession?.key)
 
 /**
- * The phone's prefs as a document. The last session comes from [base]
- * unchanged: the phone does not write it yet, and a PUT must never clear
+ * The phone's prefs as a document. The last session is the phone's own open
+ * when it can be keyed to a node; otherwise [base]'s, so a PUT never clears
  * what desktop set.
  */
 fun toHubState(local: LocalHubPrefs, base: HubState, nodeOf: (String) -> String?): HubState {
@@ -82,7 +85,10 @@ fun toHubState(local: LocalHubPrefs, base: HubState, nodeOf: (String) -> String?
         return ordered.mapNotNull { session -> resolve(session)?.let { hubKey(it, session) } }.distinct()
     }
 
+    val mineLast = local.lastSessionKey.takeIf { it.isNotBlank() && local.lastSessionAt > 0 }
+        ?.let { key -> resolve(key)?.let { HubLastSession(hubKey(it, key), local.lastSessionAt) } }
     return base.copy(
+        lastSession = mineLast ?: base.lastSession,
         projects = local.projects,
         defaultProjectId = local.defaultProjectId.ifBlank { null },
         membership = map(local.membership),
@@ -123,6 +129,9 @@ fun fromHubState(hub: HubState, local: LocalHubPrefs, mine: HubState): LocalHubP
         projects = hub.projects,
         membership = map(hub.membership, local.membership, mine.membership.keys),
         defaultProjectId = hub.defaultProjectId.orEmpty(),
+        // the handoff reads the document's last session; the phone's own stays
+        lastSessionKey = local.lastSessionKey,
+        lastSessionAt = local.lastSessionAt,
     )
 }
 
@@ -179,11 +188,12 @@ private fun mergeById(base: List<HubProject>, local: List<HubProject>, remote: L
     return LinkedHashSet(r.keys + l.keys).mapNotNull { id -> pick(b[id], l[id], r[id]) }
 }
 
+/** Latest wins: an older open on one device never replaces a newer one on another. */
+@Suppress("UNUSED_PARAMETER")
 private fun mergeLastSession(base: HubLastSession?, local: HubLastSession?, remote: HubLastSession?): HubLastSession? = when {
-    local == base -> remote
-    remote == base || remote == null -> local
     local == null -> remote
-    else -> if (local.at >= remote.at) local else remote
+    remote == null -> local
+    else -> if (local.at > remote.at) local else remote
 }
 
 private fun Map<String, String>.capTo(max: Int): Map<String, String> =

@@ -1,6 +1,7 @@
 package io.rivethub.app.data
 
 import io.rivethub.app.gateway.GatewayException
+import io.rivethub.app.gateway.HubLastSession
 import io.rivethub.app.gateway.HubState
 import io.rivethub.app.gateway.HubStatePutResult
 import io.rivethub.app.gateway.HubStateResponse
@@ -14,6 +15,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
@@ -106,6 +109,13 @@ class HubStateRepository(
     private val lock = Mutex()
     @Volatile private var unsupportedAt: String? = null
     @Volatile private var started = false
+    private val _lastSession = MutableStateFlow<HubLastSession?>(null)
+
+    /**
+     * The document's last open session, from the latest completed sync (never
+     * a cached copy, so a launch only reacts to what the server says now).
+     */
+    val lastSession: StateFlow<HubLastSession?> = _lastSession
 
     fun start() {
         if (started) return
@@ -137,6 +147,7 @@ class HubStateRepository(
         val url = io.entryUrl()
         val outcome = runCatching { syncHubStateOnce(io) { sessionNodes[it] } }
             .getOrDefault(HubSyncOutcome.OFFLINE)
+        if (outcome == HubSyncOutcome.SYNCED) _lastSession.value = io.loadSynced()?.state?.lastSession
         when (outcome) {
             HubSyncOutcome.UNSUPPORTED -> unsupportedAt = url
             HubSyncOutcome.RETRY -> kick()
