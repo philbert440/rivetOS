@@ -795,6 +795,7 @@ class HubViewModel(private val c: AppContainer, inboxLabels: InboxLabels) : View
         presetsAcc[url] = bundle.presets
         if (bundle.meshNode.isNotBlank()) {
             meta.meshNodes[url] = bundle.meshNode
+            nodeIds[url] = bundle.meshNode
             if (bundle.ok) c.hubState.noteSessionNodes(sessionNodesOf(bundle))
         }
         val root = bundle.directoryRoot?.trim()?.trimEnd('/').orEmpty()
@@ -1089,6 +1090,12 @@ class HubViewModel(private val c: AppContainer, inboxLabels: InboxLabels) : View
         watchStatus.clear()
         _state.update { it.copy(registryOpen = false) }
     }
+
+    /** Den URL → `/healthz.node`, kept across refreshes (hub state keys by node id). */
+    private val nodeIds = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    /** The den URL this phone uses for hub state node [nodeId], once discovery has seen it. */
+    fun denUrlForNode(nodeId: String): String? = nodeIds.entries.firstOrNull { it.value == nodeId }?.key
 
     /** Every listed session on one node → that node's id, for hub state keys. */
     private fun sessionNodesOf(bundle: NodeBundle): Map<String, String> = buildMap {

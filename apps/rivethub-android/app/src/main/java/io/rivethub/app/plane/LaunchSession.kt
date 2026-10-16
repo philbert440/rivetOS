@@ -1,5 +1,7 @@
 package io.rivethub.app.plane
 
+import io.rivethub.app.gateway.HubLastSession
+
 /**
  * Chat-first launch (2026-09-03/04): opening the app lands IN a session,
  * never the conversations list — the list is only reached via the history
@@ -107,3 +109,18 @@ fun narrowLaunchTarget(
  */
 fun resumedSessionStale(resumedKey: String, nodeOnline: Boolean, sourceKeys: Set<String>): Boolean =
     nodeOnline && resumedKey !in sourceKeys
+
+/** A session another device opened more recently than this phone's own last one. */
+data class HandoffTarget(val nodeId: String, val sessionKey: String)
+
+/**
+ * "Continue on phone" (hub state slice 5): the document's last session wins
+ * over the phone's own instant-resume pointer when it is newer and is a
+ * different, real (adopted) session. Null = keep what the phone resumed.
+ */
+fun handoffTarget(remote: HubLastSession?, ownKey: String, ownAt: Long): HandoffTarget? {
+    remote ?: return null
+    val (node, session) = splitHubKey(remote.key) ?: return null
+    if (session == ownKey || remote.at <= ownAt || isDraftSessionId(session)) return null
+    return HandoffTarget(node, session)
+}

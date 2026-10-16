@@ -7,6 +7,7 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -60,6 +61,8 @@ data class Prefs(
      *  never written (they are in-memory only). */
     val lastSessionKey: String = "",
     val lastSessionNode: String = "",
+    /** When [lastSessionKey] was opened (epoch ms); 0 on pointers written before hub state. */
+    val lastSessionAt: Long = 0,
     /** Unfinished drawer sections — off by default. Memory is not experimental. */
     val expFiles: Boolean = false,
     val expTasks: Boolean = false,
@@ -118,6 +121,7 @@ class Settings(context: Context) {
             agentsCollapsed = p[AGENTS_COLLAPSED] ?: false,
             lastSessionKey = p[LAST_SESSION_KEY] ?: "",
             lastSessionNode = p[LAST_SESSION_NODE] ?: "",
+            lastSessionAt = p[LAST_SESSION_AT] ?: 0L,
             expFiles = p[EXP_FILES] ?: false,
             expTasks = p[EXP_TASKS] ?: false,
             expWorkflows = p[EXP_WORKFLOWS] ?: false,
@@ -176,13 +180,15 @@ class Settings(context: Context) {
 
     /** The instant-resume pointer — written on every chat open (see
      *  MainActivity openChat); read once at nav init. */
-    suspend fun setLastSession(key: String, nodeDenUrl: String) = ds.edit {
+    suspend fun setLastSession(key: String, nodeDenUrl: String, atMs: Long = System.currentTimeMillis()) = ds.edit {
         it[LAST_SESSION_KEY] = key
         it[LAST_SESSION_NODE] = nodeDenUrl.trim().trimEnd('/')
+        it[LAST_SESSION_AT] = atMs
     }
     suspend fun clearLastSession() = ds.edit {
         it.remove(LAST_SESSION_KEY)
         it.remove(LAST_SESSION_NODE)
+        it.remove(LAST_SESSION_AT)
     }
 
     suspend fun setDefaultView(mode: String) = ds.edit { it[DEFAULT_VIEW] = mode }
@@ -279,6 +285,8 @@ class Settings(context: Context) {
                 projects = decodeProjects(it[PROJECTS]),
                 membership = decodeMap(it[MEMBERSHIP]),
                 defaultProjectId = it[DEFAULT_PROJECT] ?: "",
+                lastSessionKey = it[LAST_SESSION_KEY] ?: "",
+                lastSessionAt = it[LAST_SESSION_AT] ?: 0L,
             )
             if (current != expected) return@edit
             it[TITLES] = encodeMap(next.names)
@@ -330,6 +338,7 @@ class Settings(context: Context) {
         private val AGENTS_COLLAPSED = booleanPreferencesKey("agentsCollapsed")
         private val LAST_SESSION_KEY = stringPreferencesKey("lastSessionKey")
         private val LAST_SESSION_NODE = stringPreferencesKey("lastSessionNode")
+        private val LAST_SESSION_AT = longPreferencesKey("lastSessionAt")
         private val CODE_LINE_NUMBERS = booleanPreferencesKey("codeLineNumbers")
         private val CODE_WRAP = booleanPreferencesKey("codeWrap")
         private val EXP_FILES = booleanPreferencesKey("expFiles")
@@ -371,4 +380,6 @@ fun Prefs.hubPrefs(): LocalHubPrefs = LocalHubPrefs(
     projects = projects,
     membership = projectMembership,
     defaultProjectId = defaultProjectId,
+    lastSessionKey = lastSessionKey,
+    lastSessionAt = lastSessionAt,
 )

@@ -766,8 +766,15 @@ fetches, three-way merges against the last synced document (`plane/HubStateMerge
 back with `Settings.applyHubPrefs`, which skips the write if the user edited mid-pass. Document keys are
 `<healthz node>::<sessionKey>`. Reading ignores the node; writing takes it from the listing
 (`HubViewModel.sessionNodesOf`) or the document, and a key with neither stays phone-only. A den
-without the route (404) leaves the prefs local, as before. The last session is carried through
-untouched until slice 5.
+without the route (404) leaves the prefs local, as before.
+
+**Continue on phone (slice 5).** `Settings.setLastSession` now stamps `lastSessionAt`, and the phone
+uploads its own last open as the document's `lastSession` (latest `at` wins on merge, on both apps).
+`HubStateRepository.lastSession` publishes the document's value after each completed sync (never a
+cached copy). On launch, `MainActivity` still instant-resumes the phone's own pointer. When the first
+sync reports a newer, different, adopted session (`plane/LaunchSession.kt handoffTarget`) and the user
+is still on the launch screen, it switches to that session once discovery knows the node's URL
+(`HubViewModel.denUrlForNode`). It waits up to 20 s for each step, then keeps the phone's resume.
 
 **Projects (slice 4).** `Prefs.projects` / `projectMembership` / `defaultProjectId` are the same
 projects desktop shows as canvas spaces, synced the same way (project defaults keep node ids, not
