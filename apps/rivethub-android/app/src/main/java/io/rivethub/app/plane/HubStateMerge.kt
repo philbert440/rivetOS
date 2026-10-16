@@ -37,6 +37,11 @@ data class LocalHubPrefs(
     val pinned: Set<String> = emptySet(),
     val hidden: Set<String> = emptySet(),
     val modes: Map<String, String> = emptyMap(),
+    /** Projects as the document has them (node ids, not URLs). */
+    val projects: List<HubProject> = emptyList(),
+    /** Session key → project id. */
+    val membership: Map<String, String> = emptyMap(),
+    val defaultProjectId: String = "",
 )
 
 fun hubKey(nodeId: String, sessionKey: String): String = "$nodeId$HUB_KEY_SEP$sessionKey"
@@ -54,9 +59,9 @@ private fun HubState.perSessionKeys(): Sequence<String> =
         listOfNotNull(lastSession?.key)
 
 /**
- * The phone's prefs as a document. Projects, membership, the default project
- * and the last session come from [base] unchanged: the phone does not edit
- * them in this slice, and a PUT must never clear what desktop set.
+ * The phone's prefs as a document. The last session comes from [base]
+ * unchanged: the phone does not write it yet, and a PUT must never clear
+ * what desktop set.
  */
 fun toHubState(local: LocalHubPrefs, base: HubState, nodeOf: (String) -> String?): HubState {
     val known = HashMap<String, String>()
@@ -78,6 +83,9 @@ fun toHubState(local: LocalHubPrefs, base: HubState, nodeOf: (String) -> String?
     }
 
     return base.copy(
+        projects = local.projects,
+        defaultProjectId = local.defaultProjectId.ifBlank { null },
+        membership = map(local.membership),
         names = map(local.names),
         modes = map(local.modes.filterValues { it == MODE_CHAT || it == MODE_TERMINAL }),
         archived = list(local.archived, base.archived),
@@ -112,6 +120,9 @@ fun fromHubState(hub: HubState, local: LocalHubPrefs, mine: HubState): LocalHubP
         pinned = set(hub.pinned, local.pinned, mine.pinned),
         hidden = set(hub.hidden, local.hidden, mine.hidden),
         modes = map(hub.modes, local.modes, mine.modes.keys),
+        projects = hub.projects,
+        membership = map(hub.membership, local.membership, mine.membership.keys),
+        defaultProjectId = hub.defaultProjectId.orEmpty(),
     )
 }
 

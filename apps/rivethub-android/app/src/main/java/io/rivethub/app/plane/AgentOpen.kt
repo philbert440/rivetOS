@@ -11,6 +11,8 @@ data class AgentOpen(
     val model: String = "",
     val effort: String = "",
     val agentId: String = "",
+    /** Project working directory for a new session started inside a project. */
+    val directory: String = "",
 )
 
 /**

@@ -306,6 +306,23 @@
     <string name="cd_pinned">pinned</string>
     <string name="move_to_agent">Move to agent…</string>
     <string name="move_to_agent_title">Hand this conversation to</string>
+    <!-- Projects (hub state slice 4): the projects desktop shows as canvas spaces. -->
+    <string name="projects_label">Projects</string>
+    <string name="project_add">+ project</string>
+    <string name="project_new_title">New project</string>
+    <string name="project_rename_title">Rename project</string>
+    <string name="project_name_hint">Project name</string>
+    <string name="project_delete">Delete project</string>
+    <string name="project_delete_confirm">Delete “%1$s”? Its conversations go back to the list. Nothing on the node is removed.</string>
+    <string name="project_new_session">Start a conversation in this project</string>
+    <string name="project_options">Project options</string>
+    <string name="project_fold">Fold project</string>
+    <string name="project_unfold">Unfold project</string>
+    <string name="project_empty">Nothing filed here yet</string>
+    <string name="project_pick_agent">Which agent works on this project?</string>
+    <string name="move_to_project">Move to project…</string>
+    <string name="move_to_project_title">File this conversation under</string>
+    <string name="project_none">Take it out of its project</string>
     <string name="hide_conversation">Hide</string>
     <string name="hide_conversation_confirm">Hide this conversation from the list? It stays on the node.</string>
     <string name="font_size">Text size</string>

@@ -15,6 +15,8 @@ sealed interface Screen {
         val effort: String = "",
         val agentId: String = "",
         val transport: String? = null,
+        /** Project directory for a new session; blank = the preset's. */
+        val directory: String = "",
     ) : Screen
     data object Gallery : Screen
     data object Tasks : Screen

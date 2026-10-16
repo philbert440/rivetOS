@@ -766,8 +766,21 @@ fetches, three-way merges against the last synced document (`plane/HubStateMerge
 back with `Settings.applyHubPrefs`, which skips the write if the user edited mid-pass. Document keys are
 `<healthz node>::<sessionKey>`. Reading ignores the node; writing takes it from the listing
 (`HubViewModel.sessionNodesOf`) or the document, and a key with neither stays phone-only. A den
-without the route (404) leaves the prefs local, as before. Projects and the last session are carried
-through untouched until slices 4 and 5.
+without the route (404) leaves the prefs local, as before. The last session is carried through
+untouched until slice 5.
+
+**Projects (slice 4).** `Prefs.projects` / `projectMembership` / `defaultProjectId` are the same
+projects desktop shows as canvas spaces, synced the same way (project defaults keep node ids, not
+URLs). Logic in `plane/Projects.kt`; edits go through `Settings.editProjects` (one transaction).
+The drawer's conversation list (`ConversationsPane`) opens with a Projects block
+(`ui/screens/ProjectsBlock.kt`): `+ project`, then one foldable header per project (name, running
+dot, count, `+`). Long-press on a header offers rename and delete. A row filed under a project shows
+there instead of in the dated sections. `+` starts a draft for the project's default agent (preferring
+its default node), or asks which agent, then files the draft under the project.
+`AgentOpen.directory` → `Screen.Chat.directory` → `HarnessChatViewModel` sends the project directory
+on `POST /api/terminal` (`TermSpawnRequest.directory`; dens without it ignore the field). The row
+long-press gains Move to project. Archiving takes a row out of its project and filing unarchives it,
+as on desktop. `Settings.migrateKeys` carries membership across draft adoption.
 
 ## Build / test / install
 

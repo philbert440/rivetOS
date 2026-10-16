@@ -198,6 +198,8 @@ class HarnessChatViewModel(
     private val initialTransport: String? = null,
     private val openStream: (Uri) -> java.io.InputStream? = { null },
     private val agentId: String = "",
+    /** Project directory a new session starts in; blank = the preset's. */
+    private val directory: String = "",
     private val onAdoptPointer: ((from: String, canonical: String) -> Unit)? = null,
     /** Wall clock for the reasoning timer; injectable so tests can drive it. */
     private val clock: () -> Long = System::currentTimeMillis,
@@ -1642,6 +1644,7 @@ class HarnessChatViewModel(
                         effort = attempt.effort,
                         agentId = attempt.agentId,
                         force = if (attempt.force) true else null,
+                        directory = directory.takeIf { it.isNotBlank() },
                     )
                 }
                 val fresh = ptySpawnIsFresh(alreadyHeld = false, reattached = spawned.reattached)

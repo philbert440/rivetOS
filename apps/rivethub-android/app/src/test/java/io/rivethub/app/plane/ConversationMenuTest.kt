@@ -9,6 +9,7 @@ import io.rivethub.app.plane.ConversationAction.Rename
 import io.rivethub.app.plane.ConversationAction.Unarchive
 import io.rivethub.app.plane.ConversationAction.Unpin
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Test
 
 class ConversationMenuTest {
@@ -32,6 +33,15 @@ class ConversationMenuTest {
             listOf(Unpin, Rename, MoveToAgent, Unarchive, Hide),
             conversationActions(pinned = true, archived = true, draft = false, agentCount = 5),
         )
+    }
+
+    @Test fun `move to project appears once a project exists, after rename`() {
+        val none = conversationActions(pinned = false, archived = false, draft = false, agentCount = 1)
+        assertFalse(ConversationAction.MoveToProject in none)
+        val some = conversationActions(pinned = false, archived = false, draft = false, agentCount = 1, projectCount = 2)
+        assertEquals(ConversationAction.MoveToProject, some[some.indexOf(ConversationAction.Rename) + 1])
+        val draft = conversationActions(pinned = false, archived = false, draft = true, agentCount = 1, projectCount = 2)
+        assertEquals(listOf(ConversationAction.DiscardDraft), draft)
     }
 
     @Test fun `move to agent needs more than one agent`() {

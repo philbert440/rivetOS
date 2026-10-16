@@ -263,6 +263,7 @@ class Gateway(
         effort: String? = null,
         agentId: String? = null,
         force: Boolean? = null,
+        directory: String? = null,
     ): TermSpawnResponse =
         withContext(Dispatchers.IO) {
             val body = wireJson.encodeToString(
@@ -277,6 +278,7 @@ class Gateway(
                     effort = effort,
                     agentId = agentId,
                     force = force,
+                    directory = directory,
                 ),
             ).toRequestBody("application/json".toMediaType())
             val req = Request.Builder().url(url(listOf("api", "terminal"))).post(body).build()
