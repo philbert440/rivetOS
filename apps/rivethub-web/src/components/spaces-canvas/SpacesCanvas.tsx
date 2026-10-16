@@ -19,7 +19,7 @@ import {
   type ReactNode,
 } from 'react'
 import * as Dialog from '@radix-ui/react-dialog'
-import { Bot, History as HistoryIcon, LayoutGrid, Pencil } from 'lucide-react'
+import { Bot, History as HistoryIcon, LayoutGrid, Pencil, Plus } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import type { HarnessDescriptor } from '@rivetos/types'
 import type { ChatItem } from '../../lib/harness-chat.js'
@@ -317,7 +317,7 @@ export function SpacesCanvas(props: {
   // column in the bottom-left corner, leaving the width to the thread. Find
   // and Move live in it, so it shows while either is open even when tucked.
   const dockOpen = useCanvasDock((s) => s.open)
-  // The Agents pop-out beside History: drag an agent onto + New session.
+  // The Agents pop-out beside History: drag an agent onto a project's +.
   // While a drag is under way it goes see-through so the slots it covers
   // still take the drop.
   const agentsOpen = useCanvasDock((s) => s.agentsOpen)
@@ -1514,9 +1514,8 @@ export function SpacesCanvas(props: {
                 data-empty-thread={empty ? '' : undefined}
                 inert={hidden ? true : undefined}
                 aria-hidden={hidden ? true : undefined}
-                className={`absolute border border-dashed border-line text-sm text-ink-dim hover:border-em hover:text-em material:rounded-3xl${
-                  empty ? ' flex items-center justify-center' : ''
-                }`}
+                aria-label="New session"
+                className="absolute flex items-center justify-center border border-dashed border-line text-ink-dim [container-type:size] hover:border-em hover:text-em material:rounded-3xl"
                 style={{
                   left: empty ? laidRegion.rect.x : slot.x,
                   top: empty ? laidRegion.rect.y : slot.y,
@@ -1557,7 +1556,12 @@ export function SpacesCanvas(props: {
                   }
                 }}
               >
-                + New session
+                {/* Sized off the slot (cqmin), so it reads at every altitude. */}
+                <Plus
+                  aria-hidden="true"
+                  strokeWidth={1.5}
+                  className="size-[40cqmin] max-h-40 max-w-40"
+                />
               </button>
             )
           })}
@@ -1689,7 +1693,7 @@ export function SpacesCanvas(props: {
             data-hud-agents=""
             aria-expanded={agentsOpen}
             aria-controls="canvas-agents"
-            title="Agents — drag one onto + New session"
+            title="Agents — drag one onto + to start a session"
             className={`flex h-9 items-center gap-1.5 border border-line bg-panel px-3 text-sm hover:bg-em/15 material:rounded-pill material:border-line/40 material:shadow-pop ${
               agentsOpen ? 'text-em' : 'text-ink-dim hover:text-ink'
             }`}

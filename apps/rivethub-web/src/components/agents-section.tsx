@@ -1469,7 +1469,7 @@ export function AgentsSection(props: {
         {popout ? (
           <span className="flex min-w-0 flex-1 items-center px-2 py-1 text-xs text-ink-dim">
             <Bot className="mr-2 size-4 shrink-0" aria-hidden />
-            Drag onto + New session
+            Drag onto + to start a session
           </span>
         ) : (
           <Tooltip

@@ -1494,7 +1494,7 @@ describe('SpacesCanvas mount', () => {
     })
     const emptyThread = host?.querySelector(`[data-add-thread="${emptyId}"]`)
     expect(emptyThread?.getAttribute('data-empty-thread')).toBe('')
-    expect(emptyThread?.textContent).toContain('+ New session')
+    expect(emptyThread?.getAttribute('aria-label')).toBe('New session')
     const region = host?.querySelector(`[data-region="${emptyId}"]`)
     const regionStyle = (region as HTMLElement | null)?.style
     const buttonStyle = (emptyThread as HTMLElement | null)?.style
