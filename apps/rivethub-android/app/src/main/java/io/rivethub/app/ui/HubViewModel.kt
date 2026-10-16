@@ -749,7 +749,10 @@ class HubViewModel(private val c: AppContainer, inboxLabels: InboxLabels) : View
             legacy[url] = bundle.legacyRows
         }
         presetsAcc[url] = bundle.presets
-        if (bundle.meshNode.isNotBlank()) meta.meshNodes[url] = bundle.meshNode
+        if (bundle.meshNode.isNotBlank()) {
+            meta.meshNodes[url] = bundle.meshNode
+            if (bundle.ok) c.hubState.noteSessionNodes(sessionNodesOf(bundle))
+        }
         val root = bundle.directoryRoot?.trim()?.trimEnd('/').orEmpty()
         if (root.isNotEmpty() && meta.directoryRoot.isNullOrBlank()) meta.directoryRoot = root
         _state.update { st ->
@@ -1041,6 +1044,12 @@ class HubViewModel(private val c: AppContainer, inboxLabels: InboxLabels) : View
         watches.clear()
         watchStatus.clear()
         _state.update { it.copy(registryOpen = false) }
+    }
+
+    /** Every listed session on one node → that node's id, for hub state keys. */
+    private fun sessionNodesOf(bundle: NodeBundle): Map<String, String> = buildMap {
+        bundle.planeRows.values.forEach { rows -> rows.getOrNull()?.forEach { put(it.sessionId, bundle.meshNode) } }
+        bundle.legacyRows.getOrNull()?.forEach { put(it.id, bundle.meshNode) }
     }
 
     private data class NodeBundle(

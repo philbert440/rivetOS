@@ -12,6 +12,7 @@ import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import io.rivethub.app.gateway.wireJson
 import io.rivethub.app.plane.DEFAULT_OMARCHY_PRESET
+import io.rivethub.app.plane.LocalHubPrefs
 import io.rivethub.app.plane.MODE_CHAT
 import io.rivethub.app.plane.migrateLocalPrefs
 import io.rivethub.app.plane.nearestFontScale
@@ -202,8 +203,9 @@ class Settings(context: Context) {
     suspend fun archive(key: String) = ds.edit { it[ARCHIVED] = (it[ARCHIVED] ?: emptySet()) + key }
     suspend fun unarchive(key: String) = ds.edit { it[ARCHIVED] = (it[ARCHIVED] ?: emptySet()) - key }
 
-    /** Local-only list chrome (UX-SPEC §2): pin floats a row into the Pinned
-     *  section; hide drops it from the list. Neither touches the den. */
+    /** List chrome (UX-SPEC §2): pin floats a row into the Pinned section;
+     *  hide drops it from the list. Shared with desktop through hub state
+     *  (data/HubStateRepository.kt); no session record changes. */
     suspend fun pin(key: String) = ds.edit { it[PINNED] = (it[PINNED] ?: emptySet()) + key }
     suspend fun unpin(key: String) = ds.edit { it[PINNED] = (it[PINNED] ?: emptySet()) - key }
     suspend fun hide(key: String) = ds.edit { it[HIDDEN] = (it[HIDDEN] ?: emptySet()) + key }
@@ -228,6 +230,43 @@ class Settings(context: Context) {
 
     suspend fun setAgentPointers(encoded: Map<String, String>) = ds.edit {
         it[POINTERS] = encodeMap(encoded)
+    }
+
+    /** The prefs hub state syncs (names, archive, pins, hidden, modes). */
+    val hubPrefs: Flow<LocalHubPrefs> = prefs.map { it.hubPrefs() }
+
+    /**
+     * Write the agreed hub state in ONE edit, only if those prefs still equal
+     * [expected]. False when the user changed one mid-sync: their edit stays
+     * and the next pass merges it.
+     */
+    suspend fun applyHubPrefs(expected: LocalHubPrefs, next: LocalHubPrefs): Boolean {
+        var applied = false
+        ds.edit {
+            val current = LocalHubPrefs(
+                names = decodeMap(it[TITLES]),
+                archived = it[ARCHIVED] ?: emptySet(),
+                pinned = it[PINNED] ?: emptySet(),
+                hidden = it[HIDDEN] ?: emptySet(),
+                modes = decodeMap(it[SESSION_MODES]),
+            )
+            if (current != expected) return@edit
+            it[TITLES] = encodeMap(next.names)
+            it[ARCHIVED] = next.archived
+            it[PINNED] = next.pinned
+            it[HIDDEN] = next.hidden
+            it[SESSION_MODES] = encodeMap(next.modes)
+            applied = true
+        }
+        return applied
+    }
+
+    /** Last document agreed with the entry den, or null (never synced / unreadable). */
+    suspend fun hubSynced(): HubSynced? =
+        ds.data.first()[HUB_SYNCED]?.let { runCatching { wireJson.decodeFromString(HubSynced.serializer(), it) }.getOrNull() }
+
+    suspend fun setHubSynced(synced: HubSynced) = ds.edit {
+        it[HUB_SYNCED] = wireJson.encodeToString(HubSynced.serializer(), synced)
     }
 
     suspend fun clearAll() = ds.edit { it.clear() }
@@ -271,6 +310,7 @@ class Settings(context: Context) {
         private val DEFAULT_AGENT = stringPreferencesKey("defaultAgentId")
         private val SHOW_STATS = booleanPreferencesKey("showStats")
         private val ACTION_ROW_ALWAYS = booleanPreferencesKey("actionRowAlways")
+        private val HUB_SYNCED = stringPreferencesKey("hubStateSynced")
 
         private val mapSer = MapSerializer(String.serializer(), String.serializer())
         private val longMapSer = MapSerializer(String.serializer(), Long.serializer())
@@ -281,3 +321,11 @@ class Settings(context: Context) {
             s?.let { runCatching { wireJson.decodeFromString(longMapSer, it) }.getOrNull() } ?: emptyMap()
     }
 }
+
+fun Prefs.hubPrefs(): LocalHubPrefs = LocalHubPrefs(
+    names = titleOverrides,
+    archived = archived,
+    pinned = pinned,
+    hidden = hidden,
+    modes = sessionModes,
+)
