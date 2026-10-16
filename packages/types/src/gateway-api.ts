@@ -914,9 +914,16 @@ export interface TermSpawnRequest {
   resume?: string
   /**
    * RivetHub agent preset id; the den derives command/model/effort/cwd from it —
-   * explicit fields still win. Clients never send a raw cwd.
+   * explicit fields still win.
    */
   agentId?: string
+  /**
+   * Working directory for this session — a RivetHub project's directory, or
+   * one picked on the new-session card. Absolute, and it must already exist
+   * on the den. Wins over the preset's directory; the same recorded-directory
+   * rule applies (a different one on a resume is a 409 unless `force`).
+   */
+  directory?: string
   /**
    * Resume an existing session into the preset's current directory when that
    * directory differs from the one the session was recorded in. Without this,

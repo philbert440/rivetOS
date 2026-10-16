@@ -160,6 +160,15 @@ import {
 } from './auth.js'
 import type { TranscriptWatcher } from './term/transcript-watch.js'
 
+/** True when `path` exists and is a directory (a session directory is never created). */
+function isExistingDirectory(path: string): boolean {
+  try {
+    return statSync(path).isDirectory()
+  } catch {
+    return false
+  }
+}
+
 // Push-based transcript sync (seamless modes v2) — constructed by the boot
 // registrar and handed to the gateway channel, so it rides this export path.
 export { createTranscriptWatcher, type TranscriptWatcher } from './term/transcript-watch.js'
@@ -1097,7 +1106,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
    */
   const resolveAgentLaunch = async (
     agentId: string,
-    explicit: { command?: string; model?: string; effort?: string },
+    explicit: { command?: string; model?: string; effort?: string; directory?: string },
   ): Promise<
     | {
         ok: true
@@ -1127,12 +1136,14 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         node: preset.node,
       })
     }
-    if (!preset.directory) return refuse(409, { error: `agent "${preset.name}" has no directory` })
+    if (!preset.directory && !explicit.directory)
+      return refuse(409, { error: `agent "${preset.name}" has no directory` })
     try {
-      ensureAgentDirectory(preset, {
-        ...(config.sharedRoot ? { sharedDir: config.sharedRoot } : {}),
-        log: (msg) => console.error(`[den-server] ${msg}`),
-      })
+      if (preset.directory)
+        ensureAgentDirectory(preset, {
+          ...(config.sharedRoot ? { sharedDir: config.sharedRoot } : {}),
+          log: (msg) => console.error(`[den-server] ${msg}`),
+        })
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       return refuse(500, { error: `could not create agent directory: ${msg}` })
@@ -1159,8 +1170,8 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
     }
     // Normalised once: the record, the spawn, and the response all share it.
     // A trailing slash or surrounding whitespace must not look like a
-    // different directory.
-    const cwd = validateDirectory(preset.directory)
+    // different directory. A session directory from the client wins.
+    const cwd = explicit.directory ?? validateDirectory(preset.directory)
     if (!cwd) return refuse(409, { error: `agent "${preset.name}" has no directory` })
     return {
       ok: true,
@@ -1943,6 +1954,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
             model?: unknown
             effort?: unknown
             agentId?: unknown
+            directory?: unknown
             force?: unknown
           }
           if (p.command !== undefined && typeof p.command !== 'string')
@@ -1958,6 +1970,17 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
             return json(res, 400, { error: 'agentId must be a 1-64 token' })
           if (p.force !== undefined && typeof p.force !== 'boolean')
             return json(res, 400, { error: 'force must be a boolean' })
+          // A session directory (a RivetHub project's) wins over the preset's.
+          // Same validation as a preset directory, and it must already exist:
+          // the den creates an agent's own directory, never an arbitrary one.
+          let directoryOverride: string | undefined
+          if (p.directory !== undefined) {
+            directoryOverride = validateDirectory(p.directory)
+            if (!directoryOverride)
+              return json(res, 400, { error: 'directory must be an absolute path' })
+            if (!isExistingDirectory(directoryOverride))
+              return json(res, 400, { error: `directory ${directoryOverride} does not exist` })
+          }
           const force = p.force === true
           const token = (v: unknown, re: RegExp): string | undefined | null => {
             if (v === undefined) return undefined
@@ -1969,9 +1992,9 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
           if (modelTok === null) return json(res, 400, { error: 'model must be a 1-64 token' })
           if (effortTok === null) return json(res, 400, { error: 'effort must be a 1-64 token' })
           // Explicit command/model/effort win. agentId fills whatever the
-          // client left out, and the preset directory is the cwd — clients
-          // never send a raw one. Preset-derived tokens are checked again
-          // so a bad stored value is a 400 that names the preset.
+          // client left out, and the preset directory is the cwd unless the
+          // client sent a session directory. Preset-derived tokens are checked
+          // again so a bad stored value is a 400 that names the preset.
           let command: string | undefined = typeof p.command === 'string' ? p.command : undefined
           let cwdOverride: string | undefined
           if (typeof p.agentId === 'string') {
@@ -1979,6 +2002,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
               command,
               model: modelTok,
               effort: effortTok,
+              ...(directoryOverride ? { directory: directoryOverride } : {}),
             })
             if (!launch.ok) return json(res, launch.status, launch.body)
             command = launch.command
@@ -1986,6 +2010,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
             effortTok = launch.effort
             cwdOverride = launch.cwd
           }
+          if (cwdOverride === undefined) cwdOverride = directoryOverride
           const clamp = (v: unknown, lo: number, hi: number, dflt: number): number =>
             typeof v === 'number' && Number.isFinite(v)
               ? Math.min(hi, Math.max(lo, Math.floor(v)))
@@ -2159,11 +2184,13 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
                 ? { harnessSessionId: CodexDriver.sessionId(pty.denSession) }
                 : {}),
               command: pty.command,
-              // Preset directory only. A plain POST /term must stay
+              // Preset or session directory only. A plain POST /term must stay
               // byte-identical under mux:none — cwd never rides along just
               // because the manager resolved a roster default. The value is
-              // the normalised preset directory, not `pty.cwd`.
-              ...(typeof p.agentId === 'string' && cwdOverride ? { cwd: cwdOverride } : {}),
+              // the normalised directory, not `pty.cwd`.
+              ...((typeof p.agentId === 'string' || directoryOverride) && cwdOverride
+                ? { cwd: cwdOverride }
+                : {}),
               pid: pty.pid,
               createdAt: pty.createdAt,
               // T1: stamped only when tmux backs the PTY — under mux:none the
