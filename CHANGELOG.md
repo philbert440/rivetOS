@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Migrating to RivetHub
+
+- New `rivetos migrate-to-rivethub [--dry-run] [--rollback] [--mesh] [--binary <path>] [--version <tag>]` moves a node from the TypeScript runtime to RivetHub: a preflight that refuses with a reason before anything changes, `rh` and `rivethub-migrate` into `~/.local/bin` (release download with SHA-256 check, or `--binary`), `rh config validate`, `rivetos.service` stopped and disabled, a `~/rivetos-state-<stamp>.tgz` backup, memory adopted (`rivethub-migrate postgres`, or a PGlite dump imported into SQLite with `rivethub-migrate sqlite --import-pg-dump`), `rivethub.service` installed and started in the old unit's scope, the `~/.rivetos → ~/.rivethub` link once RivetHub has moved the state, and a health check. A failure while the TypeScript runtime is down restores it automatically; `--rollback` reverses a finished migration; `--mesh` walks the agent nodes one at a time over SSH, this node last. Exit codes: 0 done, 1 step failed, 2 refused. See [docs/migrating-to-rivethub.md](docs/migrating-to-rivethub.md).
+- The harness MCP launchers (`rivet-memory-mcp.sh`, all nine kits) exec `rh mcp` on a node that has `~/.rivethub` and an `rh` binary in `~/.local/bin` or on `PATH`; `RIVETOS_MCP_USE_TS=1` keeps the TypeScript sidecar. `rivetos_resolve_mcp_launch` reports the new `rh <path>` kind.
+- The TypeScript runtime is deprecated: `rivetos start` and `rivetos update` print one line (stderr, once per invocation) pointing at the migration command.
+- `@rivetos/boot`: an owned embedded-Postgres handle exposes `query()` (used for the PGlite dump).
+
 ### RivetHub
 
 - Material style for an explicit Light or Dark theme: tonal surfaces from the emerald seed, rounded shapes, Roboto Flex for UI text (JetBrains Mono stays for code and the terminal), pill navigation, message bubbles and soft cards. System and Omarchy keep the classic square, monospace look unchanged. The style follows the preference through `html[data-style]`; see `apps/rivethub-web/AGENT.md` → Material style.
