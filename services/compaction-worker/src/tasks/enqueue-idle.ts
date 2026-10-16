@@ -91,7 +91,7 @@ export function enqueueIdleSelectSql(): string {
         WHERE ss.summary_id IS NULL
           AND ((m.content IS NOT NULL AND LENGTH(m.content) > 10) OR m.tool_name IS NOT NULL)
           AND ${sqlNotHeartbeatConversation('c')}
-        GROUP BY c.id
+        GROUP BY c.id, c.updated_at
        HAVING (
                 COUNT(m.id) >= $2
                 AND (
