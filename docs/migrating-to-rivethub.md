@@ -190,6 +190,46 @@ refusals are reported and the walk continues. This node goes last. Datahub
 worker nodes, non-Linux nodes and nodes marked `deployable: false` are skipped.
 With `--binary`, the binaries are copied to each node first.
 
+## Memory worker nodes
+
+`--mesh` skips datahub worker nodes: their TypeScript memory workers (embedding,
+compaction, wiki) move by hand, one database at a time, and each step rolls back
+by starting the old unit again.
+
+1. **Adopt the database.** Take a `pg_dump -Fc` first, then
+   `rh db migrate --url <database url>`. Adoption renames the `ros_*` tables to
+   `rh_*` and leaves `ros_*` views behind, so the TypeScript workers keep
+   running against it while you switch.
+2. **One `rh worker` unit per role.** Mirror each TypeScript unit with
+   `rh worker --role embedder|summarizer|wiki-builder --config <path>`, the same
+   `EnvironmentFile`, and `User`/`HOME` unchanged (the wiki builder commits to
+   the wiki's git repository). Put `memory.postgres.embed_endpoint`,
+   `embed_model` and `chars_per_chunk` in the worker's `config.yaml`, or let the
+   legacy `RIVETOS_PG_URL`/`RIVETOS_EMBED_URL`/`RIVETOS_EMBED_MODEL` in the
+   environment file supply them.
+3. **Translate the tuning.**
+
+   | TypeScript | RivetHub |
+   |---|---|
+   | `WIKI_EXTRACTION=1` | `RIVETHUB_WIKI_EXTRACTION=1` (required for `wiki-builder`; without it the worker refuses to start) |
+   | `COMPACT_CONCURRENCY`, `EMBED_CONCURRENCY` | `RIVETHUB_WORKER_CONCURRENCY` per unit |
+   | `COMPACT_LEAF_TOKENS` / `_BRANCH_` / `_ROOT_` | `RIVETHUB_SUMMARY_LEAF_TOKENS` / `_BRANCH_` / `_ROOT_` |
+   | `EMBED_API_TIMEOUT_MS` | `RIVETHUB_EMBED_TIMEOUT_MS` |
+   | `EMBED_CHARS_PER_CHUNK` | `memory.postgres.chars_per_chunk` |
+
+4. **Check, then switch.** `rh worker --role <role> --check` with the unit's
+   environment, then `systemctl disable --now` the TypeScript unit and
+   `enable --now` the RivetHub one. Watch the first jobs land (embeddings on new
+   messages, `rh_summaries` rows, `rh_wiki_extractions` rows with topics) before
+   moving the next role.
+
+## Chat channels
+
+Telegram and Discord bots are not part of either runtime: the TypeScript
+plugins were removed in August, and RivetHub ignores `channels.*` with a
+warning. They run as the separate `rivethub-channels` service, which reads the
+same `channels` section and bot tokens and talks to the node's gateway.
+
 ## Troubleshooting
 
 - `journalctl -u rivethub -n 50` (or `journalctl --user -u rivethub -n 50` for a
