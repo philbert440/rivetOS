@@ -2109,13 +2109,7 @@ export function SpacesCanvas(props: {
           }}
         />
       ) : null}
-      {editing ? (
-        <SpaceDefaultsDialog
-          space={editing}
-          descriptors={descriptors}
-          onClose={() => setEditSpace(null)}
-        />
-      ) : null}
+      {editing ? <SpaceDefaultsDialog space={editing} onClose={() => setEditSpace(null)} /> : null}
     </div>
   )
 }

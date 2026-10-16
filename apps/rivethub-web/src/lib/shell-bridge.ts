@@ -21,6 +21,8 @@ export interface RivetShell {
   // check and turns the whole bridge off for that user.
   platform?: string
   appVersion?(): Promise<string>
+  /** Native folder chooser on this machine. Undefined when cancelled. */
+  pickDirectory?(startIn?: string): Promise<string | undefined>
   /** Main-process update check for the given gateway base. The renderer
    *  never passes a URL or digest — main owns the manifest and the pipe. */
   checkUpdate?(gatewayBase: string): Promise<{

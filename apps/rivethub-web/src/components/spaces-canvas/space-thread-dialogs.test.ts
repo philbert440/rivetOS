@@ -123,15 +123,12 @@ function setField(selector: string, value: string): void {
   })
 }
 
-function editDialog(
-  space: ReturnType<typeof useSpaces.getState>['spaces'][number],
-  descriptors?: HarnessDescriptor[],
-): ReactNode {
+function editDialog(space: ReturnType<typeof useSpaces.getState>['spaces'][number]): ReactNode {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return createElement(
     QueryClientProvider,
     { client },
-    createElement(SpaceDefaultsDialog, { space, descriptors, onClose: () => undefined }),
+    createElement(SpaceDefaultsDialog, { space, onClose: () => undefined }),
   )
 }
 
@@ -458,10 +455,46 @@ describe('NewThreadDialog workspace', () => {
   })
 })
 
-describe('SpaceDefaultsDialog save while the roster loads', () => {
-  it('does not clear a stored preset on Save or Enter before the roster resolves', () => {
-    roster.agents = []
-    roster.isLoading = true
+describe('SpaceDefaultsDialog', () => {
+  const shellGlobal = globalThis as { rivetShell?: unknown }
+
+  afterEach(() => {
+    delete shellGlobal.rivetShell
+  })
+
+  function project(): NonNullable<ReturnType<typeof useSpaces.getState>['spaces'][number]> {
+    const found = useSpaces.getState().spaces[0]
+    if (!found) throw new Error('missing project')
+    return found
+  }
+
+  /** The required bridge surface plus a folder chooser that answers `picked`. */
+  function desktopShell(picked: string | undefined): ReturnType<typeof vi.fn> {
+    const pickDirectory = vi.fn(async () => picked)
+    const noop = async (): Promise<void> => undefined
+    shellGlobal.rivetShell = {
+      kind: 'electron',
+      mtlsProxyPort: async () => 0,
+      openExternal: noop,
+      clipboardWriteText: noop,
+      clipboardReadText: async () => '',
+      sendNotification: noop,
+      setUnread: noop,
+      pickDirectory,
+    }
+    return pickDirectory
+  }
+
+  it('has no agent, model or effort fields', () => {
+    useSpaces.getState().addSpace('Home')
+    mount(editDialog(project()))
+    expect(document.getElementById('space-agent')).toBeNull()
+    expect(document.querySelector('[aria-label^="model:"]')).toBeNull()
+    expect(document.querySelector('[aria-label="No default effort"]')).toBeNull()
+    expect(document.getElementById('space-directory')).not.toBeNull()
+  })
+
+  it('saves name and directory, and drops agent, model and effort the project carried', () => {
     const spaceId = useSpaces.getState().addSpace('Home')
     useSpaces.getState().setSpaceDefaults(spaceId, {
       agentId: PRESET.id,
@@ -469,234 +502,59 @@ describe('SpaceDefaultsDialog save while the roster loads', () => {
       model: 'm2',
       effort: 'high',
     })
-    const space = (): NonNullable<ReturnType<typeof useSpaces.getState>['spaces'][number]> => {
-      const found = useSpaces.getState().spaces.find((row) => row.id === spaceId)
-      if (!found) throw new Error('missing project')
-      return found
-    }
-    mount(
-      createElement(SpaceDefaultsDialog, {
-        space: space(),
-        onClose: () => undefined,
-      }),
-    )
-    expect(isDisabled(buttonNamed('Save'))).toBe(true)
+    mount(editDialog(project()))
     setField('[aria-label="Project name"]', 'Renamed')
-    act(() => {
-      buttonNamed('Save')?.click()
-    })
+    setField('#space-directory', '/srv/app/')
     submitForm()
-    expect(space().name).toBe('Home')
-    expect(space().defaults).toMatchObject({
-      agentId: PRESET.id,
-      harnessId: 'claude-code',
-      model: 'm2',
-      effort: 'high',
-    })
-
-    roster.agents = [PRESET]
-    roster.isLoading = false
-    rerender(
-      createElement(SpaceDefaultsDialog, {
-        space: space(),
-        onClose: () => undefined,
-      }),
-    )
-    expect(isDisabled(buttonNamed('Save'))).toBe(false)
-    submitForm()
-    expect(space().name).toBe('Renamed')
-    expect(space().defaults).toMatchObject({
-      agentId: PRESET.id,
-      harnessId: 'claude-code',
-    })
-  })
-
-  it('clears a stored model the newly chosen harness does not offer', () => {
-    const codex = {
-      ...OTHER,
-      id: 'preset-codex',
-      name: 'Codex',
-      harnessId: 'codex' as const,
-      model: 'a',
-    }
-    roster.agents = [PRESET, codex]
-    roster.isLoading = false
-    const spaceId = useSpaces.getState().addSpace('Home')
-    useSpaces.getState().setSpaceDefaults(spaceId, {
-      agentId: PRESET.id,
-      harnessId: 'claude-code',
-      model: 'm2',
-      effort: 'high',
-    })
-    const descriptors: HarnessDescriptor[] = [
-      {
-        harnessId: 'claude-code',
-        capabilities: {
-          interrupt: true,
-          resume: true,
-          approvals: false,
-          liveStream: true,
-          listSessions: true,
-          launchModel: true,
-          models: [
-            { id: 'm1', label: 'M1' },
-            { id: 'm2', label: 'M2' },
-          ],
-        },
-      },
-      {
-        harnessId: 'codex',
-        capabilities: {
-          interrupt: true,
-          resume: true,
-          approvals: false,
-          liveStream: true,
-          listSessions: true,
-          launchModel: true,
-          models: [{ id: 'a', label: 'Model A' }],
-        },
-      },
-    ]
-    const space = useSpaces.getState().spaces[0]
-    if (!space) throw new Error('missing project')
-    mount(createElement(SpaceDefaultsDialog, { space, descriptors, onClose: () => undefined }))
-    expect(document.querySelector('[aria-label="model: M2"]')).not.toBeNull()
-    const agent = document.querySelector('[id="space-agent"]')
-    if (!agent) throw new Error('missing agent picker')
-    act(() => {
-      agent.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
-    const picked = [...document.querySelectorAll('button')].find(
-      (button) => button.textContent?.trim() === 'Codex',
-    )
-    expect(picked).toBeTruthy()
-    act(() => {
-      picked?.click()
-    })
-    expect(document.querySelector('[aria-label="model: None"]')).not.toBeNull()
-    expect(document.querySelector('[aria-label="model: M2"]')).toBeNull()
-    submitForm()
-    expect(useSpaces.getState().spaces[0]?.defaults).toMatchObject({
-      agentId: codex.id,
-      harnessId: 'codex',
-    })
-    expect(useSpaces.getState().spaces[0]?.defaults?.model).toBeUndefined()
-  })
-
-  it('keeps the stored preset when the roster is already cached', () => {
-    roster.agents = [PRESET]
-    roster.isLoading = false
-    const spaceId = useSpaces.getState().addSpace('Home')
-    useSpaces.getState().setSpaceDefaults(spaceId, {
-      agentId: PRESET.id,
-      harnessId: 'claude-code',
-      model: 'm2',
-    })
-    const space = useSpaces.getState().spaces[0]
-    if (!space) throw new Error('missing project')
-    mount(createElement(SpaceDefaultsDialog, { space, onClose: () => undefined }))
-    expect(isDisabled(buttonNamed('Save'))).toBe(false)
-    submitForm()
-    expect(useSpaces.getState().spaces[0]?.defaults?.agentId).toBe(PRESET.id)
-    expect(useSpaces.getState().spaces[0]?.defaults?.harnessId).toBe('claude-code')
-  })
-
-  it('shows a missing preset and Clear drops it', () => {
-    roster.agents = [PRESET]
-    roster.isLoading = false
-    const spaceId = useSpaces.getState().addSpace('Home')
-    useSpaces.getState().setSpaceDefaults(spaceId, {
-      agentId: 'gone',
-      harnessId: 'claude-code',
-      model: 'm2',
-      effort: 'high',
-    })
-    const space = useSpaces.getState().spaces[0]
-    if (!space) throw new Error('missing project')
-    mount(editDialog(space))
-    expect(document.body.textContent).toContain('(missing preset)')
-    const clear = document.querySelector('[aria-label="Clear missing preset"]')
-    if (!clear) throw new Error('missing clear')
-    act(() => {
-      ;(clear as HTMLButtonElement).click()
-    })
-    expect(document.body.textContent).not.toContain('(missing preset)')
-    submitForm()
-    expect(useSpaces.getState().spaces[0]?.defaults?.agentId).toBeUndefined()
-    expect(useSpaces.getState().spaces[0]?.defaults?.harnessId).toBeUndefined()
-    expect(useSpaces.getState().spaces[0]?.defaults?.model).toBe('m2')
-  })
-
-  it('clears agent, model, and effort when each field is set to none', () => {
-    roster.agents = [PRESET]
-    roster.isLoading = false
-    const spaceId = useSpaces.getState().addSpace('Home')
-    useSpaces.getState().setSpaceDefaults(spaceId, {
-      agentId: PRESET.id,
-      harnessId: 'claude-code',
-      model: 'm2',
-      effort: 'high',
-    })
-    const descriptors: HarnessDescriptor[] = [
-      {
-        harnessId: 'claude-code',
-        capabilities: {
-          interrupt: true,
-          resume: true,
-          approvals: false,
-          liveStream: true,
-          listSessions: true,
-          launchModel: true,
-          models: [{ id: 'm2', label: 'M2' }],
-        },
-      },
-    ]
-    const space = useSpaces.getState().spaces[0]
-    if (!space) throw new Error('missing project')
-    mount(editDialog(space, descriptors))
-    const model = document.querySelector('[aria-label="model: M2"]')
-    if (!model) throw new Error('missing model picker')
-    act(() => {
-      model.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
-    const noneModel = [...document.querySelectorAll('button')].find(
-      (button) =>
-        button.textContent?.trim() === 'None' &&
-        button.getAttribute('aria-label') !== 'No default effort',
-    )
-    expect(noneModel).toBeTruthy()
-    act(() => {
-      noneModel?.click()
-    })
-    expect(document.querySelector('[aria-label="model: None"]')).not.toBeNull()
-    const effortNone = document.querySelector('[aria-label="No default effort"]')
-    if (!effortNone) throw new Error('missing effort none')
-    act(() => {
-      ;(effortNone as HTMLButtonElement).click()
-    })
-    const agent = document.querySelector('[id="space-agent"]')
-    if (!agent) throw new Error('missing agent picker')
-    act(() => {
-      agent.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
-    const agentHeader = [...document.querySelectorAll('div')].find(
-      (el) => el.children.length === 0 && el.textContent === 'Agent',
-    )
-    const agentMenu = agentHeader?.parentElement?.parentElement
-    const noneAgent = agentMenu
-      ? [...agentMenu.querySelectorAll('button')].find(
-          (button) => button.textContent?.trim() === 'None',
-        )
-      : undefined
-    expect(noneAgent).toBeTruthy()
-    act(() => {
-      noneAgent?.click()
-    })
-    submitForm()
-    const saved = useSpaces.getState().spaces[0]?.defaults
+    expect(project().name).toBe('Renamed')
+    const saved = project().defaults
+    expect(saved?.directory).toBe('/srv/app')
     expect(saved?.agentId).toBeUndefined()
     expect(saved?.harnessId).toBeUndefined()
     expect(saved?.model).toBeUndefined()
     expect(saved?.effort).toBeUndefined()
+  })
+
+  it('will not save a relative directory', () => {
+    useSpaces.getState().addSpace('Home')
+    mount(editDialog(project()))
+    setField('#space-directory', 'relative/path')
+    expect(isDisabled(buttonNamed('Save'))).toBe(true)
+    expect(document.body.textContent).toContain('Use a full path that starts with /')
+  })
+
+  it('offers Browse only inside the desktop shell', () => {
+    useSpaces.getState().addSpace('Home')
+    mount(editDialog(project()))
+    expect(document.querySelector('[data-browse-directory]')).toBeNull()
+  })
+
+  it('fills the directory from the folder chooser, opening at the current one', async () => {
+    const pickDirectory = desktopShell('/home/rivet/code/app')
+    const spaceId = useSpaces.getState().addSpace('Home')
+    useSpaces.getState().setSpaceDefaults(spaceId, { directory: '/home/rivet' })
+    mount(editDialog(project()))
+    const browse = document.querySelector('[data-browse-directory]')
+    if (!browse) throw new Error('missing Browse')
+    await act(async () => {
+      ;(browse as HTMLButtonElement).click()
+    })
+    expect(pickDirectory).toHaveBeenCalledWith('/home/rivet')
+    expect((document.getElementById('space-directory') as HTMLInputElement).value).toBe(
+      '/home/rivet/code/app',
+    )
+    submitForm()
+    expect(project().defaults?.directory).toBe('/home/rivet/code/app')
+  })
+
+  it('keeps the directory when the folder chooser is cancelled', async () => {
+    desktopShell(undefined)
+    const spaceId = useSpaces.getState().addSpace('Home')
+    useSpaces.getState().setSpaceDefaults(spaceId, { directory: '/srv/app' })
+    mount(editDialog(project()))
+    await act(async () => {
+      ;(document.querySelector('[data-browse-directory]') as HTMLButtonElement).click()
+    })
+    expect((document.getElementById('space-directory') as HTMLInputElement).value).toBe('/srv/app')
   })
 })

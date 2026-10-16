@@ -51,6 +51,10 @@ const api = {
     ipcRenderer.invoke('window:zoom', delta) as Promise<void>,
   /** Quit the app for real (close-to-tray does not apply). */
   quitApp: (): Promise<void> => ipcRenderer.invoke('app:quit') as Promise<void>,
+  /** Native folder chooser. Resolves to the picked absolute path, or
+   *  undefined when cancelled. `startIn` only suggests where it opens. */
+  pickDirectory: (startIn?: string): Promise<string | undefined> =>
+    ipcRenderer.invoke('dialog:pickDirectory', startIn) as Promise<string | undefined>,
   /** Shell binary version (electron app version, not the web dist). */
   appVersion: (): Promise<string> => ipcRenderer.invoke('app:version') as Promise<string>,
   /** Ask MAIN to read the mesh update manifest for the given gateway base
