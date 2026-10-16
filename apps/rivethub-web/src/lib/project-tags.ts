@@ -32,6 +32,8 @@ export interface ProjectTagEntry {
   tries: number
   /** Epoch ms before which this entry is not retried. */
   nextAt: number
+  /** Last failure other than "not captured yet" (a 503, a bad route), for diagnosis. */
+  lastError?: string
 }
 
 export type ProjectTagLedger = Partial<Record<string, ProjectTagEntry>>
@@ -162,6 +164,7 @@ export function loadLedger(): ProjectTagLedger {
         ...(typeof entry.retire === 'string' ? { retire: entry.retire } : {}),
         tries: typeof entry.tries === 'number' ? entry.tries : 0,
         nextAt: typeof entry.nextAt === 'number' ? entry.nextAt : 0,
+        ...(typeof entry.lastError === 'string' ? { lastError: entry.lastError } : {}),
       }
     }
     return out
@@ -200,6 +203,11 @@ async function retireTag(
   if (ids.length > 0) await endpoint.gateway.memoryTagsDecide({ ids, state: 'rejected' })
 }
 
+/** The memory backend's answer for a session with no captured conversation yet. */
+export function isNotCapturedYet(err: unknown): boolean {
+  return err instanceof Error && err.message.includes('no conversation captured')
+}
+
 /** One pass. Returns the ledger to keep. */
 export async function syncProjectTags(
   endpoint: { gateway: RivetGateway },
@@ -210,8 +218,9 @@ export async function syncProjectTags(
   const reconciled = reconcileLedger(ledger, desired, now)
   const next = new Map(Object.entries(reconciled))
   for (const step of dueSteps(reconciled, desired, now)) {
-    const entry = next.get(step.sessionKey)
-    if (!entry) continue
+    const found = next.get(step.sessionKey)
+    if (!found) continue
+    const { lastError: _previous, ...entry } = found
     try {
       if (step.kind === 'add') {
         await endpoint.gateway.memoryTagsAdd({
@@ -230,10 +239,20 @@ export async function syncProjectTags(
           next.delete(step.sessionKey)
         }
       }
-    } catch {
-      // Usually "no conversation captured" — the session has not run yet.
+    } catch (err) {
+      // "No conversation captured" is expected until the session runs. Anything
+      // else (missing tag tables, a bad route) is still retried, but said out loud.
       const tries = entry.tries + 1
-      next.set(step.sessionKey, { ...entry, tries, nextAt: now + backoffMs(tries) })
+      const failed = { ...entry, tries, nextAt: now + backoffMs(tries) }
+      if (isNotCapturedYet(err)) {
+        next.set(step.sessionKey, failed)
+      } else {
+        const lastError = err instanceof Error ? err.message : String(err)
+        console.warn(
+          `[project-tags] ${step.kind} ${step.literal} on ${step.sessionKey}: ${lastError}`,
+        )
+        next.set(step.sessionKey, { ...failed, lastError })
+      }
     }
   }
   return Object.fromEntries(next)

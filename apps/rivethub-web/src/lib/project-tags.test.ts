@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { RivetGateway } from '@rivetos/gateway-client'
 import {
   backoffMs,
@@ -97,6 +97,47 @@ describe('project tags', () => {
     ledger = await syncProjectTags(endpoint, ledger, desired, 1000 + backoffMs(1))
     expect(tags.map((t) => t.session)).toEqual(['s1', 's2'])
     expect(ledger.s2?.applied).toBe(true)
+  })
+
+  it('records and logs a failure that is not "not captured yet", and clears it on success', async () => {
+    const { endpoint, tags } = fakeGateway(new Set(['s1']))
+    const add = endpoint.gateway.memoryTagsAdd.bind(endpoint.gateway)
+    let down = true
+    endpoint.gateway.memoryTagsAdd = async (...args: Parameters<typeof add>) => {
+      if (down) throw new Error('tag tables are missing: apply migration 0019 (rivetos db migrate)')
+      return add(...args)
+    }
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const desired = desiredProjectTags({ [`${BASE}::s1`]: 'p1' }, SPACES)
+    let ledger = await syncProjectTags(endpoint, {}, desired, 0)
+    expect(ledger.s1).toMatchObject({ applied: false, tries: 1 })
+    expect(ledger.s1?.lastError).toMatch(/migration 0019/)
+    expect(warn).toHaveBeenCalledOnce()
+    warn.mockRestore()
+
+    down = false
+    ledger = await syncProjectTags(endpoint, ledger, desired, backoffMs(1))
+    expect(ledger.s1).toEqual({
+      literal: 'project:Android stuff',
+      applied: true,
+      tries: 0,
+      nextAt: 0,
+    })
+    expect(tags).toHaveLength(1)
+  })
+
+  it('does not log a session that is not captured yet', async () => {
+    const { endpoint } = fakeGateway(new Set())
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const ledger = await syncProjectTags(
+      endpoint,
+      {},
+      desiredProjectTags({ [`${BASE}::s1`]: 'p1' }, SPACES),
+      0,
+    )
+    expect(ledger.s1?.lastError).toBeUndefined()
+    expect(warn).not.toHaveBeenCalled()
+    warn.mockRestore()
   })
 
   it('moves the tag with the session and retires it when the session leaves', async () => {
