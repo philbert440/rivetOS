@@ -13,6 +13,13 @@ export const TW = 880
 export const TH = 210
 export const GAP = 80
 export const PAD = 70
+/**
+ * The region's top band holds the "active · waiting on you" count and, under
+ * it, the first row's title pills. Both grow with --inv as the camera pulls
+ * back (count capped at 22px top + 1.2 × 30px; pills at --ch 2.2, about
+ * 65px), so PAD alone let the pills cover the count past ~1.5× out.
+ */
+export const PAD_TOP = 130
 export const CGAP = 300
 /** Two tile columns plus the region's own padding. */
 export const REG_W = PAD * 2 + TW * 2 + GAP
@@ -96,7 +103,7 @@ export function tileSlot(regionId: string, origin: Pick<Rect, 'x' | 'y'>, index:
     regionId,
     index,
     x: origin.x + PAD + (index % 2) * (TW + GAP),
-    y: origin.y + PAD + Math.floor(index / 2) * (TH + GAP),
+    y: origin.y + PAD_TOP + Math.floor(index / 2) * (TH + GAP),
     w: TW,
     h: TH,
   }
@@ -105,7 +112,7 @@ export function tileSlot(regionId: string, origin: Pick<Rect, 'x' | 'y'>, index:
 /** Region height for `n` threads. The +1 is the mock's phantom new-thread slot. */
 export function regH(n: number): number {
   const rows = Math.max(1, Math.ceil((Math.max(0, n) + 1) / 2))
-  return PAD * 2 + rows * TH + (rows - 1) * GAP
+  return PAD_TOP + PAD + rows * TH + (rows - 1) * GAP
 }
 
 /**

@@ -5,6 +5,7 @@ import {
   LIVE_HI,
   LIVE_LO,
   PAD,
+  PAD_TOP,
   REG_W,
   TH,
   TW,
@@ -31,8 +32,8 @@ function project(cam: Cam, vp: Viewport, rect: Rect): Rect {
 
 describe('regH', () => {
   it('reserves a phantom slot so two threads are two rows', () => {
-    expect(regH(0)).toBe(PAD * 2 + TH)
-    expect(regH(2)).toBe(PAD * 2 + 2 * TH + GAP)
+    expect(regH(0)).toBe(PAD_TOP + PAD + TH)
+    expect(regH(2)).toBe(PAD_TOP + PAD + 2 * TH + GAP)
   })
 })
 
@@ -145,7 +146,7 @@ describe('layout', () => {
   it('places one slot per thread inside the region padding', () => {
     const laid = layout([{ id: 'unplaced', name: 'Unplaced', count: 2 }], { w: 1400, h: 900 })
     expect(laid.slots).toHaveLength(2)
-    expect(laid.slots[0]).toMatchObject({ x: PAD, y: PAD, w: TW, h: TH })
+    expect(laid.slots[0]).toMatchObject({ x: PAD, y: PAD_TOP, w: TW, h: TH })
     expect(laid.slots[1]?.x).toBe(PAD + TW + GAP)
     expect(laid.regions[0]?.rect.w).toBe(REG_W)
     expect(CGAP).toBe(300)

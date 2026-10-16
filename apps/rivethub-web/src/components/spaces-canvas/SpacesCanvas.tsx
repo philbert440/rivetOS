@@ -1448,15 +1448,15 @@ export function SpacesCanvas(props: {
                   </div>
                 )}
                 {isNew ? null : (
-                  // Inside the box, in the top padding above the first row
-                  // of tiles. Capped so far out it never grows into them.
+                  // Inside the box, in the top band (PAD_TOP) above the first
+                  // row's title pills. Capped so far out it never reaches them.
                   <div
                     data-region-count=""
                     className="pointer-events-none absolute text-ink-dim"
                     style={{
                       left: 'min(calc(16px * var(--inv, 1)), 24px)',
                       top: 'min(calc(12px * var(--inv, 1)), 22px)',
-                      fontSize: 'min(calc(13px * var(--inv, 1)), 44px)',
+                      fontSize: 'min(calc(13px * var(--inv, 1)), 30px)',
                       lineHeight: 1.2,
                     }}
                   >
