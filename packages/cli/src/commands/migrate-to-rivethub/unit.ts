@@ -2,14 +2,11 @@
  * systemd plumbing for the migration: scope-aware systemctl commands and the
  * rivethub.service unit.
  *
- * The unit is rendered here rather than by `rh service init` for two
- * reasons. `rh service init` points EnvironmentFile at ~/.rivethub/.env,
- * which does not exist until RivetHub has moved the state directory during
- * that very first start, so the first start would run without the node's
- * credentials; ~/.rivetos/.env is valid before the move and, through the
- * symlink, after it. And a system unit written by `rh service init` under
- * sudo would take root's HOME and carry no User=, while the old unit ran as
- * the install owner. The settings match the production cutover runbook.
+ * The unit is rendered here rather than by `rh service init`: a system unit
+ * written by `rh service init` under sudo would take root's HOME and carry
+ * no User=, while the old unit ran as the install owner. The settings match
+ * the production cutover runbook (EnvironmentFile=-~/.rivetos/.env, valid
+ * through the ~/.rivetos → ~/.rivethub link the plan creates before start).
  */
 
 export type UnitScope = 'system' | 'user' | 'none'

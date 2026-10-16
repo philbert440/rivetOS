@@ -71,27 +71,28 @@ Then, in order:
 4. Back up `~/.rivetos` to `~/rivetos-state-<stamp>.tgz` (mode 600; it holds
    keys, so it stays on the node).
 5. Bring memory over (next section).
-6. Install `rivethub.service` and start it.
-7. Wait for RivetHub to move `~/.rivetos` to `~/.rivethub`, then link
-   `~/.rivetos → ~/.rivethub`.
+6. Move `~/.rivetos` to `~/.rivethub` and link `~/.rivetos → ~/.rivethub`
+   (after removing a stale `rivetos.pid`). This happens before RivetHub's
+   first start, so there is no moment when `~/.rivetos` is missing for hooks,
+   MCP launchers or workspace paths; RivetHub starts on that layout as is.
+7. Install `rivethub.service`, enable it and start it.
 8. Health: the unit is active, the gateway answers `/healthz`, `rh status`.
 
-If a step fails while the TypeScript runtime is down (steps 3–7), the command
-puts it back on its own: it removes `rivethub.service`, moves the state back if
-it had moved, and re-enables `rivetos.service`. Once RivetHub owns the state
-(step 8), a failure is reported with the rollback command instead; nothing is
-undone without you deciding to.
+If any step from 3 on fails, including RivetHub never becoming healthy, the
+command puts RivetOS back on its own: it stops and removes `rivethub.service`,
+removes the link and moves `~/.rivethub` back to `~/.rivetos`, and re-enables
+`rivetos.service`. When it reports success, RivetHub is running and healthy;
+going back after that is `--rollback`.
 
 The unit carries the old unit's semantics: `User=` the install owner (system
 units), `HOME`, a `PATH` that starts with `~/.local/bin`, `TERM`,
-`EnvironmentFile=-~/.rivetos/.env` (valid before the move and, through the
-link, after it), and `ExecStart=~/.local/bin/rh start`.
+`EnvironmentFile=-~/.rivetos/.env` (valid through the link), and `ExecStart=~/.local/bin/rh start`.
 
 ## What moves
 
 |                          | RivetOS                             | RivetHub                                           |
 | ------------------------ | ----------------------------------- | -------------------------------------------------- |
-| State directory          | `~/.rivetos`                        | `~/.rivethub` (moved once, at the first start)     |
+| State directory          | `~/.rivetos`                        | `~/.rivethub` (moved once, before the first start) |
 | Service                  | `rivetos.service`                   | `rivethub.service`, same scope                     |
 | CLI                      | `rivetos`                           | `rh`                                               |
 | Binaries                 | `/opt/rivetos` checkout or npm      | `~/.local/bin/rh`, `~/.local/bin/rivethub-migrate` |

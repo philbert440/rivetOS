@@ -31,11 +31,11 @@ import {
 
 /**
  * prepare — nothing about the running node has changed yet.
- * switch  — the TS runtime is down; a failure here puts it back automatically.
- * finish  — RivetHub is running; a failure here is reported with the rollback
- *           command, never undone silently.
+ * switch  — the TS runtime is down (and, after the move step, the state is
+ *           at ~/.rivethub behind the link); a failure here, up to and
+ *           including RivetHub's health check, puts RivetOS back automatically.
  */
-export type Phase = 'prepare' | 'switch' | 'finish'
+export type Phase = 'prepare' | 'switch'
 
 export interface Step {
   id: string
@@ -59,7 +59,6 @@ export interface Plan {
   notes: string[]
 }
 
-export const AWAIT_MOVE_MS = 120_000
 export const HEALTH_TIMEOUT_MS = 120_000
 const POLL_MS = 2_000
 
@@ -321,7 +320,7 @@ function unitSteps(facts: NodeFacts, hubScope: 'system' | 'user'): Step[] {
     rhPath: facts.installedRh,
   })
   const dest = unitPath(hubScope, facts.home)
-  const staged = join(facts.home, '.rivetos', 'migrate', HUB_UNIT)
+  const staged = join(facts.home, '.rivethub', 'migrate', HUB_UNIT)
   const s = (args: string): string => systemctl(hubScope, args, facts.scope)
   const installCmd =
     hubScope === 'system'
@@ -335,7 +334,7 @@ function unitSteps(facts: NodeFacts, hubScope: 'system' | 'user'): Step[] {
       phase: 'switch',
       commands: [`write ${staged}`, installCmd],
       run: (host) => {
-        host.mkdirp(join(facts.home, '.rivetos', 'migrate'))
+        host.mkdirp(join(facts.home, '.rivethub', 'migrate'))
         host.writeFile(staged, unit, 0o644)
         sh(host, installCmd, `install ${HUB_UNIT}`)
         return Promise.resolve(dest)
@@ -370,6 +369,7 @@ export function planMigration(facts: NodeFacts, opts: MigrateOptions, stamp: str
   const legacy = join(home, '.rivetos')
   const hub = join(home, '.rivethub')
   const backup = join(home, `rivetos-state-${stamp}.tgz`)
+  const pidFile = join(legacy, 'rivetos.pid')
   const backupCmd = `(umask 077 && tar czf ${backup} -C ${home} .rivetos) && chmod 600 ${backup}`
   const validateCmd = `${facts.installedRh} config validate`
 
@@ -421,37 +421,20 @@ export function planMigration(facts: NodeFacts, opts: MigrateOptions, stamp: str
       },
     },
     ...memorySteps(facts, stamp),
-    ...unitSteps(facts, hubScope),
     {
-      id: 'await-state-move',
-      title: 'Wait for RivetHub to move ~/.rivetos to ~/.rivethub',
+      id: 'move-state',
+      title: 'Move ~/.rivetos to ~/.rivethub and link it back (before the first start)',
       phase: 'switch',
-      commands: [`wait up to ${String(AWAIT_MOVE_MS / 1000)}s for ${hub}/ and no ${legacy}`],
-      run: async (host) => {
-        const moved = await poll(
-          host,
-          AWAIT_MOVE_MS,
-          () => host.kind(hub) === 'dir' && host.kind(legacy) === 'missing',
-        )
-        if (!moved) {
-          throw new Error(
-            `RivetHub did not move the state directory within ${String(AWAIT_MOVE_MS / 1000)}s — check: ${journalHint(hubScope)}`,
-          )
-        }
-        return undefined
-      },
-    },
-    {
-      id: 'link-state',
-      title: 'Link ~/.rivetos → ~/.rivethub (keeps old paths working)',
-      phase: 'finish',
-      commands: [`ln -s ${hub} ${legacy}`],
+      commands: [`rm -f ${pidFile}`, `mv ${legacy} ${hub} && ln -s ${hub} ${legacy}`],
       run: (host) => {
+        host.remove(pidFile)
+        host.rename(legacy, hub)
         host.symlink(hub, legacy)
-        return Promise.resolve(undefined)
+        return Promise.resolve(`${legacy} → ${hub}`)
       },
     },
-    healthStep('health', HUB_UNIT, hubScope, facts, `${facts.installedRh} status`),
+    ...unitSteps(facts, hubScope),
+    healthStep('health', HUB_UNIT, hubScope, facts, 'switch', `${facts.installedRh} status`),
   )
 
   if (facts.memory.kind === 'none') {
@@ -480,6 +463,7 @@ function healthStep(
   unit: string,
   scope: UnitScope,
   facts: NodeFacts,
+  phase: Phase,
   statusCmd?: string,
 ): Step {
   const active =
@@ -492,7 +476,7 @@ function healthStep(
   return {
     id,
     title: `Health check (${unit})`,
-    phase: 'finish',
+    phase,
     commands,
     run: async (host) => {
       const healthy = await poll(
@@ -615,6 +599,7 @@ function rollbackSteps(
         TS_UNIT,
         facts.tsUnit,
         facts,
+        'switch',
       ),
     )
   }

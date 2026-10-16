@@ -32,13 +32,13 @@ interface Scenario {
   /** Command substrings that fail with exit 1. */
   failOn?: string[]
   insideTsService?: boolean
-  /** RivetHub moves ~/.rivetos when it starts (default true). */
-  moves?: boolean
   arch?: string
 }
 
 interface FakeHost extends Host {
   calls: string[]
+  /** Commands and filesystem changes, in the order they happened. */
+  events: string[]
   envs: (Record<string, string> | undefined)[]
   logs: string[]
   errors: string[]
@@ -87,6 +87,7 @@ function fakeHost(s: Scenario = {}): FakeHost {
     arch: s.arch ?? 'x64',
     env: { ...(s.env ?? {}) },
     calls: [],
+    events: [],
     envs: [],
     logs: [],
     errors: [],
@@ -98,6 +99,7 @@ function fakeHost(s: Scenario = {}): FakeHost {
     },
     run(cmd: string, opts?: RunOptions): RunResult {
       host.calls.push(cmd)
+      host.events.push(cmd)
       host.envs.push(opts?.env)
       const ok = (stdout = ''): RunResult => ({ code: 0, stdout, stderr: '' })
       const no: RunResult = { code: 1, stdout: '', stderr: '' }
@@ -122,11 +124,10 @@ function fakeHost(s: Scenario = {}): FakeHost {
       if (cmd.includes('enable --now rivetos.service')) host.gatewayUp = true
       if (cmd.includes('disable --now rivethub.service')) host.gatewayUp = false
       if (cmd.includes('start rivethub.service')) {
+        // RivetHub refuses to start while ~/.rivetos is still a directory
+        // (it would adopt it itself); the plan moves and links it first.
+        if (paths.get(legacy) !== 'symlink' || paths.get(hub) !== 'dir') return no
         host.gatewayUp = true
-        if (s.moves !== false && paths.get(legacy) === 'dir') {
-          paths.delete(legacy)
-          paths.set(hub, 'dir')
-        }
       }
       if (cmd.endsWith(' status')) return ok('RivetHub gateway healthy')
       return ok()
@@ -142,19 +143,23 @@ function fakeHost(s: Scenario = {}): FakeHost {
     ownerUid: () => uid,
     mkdirp: (p) => {
       host.writes.push(`mkdir ${p}`)
+      host.events.push(`mkdir ${p}`)
       paths.set(p, 'dir')
     },
     writeFile: (p, data) => {
       host.writes.push(`write ${p}`)
+      host.events.push(`write ${p}`)
       paths.set(p, 'file')
       texts.set(p, typeof data === 'string' ? data : new TextDecoder().decode(data))
     },
     copyExecutable: (from, to) => {
       host.writes.push(`copy ${from} ${to}`)
+      host.events.push(`copy ${from} ${to}`)
       paths.set(to, 'file')
     },
     rename: (from, to) => {
       host.writes.push(`rename ${from} ${to}`)
+      host.events.push(`rename ${from} ${to}`)
       const kind = paths.get(from) ?? 'missing'
       paths.delete(from)
       paths.set(to, kind)
@@ -167,17 +172,20 @@ function fakeHost(s: Scenario = {}): FakeHost {
     },
     symlink: (target, p) => {
       host.writes.push(`symlink ${target} ${p}`)
+      host.events.push(`symlink ${target} ${p}`)
       paths.set(p, 'symlink')
       links.set(p, target)
     },
     remove: (p) => {
       host.writes.push(`remove ${p}`)
+      host.events.push(`remove ${p}`)
       paths.delete(p)
       links.delete(p)
     },
     download: () => Promise.reject(new Error('no network in tests')),
     dumpPglite: (_config, out) => {
       host.writes.push(`dump ${out}`)
+      host.events.push(`dump ${out}`)
       paths.set(out, 'file')
       return Promise.resolve({ ros_conversations: 2, ros_messages: 5 })
     },
@@ -331,7 +339,10 @@ describe('dry run', () => {
     expect(out).toContain('sudo -n systemctl disable --now rivetos.service')
     expect(out).toContain('tar czf /home/rivet/rivetos-state-')
     expect(out).toContain('RIVETHUB_PG_URL=<memory.postgres URL>')
-    expect(out).toContain('ln -s /home/rivet/.rivethub /home/rivet/.rivetos')
+    expect(out).toContain(
+      'mv /home/rivet/.rivetos /home/rivet/.rivethub && ln -s /home/rivet/.rivethub /home/rivet/.rivetos',
+    )
+    expect(out).not.toMatch(/Wait for RivetHub/)
     expect(out).toContain('releases/latest/download/rh')
     expect(out).toContain('nothing was changed')
     expect(out).not.toContain('s3cret')
@@ -393,7 +404,21 @@ describe('migration run', () => {
     ].map((needle) => host.calls.findIndex((c) => c.includes(needle)))
     expect(order.every((i) => i >= 0)).toBe(true)
     expect([...order].sort((a, b) => a - b)).toEqual(order)
-    expect(host.writes).toContain('symlink /home/rivet/.rivethub /home/rivet/.rivetos')
+    // The state is moved and linked after the backup and before the unit is
+    // installed, so ~/.rivetos never disappears while RivetHub starts.
+    const ev = [
+      'tar czf',
+      'remove /home/rivet/.rivetos/rivetos.pid',
+      'rename /home/rivet/.rivetos /home/rivet/.rivethub',
+      'symlink /home/rivet/.rivethub /home/rivet/.rivetos',
+      'enable rivethub.service',
+      'start rivethub.service',
+      'is-active --quiet rivethub.service',
+    ].map((needle) => host.events.findIndex((e) => e.includes(needle)))
+    expect(ev.every((i) => i >= 0)).toBe(true)
+    expect([...ev].sort((a, b) => a - b)).toEqual(ev)
+    expect(host.paths.get('/home/rivet/.rivetos')).toBe('symlink')
+    expect(host.paths.get('/home/rivet/.rivethub')).toBe('dir')
     expect(host.writes).toContain('copy /opt/rh/rh /home/rivet/.local/bin/rh')
     // The database URL reaches rivethub-migrate through the environment only.
     const i = host.calls.findIndex((c) => c.includes('rivethub-migrate postgres'))
@@ -437,28 +462,38 @@ describe('migration run', () => {
     expect(host.calls.some((c) => c.includes('disable --now'))).toBe(false)
   })
 
-  it('recovers when RivetHub never moves the state directory', async () => {
+  it('undoes the move and the link when rivethub.service fails to start', async () => {
     const host = fakeHost({
-      moves: false,
+      failOn: ['start rivethub.service'],
       paths: { '/opt/rh/rh': 'file', '/opt/rh/rivethub-migrate': 'file' },
     })
-    // State never moves → the await step (switch phase) fails and recovery runs.
     expect(await migrateToRivethub(['--binary', '/opt/rh/rh'], host)).toBe(1)
-    expect(host.calls.some((c) => c.includes('disable --now rivethub.service'))).toBe(true)
-    expect(host.calls.some((c) => c.includes('enable --now rivetos.service'))).toBe(true)
+    const at = (needle: string): number => host.events.findIndex((e) => e.includes(needle))
+    const failedStart = at('start rivethub.service')
+    expect(failedStart).toBeGreaterThan(at('symlink /home/rivet/.rivethub /home/rivet/.rivetos'))
+    const order = [
+      'disable --now rivethub.service',
+      'remove /home/rivet/.rivetos',
+      'rename /home/rivet/.rivethub /home/rivet/.rivetos',
+      'enable --now rivetos.service',
+    ].map((needle) => host.events.findIndex((e, i) => i > failedStart && e.includes(needle)))
+    expect(order.every((i) => i > failedStart)).toBe(true)
+    expect([...order].sort((a, b) => a - b)).toEqual(order)
+    expect(host.paths.get('/home/rivet/.rivetos')).toBe('dir')
+    expect(host.paths.get('/home/rivet/.rivethub')).toBeUndefined()
+    expect(host.errors.join('\n')).toMatch(/RivetOS runtime is back/)
   })
-})
 
-describe('migration run after RivetHub is up', () => {
-  it('does not undo anything once the state moved; it points at --rollback', async () => {
+  it('undoes the move and the link when RivetHub never becomes healthy', async () => {
     const host = fakeHost({
-      failOn: ['/healthz'],
+      failOn: ['is-active --quiet rivethub.service'],
       paths: { '/opt/rh/rh': 'file', '/opt/rh/rivethub-migrate': 'file' },
     })
     expect(await migrateToRivethub(['--binary', '/opt/rh/rh'], host)).toBe(1)
-    expect(host.writes).toContain('symlink /home/rivet/.rivethub /home/rivet/.rivetos')
-    expect(host.calls.some((c) => c.includes('enable --now rivetos.service'))).toBe(false)
-    expect(host.errors.join('\n')).toContain('rivetos migrate-to-rivethub --rollback')
+    expect(host.writes).toContain('rename /home/rivet/.rivethub /home/rivet/.rivetos')
+    expect(host.paths.get('/home/rivet/.rivetos')).toBe('dir')
+    expect(host.calls.some((c) => c.includes('enable --now rivetos.service'))).toBe(true)
+    expect(host.errors.join('\n')).toMatch(/RivetOS runtime is back/)
   })
 })
 

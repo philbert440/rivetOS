@@ -79,17 +79,12 @@ export async function executePlan(plan: Plan, host: Host, dryRun: boolean): Prom
       host.error(`  ❌ Stopped before changing the running node ("${step.title}").`)
       return EXIT_FAILED
     }
-    if (step.phase === 'switch') {
-      const restored = await recover(plan, host)
-      host.error(
-        restored
-          ? '  ❌ Migration failed; the RivetOS runtime is back. Nothing else to undo.'
-          : `  ❌ Migration failed and the automatic recovery did not finish. Run: ${ROLLBACK_HINT}`,
-      )
-      return EXIT_FAILED
-    }
-    host.error('  ❌ RivetHub is running, but the migration did not finish cleanly.')
-    host.error(`     Inspect it, re-check with \`rh status\`, or go back with: ${ROLLBACK_HINT}`)
+    const restored = await recover(plan, host)
+    host.error(
+      restored
+        ? '  ❌ Migration failed; the RivetOS runtime is back. Nothing else to undo.'
+        : `  ❌ Migration failed and the automatic recovery did not finish. Run: ${ROLLBACK_HINT}`,
+    )
     return EXIT_FAILED
   }
 

@@ -8,8 +8,8 @@
  *   2. Install rh + rivethub-migrate (release download or --binary), validate config
  *   3. Stop + disable rivetos.service; back up ~/.rivetos
  *   4. Memory: rivethub-migrate postgres, or PGlite dump → SQLite import
- *   5. Install + start rivethub.service in the old unit's scope
- *   6. ~/.rivetos → ~/.rivethub link once RivetHub has moved the state; health
+ *   5. ~/.rivetos → ~/.rivethub, linked back, before RivetHub's first start
+ *   6. Install + start rivethub.service in the old unit's scope; health
  *
  * Same structure as `rivetos update`: preflight, systemd scope detection,
  * ownership checks, mesh walk over SSH (local last), step logging, exit codes.
