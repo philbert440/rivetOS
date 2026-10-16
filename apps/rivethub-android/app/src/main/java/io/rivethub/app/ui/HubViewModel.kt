@@ -19,6 +19,13 @@ import io.rivethub.app.plane.AgentNodeHint
 import io.rivethub.app.plane.AgentOpen
 import io.rivethub.app.plane.AgentPointers
 import io.rivethub.app.plane.AgentRow
+import io.rivethub.app.gateway.HubProject
+import io.rivethub.app.plane.addProject as addProjectTo
+import io.rivethub.app.plane.deleteProject as deleteProjectFrom
+import io.rivethub.app.plane.openInProject
+import io.rivethub.app.plane.placeInProject as placeIn
+import io.rivethub.app.plane.projectAgent
+import io.rivethub.app.plane.renameProject as renameProjectIn
 import io.rivethub.app.plane.ConversationFilter
 import io.rivethub.app.plane.EnrollErrorKind
 import io.rivethub.app.plane.EntryAnswer
@@ -315,8 +322,12 @@ class HubViewModel(private val c: AppContainer, inboxLabels: InboxLabels) : View
         }
     }
 
+    /** Archived sessions live in the archive, not in a project (desktop's rule too). */
     fun archive(key: String) {
-        viewModelScope.launch { c.settings.archive(key) }
+        viewModelScope.launch {
+            c.settings.archive(key)
+            c.settings.editProjects { placeIn(it, key, null) }
+        }
     }
     fun unarchive(key: String) {
         viewModelScope.launch { c.settings.unarchive(key) }
@@ -332,6 +343,39 @@ class HubViewModel(private val c: AppContainer, inboxLabels: InboxLabels) : View
     }
     fun hide(key: String) {
         viewModelScope.launch { c.settings.hide(key) }
+    }
+
+    // -- Projects (shared with desktop through hub state; plane/Projects.kt) --
+
+    fun addProject(name: String) {
+        val id = java.util.UUID.randomUUID().toString()
+        viewModelScope.launch { c.settings.editProjects { addProjectTo(it, name, id, System.currentTimeMillis()) } }
+    }
+    fun renameProject(id: String, name: String) {
+        viewModelScope.launch { c.settings.editProjects { renameProjectIn(it, id, name) } }
+    }
+    fun deleteProject(id: String) {
+        viewModelScope.launch { c.settings.editProjects { deleteProjectFrom(it, id) } }
+    }
+    /** Move a session into [projectId], or out of every project when null. Filing unarchives it. */
+    fun placeInProject(key: String, projectId: String?) {
+        viewModelScope.launch {
+            if (projectId != null) c.settings.unarchive(key)
+            c.settings.editProjects { placeIn(it, key, projectId) }
+        }
+    }
+
+    /**
+     * "+" inside a project: a new draft for [agent] (or the project's default
+     * agent), started in the project's directory and filed under the
+     * project. Null when the project names no usable agent and none was
+     * given: the caller asks which agent.
+     */
+    fun startInProject(project: HubProject, agent: AgentRow? = null): AgentOpen? {
+        val row = agent ?: projectAgent(project, _state.value.agents) ?: return null
+        val open = openAgentAction(row, AgentAction.Plus) ?: return null
+        viewModelScope.launch { c.settings.editProjects { placeIn(it, open.sessionId, project.id) } }
+        return openInProject(open, project)
     }
 
     /**
