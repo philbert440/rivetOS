@@ -787,6 +787,111 @@ describe('claimSession on create', () => {
   })
 })
 
+describe('POST .../sessions { agentId }', () => {
+  type Resolve = NonNullable<Parameters<typeof createHarnessRoutes>[0]['resolveAgent']>
+  async function withRoutes(
+    resolveAgent: Resolve | undefined,
+    run: (base: string, driver: FakeDriver) => Promise<void>,
+  ): Promise<void> {
+    const driver = new FakeDriver()
+    const registry = createHarnessRegistry()
+    registry.register(driver)
+    const routes = createHarnessRoutes({ registry, ...(resolveAgent ? { resolveAgent } : {}) })
+    const server = createServer((req, res) => {
+      void routes.handle(req, res, new URL(req.url ?? '/', 'http://127.0.0.1')).then((handled) => {
+        if (!handled) {
+          res.writeHead(404)
+          res.end()
+        }
+      })
+    })
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
+    try {
+      await run(`http://127.0.0.1:${String((server.address() as AddressInfo).port)}`, driver)
+    } finally {
+      routes.close()
+      await new Promise<void>((r) => {
+        server.close(() => r())
+      })
+    }
+  }
+  const preset: Resolve = (_id, explicit) =>
+    Promise.resolve({
+      ok: true,
+      name: 'Researcher',
+      harnessId: 'claude-code',
+      cwd: '/agents/researcher',
+      model: explicit.model ?? 'opus',
+      effort: explicit.effort ?? 'high',
+    })
+
+  it('starts with the preset directory, model and effort; explicit values win', async () => {
+    const asked: Parameters<Resolve>[] = []
+    await withRoutes(
+      (id, explicit) => {
+        asked.push([id, explicit])
+        return preset(id, explicit)
+      },
+      async (base, driver) => {
+        expect(
+          (await post(base, '/api/harnesses/claude-code/sessions', { agentId: 'a1' })).status,
+        ).toBe(201)
+        expect(
+          (
+            await post(base, '/api/harnesses/claude-code/sessions', {
+              agentId: 'a1',
+              model: 'sonnet',
+            })
+          ).status,
+        ).toBe(201)
+        expect(driver.calls.started).toEqual([
+          { cwd: '/agents/researcher', model: 'opus', effort: 'high' },
+          { cwd: '/agents/researcher', model: 'sonnet', effort: 'high' },
+        ])
+        expect(asked[0]).toEqual(['a1', { command: 'claude' }])
+      },
+    )
+  })
+
+  it('refuses a preset for another harness, a raw cwd alongside it, and a bad id', async () => {
+    await withRoutes(preset, async (base, driver) => {
+      const other = await post(base, '/api/harnesses/claude-code/sessions', { agentId: 'a1' })
+      expect(other.status).toBe(201)
+      const grok: Resolve = () =>
+        Promise.resolve({ ok: true, name: 'G', harnessId: 'grok-build', cwd: '/g' })
+      await withRoutes(grok, async (b2) => {
+        const res = await post(b2, '/api/harnesses/claude-code/sessions', { agentId: 'g' })
+        expect(res.status).toBe(409)
+        expect(await res.json()).toEqual({ error: 'agent "G" runs grok-build' })
+      })
+      expect(
+        (await post(base, '/api/harnesses/claude-code/sessions', { agentId: 'a1', cwd: '/x' }))
+          .status,
+      ).toBe(400)
+      expect(
+        (await post(base, '/api/harnesses/claude-code/sessions', { agentId: 'a b' })).status,
+      ).toBe(400)
+      expect(driver.calls.started).toHaveLength(1)
+    })
+  })
+
+  it("passes the resolver's refusal through, and 501s without a resolver", async () => {
+    await withRoutes(
+      () => Promise.resolve({ ok: false, status: 404, body: { error: 'agent not found' } }),
+      async (base) => {
+        const res = await post(base, '/api/harnesses/claude-code/sessions', { agentId: 'nope' })
+        expect(res.status).toBe(404)
+        expect(await res.json()).toEqual({ error: 'agent not found' })
+      },
+    )
+    await withRoutes(undefined, async (base) => {
+      expect(
+        (await post(base, '/api/harnesses/claude-code/sessions', { agentId: 'a1' })).status,
+      ).toBe(501)
+    })
+  })
+})
+
 describe(':sessionId params use enc()', () => {
   it('round-trips a native id containing both ":" and "/"', async () => {
     const gnarly = 'claude-code:-home-rivet-repo/a1b2:c3d4' as SessionId

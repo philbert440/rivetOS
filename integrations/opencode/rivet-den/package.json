@@ -1,0 +1,11 @@
+{
+  "name": "@rivetos/opencode-rivet-den",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Test harness for the OpenCode rivet-den plugin. The shipped artifact is plugin/rivet-den.ts, which is dependency-free by design; this package exists only so the plugin's behaviour is covered by the workspace test run.",
+  "license": "Apache-2.0",
+  "scripts": {
+    "test": "tsx test/smoke.test.ts"
+  }
+}

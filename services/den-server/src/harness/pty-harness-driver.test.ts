@@ -1970,6 +1970,44 @@ describe('sendUserTurn gates on an open blocking dialog', () => {
     driver.close()
   })
 
+  it('submits instead of refusing when the input box already holds this turn', async () => {
+    const pty = fakePty()
+    const logs: string[] = []
+    const driver = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      pty: () => Promise.resolve(pty.host),
+      turnQuietMs: 0,
+      screen: () => SLASH_DRAFT_SCREEN,
+      log: (msg) => logs.push(msg),
+    })
+    await driver.startSession({ nativeSessionId: UUID })
+    // A retry of `/model` whose first paste never submitted: one Enter, no second paste.
+    await driver.sendUserTurn(sid, { text: '/model' })
+    expect(pty.injects).toEqual([expect.objectContaining({ text: '\r', submit: false })])
+    expect(logs.some((l) => l.includes('input already holds this turn'))).toBe(true)
+    driver.close()
+  })
+
+  it('logs why a send was refused', async () => {
+    const pty = fakePty()
+    const logs: string[] = []
+    const driver = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      pty: () => Promise.resolve(pty.host),
+      turnQuietMs: 0,
+      screen: () => SLASH_DRAFT_SCREEN,
+      log: (msg) => logs.push(msg),
+    })
+    await driver.startSession({ nativeSessionId: UUID })
+    await expect(driver.sendUserTurn(sid, { text: 'test 1' })).rejects.toMatchObject({
+      context: { reason: 'harness_draft' },
+    })
+    expect(logs.some((l) => l.includes('send refused') && l.includes('unsent text'))).toBe(true)
+    // The draft's text is not logged.
+    expect(logs.some((l) => l.includes('/model'))).toBe(false)
+    driver.close()
+  })
+
   it('refuses a typed Try "…" that is not a placeholder template', async () => {
     const pty = fakePty()
     const screen = FRESH_CLAUDE_PROMPT_SCREEN.replace('Try "refactor <filepath>"', 'Try "foo"')
@@ -2509,7 +2547,7 @@ describe('sendUserTurn delivery confirm', () => {
     driver.close()
   })
 
-  it('fails at 2500ms when the turn is stuck in the input twice', async () => {
+  it('presses Enter once more, then fails at 2500ms when the turn is still stuck', async () => {
     vi.useFakeTimers()
     const stuck = screenAfterPaste(composerScreen(TURN))
     const { driver, seen, pty } = await warm({ screen: stuck.screen })
@@ -2517,11 +2555,31 @@ describe('sendUserTurn delivery confirm', () => {
     stuck.pasted()
     await vi.advanceTimersByTimeAsync(1_500)
     expect(undelivered(seen)).toEqual([])
+    // The swallowed submit is retried as a raw Enter, not a second paste.
+    expect(pty.injects).toHaveLength(2)
+    expect(pty.injects[1]).toMatchObject({ text: '\r', submit: false })
     await vi.advanceTimersByTimeAsync(999)
     expect(undelivered(seen)).toEqual([])
     await vi.advanceTimersByTimeAsync(1)
     expect(undelivered(seen)[0]?.message).toMatch(/input box/)
-    expect(pty.injects).toHaveLength(1)
+    expect(pty.injects).toHaveLength(2)
+    driver.close()
+  })
+
+  it('delivers when the extra Enter submits a stuck paste', async () => {
+    vi.useFakeTimers()
+    let n = 0
+    const { driver, seen, pty } = await warm({
+      screen: () => {
+        n += 1
+        // 1: pre-send (idle), 2: first peek (paste stuck), then the Enter landed.
+        return n === 2 ? composerScreen(TURN) : IDLE_HARNESS_SCREEN
+      },
+    })
+    await driver.sendUserTurn(sid, { text: TURN })
+    await vi.advanceTimersByTimeAsync(2_500)
+    expect(pty.injects.map((i) => i.text === '\r' && !i.submit)).toEqual([false, true])
+    expect(undelivered(seen)).toEqual([])
     driver.close()
   })
 
@@ -2941,19 +2999,21 @@ describe('sendUserTurn delivery confirm', () => {
     driver.close()
   })
 
-  it('a collapsed paste of this turn fails as stuck input', async () => {
+  it('a collapsed paste placeholder is not submitted', async () => {
     vi.useFakeTimers()
     const long = `${'line of the paste\n'.repeat(5)}tail`
     const stuck = screenAfterPaste(composerScreen('[Pasted text #1 +12 lines]'))
-    const { driver, seen } = await warm({ screen: stuck.screen })
+    const { driver, seen, pty } = await warm({ screen: stuck.screen })
     await driver.sendUserTurn(sid, { text: long })
     stuck.pasted()
-    await vi.advanceTimersByTimeAsync(1_500)
+    const writes = pty.injects.length
+    // The placeholder does not identify the paste, so no extra Enter.
+    await vi.advanceTimersByTimeAsync(2_500)
+    expect(pty.injects).toHaveLength(writes)
     expect(undelivered(seen)).toEqual([])
-    await vi.advanceTimersByTimeAsync(999)
-    expect(undelivered(seen)).toEqual([])
-    await vi.advanceTimersByTimeAsync(1)
-    expect(undelivered(seen)[0]?.message).toMatch(/input box/)
+    await vi.advanceTimersByTimeAsync(7_500)
+    expect(undelivered(seen)).toHaveLength(1)
+    expect(undelivered(seen)[0]?.message).toMatch(/10s/)
     driver.close()
   })
 

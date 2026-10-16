@@ -137,3 +137,49 @@ describe('parseComposerInput on live captures', () => {
     expect(parseComposerInput(WRAPPED_DRAFT_SCREEN)).toBeUndefined()
   })
 })
+
+/** Claude Code 2.1.293 `❯` lines as herdr `--format ansi` returns them:
+ *  `❯`, NBSP, space, then a reset before the box's content. */
+const ESC = '\u001b'
+const ANSI_GAP = '\u00a0 '
+const ansiBox = (body: string): string => composerBox(`${ESC}[0m${body}`, ANSI_GAP)
+
+describe('parseComposerInput on ANSI captures', () => {
+  it('treats a dim suggested next prompt as an empty box', () => {
+    const suggestions = ["yeah it's in ~/Work/rivetOS, go with 1 and 3", 'push it to my fork']
+    for (const text of suggestions) {
+      expect(parseComposerInput(ansiBox(`${ESC}[2m${text}${ESC}[0m`))).toBeUndefined()
+    }
+  })
+
+  it('treats a dim allowlisted example as an empty box', () => {
+    expect(
+      parseComposerInput(ansiBox(`${ESC}[2mTry "write a test for <filepath>"${ESC}[0m`)),
+    ).toBeUndefined()
+  })
+
+  it('treats a non-dim allowlisted example as an empty box', () => {
+    expect(
+      parseComposerInput(ansiBox(`Try "write a test for <filepath>"${ESC}[0m`)),
+    ).toBeUndefined()
+    expect(
+      parseComposerInput(ansiBox(`${ESC}[22mPress up to edit queued messages`)),
+    ).toBeUndefined()
+  })
+
+  it('reads typed text as a draft', () => {
+    expect(parseComposerInput(ansiBox('push it to my fork'))).toBe('push it to my fork')
+  })
+
+  it('reads only the typed part when a dim completion trails it', () => {
+    expect(parseComposerInput(ansiBox(`/mo${ESC}[2mdel${ESC}[22m`))).toBe('/mo')
+  })
+
+  it('does not read a truecolor argument of 2 as dim', () => {
+    expect(parseComposerInput(ansiBox(`${ESC}[38;2;2;2;200mhello${ESC}[0m`))).toBe('hello')
+  })
+
+  it('treats an empty box with only SGR as empty', () => {
+    expect(parseComposerInput(ansiBox(`${ESC}[7m ${ESC}[27m`))).toBeUndefined()
+  })
+})

@@ -451,6 +451,9 @@ export function createTranscriptWatcher(
     sync(session: string): void {
       if (closed || !watched.has(session)) return
       emitSnapshot(session)
+      // A store that appeared since the last resolve poll is watched now, so
+      // the changes after this snapshot are not up to a poll interval late.
+      void tryResolve(session)
     },
 
     close(): void {

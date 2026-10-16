@@ -19,7 +19,16 @@
 // harness yields [] — the drawer just shows nothing for it rather than breaking.
 
 import { readdir, stat, open, readFile } from 'node:fs/promises'
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import {
+  closeSync,
+  existsSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+  readSync,
+  statSync,
+} from 'node:fs'
+import { StringDecoder } from 'node:string_decoder'
 import { basename, dirname, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
 import { type DelegatedSessionLink, type HarnessTranscriptTurn } from '@rivetos/types'
@@ -1600,20 +1609,16 @@ function cursorTranscriptPath(id: string): string | undefined {
   return best?.path
 }
 
-/**
- * Newest Cursor chat whose transcript was modified at or after `sinceMs`,
- * scoped to the project slug for `cwd`. Sync: the adopting driver calls it
- * on the den event path.
- */
-export function newestCursorSessionAfter(cwd: string, sinceMs: number): string | undefined {
+/** Cursor chats for `cwd` modified at or after `sinceMs`, newest first. */
+export function cursorSessionsAfter(cwd: string, sinceMs: number): string[] {
   const dir = join(cursorProjectsDir(), cursorProjectSlug(cwd), 'agent-transcripts')
   let ids: string[]
   try {
     ids = readdirSync(dir)
   } catch {
-    return undefined
+    return []
   }
-  let best: { id: string; mtime: number } | undefined
+  const hits: { id: string; mtime: number }[] = []
   for (const id of ids) {
     if (!CURSOR_UUID_RE.test(id)) continue
     const path = join(dir, id, `${id}.jsonl`)
@@ -1624,9 +1629,19 @@ export function newestCursorSessionAfter(cwd: string, sinceMs: number): string |
       continue
     }
     if (!st.isFile() || st.mtimeMs < sinceMs) continue
-    if (!best || st.mtimeMs >= best.mtime) best = { id, mtime: st.mtimeMs }
+    hits.push({ id, mtime: st.mtimeMs })
   }
-  return best?.id
+  hits.sort((a, b) => b.mtime - a.mtime)
+  return hits.map((h) => h.id)
+}
+
+/**
+ * Newest Cursor chat whose transcript was modified at or after `sinceMs`,
+ * scoped to the project slug for `cwd`. Sync: the adopting driver calls it
+ * on the den event path.
+ */
+export function newestCursorSessionAfter(cwd: string, sinceMs: number): string | undefined {
+  return cursorSessionsAfter(cwd, sinceMs)[0]
 }
 
 async function cursorPreviewTitle(file: string): Promise<string> {
@@ -1862,7 +1877,7 @@ async function readQwenSession(
     return undefined
   }
   const title = (await qwenTitleFromTranscript(transcript).catch(() => '')) || id
-  const cwd = qwenCwdFromFile(transcript)
+  const cwd = cwdFromJsonl(transcript)
   return {
     id,
     command: 'qwen',
@@ -1873,24 +1888,56 @@ async function readQwenSession(
   }
 }
 
-/** First `cwd` stamped on a qwen jsonl line. Sync — term spawn is sync. */
-function qwenCwdFromFile(file: string): string | undefined {
+/** A single JSONL record larger than this is not a cwd we can trust. Stop
+ *  rather than read a later line: that later line may be a `cd`. */
+const CWD_LINE_MAX = 8 * 1024 * 1024
+
+function cwdOnLine(line: string): string | undefined {
+  if (!line.trim()) return undefined
   try {
-    const text = readFileSync(file, 'utf8')
-    const window = text.length > 64 * 1024 ? text.slice(0, 64 * 1024) : text
-    for (const line of window.split('\n')) {
-      if (!line.trim()) continue
-      try {
-        const obj: unknown = JSON.parse(line)
-        if (isRecord(obj) && typeof obj.cwd === 'string' && obj.cwd.trim()) return obj.cwd.trim()
-      } catch {
-        continue
-      }
-    }
+    const obj: unknown = JSON.parse(line)
+    if (isRecord(obj) && typeof obj.cwd === 'string' && obj.cwd.trim()) return obj.cwd.trim()
   } catch {
-    /* skip */
+    /* not a complete record */
   }
   return undefined
+}
+
+/** First `cwd` in a JSONL transcript — the session's start directory.
+ *  Sync, because term spawn is sync. Reads complete records only, and stops
+ *  at the first one that carries a cwd, so a later `cd` is never the answer
+ *  and a multi-megabyte transcript is not loaded up front. */
+function cwdFromJsonl(file: string): string | undefined {
+  let fd: number | undefined
+  try {
+    fd = openSync(file, 'r')
+    const buf = Buffer.alloc(64 * 1024)
+    const dec = new StringDecoder('utf8')
+    let carry = ''
+    for (;;) {
+      const n = readSync(fd, buf, 0, buf.length, null)
+      if (n <= 0) return cwdOnLine(carry + dec.end())
+      carry += dec.write(buf.subarray(0, n))
+      let nl = carry.indexOf('\n')
+      while (nl >= 0) {
+        const cwd = cwdOnLine(carry.slice(0, nl))
+        if (cwd) return cwd
+        carry = carry.slice(nl + 1)
+        nl = carry.indexOf('\n')
+      }
+      if (carry.length > CWD_LINE_MAX) return undefined
+    }
+  } catch {
+    return undefined
+  } finally {
+    if (fd !== undefined) {
+      try {
+        closeSync(fd)
+      } catch {
+        /* already closed */
+      }
+    }
+  }
 }
 
 /**
@@ -1901,7 +1948,50 @@ export function qwenSessionCwd(id: string): string | undefined {
   if (!id || id.includes('/') || id.includes('..')) return undefined
   const path = qwenTranscriptPath(id)
   if (!path) return undefined
-  return qwenCwdFromFile(path)
+  return cwdFromJsonl(path)
+}
+
+/**
+ * Start directory of a Claude Code session, from its transcript. Claude files
+ * sessions under a slug of the directory they began in, and `claude --resume
+ * <id>` only finds ones whose slug matches the spawn cwd — so resuming a
+ * session started outside RivetHub (no recorded cwd) from the roster default
+ * ($HOME) fails with "No conversation found". The first `cwd` line is the
+ * start directory; later lines follow the agent's `cd`s and are not.
+ */
+export function claudeSessionCwd(id: string): string | undefined {
+  if (!claudeIdSafe(id) || !CLAUDE_SESSION_UUID_RE.test(id)) return undefined
+  const dir = claudeProjectsDir()
+  let slugs: string[]
+  try {
+    slugs = readdirSync(dir)
+  } catch {
+    return undefined
+  }
+  // Same rule as findClaudeJsonl: the newest real file, not whichever
+  // slug readdir happens to return first. A copied project dir must not
+  // resume into the stale copy.
+  let best: { file: string; mtime: number } | undefined
+  for (const slug of slugs) {
+    if (!claudeIdSafe(slug)) continue
+    const file = join(dir, slug, `${id}.jsonl`)
+    try {
+      const st = statSync(file)
+      if (!st.isFile()) continue
+      if (!best || st.mtimeMs > best.mtime) best = { file, mtime: st.mtimeMs }
+    } catch {
+      /* miss */
+    }
+  }
+  return best ? cwdFromJsonl(best.file) : undefined
+}
+
+/** Start directory a harness recorded in its own store, for harnesses whose
+ *  `--resume` is cwd-scoped. Undefined for the rest. */
+export function harnessSessionCwd(command: string, id: string): string | undefined {
+  if (command === 'qwen') return qwenSessionCwd(id)
+  if (command === 'claude') return claudeSessionCwd(id)
+  return undefined
 }
 
 async function collectQwenSessionFiles(): Promise<
@@ -2348,32 +2438,44 @@ export function describeOpencodeSession(id: string): Promise<HarnessSession | un
 }
 
 /**
- * Newest OpenCode session for `cwd` created at or after `sinceMs`. Used by
- * the adopting driver to learn a fresh roster spawn's native id when no
- * hook stamped `harnessSession`.
+ * OpenCode sessions for `cwd` created at or after `sinceMs`, newest first.
+ * A child session (`parent_id`, when that column exists) is not a pane's
+ * own chat. Used by the adopting driver when no hook stamped `harnessSession`.
  */
-export function newestOpencodeSessionAfter(cwd: string, sinceMs: number): string | undefined {
+export function opencodeSessionsAfter(cwd: string, sinceMs: number): string[] {
   const db = openOpencodeDb()
-  if (!db) return undefined
+  if (!db) return []
   try {
     const cwdResolved = cwd ? resolve(cwd) : ''
+    let hasParent = false
+    try {
+      const cols = db.prepare(`PRAGMA table_info(session)`).all() as Array<{ name?: unknown }>
+      hasParent = cols.some((c) => c.name === 'parent_id')
+    } catch {
+      hasParent = false
+    }
     const rows = db
       .prepare(
-        `SELECT id, directory, time_created FROM session
-         WHERE time_created >= ?
-         ORDER BY time_created DESC, time_updated DESC`,
+        hasParent
+          ? `SELECT id, directory, time_created FROM session
+             WHERE time_created >= ? AND parent_id IS NULL
+             ORDER BY time_created DESC, time_updated DESC`
+          : `SELECT id, directory, time_created FROM session
+             WHERE time_created >= ?
+             ORDER BY time_created DESC, time_updated DESC`,
       )
       .all(sinceMs)
+    const ids: string[] = []
     for (const r of rows) {
       const id = typeof r.id === 'string' ? r.id : ''
       if (!id) continue
       const dir = typeof r.directory === 'string' ? r.directory : undefined
       if (dir !== undefined && cwdResolved && resolve(dir) !== cwdResolved) continue
-      return id
+      ids.push(id)
     }
-    return undefined
+    return ids
   } catch {
-    return undefined
+    return []
   } finally {
     try {
       db.close()
@@ -2381,6 +2483,11 @@ export function newestOpencodeSessionAfter(cwd: string, sinceMs: number): string
       /* ignore */
     }
   }
+}
+
+/** Newest OpenCode session for `cwd` created at or after `sinceMs`. */
+export function newestOpencodeSessionAfter(cwd: string, sinceMs: number): string | undefined {
+  return opencodeSessionsAfter(cwd, sinceMs)[0]
 }
 
 function opencodeSessionExists(id: string): boolean {

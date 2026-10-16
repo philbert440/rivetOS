@@ -125,7 +125,7 @@ export function queryCompactionHealth(pool: pg.Pool) {
                AND ((m.content IS NOT NULL AND LENGTH(m.content) > 10)
                     OR m.tool_name IS NOT NULL)
                AND ${notHeartbeat}
-             GROUP BY c.id
+             GROUP BY c.id, c.updated_at
            )
            SELECT
              COALESCE(SUM(qualifying) FILTER (

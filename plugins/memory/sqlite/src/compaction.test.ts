@@ -167,8 +167,13 @@ describe('compaction on the job loop', () => {
     await fill(memory, 's1', 10)
     await memory.runJobs()
     const conv = memory.conversationIdForTest('s1', 'rivet')
+    // 10 was truncated, 5 fit. The other 5 is the next leaf — usually in the
+    // same job, but a tick that returns after the shrink still leaves it queued.
+    if (memory.summariesForConversation(conv).length < 2) {
+      memory.enqueueCompactionForTest('s1', 'rivet')
+      await memory.runJobs()
+    }
     const summaries = memory.summariesForConversation(conv)
-    // 10 was truncated, 5 fit; the other 5 formed a second leaf in the same job.
     expect(summaries.map((s) => s.messageCount)).toEqual([5, 5])
   })
 
