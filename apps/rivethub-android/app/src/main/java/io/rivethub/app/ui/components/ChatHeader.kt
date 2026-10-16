@@ -85,7 +85,7 @@ fun ChatSessionHeader(
     Column(
         modifier
             .fillMaxWidth()
-            .background(if (mode == SessionMode.Chat) colors.bg else colors.panel.copy(alpha = 0.4f)),
+            .background(if (mode == SessionMode.Chat) colors.page else colors.panel.copy(alpha = 0.4f)),
     ) {
         Row(
             Modifier

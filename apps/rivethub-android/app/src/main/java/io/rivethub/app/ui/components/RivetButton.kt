@@ -121,7 +121,7 @@ fun RivetButton(
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
     val fg = when (variant) {
-        RivetButtonVariant.Default -> textColor ?: colors.bg
+        RivetButtonVariant.Default -> textColor ?: colors.onEm
         RivetButtonVariant.Ghost -> textColor ?: if (pressed) colors.ink else colors.inkDim
         RivetButtonVariant.Outline -> textColor ?: colors.ink
     }

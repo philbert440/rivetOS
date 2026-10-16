@@ -77,7 +77,7 @@ fun MemoryScreen(
     val colors = RivetTheme.colors
     LaunchedEffect(nodes) { vm.bind(nodes) }
 
-    Column(Modifier.fillMaxSize().background(colors.bg)) {
+    Column(Modifier.fillMaxSize().background(colors.page)) {
         TopBar(
             title = stringResource(R.string.title_memory),
             onOpenDrawer = onOpenDrawer,

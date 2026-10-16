@@ -43,11 +43,11 @@ fun SegmentedControl(
             val active = option == selected
             Text(
                 option,
-                color = if (active) colors.em else colors.inkDim,
+                color = if (active) colors.onEmContainer else colors.inkDim,
                 style = RivetType.mono11,
                 modifier = Modifier
                     .clip(RoundedCornerShape(Shape.row))
-                    .background(if (active) colors.panel2 else Color.Transparent)
+                    .background(if (active) colors.emContainer else Color.Transparent)
                     .selectable(selected = active, role = Role.RadioButton, onClick = { onSelect(option) })
                     .padding(horizontal = 10.dp, vertical = 4.dp),
             )
