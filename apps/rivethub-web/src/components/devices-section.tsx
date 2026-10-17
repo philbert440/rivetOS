@@ -86,6 +86,8 @@ export function DevicesSection(): JSX.Element | null {
     queryFn: ({ signal }) => useConnection.getState().gateway.devicesList(signal),
     enabled: connected,
     refetchInterval: openEnroll ? 3000 : 30_000, // watch for the phone landing
+    // "disabled" is a node setting, not a blip — say so now, not after retries.
+    retry: (n, err) => !/disabled/.test(err.message) && n < 3,
   })
 
   const add = useMutation({
@@ -109,8 +111,22 @@ export function DevicesSection(): JSX.Element | null {
   }, [list.data, openEnroll])
 
   if (!connected) return null
-  // 503 = enrollment not enabled on this node — keep Settings uncluttered.
-  if (list.isError && /disabled/.test(list.error.message)) return null
+  // 503 = enrollment not enabled on this node. This is the Devices tab's main
+  // section, so say why it's empty rather than leaving the tab blank.
+  if (list.isError && /disabled/.test(list.error.message))
+    return (
+      <section className="mt-10">
+        <h2 className="mb-1 text-lg font-semibold text-ink classic:text-base classic:text-em">
+          Devices
+        </h2>
+        <p className="text-sm text-ink-dim">
+          Device enrollment is off on this node. Set{' '}
+          <span className="font-mono">RIVETOS_DEN_DEVICES=1</span> (plus the{' '}
+          <span className="font-mono">RIVETOS_DEN_DEVICES_*</span> mesh settings) in the node's
+          environment and restart it.
+        </p>
+      </section>
+    )
 
   const devices = list.data?.devices ?? []
   const pending = list.data?.pending ?? []
