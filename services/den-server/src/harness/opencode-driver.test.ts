@@ -93,6 +93,13 @@ function fakePty() {
   }
 }
 
+/** No opencode.json — tests never read the developer's real ~/.config/opencode. */
+const missingOpencodeConfig: SheetReaders = {
+  readJson: (): never => {
+    throw new Error('ENOENT')
+  },
+}
+
 function makeDriver(
   opts: {
     rows?: FakeRow[]
@@ -123,7 +130,7 @@ function makeDriver(
     sessionCwd: opts.sessionCwd,
     now: opts.now,
     turnQuietMs: 0,
-    sheetReaders: opts.sheetReaders,
+    sheetReaders: opts.sheetReaders ?? missingOpencodeConfig,
   })
   return { driver, pty, store, emitDen: (ev) => emit(ev) }
 }
@@ -847,7 +854,11 @@ describe('transcript', () => {
 describe('close', () => {
   it('detaches the den tap', () => {
     const off = vi.fn()
-    const driver = new OpencodeDriver({ store: fakeStore().host(), events: () => off })
+    const driver = new OpencodeDriver({
+      store: fakeStore().host(),
+      events: () => off,
+      sheetReaders: missingOpencodeConfig,
+    })
     driver.close()
     expect(off).toHaveBeenCalledOnce()
   })

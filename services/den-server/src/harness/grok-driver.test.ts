@@ -109,7 +109,7 @@ function makeDriver(
       : undefined,
     cwd: opts.cwd ?? ((): string => '/home/rivet'),
     turnQuietMs: 0,
-    sheetReaders: opts.sheetReaders,
+    sheetReaders: opts.sheetReaders ?? missingGrokCache,
   })
   return { driver, pty, store, emitDen: (ev) => emit(ev) }
 }
