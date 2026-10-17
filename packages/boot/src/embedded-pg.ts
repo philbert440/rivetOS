@@ -62,10 +62,22 @@ export interface EmbeddedPgHandle {
   /** In-process exec on the WASM session. Present only when owned. */
   exec?(sql: string): Promise<unknown>
   /**
+   * In-process query on the WASM session, with PGlite's `/dev/blob` COPY
+   * output when the statement is `COPY … TO '/dev/blob'`. Present only when
+   * owned (used by `rivetos migrate-to-rivethub` to dump the memory tables).
+   */
+  query?: (sql: string) => Promise<EmbeddedPgQueryResult>
+  /**
    * Native PGlite gzip tarball (`dumpDataDir`). Attach mode (another process
    * owns the engine) throws {@link ATTACH_BACKUP_ERROR}.
    */
   backup(outPath: string): Promise<void>
+}
+
+export interface EmbeddedPgQueryResult {
+  rows: Record<string, unknown>[]
+  /** Bytes written by `COPY … TO '/dev/blob'`. */
+  blob?: Blob
 }
 
 export interface EmbeddedPgLock {
@@ -299,6 +311,10 @@ export async function startEmbeddedPg(
     owned: true,
     close,
     exec: (sql: string) => db.exec(sql),
+    query: async (sql: string) => {
+      const result = await db.query<Record<string, unknown>>(sql)
+      return { rows: result.rows, blob: result.blob }
+    },
     backup: async (outPath: string) => {
       mkdirSync(dirname(outPath), { recursive: true })
       const dumped = await (

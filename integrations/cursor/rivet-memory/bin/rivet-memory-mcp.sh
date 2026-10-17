@@ -7,6 +7,8 @@
 # script goes to stderr.
 #
 # Resolution:
+#   (0) RivetHub node (~/.rivethub + rh) → exec rh mcp
+#       (RIVETOS_MCP_USE_TS=1 keeps the TS sidecar)
 #   (a) built checkout ($RIVETOS_ROOT / walk-up / /opt/rivetos) — unchanged
 #   (b) otherwise exec npx -y @rivetos/mcp-sidecar@<pin> --stdio
 # The pin lives in integrations/shared/rivet-paths.sh and requires ≥ 0.5.0.
@@ -68,6 +70,10 @@ if rivetos_embed_model_missing; then
 fi
 
 case "$kind" in
+  rh\ *)
+    # RivetHub serves MCP itself (stdio); same env, no Node needed.
+    exec "${kind#rh }" mcp
+    ;;
   checkout\ *)
     CLI="${kind#checkout }"
     exec node "$CLI" --stdio

@@ -50,6 +50,7 @@ export {
   type ResolvedEmbeddedPg,
   type EmbeddedPgHandle,
   type EmbeddedPgLock,
+  type EmbeddedPgQueryResult,
 } from './embedded-pg.js'
 export {
   validateConfig,

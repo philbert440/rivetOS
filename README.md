@@ -275,6 +275,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full development guide.
 
 ## Documentation
 
+- [Migrating to RivetHub](docs/migrating-to-rivethub.md): move a node to the RivetHub runtime (`rivetos migrate-to-rivethub`), and back
 - [Getting Started](docs/GETTING-STARTED.md): zero to running in 5 minutes
 - [Architecture](docs/ARCHITECTURE.md): system design and plugin model
 - [Config Reference](docs/CONFIG-REFERENCE.md): every config option explained

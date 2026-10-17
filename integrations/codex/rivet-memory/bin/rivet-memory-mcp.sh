@@ -46,5 +46,11 @@ export RIVETOS_ROOT
 # Tell the MCP server we're running in stdio mode.
 export RIVETOS_MCP_STDIO=1
 
+# A node that runs RivetHub serves MCP with `rh mcp` (stdio);
+# RIVETOS_MCP_USE_TS=1 keeps the TS sidecar.
+if RH="$(rivetos_rh_mcp_bin)"; then
+  exec "$RH" mcp
+fi
+
 CLI="$(rivetos_mcp_cli "$RIVETOS_ROOT")"
 exec node "$CLI" --stdio

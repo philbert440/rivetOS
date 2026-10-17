@@ -56,6 +56,8 @@ export const COMMANDS: Partial<Record<string, CommandHandler>> = {
   stop: () => import('./commands/stop.js').then((m) => m.default()),
   status: () => import('./commands/status.js').then((m) => m.default()),
   update: () => import('./commands/update.js').then((m) => m.default()),
+  'migrate-to-rivethub': (args) =>
+    import('./commands/migrate-to-rivethub.js').then((m) => m.default(args)),
   doctor: () => import('./commands/doctor.js').then((m) => m.default()),
   config: (args) => import('./commands/config.js').then((m) => m.default(args)),
   agent: () => import('./commands/agent.js').then((m) => m.default()),
@@ -104,6 +106,7 @@ export function helpText(): string {
     rivetos local [init|up|status|backup|reset]  One-shot laptop bring-up (embedded DB + den)
     rivetos install --herdr             Provision pinned herdr + manifest overrides
     rivetos update                      Pull latest, rebuild containers
+    rivetos migrate-to-rivethub         Switch this node to the RivetHub runtime (--dry-run, --rollback, --mesh)
     rivetos doctor                      Check config and connectivity
     rivetos version                     Show CLI version and commit
 

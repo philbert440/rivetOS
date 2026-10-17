@@ -8,6 +8,9 @@ ROOT="$(cd "$(dirname "$0")" && pwd -P)"
 . "$ROOT/rivet-paths.sh"
 
 failed=0
+# The checkout/npx cases below must not pick RivetHub up from the machine
+# running the test; the RivetHub cases at the end clear this explicitly.
+export RIVETOS_MCP_USE_TS=1
 pass() { echo "ok - $1"; }
 fail() { echo "not ok - $1" >&2; failed=$((failed + 1)); }
 
@@ -172,6 +175,80 @@ for scenario in pg datahub pg_datahub model no_database no_embed placeholder fil
     fi
   done
 done
+
+# RivetHub: `rh mcp` replaces the TS sidecar once the node runs RivetHub.
+HUBHOME="$(mktemp -d "${TMPDIR:-/tmp}/rivetos-rh-home.XXXXXX")"
+mkdir -p "$HUBHOME/.local/bin" "$HUBHOME/pathbin"
+cat >"$HUBHOME/.local/bin/rh" <<'SH'
+#!/usr/bin/env bash
+printf 'rh-stub %s\n' "$*"
+exit 17
+SH
+chmod 755 "$HUBHOME/.local/bin/rh"
+cp "$HUBHOME/.local/bin/rh" "$HUBHOME/pathbin/rh"
+
+rh_kind() {
+  env -u RIVETOS_MCP_USE_TS HOME="$1" PATH="$2" RIVETOS_ROOT="$DUMMY" \
+    bash -c '. "$0"; rivetos_resolve_mcp_launch' "$ROOT/rivet-paths.sh" 2>/dev/null
+}
+
+if [ "$(rh_kind "$HUBHOME" "$PATH")" = npx ]; then
+  pass "rh without ~/.rivethub keeps the TS launch (not migrated / rolled back)"
+else
+  fail "rh alone must not select rh mcp"
+fi
+
+mkdir -p "$HUBHOME/.rivethub"
+if [ "$(rh_kind "$HUBHOME" "$PATH")" = "rh $HUBHOME/.local/bin/rh" ]; then
+  pass "RivetHub node with ~/.local/bin/rh selects rh mcp"
+else
+  fail "RivetHub node should print rh <~/.local/bin/rh>"
+fi
+
+mv "$HUBHOME/.local/bin/rh" "$HUBHOME/rh.parked"
+if [ "$(rh_kind "$HUBHOME" "$HUBHOME/pathbin:$PATH")" = "rh $HUBHOME/pathbin/rh" ]; then
+  pass "rh on PATH is used when ~/.local/bin/rh is absent"
+else
+  fail "rh on PATH should be selected"
+fi
+if [ "$(rh_kind "$HUBHOME" "/usr/bin:/bin")" = npx ]; then
+  pass "no rh binary anywhere keeps the TS launch"
+else
+  fail "missing rh must fall back to the TS launch"
+fi
+mv "$HUBHOME/rh.parked" "$HUBHOME/.local/bin/rh"
+
+for optout in 1 true yes; do
+  kind="$(env RIVETOS_MCP_USE_TS="$optout" HOME="$HUBHOME" RIVETOS_ROOT="$DUMMY" \
+    bash -c '. "$0"; rivetos_resolve_mcp_launch' "$ROOT/rivet-paths.sh" 2>/dev/null)"
+  if [ "$kind" = npx ]; then
+    pass "RIVETOS_MCP_USE_TS=$optout opts out of rh mcp"
+  else
+    fail "RIVETOS_MCP_USE_TS=$optout should keep the TS launch"
+  fi
+done
+
+out="$(env -u RIVETOS_MCP_USE_TS HOME="$HUBHOME" RIVETOS_ROOT="$DUMMY" RIVETOS_ENV_FILE="$DUMMY/no.env" \
+  RIVETOS_PG_URL=postgres://fixture.example/db RIVETOS_MCP_LAUNCH_PRINT=1 bash "$LAUNCH" 2>&1 >"$DUMMY/stdout")"
+if [ "$out" = "rh $HUBHOME/.local/bin/rh" ]; then
+  pass "claude launcher print: rh on a RivetHub node"
+else
+  fail "claude launcher print should be rh <path> on a RivetHub node"
+fi
+
+for kit in claude-code cursor codex grok grok-bot kimi opencode pi qwen-code; do
+  launcher="$ROOT/../$kit/rivet-memory/bin/rivet-memory-mcp.sh"
+  rc=0
+  env -u RIVETOS_MCP_USE_TS HOME="$HUBHOME" PATH="$PATH" RIVETOS_ROOT="$TREE" \
+    RIVETOS_ENV_FILE="$DUMMY/no.env" RIVETOS_PG_URL=postgres://fixture.example/db \
+    bash "$launcher" >"$DUMMY/out" 2>"$DUMMY/err" </dev/null || rc=$?
+  if [ "$rc" -eq 17 ] && [ "$(cat "$DUMMY/out")" = "rh-stub mcp" ]; then
+    pass "$kit launcher execs rh mcp on a RivetHub node"
+  else
+    fail "$kit launcher should exec rh mcp (rc=$rc, out=$(head -c 80 "$DUMMY/out"))"
+  fi
+done
+rm -rf "$HUBHOME"
 
 rm -rf "$DUMMY" "$TREE"
 
