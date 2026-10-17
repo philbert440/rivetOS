@@ -41,7 +41,7 @@ export function latestReleaseApiUrl(): string {
 export function parseReleaseTag(text: string): string | undefined {
   try {
     const tag = (JSON.parse(text) as { tag_name?: unknown }).tag_name
-    return typeof tag === 'string' && /^[\w.\-]+$/.test(tag) ? tag : undefined
+    return typeof tag === 'string' && /^[\w.-]+$/.test(tag) ? tag : undefined
   } catch {
     return undefined
   }
