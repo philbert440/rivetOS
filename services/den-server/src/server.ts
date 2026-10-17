@@ -159,15 +159,7 @@ import {
   UNAUTHORIZED_HTML,
 } from './auth.js'
 import type { TranscriptWatcher } from './term/transcript-watch.js'
-
-/** True when `path` exists and is a directory (a session directory is never created). */
-function isExistingDirectory(path: string): boolean {
-  try {
-    return statSync(path).isDirectory()
-  } catch {
-    return false
-  }
-}
+import { checkSessionDirectory } from './session-directory.js'
 
 // Push-based transcript sync (seamless modes v2) — constructed by the boot
 // registrar and handed to the gateway channel, so it rides this export path.
@@ -1971,15 +1963,11 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
           if (p.force !== undefined && typeof p.force !== 'boolean')
             return json(res, 400, { error: 'force must be a boolean' })
           // A session directory (a RivetHub project's) wins over the preset's.
-          // Same validation as a preset directory, and it must already exist:
-          // the den creates an agent's own directory, never an arbitrary one.
           let directoryOverride: string | undefined
           if (p.directory !== undefined) {
-            directoryOverride = validateDirectory(p.directory)
-            if (!directoryOverride)
-              return json(res, 400, { error: 'directory must be an absolute path' })
-            if (!isExistingDirectory(directoryOverride))
-              return json(res, 400, { error: `directory ${directoryOverride} does not exist` })
+            const checked = checkSessionDirectory(p.directory)
+            if (!checked.ok) return json(res, 400, { error: checked.error })
+            directoryOverride = checked.directory
           }
           const force = p.force === true
           const token = (v: unknown, re: RegExp): string | undefined | null => {

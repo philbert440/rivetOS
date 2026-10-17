@@ -90,6 +90,7 @@ import { harnessNotAllowedMessage } from './allowed.js'
 import type { HarnessCapabilityEvent } from './capabilities.js'
 import { isHarnessId, type HarnessRegistry, type ResolvedSession } from './registry.js'
 import { overlaySessionContext } from '../term/context-window.js'
+import { checkSessionDirectory } from '../session-directory.js'
 
 /** Drivers that can serve the hard-resync transcript (feature-detected). */
 export interface HarnessTranscriptSource {
@@ -248,12 +249,13 @@ export function createHarnessRoutes(opts: {
   isInstalled?: (harnessId: HarnessId) => boolean
   /**
    * Resolve an agent preset for `POST .../sessions { agentId }` — the same
-   * resolution `POST /term` uses (directory, model, effort). Absent = an
-   * `agentId` body is a 501.
+   * resolution `POST /term` uses (directory, model, effort). A session
+   * `directory` the client sent arrives checked and wins over the preset's.
+   * Absent = an `agentId` body is a 501.
    */
   resolveAgent?: (
     agentId: string,
-    explicit: { command?: string; model?: string; effort?: string },
+    explicit: { command?: string; model?: string; effort?: string; directory?: string },
   ) => Promise<
     | { ok: true; name: string; harnessId?: string; cwd: string; model?: string; effort?: string }
     | { ok: false; status: number; body: Record<string, unknown> }
@@ -441,13 +443,23 @@ export function createHarnessRoutes(opts: {
         return json(res, 400, { error: 'model must be a string' })
       if (body.effort !== undefined && typeof body.effort !== 'string')
         return json(res, 400, { error: 'effort must be a string' })
-      let cwd: string | undefined = body.cwd
+      // A session directory (a RivetHub project's) wins over the preset's,
+      // checked exactly as `POST /term` checks it.
+      let directory: string | undefined
+      if (body.directory !== undefined) {
+        if (body.cwd !== undefined)
+          return json(res, 400, { error: 'send directory or cwd, not both' })
+        const checked = checkSessionDirectory(body.directory)
+        if (!checked.ok) return json(res, 400, { error: checked.error })
+        directory = checked.directory
+      }
+      let cwd: string | undefined = body.cwd ?? directory
       let model: string | undefined = body.model
       let effort: string | undefined = body.effort
       if (agentId !== undefined) {
         if (typeof agentId !== 'string' || !/^[\w-]{1,64}$/.test(agentId))
           return json(res, 400, { error: 'agentId must be a 1-64 token' })
-        if (cwd !== undefined)
+        if (body.cwd !== undefined)
           return json(res, 400, { error: 'cwd comes from the agent; do not send both' })
         if (!opts.resolveAgent)
           return json(res, 501, { error: 'agent presets are not available on this node' })
@@ -455,6 +467,7 @@ export function createHarnessRoutes(opts: {
           command: rosterCommandFor(harnessId),
           ...(model !== undefined ? { model } : {}),
           ...(effort !== undefined ? { effort } : {}),
+          ...(directory !== undefined ? { directory } : {}),
         })
         if (!launch.ok) return json(res, launch.status, launch.body)
         if (launch.harnessId && launch.harnessId !== harnessId)

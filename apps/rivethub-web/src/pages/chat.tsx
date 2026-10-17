@@ -1733,8 +1733,10 @@ function ActiveSession(props: {
     })
     if (plan) {
       try {
+        const directory = settings?.directory?.trim()
         const started = await gw.startHarnessSession(plan.harnessId, {
           ...(plan.agentId ? { agentId: plan.agentId } : {}),
+          ...(directory ? { directory } : {}),
           ...(launch.spawn.model ? { model: launch.spawn.model } : {}),
           ...(launch.spawn.effort ? { effort: launch.spawn.effort } : {}),
         })
