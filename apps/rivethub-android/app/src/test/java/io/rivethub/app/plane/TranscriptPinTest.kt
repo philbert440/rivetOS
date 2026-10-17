@@ -64,4 +64,22 @@ class TranscriptPinTest {
         // the first non-empty load still jumps to the end afterwards
         assertTrue(pin.onContent(3))
     }
+
+    private fun edge(last: String?, live: Boolean = false, reasoning: Boolean = false) =
+        TranscriptEdge(last, live, reasoning)
+
+    @Test
+    fun `arrival jump on a new last message, a finished turn, or thinking giving way to text`() {
+        assertTrue(arrivalJump(edge("3:user"), edge("4:assistant")))
+        assertTrue(arrivalJump(edge("3:user", live = true), edge("3:user", live = false)))
+        assertTrue(arrivalJump(edge("3:user", live = true, reasoning = true), edge("3:user", live = true, reasoning = false)))
+    }
+
+    @Test
+    fun `no arrival jump while streaming, on an empty transcript, or when thinking starts`() {
+        assertFalse(arrivalJump(edge("3:user", live = true), edge("3:user", live = true)))
+        assertFalse(arrivalJump(edge(null), edge(null)))
+        assertFalse(arrivalJump(edge("3:user"), edge(null)))
+        assertFalse(arrivalJump(edge("3:user", live = true), edge("3:user", live = true, reasoning = true)))
+    }
 }

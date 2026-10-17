@@ -87,4 +87,37 @@ class NodeSheetTest {
         val entryRow = model.saved.find { it.denUrl == entry }!!
         assertFalse(entryRow.selectable)
     }
+
+    @Test
+    fun `single entry node stays hidden while discovery is pending or failed`() {
+        assertTrue(shouldHideNodePickers(entry, emptySet(), entry, meshNodeUrls = null))
+    }
+
+    @Test
+    fun `single entry node hides once the mesh confirms no peers`() {
+        assertTrue(shouldHideNodePickers(entry, emptySet(), "$entry/", listOf("$entry/")))
+        assertTrue(shouldHideNodePickers(entry, emptySet(), entry, emptyList()))
+    }
+
+    @Test
+    fun `a discovered peer shows the picker so it can be saved`() {
+        assertFalse(shouldHideNodePickers(entry, emptySet(), entry, listOf(entry, mesh)))
+    }
+
+    @Test
+    fun `a second saved node always shows the picker`() {
+        assertFalse(shouldHideNodePickers(entry, setOf(extra), entry, meshNodeUrls = null))
+        assertFalse(shouldHideNodePickers(entry, setOf(extra), entry, listOf(entry)))
+    }
+
+    @Test
+    fun `an extra url equal to the entry is not a second node`() {
+        assertTrue(shouldHideNodePickers(entry, setOf("$entry/"), entry, listOf(entry)))
+    }
+
+    @Test
+    fun `viewing another node or no entry never hides`() {
+        assertFalse(shouldHideNodePickers(entry, emptySet(), mesh, listOf(entry)))
+        assertFalse(shouldHideNodePickers("", emptySet(), "", null))
+    }
 }

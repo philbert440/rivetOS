@@ -58,6 +58,18 @@ import io.rivethub.app.plane.nodeErrorBadge
 import io.rivethub.app.plane.InboxEntry
 import io.rivethub.app.plane.InboxLabels
 import io.rivethub.app.plane.SystemNotifier
+import io.rivethub.app.plane.FinishedTurnTracker
+import io.rivethub.app.plane.INBOX_KIND_NEEDS_YOU
+import io.rivethub.app.plane.NeedsEpisodes
+import io.rivethub.app.plane.RECONNECT_BLOCK_GRACE_MS
+import io.rivethub.app.plane.StatusBlocks
+import io.rivethub.app.plane.withStatusBlocks
+import io.rivethub.app.plane.WaitingRow
+import io.rivethub.app.plane.shouldNotifySession
+import io.rivethub.app.plane.waitingRows
+import io.rivethub.app.plane.INBOX_KIND_AGENT_FINISHED
+import io.rivethub.app.plane.agentFinishedBody
+import io.rivethub.app.plane.shouldNotifyAgentFinished
 import io.rivethub.app.plane.inboxEntryFor
 import io.rivethub.app.plane.markRead
 import io.rivethub.app.plane.NotificationsWatch
@@ -130,6 +142,8 @@ class HubViewModel(private val c: AppContainer, inboxLabels: InboxLabels) : View
          * which yields null for another entry URL / identity generation.
          */
         val entryAnswer: EntryAnswer? = null,
+        /** Conversations waiting on you, oldest first (plane/NeedsYou.kt). */
+        val needsYou: List<WaitingRow> = emptyList(),
     )
 
     private val _state = MutableStateFlow(UiState())
@@ -147,7 +161,8 @@ class HubViewModel(private val c: AppContainer, inboxLabels: InboxLabels) : View
     private var refreshJob: Job? = null
     private val registryFrames = Channel<RegistryMail>(Channel.UNLIMITED)
 
-    private data class RegistryMail(val nodeUrl: String, val event: HarnessEvent, val identityGen: Int)
+    /** A registry frame, or (event == null) the node's registry socket (re)opening. */
+    private data class RegistryMail(val nodeUrl: String, val event: HarnessEvent?, val identityGen: Int)
 
     /**
      * The ONE notifications socket (entry node) and its ownership state —
@@ -179,9 +194,41 @@ class HubViewModel(private val c: AppContainer, inboxLabels: InboxLabels) : View
     /** True while the app is on screen; read per frame (see notify/AppVisibility). */
     @Volatile var appResumed: () -> Boolean = { true }
 
+    /** The session key of the chat on screen, if any — its own finished reply is not notified. */
+    @Volatile var openSessionKey: () -> String? = { null }
+
+    /** "Agent finished replying" notice title (strings.xml; MainActivity hands it over). */
+    @Volatile var agentFinishedTitle: String = ""
+
+    /** active → idle edges from every node's registry stream (plane/FinishedTurns.kt). */
+    private val finishedTurns = FinishedTurnTracker()
+
+    /** "Needs you" notice title (strings.xml; MainActivity hands it over). */
+    @Volatile var needsYouTitle: String = ""
+
+    /** Waiting episodes (plane/NeedsYou.kt); primed until the first full refresh lands. */
+    private val needsEpisodes = NeedsEpisodes()
+    private var rosterSettled = false
+
+    /** Nodes whose roster has been reconciled once (a late node primes, never announces). */
+    private val settledNodes = HashSet<String>()
+
+    /** Nodes whose bundle has landed a roster (a registry frame alone does not count). */
+    private val landedNodes = HashSet<String>()
+
+    /** Registry `status: 'blocked'` frames per node URL (ACP drivers; plane/NeedsYou.kt). */
+    private val statusBlocks = HashMap<String, StatusBlocks>()
+
+    /** Identity generation the episode/turn trackers belong to; a switch resets them. */
+    private var trackersIdentityGen: Int? = null
+
     init {
         viewModelScope.launch {
-            for (mail in registryFrames) onRegistry(mail.nodeUrl, mail.event, mail.identityGen)
+            for (mail in registryFrames) {
+                val event = mail.event
+                if (event == null) onRegistryOpen(mail.nodeUrl, mail.identityGen)
+                else onRegistry(mail.nodeUrl, event, mail.identityGen)
+            }
         }
         viewModelScope.launch {
             for (mail in notifFrames) onNotification(mail.gen, mail.frame)
@@ -444,6 +491,7 @@ class HubViewModel(private val c: AppContainer, inboxLabels: InboxLabels) : View
         plane.clear()
         legacy.clear()
         descriptors.clear()
+        resetSessionTrackers(null)
         _state.value = UiState()
     }
 
@@ -478,9 +526,21 @@ class HubViewModel(private val c: AppContainer, inboxLabels: InboxLabels) : View
         c.settings.setAgentPointers(encodePointers(pointers.all()))
     }
 
+    /** Forget needs-you episodes, finished-turn edges and status blocks (new identity / forget). */
+    private fun resetSessionTrackers(identityGen: Int?) {
+        trackersIdentityGen = identityGen
+        rosterSettled = false
+        settledNodes.clear()
+        landedNodes.clear()
+        statusBlocks.clear()
+        needsEpisodes.clear()
+        finishedTurns.clear()
+    }
+
     private suspend fun refreshOnce(gen: Int) {
         try {
             val identityGen = c.identity.generation()
+            if (trackersIdentityGen != identityGen) resetSessionTrackers(identityGen)
             _state.update {
                 it.copy(
                     loading = true,
@@ -526,6 +586,9 @@ class HubViewModel(private val c: AppContainer, inboxLabels: InboxLabels) : View
             val live = nodes.map { it.denUrl.trimEnd('/') }.toSet()
             descriptors.keys.filter { it !in live }.forEach { descriptors.remove(it) }
             plane.keys.filter { it !in live }.forEach { plane.remove(it) }
+            statusBlocks.keys.retainAll(live)
+            settledNodes.retainAll(live)
+            landedNodes.retainAll(live)
             legacy.keys.filter { it !in live }.forEach { legacy.remove(it) }
             _state.update {
                 it.copy(
@@ -571,6 +634,7 @@ class HubViewModel(private val c: AppContainer, inboxLabels: InboxLabels) : View
             }
             if (gen != refreshLatch.gen) return
             if (c.identity.generation() != identityGen) return
+            rosterSettled = true
             publishAgents()
             rebuildItems()
             startWatches(_state.value.nodes, identityGen)
@@ -679,6 +743,7 @@ class HubViewModel(private val c: AppContainer, inboxLabels: InboxLabels) : View
             return
         }
         if (bundle.ok) {
+            landedNodes += url
             descriptors[url] = bundle.desc
             plane[url] = HashMap(bundle.planeRows)
             legacy[url] = bundle.legacyRows
@@ -714,6 +779,8 @@ class HubViewModel(private val c: AppContainer, inboxLabels: InboxLabels) : View
                 onEvent = { event -> registryFrames.trySend(RegistryMail(url, event, identityGen)) },
                 onStatus = { status ->
                     watchStatus[url] = status
+                    // Through the frame channel so the drop is ordered before the new socket's frames.
+                    if (status == WsStatus.OPEN) registryFrames.trySend(RegistryMail(url, null, identityGen))
                     _state.update { it.copy(registryOpen = watchStatus.values.any { s -> s == WsStatus.OPEN }) }
                 },
             )
@@ -721,10 +788,28 @@ class HubViewModel(private val c: AppContainer, inboxLabels: InboxLabels) : View
         _state.update { it.copy(registryOpen = watchStatus.values.any { it == WsStatus.OPEN }) }
     }
 
+    /**
+     * A node's registry socket (re)opened. Status frames missed while it was
+     * down are never replayed, so its status-derived blocks are dropped; their
+     * waiting episodes are held briefly so a block re-reported right after the
+     * reconnect is the same episode, not a fresh notice.
+     */
+    private fun onRegistryOpen(nodeUrl: String, identityGen: Int) {
+        if (c.identity.generation() != identityGen) return
+        val dropped = statusBlocks[nodeUrl]?.reset().orEmpty()
+        if (dropped.isEmpty()) return
+        val keys = _state.value.items
+            .filter { it.nodeDenUrl.trimEnd('/') == nodeUrl && it.item.sessionId in dropped }
+            .map { it.item.key }
+        needsEpisodes.hold(keys, System.currentTimeMillis() + RECONNECT_BLOCK_GRACE_MS)
+        rebuildItems()
+    }
+
     private fun onRegistry(nodeUrl: String, event: HarnessEvent, identityGen: Int) {
         if (c.identity.generation() != identityGen) return
         when (event) {
             is HarnessEvent.SessionCreated -> {
+                finishedTurns.onStatus(event.sessionId, event.summary.status, event.supersedes)
                 val hid = event.summary.harnessId
                 val bucket = plane.getOrPut(nodeUrl) { HashMap() }
                 val prev = bucket[hid]?.getOrNull()
@@ -745,9 +830,22 @@ class HubViewModel(private val c: AppContainer, inboxLabels: InboxLabels) : View
                 }
                 rebuildItems()
             }
+            is HarnessEvent.Status -> {
+                val blocks = statusBlocks.getOrPut(nodeUrl) { StatusBlocks() }
+                if (blocks.onStatus(event.sessionId, event.status, event.source)) rebuildItems()
+            }
             is HarnessEvent.SessionUpdated -> {
-                val buckets = plane[nodeUrl] ?: return
-                var changed = false
+                if (finishedTurns.onStatus(event.sessionId, event.status, event.previousSessionId)) {
+                    notifyAgentFinished(event.sessionId)
+                }
+                val blocksMoved = statusBlocks[nodeUrl]
+                    ?.onSessionUpdated(event.sessionId, event.status, event.previousSessionId) == true
+                val buckets = plane[nodeUrl]
+                if (buckets == null) {
+                    if (blocksMoved) rebuildItems()
+                    return
+                }
+                var changed = blocksMoved
                 for ((hid, result) in buckets.toList()) {
                     val list = result.getOrNull() ?: continue
                     val next = applyRegistryEvent(
@@ -756,6 +854,7 @@ class HubViewModel(private val c: AppContainer, inboxLabels: InboxLabels) : View
                         event.sessionId,
                         previousSessionId = event.previousSessionId,
                         status = event.status,
+                        blocked = event.blocked,
                     ) ?: continue
                     if (next !== list) {
                         buckets[hid] = Result.success(next)
@@ -797,7 +896,9 @@ class HubViewModel(private val c: AppContainer, inboxLabels: InboxLabels) : View
                 nodeDrafts.associate { it.id to it.createdAt },
                 pins,
             )
-            for (item in items) located += locate(item, node.id, node.name.ifBlank { node.id }, node.denUrl)
+            for (item in withStatusBlocks(items, statusBlocks[url])) {
+                located += locate(item, node.id, node.name.ifBlank { node.id }, node.denUrl)
+            }
         }
         for (d in drafts) {
             if (d.nodeDenUrl.trimEnd('/') in seen) continue
@@ -805,7 +906,48 @@ class HubViewModel(private val c: AppContainer, inboxLabels: InboxLabels) : View
             val items = chatItems(emptyMap(), emptyList(), listOf(d.id), mapOf(d.id to d.createdAt), pins)
             for (item in items) located += locate(item, d.nodeId, d.nodeName, d.nodeDenUrl)
         }
-        _state.update { it.copy(items = sortLocatedByRecency(located)) }
+        val sorted = sortLocatedByRecency(located)
+        // Needs you: every rebuild reconciles the waiting set. Until the first
+        // full refresh has landed, sessions already waiting are primed, not
+        // announced (no burst of notices at launch).
+        // A node is settled only after a rebuild that already held its roster,
+        // so a node that times out at launch and lands later primes its
+        // waiting sessions instead of announcing them all.
+        val waiting = sorted.filter { it.item.blocked }
+        val waitingItems = waiting.map { it.item }
+        val nodeOf = waiting.associate { it.item.key to it.nodeDenUrl.trimEnd('/') }
+        val fresh = needsEpisodes.reconcile(
+            blocked = waitingItems.map { it.key }.toSet(),
+            now = System.currentTimeMillis(),
+            ready = rosterSettled,
+            present = sorted.map { it.item.key }.toSet(),
+            settled = { id -> nodeOf[id] in settledNodes },
+        )
+        if (rosterSettled) settledNodes += landedNodes
+        _state.update { it.copy(items = sorted, needsYou = waitingRows(waitingItems, needsEpisodes.since)) }
+        fresh.forEach(::notifyNeedsYou)
+    }
+
+    /** Settings → General "When an agent needs you": a conversation started waiting. */
+    private fun notifyNeedsYou(sessionId: String) {
+        runNotificationHook(onError = { logHookFailure("needs you", it) }) {
+            val st = _state.value
+            if (!shouldNotifySession(st.prefs.needsYouNotifications, appResumed(), sessionId, openSessionKey())) {
+                return@runNotificationHook
+            }
+            val item = io.rivethub.app.plane.findChatItem(st.items.map { it.item }, sessionId)
+            val title = item?.let { io.rivethub.app.plane.displayTitle(it, st.titleOverrides) }
+            systemNotifier?.post(
+                InboxEntry(
+                    id = "$INBOX_KIND_NEEDS_YOU:$sessionId",
+                    kind = INBOX_KIND_NEEDS_YOU,
+                    title = needsYouTitle,
+                    body = agentFinishedBody(title, sessionId),
+                    atMs = System.currentTimeMillis(),
+                    sessionId = sessionId,
+                ),
+            )
+        }
     }
 
     /**
@@ -858,6 +1000,29 @@ class HubViewModel(private val c: AppContainer, inboxLabels: InboxLabels) : View
                     systemNotifier?.post(entry)
                 }
             }
+        }
+    }
+
+    /** Settings → General "When an agent finishes a reply" (rivethub-web lib/turn-finished.ts). */
+    private fun notifyAgentFinished(sessionId: String) {
+        runNotificationHook(onError = { logHookFailure("agent finished", it) }) {
+            val st = _state.value
+            if (!shouldNotifyAgentFinished(st.prefs.agentFinishedNotifications, appResumed(), sessionId, openSessionKey())) {
+                return@runNotificationHook
+            }
+            val item = io.rivethub.app.plane.findChatItem(st.items.map { it.item }, sessionId)
+            val title = item?.let { io.rivethub.app.plane.displayTitle(it, st.titleOverrides) }
+            systemNotifier?.post(
+                InboxEntry(
+                    // One notice per conversation: a later reply replaces it (systemNotificationId).
+                    id = "$INBOX_KIND_AGENT_FINISHED:$sessionId",
+                    kind = INBOX_KIND_AGENT_FINISHED,
+                    title = agentFinishedTitle,
+                    body = agentFinishedBody(title, sessionId),
+                    atMs = System.currentTimeMillis(),
+                    sessionId = sessionId,
+                ),
+            )
         }
     }
 

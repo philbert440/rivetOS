@@ -110,4 +110,21 @@ class ConversationChromeTest {
             newConversationAction("gone-current", listOf("session"), "session"),
         )
     }
+
+    @Test
+    fun `settings default agent applies only when session and current agent do not`() {
+        val roster = listOf("agent-1", "agent-2")
+        assertEquals(
+            NewConversationAction.ForAgent("agent-2"),
+            newConversationAction("", roster, defaultAgentId = "agent-2"),
+        )
+        assertEquals(
+            NewConversationAction.ForAgent("agent-1"),
+            newConversationAction("agent-1", roster, defaultAgentId = "agent-2"),
+        )
+        assertEquals(
+            NewConversationAction.PickAgent,
+            newConversationAction("", roster, defaultAgentId = "retired"),
+        )
+    }
 }

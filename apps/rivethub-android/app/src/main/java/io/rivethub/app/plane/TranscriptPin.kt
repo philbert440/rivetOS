@@ -46,3 +46,26 @@ class TranscriptPin {
         pinned = true
     }
 }
+
+/** What the arrival jump compares between frames (rivethub-web `lib/transcript-follow.ts`). */
+data class TranscriptEdge(
+    /** Identity of the last transcript row (its index and role), null when empty. */
+    val lastId: String?,
+    /** A turn is streaming. */
+    val live: Boolean,
+    /** The streaming turn is still thinking (reasoning, no reply text yet). */
+    val reasoning: Boolean,
+)
+
+/**
+ * Moments that bring the transcript to the bottom even when scrolled up — a
+ * new message at the end (a reply, or your own send), a turn finishing, or
+ * the agent done thinking and starting to write. Gated by Settings → General
+ * "Jump to the newest message"; with it off, only [TranscriptPin] following
+ * applies.
+ */
+fun arrivalJump(prev: TranscriptEdge, next: TranscriptEdge): Boolean {
+    if (next.lastId != null && next.lastId != prev.lastId) return true
+    if (prev.live && !next.live) return true
+    return prev.live && next.live && prev.reasoning && !next.reasoning
+}

@@ -40,6 +40,8 @@ data class Prefs(
     val omarchyPalette: String = DEFAULT_OMARCHY_PRESET,
     val fontScale: Float = 1.0f,
     val sessionModes: Map<String, String> = emptyMap(),
+    /** sessionId → per-turn model/effort override (plane/TurnPick.kt encodeTurnPick). */
+    val turnPicks: Map<String, String> = emptyMap(),
     /** Settings → Conversations → Default view (`chat` | `terminal`); see plane/SessionMode.kt. */
     val defaultView: String = MODE_CHAT,
     val archived: Set<String> = emptySet(),
@@ -64,6 +66,14 @@ data class Prefs(
     val favouriteModels: Set<String> = emptySet(),
     /** Post an OS notification when a task completes while the app is in the background. Off by default. */
     val taskNotifications: Boolean = false,
+    /** Settings → General: OS notification when an agent finishes a reply you are not looking at. Off by default. */
+    val agentFinishedNotifications: Boolean = false,
+    /** Settings → General: OS notification when a conversation starts waiting on you. Off by default. */
+    val needsYouNotifications: Boolean = false,
+    /** Settings → General: bring the transcript to the newest message on arrival (plane/TranscriptPin.kt arrivalJump). */
+    val autoScroll: Boolean = true,
+    /** Settings → General: agent `+ new` falls back to when neither the open chat nor the current agent decides. */
+    val defaultAgentId: String = "",
     /** Chat message display (UX-SPEC §7): token stats under assistant turns, action row always shown. */
     val showStats: Boolean = false,
     val actionRowAlways: Boolean = false,
@@ -88,6 +98,7 @@ class Settings(context: Context) {
             omarchyPalette = p[OMARCHY_PALETTE] ?: DEFAULT_OMARCHY_PRESET,
             fontScale = nearestFontScale(p[FONT_SCALE] ?: 1.0f),
             sessionModes = decodeMap(p[SESSION_MODES]),
+            turnPicks = decodeMap(p[TURN_PICKS]),
             defaultView = p[DEFAULT_VIEW] ?: MODE_CHAT,
             archived = p[ARCHIVED] ?: emptySet(),
             titleOverrides = decodeMap(p[TITLES]),
@@ -105,6 +116,10 @@ class Settings(context: Context) {
             codeWrap = p[CODE_WRAP] ?: false,
             favouriteModels = p[FAVOURITE_MODELS] ?: emptySet(),
             taskNotifications = p[TASK_NOTIFICATIONS] ?: false,
+            agentFinishedNotifications = p[AGENT_FINISHED_NOTIFICATIONS] ?: false,
+            needsYouNotifications = p[NEEDS_YOU_NOTIFICATIONS] ?: false,
+            autoScroll = p[AUTO_SCROLL] ?: true,
+            defaultAgentId = p[DEFAULT_AGENT] ?: "",
             showStats = p[SHOW_STATS] ?: false,
             actionRowAlways = p[ACTION_ROW_ALWAYS] ?: false,
         )
@@ -128,6 +143,10 @@ class Settings(context: Context) {
     suspend fun setExpTasks(v: Boolean) = ds.edit { it[EXP_TASKS] = v }
     suspend fun setExpWorkflows(v: Boolean) = ds.edit { it[EXP_WORKFLOWS] = v }
     suspend fun setTaskNotifications(v: Boolean) = ds.edit { it[TASK_NOTIFICATIONS] = v }
+    suspend fun setAgentFinishedNotifications(v: Boolean) = ds.edit { it[AGENT_FINISHED_NOTIFICATIONS] = v }
+    suspend fun setNeedsYouNotifications(v: Boolean) = ds.edit { it[NEEDS_YOU_NOTIFICATIONS] = v }
+    suspend fun setAutoScroll(v: Boolean) = ds.edit { it[AUTO_SCROLL] = v }
+    suspend fun setDefaultAgentId(id: String) = ds.edit { it[DEFAULT_AGENT] = id }
     suspend fun setShowStats(v: Boolean) = ds.edit { it[SHOW_STATS] = v }
     suspend fun setActionRowAlways(v: Boolean) = ds.edit { it[ACTION_ROW_ALWAYS] = v }
     suspend fun setTerminalFontSp(sp: Int) = ds.edit { it[TERM_FONT] = sp.coerceIn(10, 22) }
@@ -158,6 +177,20 @@ class Settings(context: Context) {
     suspend fun setSessionMode(sessionId: String, mode: String) = ds.edit {
         it[SESSION_MODES] = encodeMap(decodeMap(it[SESSION_MODES]) + (sessionId to mode))
     }
+    /** Per-turn model/effort override; null removes it. */
+    suspend fun setTurnPick(sessionId: String, encoded: String?) = ds.edit {
+        val cur = decodeMap(it[TURN_PICKS])
+        it[TURN_PICKS] = encodeMap(if (encoded == null) cur - sessionId else cur + (sessionId to encoded))
+    }
+
+    /** Draft → canonical: the pick follows the thread; an existing canonical entry wins. */
+    suspend fun rekeyTurnPick(from: String, to: String) = ds.edit {
+        val cur = decodeMap(it[TURN_PICKS])
+        val moved = cur[from] ?: return@edit
+        val next = if (cur[to] != null) cur - from else cur - from + (to to moved)
+        it[TURN_PICKS] = encodeMap(next)
+    }
+
     suspend fun rekeySessionMode(from: String, to: String) = ds.edit {
         val cur = decodeMap(it[SESSION_MODES])
         val moved = cur[from] ?: return@edit
@@ -214,6 +247,7 @@ class Settings(context: Context) {
         private val THEME = stringPreferencesKey("themeMode")
         private val OMARCHY_PALETTE = stringPreferencesKey("omarchyPalette")
         private val SESSION_MODES = stringPreferencesKey("sessionModes")
+        private val TURN_PICKS = stringPreferencesKey("turnPicks")
         private val DEFAULT_VIEW = stringPreferencesKey("defaultView")
         private val ARCHIVED = stringSetPreferencesKey("archived")
         private val TITLES = stringPreferencesKey("titleOverrides")
@@ -231,6 +265,10 @@ class Settings(context: Context) {
         private val EXP_WORKFLOWS = booleanPreferencesKey("expWorkflows")
         private val FAVOURITE_MODELS = stringSetPreferencesKey("favouriteModels")
         private val TASK_NOTIFICATIONS = booleanPreferencesKey("taskNotifications")
+        private val AGENT_FINISHED_NOTIFICATIONS = booleanPreferencesKey("agentFinishedNotifications")
+        private val NEEDS_YOU_NOTIFICATIONS = booleanPreferencesKey("needsYouNotifications")
+        private val AUTO_SCROLL = booleanPreferencesKey("autoScroll")
+        private val DEFAULT_AGENT = stringPreferencesKey("defaultAgentId")
         private val SHOW_STATS = booleanPreferencesKey("showStats")
         private val ACTION_ROW_ALWAYS = booleanPreferencesKey("actionRowAlways")
 

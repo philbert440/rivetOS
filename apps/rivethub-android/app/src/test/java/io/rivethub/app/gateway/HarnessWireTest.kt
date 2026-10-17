@@ -392,6 +392,13 @@ class HarnessWireTest {
         assertEquals(165_000, msgs.compactAt)
         assertEquals("default", msgs.contextSource)
     }
+
+    @Test fun `session-updated carries blocked only when the den sets it`() {
+        val blocked = parseHarnessEvent("""{"type":"session-updated","sessionId":"$sid","status":"active","blocked":true}""") as HarnessEvent.SessionUpdated
+        assertTrue(blocked.blocked)
+        val plain = parseHarnessEvent("""{"type":"session-updated","sessionId":"$sid","status":"active"}""") as HarnessEvent.SessionUpdated
+        assertFalse(plain.blocked)
+    }
 }
 
 private fun kotlinx.serialization.json.JsonElement.jsonPrimitiveContent(): String =

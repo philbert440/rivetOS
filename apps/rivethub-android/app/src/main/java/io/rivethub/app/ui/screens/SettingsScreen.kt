@@ -28,6 +28,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -37,10 +38,14 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import io.rivethub.app.AppContainer
+import io.rivethub.app.BuildConfig
 import io.rivethub.app.R
 import io.rivethub.app.plane.FONT_SCALE_STEPS
 import io.rivethub.app.plane.OMARCHY_PRESETS
+import io.rivethub.app.plane.DEFAULT_SETTINGS_TAB
 import io.rivethub.app.plane.SessionMode
+import io.rivethub.app.plane.SettingsTab
+import io.rivethub.app.plane.settingsTab
 import io.rivethub.app.plane.fontScaleLabel
 import io.rivethub.app.plane.fontScaleFromLabel
 import io.rivethub.app.plane.EntryUrlError
@@ -62,6 +67,7 @@ import io.rivethub.app.ui.components.RivetToggle
 import io.rivethub.app.ui.components.SegmentedControl
 import io.rivethub.app.ui.components.SelectOption
 import io.rivethub.app.ui.components.SettingsH2
+import io.rivethub.app.ui.components.SettingsTabRow
 import io.rivethub.app.ui.components.ThemeGroup
 import io.rivethub.app.ui.components.UpdatesSection
 import io.rivethub.app.ui.components.TopBar
@@ -97,6 +103,9 @@ fun SettingsScreen(
     var pass by remember { mutableStateOf("") }
     var probe by remember { mutableStateOf<ProbeState>(ProbeState.Idle) }
     var confirmForget by remember { mutableStateOf(false) }
+    // Settings tabs (plane/SettingsTabs.kt ← web lib/settings-tabs.ts); General first.
+    var tabId by rememberSaveable { mutableStateOf(DEFAULT_SETTINGS_TAB.id) }
+    val hub by vm.state.collectAsState()
     LaunchedEffect(prefs.entryUrl) { if (entry.isBlank()) entry = prefs.entryUrl }
 
     val pickP12 = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -106,6 +115,27 @@ fun SettingsScreen(
     // (POST_NOTIFICATIONS is a runtime permission from API 33).
     val askNotifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) scope.launch { c.settings.setTaskNotifications(true) }
+    }
+    // Session notices (agent finished, needs you) need POST_NOTIFICATIONS on
+    // API 33+; the toggle only sticks once granted. The launcher remembers
+    // which setting asked.
+    var pendingNotice by remember { mutableStateOf<(suspend () -> Unit)?>(null) }
+    val askSessionNotifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        val enable = pendingNotice
+        pendingNotice = null
+        if (granted && enable != null) scope.launch { enable() }
+    }
+    fun setSessionNotice(on: Boolean, write: suspend (Boolean) -> Unit) {
+        val needsGrant = on &&
+            android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU &&
+            androidx.core.content.ContextCompat.checkSelfPermission(ctx, android.Manifest.permission.POST_NOTIFICATIONS) !=
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        if (needsGrant) {
+            pendingNotice = { write(true) }
+            askSessionNotifications.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+        } else {
+            scope.launch { write(on) }
+        }
     }
     fun setTaskNotifications(on: Boolean) {
         val needsGrant = on &&
@@ -173,276 +203,369 @@ fun SettingsScreen(
                     modifier = Modifier.padding(bottom = 24.dp),
                 )
 
-                // settings.tsx:180-193 — the entry field follows the h1 directly
-                // (no lead `h2`), then the auth helper paragraph.
-                FieldLabel(stringResource(R.string.label_entry_url))
-                RivetField(
-                    value = entry,
-                    onValueChange = { entry = it },
-                    placeholder = stringResource(R.string.hint_entry_url),
-                    size = RivetFieldSize.Settings,
+                SettingsTabRow(
+                    labels = SettingsTab.entries.map { stringResource(it.labelRes()) },
+                    selected = settingsTab(tabId).ordinal,
+                    onSelect = { tabId = SettingsTab.entries[it].id },
+                    modifier = Modifier.padding(bottom = 24.dp),
                 )
-                Text(
-                    stringResource(R.string.settings_auth_helper),
-                    color = colors.inkDim,
-                    style = RivetType.xs,
-                    modifier = Modifier.padding(top = 8.dp),
-                )
-                Spacer(Modifier.height(16.dp))
-                FieldLabel(stringResource(R.string.label_strict_pair))
-                val strictOn = stringResource(R.string.strict_on)
-                val strictOff = stringResource(R.string.strict_off)
-                SegmentedControl(
-                    options = listOf(strictOn, strictOff),
-                    selected = if (prefs.strictHostnames) strictOn else strictOff,
-                    onSelect = { sel ->
-                        val on = sel == strictOn
-                        scope.launch {
-                            c.settings.setStrictHostnames(on)
-                            c.setStrictHostnames(on)
-                            c.dropClients()
-                            vm.refresh()
-                        }
-                    },
-                )
-                Spacer(Modifier.height(12.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                    RivetButton(
-                        text = stringResource(R.string.action_test_connection),
-                        onClick = {
-                            when (validateEntryUrl(entry)) {
-                                EntryUrlError.Blank, EntryUrlError.NotHttps -> {
-                                    probe = ProbeState.Fail(ctx.getString(R.string.error_https_required))
+                when (settingsTab(tabId)) {
+                    SettingsTab.General -> {
+                        SettingsH2(stringResource(R.string.section_new_conversations), first = true)
+                        FieldLabel(stringResource(R.string.default_agent))
+                        RivetSelect(
+                            value = prefs.defaultAgentId,
+                            options = listOf(SelectOption("", stringResource(R.string.default_agent_none))) +
+                                hub.agents.map { SelectOption(it.agentId, it.name) },
+                            onChange = { id -> scope.launch { c.settings.setDefaultAgentId(id) } },
+                            title = stringResource(R.string.default_agent),
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        Text(
+                            stringResource(R.string.default_agent_helper),
+                            color = colors.inkDim,
+                            style = RivetType.xs,
+                            modifier = Modifier.padding(top = 8.dp),
+                        )
+
+                        SettingsH2(stringResource(R.string.section_conversations))
+                        FieldLabel(stringResource(R.string.default_view))
+                        val viewTerminal = stringResource(R.string.default_view_terminal)
+                        val viewChat = stringResource(R.string.default_view_chat)
+                        ThemeGroup(
+                            options = listOf(viewTerminal, viewChat),
+                            selected = if (parseDefaultView(prefs.defaultView) == SessionMode.Chat) viewChat else viewTerminal,
+                            onSelect = { sel ->
+                                val mode = if (sel == viewChat) SessionMode.Chat else SessionMode.Terminal
+                                scope.launch { c.settings.setDefaultView(persistSessionMode(mode)) }
+                            },
+                        )
+                        Text(
+                            stringResource(R.string.default_view_helper),
+                            color = colors.inkDim,
+                            style = RivetType.xs,
+                            modifier = Modifier.padding(top = 8.dp),
+                        )
+
+                        Spacer(Modifier.height(12.dp))
+                        ToggleRow(
+                            label = stringResource(R.string.settings_auto_scroll),
+                            checked = prefs.autoScroll,
+                            onChange = { v -> scope.launch { c.settings.setAutoScroll(v) } },
+                        )
+                        Text(
+                            stringResource(R.string.settings_auto_scroll_helper),
+                            color = colors.inkDim,
+                            style = RivetType.xs,
+                        )
+
+                        SettingsH2(stringResource(R.string.settings_messages))
+                        ToggleRow(
+                            label = stringResource(R.string.settings_show_stats),
+                            checked = prefs.showStats,
+                            onChange = { v -> scope.launch { c.settings.setShowStats(v) } },
+                        )
+                        ToggleRow(
+                            label = stringResource(R.string.settings_action_row_always),
+                            checked = prefs.actionRowAlways,
+                            onChange = { v -> scope.launch { c.settings.setActionRowAlways(v) } },
+                        )
+
+                        SettingsH2(stringResource(R.string.section_code))
+                        ToggleRow(
+                            label = stringResource(R.string.code_line_numbers),
+                            checked = prefs.codeLineNumbers,
+                            onChange = { v -> scope.launch { c.settings.setCodeLineNumbers(v) } },
+                        )
+                        ToggleRow(
+                            label = stringResource(R.string.code_wrap),
+                            checked = prefs.codeWrap,
+                            onChange = { v -> scope.launch { c.settings.setCodeWrap(v) } },
+                        )
+
+                        SettingsH2(stringResource(R.string.section_notifications))
+                        ToggleRow(
+                            label = stringResource(R.string.settings_task_notifications),
+                            checked = prefs.taskNotifications,
+                            onChange = { v -> setTaskNotifications(v) },
+                        )
+                        Text(
+                            stringResource(R.string.settings_task_notifications_helper),
+                            color = colors.inkDim,
+                            style = RivetType.xs,
+                            modifier = Modifier.padding(top = 4.dp),
+                        )
+                        ToggleRow(
+                            label = stringResource(R.string.settings_agent_finished),
+                            checked = prefs.agentFinishedNotifications,
+                            onChange = { v -> setSessionNotice(v) { c.settings.setAgentFinishedNotifications(it) } },
+                        )
+                        Text(
+                            stringResource(R.string.settings_agent_finished_helper),
+                            color = colors.inkDim,
+                            style = RivetType.xs,
+                            modifier = Modifier.padding(top = 4.dp),
+                        )
+                        ToggleRow(
+                            label = stringResource(R.string.settings_needs_you),
+                            checked = prefs.needsYouNotifications,
+                            onChange = { v -> setSessionNotice(v) { c.settings.setNeedsYouNotifications(it) } },
+                        )
+                        Text(
+                            stringResource(R.string.settings_needs_you_helper),
+                            color = colors.inkDim,
+                            style = RivetType.xs,
+                            modifier = Modifier.padding(top = 4.dp),
+                        )
+                        Spacer(Modifier.height(12.dp))
+                        RivetButton(
+                            text = stringResource(R.string.action_system_notification_settings),
+                            onClick = {
+                                val intent = android.content.Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                                    .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, ctx.packageName)
+                                runCatching { ctx.startActivity(intent) }
+                            },
+                            variant = RivetButtonVariant.Outline,
+                        )
+                        Text(
+                            stringResource(R.string.settings_system_notifications_helper),
+                            color = colors.inkDim,
+                            style = RivetType.xs,
+                            modifier = Modifier.padding(top = 4.dp),
+                        )
+                    }
+                    SettingsTab.Appearance -> {
+                        SettingsH2(stringResource(R.string.section_appearance), first = true)
+                        ThemeGroup(
+                            options = listOf(appearLight, appearDark, appearSystem, appearOmarchy),
+                            selected = appearSelected,
+                            onSelect = { sel ->
+                                val mode = when (sel) {
+                                    appearLight -> "light"
+                                    appearDark -> "dark"
+                                    appearOmarchy -> "omarchy"
+                                    else -> "system"
                                 }
-                                null -> scope.launch {
-                                    probe = ProbeState.Testing
-                                    val result = withContext(Dispatchers.IO) {
-                                        runCatching {
-                                            val url = entry.trim().trimEnd('/')
-                                            c.settings.setEntryUrl(url)
-                                            c.transport.retarget(url, c.settings.snapshot().extraNodes)
-                                            val hz = c.transport.entry().healthz()
-                                            if (!hz.ok) error("unreachable (healthz failed)")
-                                            val catalog = runCatching { c.transport.entry().catalogAgents() }.getOrNull()
-                                            ProbeState.Ok(hz.name.ifBlank { url }, catalog?.agents?.size ?: 0)
+                                scope.launch { c.settings.setThemeMode(mode) }
+                            },
+                        )
+                        if (prefs.themeMode == "omarchy") {
+                            Spacer(Modifier.height(12.dp))
+                            FieldLabel(stringResource(R.string.omarchy_palette))
+                            RivetSelect(
+                                value = prefs.omarchyPalette,
+                                options = OMARCHY_PRESETS.map { SelectOption(it.id, it.name) },
+                                onChange = { id -> scope.launch { c.settings.setOmarchyPalette(id) } },
+                                title = stringResource(R.string.omarchy_palette),
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        }
+                        Text(
+                            stringResource(R.string.appearance_helper),
+                            color = colors.inkDim,
+                            style = RivetType.xs,
+                            modifier = Modifier.padding(top = 8.dp),
+                        )
+
+                        Spacer(Modifier.height(16.dp))
+                        FieldLabel(stringResource(R.string.font_size))
+                        ThemeGroup(
+                            options = FONT_SCALE_STEPS.map(::fontScaleLabel),
+                            selected = fontScaleLabel(prefs.fontScale),
+                            onSelect = { scope.launch { c.settings.setFontScale(fontScaleFromLabel(it)) } },
+                        )
+
+                        SettingsH2(stringResource(R.string.section_terminal))
+                        ThemeGroup(
+                            options = listOf(fontSmall, fontMedium, fontLarge),
+                            selected = fontSelected,
+                            onSelect = { sel ->
+                                val sp = when (sel) {
+                                    fontSmall -> 11
+                                    fontLarge -> 16
+                                    else -> 13
+                                }
+                                scope.launch { c.settings.setTerminalFontSp(sp) }
+                            },
+                        )
+
+                    }
+                    SettingsTab.Node -> {
+                        SettingsH2(stringResource(R.string.section_gateway), first = true)
+                        // settings.tsx:180-193 — the entry field follows the h1 directly
+                        // (no lead `h2`), then the auth helper paragraph.
+                        FieldLabel(stringResource(R.string.label_entry_url))
+                        RivetField(
+                            value = entry,
+                            onValueChange = { entry = it },
+                            placeholder = stringResource(R.string.hint_entry_url),
+                            size = RivetFieldSize.Settings,
+                        )
+                        Text(
+                            stringResource(R.string.settings_auth_helper),
+                            color = colors.inkDim,
+                            style = RivetType.xs,
+                            modifier = Modifier.padding(top = 8.dp),
+                        )
+                        Spacer(Modifier.height(16.dp))
+                        FieldLabel(stringResource(R.string.label_strict_pair))
+                        val strictOn = stringResource(R.string.strict_on)
+                        val strictOff = stringResource(R.string.strict_off)
+                        SegmentedControl(
+                            options = listOf(strictOn, strictOff),
+                            selected = if (prefs.strictHostnames) strictOn else strictOff,
+                            onSelect = { sel ->
+                                val on = sel == strictOn
+                                scope.launch {
+                                    c.settings.setStrictHostnames(on)
+                                    c.setStrictHostnames(on)
+                                    c.dropClients()
+                                    vm.refresh()
+                                }
+                            },
+                        )
+                        Spacer(Modifier.height(12.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                            RivetButton(
+                                text = stringResource(R.string.action_test_connection),
+                                onClick = {
+                                    when (validateEntryUrl(entry)) {
+                                        EntryUrlError.Blank, EntryUrlError.NotHttps -> {
+                                            probe = ProbeState.Fail(ctx.getString(R.string.error_https_required))
+                                        }
+                                        null -> scope.launch {
+                                            probe = ProbeState.Testing
+                                            val result = withContext(Dispatchers.IO) {
+                                                runCatching {
+                                                    val url = entry.trim().trimEnd('/')
+                                                    c.settings.setEntryUrl(url)
+                                                    c.transport.retarget(url, c.settings.snapshot().extraNodes)
+                                                    val hz = c.transport.entry().healthz()
+                                                    if (!hz.ok) error("unreachable (healthz failed)")
+                                                    val catalog = runCatching { c.transport.entry().catalogAgents() }.getOrNull()
+                                                    ProbeState.Ok(hz.name.ifBlank { url }, catalog?.agents?.size ?: 0)
+                                                }
+                                            }
+                                            probe = result.getOrElse { ProbeState.Fail(it.message ?: it.javaClass.simpleName) }
                                         }
                                     }
-                                    probe = result.getOrElse { ProbeState.Fail(it.message ?: it.javaClass.simpleName) }
-                                }
-                            }
-                        },
-                        variant = RivetButtonVariant.Outline,
-                    )
-                    RivetButton(
-                        text = stringResource(R.string.action_save),
-                        onClick = {
-                            when (validateEntryUrl(entry)) {
-                                EntryUrlError.Blank, EntryUrlError.NotHttps -> {
-                                    probe = ProbeState.Fail(ctx.getString(R.string.error_https_required))
-                                }
-                                null -> scope.launch {
-                                    c.settings.setEntryUrl(entry.trim().trimEnd('/'))
-                                    vm.refresh()
-                                    probe = ProbeState.Idle
-                                }
-                            }
-                        },
-                    )
-                }
-                Spacer(Modifier.height(16.dp))
-                when (val p = probe) {
-                    ProbeState.Idle -> Unit
-                    ProbeState.Testing -> Text(stringResource(R.string.probe_probing), color = colors.inkDim, style = RivetType.mono14)
-                    is ProbeState.Ok -> Text(
-                        if (p.agents == 1) stringResource(R.string.probe_ok_one, p.node)
-                        else stringResource(R.string.probe_ok, p.node, p.agents),
-                        color = colors.em,
-                        style = RivetType.mono14,
-                    )
-                    is ProbeState.Fail -> Text(stringResource(R.string.probe_fail, p.message), color = colors.red, style = RivetType.mono14)
-                }
-
-                SettingsH2(stringResource(R.string.section_identity))
-                if (summary == null) {
-                    Text(stringResource(R.string.no_identity), color = colors.red, style = RivetType.xs)
-                } else {
-                    FieldLabel(stringResource(R.string.label_subject))
-                    Text(summary.cn, color = colors.ink, style = RivetType.mono12)
-                    Spacer(Modifier.height(8.dp))
-                    FieldLabel(stringResource(R.string.label_fingerprint))
-                    Text(c.identity.deviceTag(), color = colors.ink, style = RivetType.mono12)
-                }
-                Spacer(Modifier.height(8.dp))
-                RivetButton(
-                    text = stringResource(R.string.action_import_p12),
-                    onClick = { pickP12.launch(arrayOf("*/*")) },
-                    variant = RivetButtonVariant.Outline,
-                )
-                if (pendingP12 != null) {
-                    Spacer(Modifier.height(8.dp))
-                    RivetField(
-                        value = pass,
-                        onValueChange = { pass = it },
-                        placeholder = stringResource(R.string.label_passphrase),
-                        password = true,
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    RivetButton(
-                        text = stringResource(R.string.action_install_cert),
-                        onClick = {
-                            val uriToImport = pendingP12 ?: return@RivetButton
-                            val pw = pass
-                            scope.launch {
-                                withContext(Dispatchers.IO) {
-                                    runCatching {
-                                        val bytes = ctx.contentResolver.openInputStream(uriToImport)?.use { it.readBytes() }
-                                            ?: error("could not read p12")
-                                        c.identity.importPkcs12(bytes, pw)
+                                },
+                                variant = RivetButtonVariant.Outline,
+                            )
+                            RivetButton(
+                                text = stringResource(R.string.action_save),
+                                onClick = {
+                                    when (validateEntryUrl(entry)) {
+                                        EntryUrlError.Blank, EntryUrlError.NotHttps -> {
+                                            probe = ProbeState.Fail(ctx.getString(R.string.error_https_required))
+                                        }
+                                        null -> scope.launch {
+                                            c.settings.setEntryUrl(entry.trim().trimEnd('/'))
+                                            vm.refresh()
+                                            probe = ProbeState.Idle
+                                        }
                                     }
-                                }
-                                    .onSuccess {
-                                        pendingP12 = null
-                                        pass = ""
-                                        identityGen++
-                                        c.dropClients()
-                                        vm.refresh()
+                                },
+                            )
+                        }
+                        Spacer(Modifier.height(16.dp))
+                        when (val p = probe) {
+                            ProbeState.Idle -> Unit
+                            ProbeState.Testing -> Text(stringResource(R.string.probe_probing), color = colors.inkDim, style = RivetType.mono14)
+                            is ProbeState.Ok -> Text(
+                                if (p.agents == 1) stringResource(R.string.probe_ok_one, p.node)
+                                else stringResource(R.string.probe_ok, p.node, p.agents),
+                                color = colors.em,
+                                style = RivetType.mono14,
+                            )
+                            is ProbeState.Fail -> Text(stringResource(R.string.probe_fail, p.message), color = colors.red, style = RivetType.mono14)
+                        }
+
+                    }
+                    SettingsTab.Device -> {
+                        SettingsH2(stringResource(R.string.section_identity), first = true)
+                        if (summary == null) {
+                            Text(stringResource(R.string.no_identity), color = colors.red, style = RivetType.xs)
+                        } else {
+                            FieldLabel(stringResource(R.string.label_subject))
+                            Text(summary.cn, color = colors.ink, style = RivetType.mono12)
+                            Spacer(Modifier.height(8.dp))
+                            FieldLabel(stringResource(R.string.label_fingerprint))
+                            Text(c.identity.deviceTag(), color = colors.ink, style = RivetType.mono12)
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        RivetButton(
+                            text = stringResource(R.string.action_import_p12),
+                            onClick = { pickP12.launch(arrayOf("*/*")) },
+                            variant = RivetButtonVariant.Outline,
+                        )
+                        if (pendingP12 != null) {
+                            Spacer(Modifier.height(8.dp))
+                            RivetField(
+                                value = pass,
+                                onValueChange = { pass = it },
+                                placeholder = stringResource(R.string.label_passphrase),
+                                password = true,
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            RivetButton(
+                                text = stringResource(R.string.action_install_cert),
+                                onClick = {
+                                    val uriToImport = pendingP12 ?: return@RivetButton
+                                    val pw = pass
+                                    scope.launch {
+                                        withContext(Dispatchers.IO) {
+                                            runCatching {
+                                                val bytes = ctx.contentResolver.openInputStream(uriToImport)?.use { it.readBytes() }
+                                                    ?: error("could not read p12")
+                                                c.identity.importPkcs12(bytes, pw)
+                                            }
+                                        }
+                                            .onSuccess {
+                                                pendingP12 = null
+                                                pass = ""
+                                                identityGen++
+                                                c.dropClients()
+                                                vm.refresh()
+                                            }
+                                            .onFailure { e -> probe = ProbeState.Fail(e.message ?: e.javaClass.simpleName) }
                                     }
-                                    .onFailure { e -> probe = ProbeState.Fail(e.message ?: e.javaClass.simpleName) }
-                            }
-                        },
-                    )
-                }
-                Spacer(Modifier.height(8.dp))
-                ForgetButton(onClick = { confirmForget = true })
-
-                SettingsH2(stringResource(R.string.section_appearance))
-                ThemeGroup(
-                    options = listOf(appearLight, appearDark, appearSystem, appearOmarchy),
-                    selected = appearSelected,
-                    onSelect = { sel ->
-                        val mode = when (sel) {
-                            appearLight -> "light"
-                            appearDark -> "dark"
-                            appearOmarchy -> "omarchy"
-                            else -> "system"
+                                },
+                            )
                         }
-                        scope.launch { c.settings.setThemeMode(mode) }
-                    },
-                )
-                if (prefs.themeMode == "omarchy") {
-                    Spacer(Modifier.height(12.dp))
-                    FieldLabel(stringResource(R.string.omarchy_palette))
-                    RivetSelect(
-                        value = prefs.omarchyPalette,
-                        options = OMARCHY_PRESETS.map { SelectOption(it.id, it.name) },
-                        onChange = { id -> scope.launch { c.settings.setOmarchyPalette(id) } },
-                        title = stringResource(R.string.omarchy_palette),
-                        modifier = Modifier.fillMaxWidth(),
-                    )
+                        Spacer(Modifier.height(8.dp))
+                        ForgetButton(onClick = { confirmForget = true })
+
+                    }
+                    SettingsTab.Advanced -> {
+                        SettingsH2(stringResource(R.string.section_experimental), first = true)
+                        Text(
+                            stringResource(R.string.experimental_helper),
+                            color = colors.inkDim,
+                            style = RivetType.xs,
+                            modifier = Modifier.padding(bottom = 8.dp),
+                        )
+                        ToggleRow(
+                            label = stringResource(R.string.nav_files),
+                            checked = prefs.expFiles,
+                            onChange = { v -> scope.launch { c.settings.setExpFiles(v) } },
+                        )
+                        ToggleRow(
+                            label = stringResource(R.string.nav_workflows),
+                            checked = prefs.expWorkflows,
+                            onChange = { v -> scope.launch { c.settings.setExpWorkflows(v) } },
+                        )
+
+                        UpdatesSection(c)
+
+                        Text(
+                            stringResource(R.string.settings_build_stamp, BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE),
+                            color = colors.inkDim,
+                            style = RivetType.xs,
+                            modifier = Modifier.padding(top = 40.dp),
+                        )
+                    }
                 }
-                Text(
-                    stringResource(R.string.appearance_helper),
-                    color = colors.inkDim,
-                    style = RivetType.xs,
-                    modifier = Modifier.padding(top = 8.dp),
-                )
-
-                Spacer(Modifier.height(16.dp))
-                FieldLabel(stringResource(R.string.font_size))
-                ThemeGroup(
-                    options = FONT_SCALE_STEPS.map(::fontScaleLabel),
-                    selected = fontScaleLabel(prefs.fontScale),
-                    onSelect = { scope.launch { c.settings.setFontScale(fontScaleFromLabel(it)) } },
-                )
-
-                SettingsH2(stringResource(R.string.section_conversations))
-                FieldLabel(stringResource(R.string.default_view))
-                val viewTerminal = stringResource(R.string.default_view_terminal)
-                val viewChat = stringResource(R.string.default_view_chat)
-                ThemeGroup(
-                    options = listOf(viewTerminal, viewChat),
-                    selected = if (parseDefaultView(prefs.defaultView) == SessionMode.Chat) viewChat else viewTerminal,
-                    onSelect = { sel ->
-                        val mode = if (sel == viewChat) SessionMode.Chat else SessionMode.Terminal
-                        scope.launch { c.settings.setDefaultView(persistSessionMode(mode)) }
-                    },
-                )
-                Text(
-                    stringResource(R.string.default_view_helper),
-                    color = colors.inkDim,
-                    style = RivetType.xs,
-                    modifier = Modifier.padding(top = 8.dp),
-                )
-
-                SettingsH2(stringResource(R.string.section_code))
-                ToggleRow(
-                    label = stringResource(R.string.code_line_numbers),
-                    checked = prefs.codeLineNumbers,
-                    onChange = { v -> scope.launch { c.settings.setCodeLineNumbers(v) } },
-                )
-                ToggleRow(
-                    label = stringResource(R.string.code_wrap),
-                    checked = prefs.codeWrap,
-                    onChange = { v -> scope.launch { c.settings.setCodeWrap(v) } },
-                )
-
-                SettingsH2(stringResource(R.string.section_terminal))
-                ThemeGroup(
-                    options = listOf(fontSmall, fontMedium, fontLarge),
-                    selected = fontSelected,
-                    onSelect = { sel ->
-                        val sp = when (sel) {
-                            fontSmall -> 11
-                            fontLarge -> 16
-                            else -> 13
-                        }
-                        scope.launch { c.settings.setTerminalFontSp(sp) }
-                    },
-                )
-
-                SettingsH2(stringResource(R.string.section_notifications))
-                ToggleRow(
-                    label = stringResource(R.string.settings_task_notifications),
-                    checked = prefs.taskNotifications,
-                    onChange = { v -> setTaskNotifications(v) },
-                )
-                Text(
-                    stringResource(R.string.settings_task_notifications_helper),
-                    color = colors.inkDim,
-                    style = RivetType.xs,
-                    modifier = Modifier.padding(top = 4.dp),
-                )
-                SettingsH2(stringResource(R.string.settings_messages))
-                ToggleRow(
-                    label = stringResource(R.string.settings_show_stats),
-                    checked = prefs.showStats,
-                    onChange = { v -> scope.launch { c.settings.setShowStats(v) } },
-                )
-                ToggleRow(
-                    label = stringResource(R.string.settings_action_row_always),
-                    checked = prefs.actionRowAlways,
-                    onChange = { v -> scope.launch { c.settings.setActionRowAlways(v) } },
-                )
-
-                SettingsH2(stringResource(R.string.section_experimental))
-                Text(
-                    stringResource(R.string.experimental_helper),
-                    color = colors.inkDim,
-                    style = RivetType.xs,
-                    modifier = Modifier.padding(bottom = 8.dp),
-                )
-                ToggleRow(
-                    label = stringResource(R.string.nav_files),
-                    checked = prefs.expFiles,
-                    onChange = { v -> scope.launch { c.settings.setExpFiles(v) } },
-                )
-                ToggleRow(
-                    label = stringResource(R.string.nav_workflows),
-                    checked = prefs.expWorkflows,
-                    onChange = { v -> scope.launch { c.settings.setExpWorkflows(v) } },
-                )
-
-                UpdatesSection(c)
 
                 Spacer(Modifier.height(32.dp))
             }
@@ -494,4 +617,12 @@ private fun ForgetButton(onClick: () -> Unit) {
         variant = RivetButtonVariant.Outline,
         textColor = RivetTheme.colors.ink,
     )
+}
+
+private fun SettingsTab.labelRes(): Int = when (this) {
+    SettingsTab.General -> R.string.settings_tab_general
+    SettingsTab.Appearance -> R.string.settings_tab_appearance
+    SettingsTab.Node -> R.string.settings_tab_node
+    SettingsTab.Device -> R.string.settings_tab_device
+    SettingsTab.Advanced -> R.string.settings_tab_advanced
 }

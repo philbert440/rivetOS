@@ -14,3 +14,9 @@ fun locate(item: ChatItem, nodeId: String, nodeName: String, nodeDenUrl: String)
 /** Newest-first across every node. Pins stay mingled (desktop 0.5.14). */
 fun sortLocatedByRecency(items: List<LocatedChatItem>): List<LocatedChatItem> =
     items.sortedWith(compareByDescending<LocatedChatItem> { it.item.updatedAt }.thenBy { it.item.key })
+
+/** The listed row for [key] (exact key, else the same den room — see [findChatItem]). */
+fun findLocatedChat(items: List<LocatedChatItem>, key: String?): LocatedChatItem? {
+    val hit = findChatItem(items.map { it.item }, key) ?: return null
+    return items.find { it.item === hit }
+}

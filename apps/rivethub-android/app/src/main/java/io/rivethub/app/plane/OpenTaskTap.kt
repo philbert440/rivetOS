@@ -9,7 +9,13 @@ package io.rivethub.app.plane
  * [fromLaunch] is true when the tap came from the intent the Activity was
  * CREATED with (read in onCreate), false for an `onNewIntent` delivery.
  */
-data class OpenTaskTap(val taskId: String, val marker: String, val fromLaunch: Boolean = false)
+data class OpenTaskTap(
+    val taskId: String,
+    val marker: String,
+    val fromLaunch: Boolean = false,
+    /** Set for a session notice (needs you / agent finished): open this conversation, not a task. */
+    val sessionId: String? = null,
+)
 
 /** Recent `onNewIntent` markers kept across recreation; older ones fall off. */
 const val CONSUMED_TAPS_MAX = 8
@@ -59,6 +65,18 @@ fun openTaskFromIntent(extra: String?, nonce: String?, consumed: ConsumedTaps, f
     val marker = openTaskMarker(taskId, nonce?.trim()?.takeIf { it.isNotEmpty() })
     if (marker in consumed) return null
     return OpenTaskTap(taskId, marker, fromLaunch)
+}
+
+/**
+ * A tapped session notice (needs you / agent finished). Same marker rules as a
+ * task tap, in its own `session:` namespace so a session and a task with the
+ * same id never consume each other. A task extra on the same intent wins.
+ */
+fun openSessionFromIntent(extra: String?, nonce: String?, consumed: ConsumedTaps, fromLaunch: Boolean): OpenTaskTap? {
+    val sessionId = extra?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+    val marker = openTaskMarker("session:$sessionId", nonce?.trim()?.takeIf { it.isNotEmpty() })
+    if (marker in consumed) return null
+    return OpenTaskTap(taskId = "", marker = marker, fromLaunch = fromLaunch, sessionId = sessionId)
 }
 
 /** [consumed] plus [marker], newest last, at most [CONSUMED_TAPS_MAX]. */

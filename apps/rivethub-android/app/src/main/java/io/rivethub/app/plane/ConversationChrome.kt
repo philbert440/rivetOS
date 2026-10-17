@@ -26,16 +26,19 @@ fun conversationEmptyKind(
 }
 
 /**
- * `+ new`: prefer the session agent, then the current agent, if still on the roster.
- * Callers mint drafts with Plus; PickAgent leaves the no-agent fallback to the host.
- * Omitting sessionAgentId preserves the conversations pane's current-agent rule.
+ * `+ new`: prefer the session agent, then the current agent, then Settings →
+ * General's default agent, each only if still on the roster (a default that is
+ * not is skipped, as on the desktop). Callers mint drafts with Plus; PickAgent
+ * leaves the no-agent fallback to the host. Omitting sessionAgentId preserves
+ * the conversations pane's current-agent rule.
  */
 fun newConversationAction(
     currentAgentId: String,
     agentIds: Collection<String>,
     sessionAgentId: String? = null,
+    defaultAgentId: String? = null,
 ): NewConversationAction {
-    val id = listOfNotNull(sessionAgentId, currentAgentId)
+    val id = listOfNotNull(sessionAgentId, currentAgentId, defaultAgentId)
         .map(String::trim)
         .firstOrNull { it.isNotEmpty() && it in agentIds }
     return if (id != null) NewConversationAction.ForAgent(id) else NewConversationAction.PickAgent

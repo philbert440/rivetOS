@@ -107,4 +107,24 @@ class OpenTaskTapTest {
         assertTrue(later.marker in saved)
         assertFalse(openTaskMarker("task-c", "3") in saved)
     }
+
+    @Test fun `a session notice tap opens its conversation once`() {
+        val tap = openSessionFromIntent("grok:a", "1000", ConsumedTaps(), fromLaunch = false)!!
+        assertEquals("grok:a", tap.sessionId)
+        val saved = rememberConsumedTap(ConsumedTaps(), tap)
+        assertNull(openSessionFromIntent("grok:a", "1000", saved, fromLaunch = false))
+        assertEquals("grok:a", openSessionFromIntent("grok:a", "2000", saved, fromLaunch = false)?.sessionId)
+        assertNull(openSessionFromIntent(" ", "1000", ConsumedTaps(), fromLaunch = false))
+        // Its own namespace: a task with the same id is a different tap.
+        assertEquals("grok:a", openTaskFromIntent("grok:a", "1000", saved, fromLaunch = false)?.taskId)
+        assertNull(openTaskFromIntent("grok:a", "1000", saved, fromLaunch = false)?.sessionId)
+    }
+
+    @Test fun `a session tap finds its listed row by key or den room`() {
+        val a = locate(ChatItem("codex:a", ChatItemKind.HARNESS, "a", sessionId = "codex:a"), "n1", "N1", "http://n1")
+        val b = locate(ChatItem("codex:b", ChatItemKind.HARNESS, "b", sessionId = "codex:b"), "n2", "N2", "http://n2")
+        assertEquals(b, findLocatedChat(listOf(a, b), "codex:b"))
+        assertNull(findLocatedChat(listOf(a, b), "codex:zzz"))
+        assertNull(findLocatedChat(listOf(a, b), null))
+    }
 }
