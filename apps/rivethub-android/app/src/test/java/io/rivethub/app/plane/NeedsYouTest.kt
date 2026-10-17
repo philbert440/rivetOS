@@ -63,4 +63,88 @@ class NeedsYouTest {
         assertTrue(shouldNotifySession(enabled = true, appResumed = true, sessionId = "codex:b", openSessionKey = "codex:a"))
         assertFalse(shouldNotifySession(enabled = false, appResumed = false, sessionId = "codex:a", openSessionKey = null))
     }
+
+    @Test
+    fun `a session missing from the list keeps its episode and is not re-announced`() {
+        val e = NeedsEpisodes()
+        e.reconcile(emptySet(), now = 0)
+        assertEquals(listOf("a"), e.reconcile(setOf("a"), now = 10, present = setOf("a", "b")))
+        // Its node timed out: "a" is gone from the list, not resolved.
+        assertEquals(emptyList<String>(), e.reconcile(emptySet(), now = 20, present = setOf("b")))
+        assertEquals(10L, e.since["a"])
+        assertEquals(emptyList<String>(), e.reconcile(setOf("a"), now = 30, present = setOf("a", "b")))
+        assertEquals(10L, e.since["a"])
+        // Listed and no longer waiting: the episode ends.
+        e.reconcile(emptySet(), now = 40, present = setOf("a", "b"))
+        assertNull(e.since["a"])
+    }
+
+    @Test
+    fun `a node whose roster lands late primes instead of announcing`() {
+        val e = NeedsEpisodes()
+        e.reconcile(emptySet(), now = 0)
+        val settled = setOf("a")
+        assertEquals(
+            listOf("a"),
+            e.reconcile(setOf("a", "late"), now = 10, settled = { it in settled }),
+        )
+        // The late node has settled; its already-waiting session stays quiet.
+        assertEquals(emptyList<String>(), e.reconcile(setOf("a", "late"), now = 20))
+        assertEquals(listOf("new"), e.reconcile(setOf("a", "late", "new"), now = 30))
+    }
+
+    @Test
+    fun `clear primes the next roster again`() {
+        val e = NeedsEpisodes()
+        e.reconcile(emptySet(), now = 0)
+        assertEquals(listOf("a"), e.reconcile(setOf("a"), now = 10))
+        e.clear()
+        assertNull(e.since["a"])
+        assertEquals(emptyList<String>(), e.reconcile(setOf("b"), now = 20))
+        assertEquals(listOf("c"), e.reconcile(setOf("b", "c"), now = 30))
+    }
+
+    @Test
+    fun `status frames block a session until every source moves on`() {
+        val b = StatusBlocks()
+        assertTrue(b.onStatus("grok:a", "blocked", "protocol"))
+        assertTrue(b.isBlocked("grok:a"))
+        assertFalse(b.onStatus("grok:a", "blocked", "protocol"))
+        // A transcript "working" frame mid-permission does not clear it.
+        assertFalse(b.onStatus("grok:a", "working", "transcript"))
+        assertTrue(b.isBlocked("grok:a"))
+        assertTrue(b.onStatus("grok:a", "working", "protocol"))
+        assertFalse(b.isBlocked("grok:a"))
+        assertTrue(b.isEmpty)
+    }
+
+    @Test
+    fun `status blocks follow a rekey and drop on end`() {
+        val b = StatusBlocks()
+        b.onStatus("opencode:old", "blocked", "protocol")
+        assertTrue(b.onSessionUpdated("opencode:new", "active", previousSessionId = "opencode:old"))
+        assertFalse(b.isBlocked("opencode:old"))
+        assertTrue(b.isBlocked("opencode:new"))
+        assertFalse(b.onSessionUpdated("opencode:new", "active"))
+        assertTrue(b.onSessionUpdated("opencode:new", "ended"))
+        assertFalse(b.isBlocked("opencode:new"))
+    }
+
+    @Test
+    fun `status blocks surface a session as waiting`() {
+        val items = listOf(
+            ChatItem("grok:a", ChatItemKind.HARNESS, "a", sessionId = "grok:a"),
+            ChatItem("grok:b", ChatItemKind.HARNESS, "b", sessionId = "grok:b"),
+            ChatItem("grok:c", ChatItemKind.HARNESS, "c", sessionId = "grok:c", status = "ended"),
+        )
+        val b = StatusBlocks()
+        b.onStatus("grok:a", "blocked", "protocol")
+        b.onStatus("grok:c", "blocked", "protocol")
+        val out = withStatusBlocks(items, b)
+        assertEquals(listOf("grok:a"), out.filter { it.blocked }.map { it.key })
+        assertEquals(listOf("grok:a"), waitingRows(out, emptyMap()).map { it.id })
+        b.onStatus("grok:a", "idle", "protocol")
+        assertTrue(withStatusBlocks(items, b).none { it.blocked })
+        assertEquals(items, withStatusBlocks(items, null))
+    }
 }

@@ -61,6 +61,8 @@ import io.rivethub.app.plane.SystemNotifier
 import io.rivethub.app.plane.FinishedTurnTracker
 import io.rivethub.app.plane.INBOX_KIND_NEEDS_YOU
 import io.rivethub.app.plane.NeedsEpisodes
+import io.rivethub.app.plane.StatusBlocks
+import io.rivethub.app.plane.withStatusBlocks
 import io.rivethub.app.plane.WaitingRow
 import io.rivethub.app.plane.shouldNotifySession
 import io.rivethub.app.plane.waitingRows
@@ -205,6 +207,18 @@ class HubViewModel(private val c: AppContainer, inboxLabels: InboxLabels) : View
     /** Waiting episodes (plane/NeedsYou.kt); primed until the first full refresh lands. */
     private val needsEpisodes = NeedsEpisodes()
     private var rosterSettled = false
+
+    /** Nodes whose roster has been reconciled once (a late node primes, never announces). */
+    private val settledNodes = HashSet<String>()
+
+    /** Nodes whose bundle has landed a roster (a registry frame alone does not count). */
+    private val landedNodes = HashSet<String>()
+
+    /** Registry `status: 'blocked'` frames per node URL (ACP drivers; plane/NeedsYou.kt). */
+    private val statusBlocks = HashMap<String, StatusBlocks>()
+
+    /** Identity generation the episode/turn trackers belong to; a switch resets them. */
+    private var trackersIdentityGen: Int? = null
 
     init {
         viewModelScope.launch {
@@ -471,6 +485,7 @@ class HubViewModel(private val c: AppContainer, inboxLabels: InboxLabels) : View
         plane.clear()
         legacy.clear()
         descriptors.clear()
+        resetSessionTrackers(null)
         _state.value = UiState()
     }
 
@@ -505,9 +520,21 @@ class HubViewModel(private val c: AppContainer, inboxLabels: InboxLabels) : View
         c.settings.setAgentPointers(encodePointers(pointers.all()))
     }
 
+    /** Forget needs-you episodes, finished-turn edges and status blocks (new identity / forget). */
+    private fun resetSessionTrackers(identityGen: Int?) {
+        trackersIdentityGen = identityGen
+        rosterSettled = false
+        settledNodes.clear()
+        landedNodes.clear()
+        statusBlocks.clear()
+        needsEpisodes.clear()
+        finishedTurns.clear()
+    }
+
     private suspend fun refreshOnce(gen: Int) {
         try {
             val identityGen = c.identity.generation()
+            if (trackersIdentityGen != identityGen) resetSessionTrackers(identityGen)
             _state.update {
                 it.copy(
                     loading = true,
@@ -553,6 +580,9 @@ class HubViewModel(private val c: AppContainer, inboxLabels: InboxLabels) : View
             val live = nodes.map { it.denUrl.trimEnd('/') }.toSet()
             descriptors.keys.filter { it !in live }.forEach { descriptors.remove(it) }
             plane.keys.filter { it !in live }.forEach { plane.remove(it) }
+            statusBlocks.keys.retainAll(live)
+            settledNodes.retainAll(live)
+            landedNodes.retainAll(live)
             legacy.keys.filter { it !in live }.forEach { legacy.remove(it) }
             _state.update {
                 it.copy(
@@ -707,6 +737,7 @@ class HubViewModel(private val c: AppContainer, inboxLabels: InboxLabels) : View
             return
         }
         if (bundle.ok) {
+            landedNodes += url
             descriptors[url] = bundle.desc
             plane[url] = HashMap(bundle.planeRows)
             legacy[url] = bundle.legacyRows
@@ -774,12 +805,22 @@ class HubViewModel(private val c: AppContainer, inboxLabels: InboxLabels) : View
                 }
                 rebuildItems()
             }
+            is HarnessEvent.Status -> {
+                val blocks = statusBlocks.getOrPut(nodeUrl) { StatusBlocks() }
+                if (blocks.onStatus(event.sessionId, event.status, event.source)) rebuildItems()
+            }
             is HarnessEvent.SessionUpdated -> {
                 if (finishedTurns.onStatus(event.sessionId, event.status, event.previousSessionId)) {
                     notifyAgentFinished(event.sessionId)
                 }
-                val buckets = plane[nodeUrl] ?: return
-                var changed = false
+                val blocksMoved = statusBlocks[nodeUrl]
+                    ?.onSessionUpdated(event.sessionId, event.status, event.previousSessionId) == true
+                val buckets = plane[nodeUrl]
+                if (buckets == null) {
+                    if (blocksMoved) rebuildItems()
+                    return
+                }
+                var changed = blocksMoved
                 for ((hid, result) in buckets.toList()) {
                     val list = result.getOrNull() ?: continue
                     val next = applyRegistryEvent(
@@ -830,7 +871,9 @@ class HubViewModel(private val c: AppContainer, inboxLabels: InboxLabels) : View
                 nodeDrafts.associate { it.id to it.createdAt },
                 pins,
             )
-            for (item in items) located += locate(item, node.id, node.name.ifBlank { node.id }, node.denUrl)
+            for (item in withStatusBlocks(items, statusBlocks[url])) {
+                located += locate(item, node.id, node.name.ifBlank { node.id }, node.denUrl)
+            }
         }
         for (d in drafts) {
             if (d.nodeDenUrl.trimEnd('/') in seen) continue
@@ -842,8 +885,20 @@ class HubViewModel(private val c: AppContainer, inboxLabels: InboxLabels) : View
         // Needs you: every rebuild reconciles the waiting set. Until the first
         // full refresh has landed, sessions already waiting are primed, not
         // announced (no burst of notices at launch).
-        val waitingItems = sorted.map { it.item }.filter { it.blocked }
-        val fresh = needsEpisodes.reconcile(waitingItems.map { it.key }.toSet(), System.currentTimeMillis(), rosterSettled)
+        // A node is settled only after a rebuild that already held its roster,
+        // so a node that times out at launch and lands later primes its
+        // waiting sessions instead of announcing them all.
+        val waiting = sorted.filter { it.item.blocked }
+        val waitingItems = waiting.map { it.item }
+        val nodeOf = waiting.associate { it.item.key to it.nodeDenUrl.trimEnd('/') }
+        val fresh = needsEpisodes.reconcile(
+            blocked = waitingItems.map { it.key }.toSet(),
+            now = System.currentTimeMillis(),
+            ready = rosterSettled,
+            present = sorted.map { it.item.key }.toSet(),
+            settled = { id -> nodeOf[id] in settledNodes },
+        )
+        if (rosterSettled) settledNodes += landedNodes
         _state.update { it.copy(items = sorted, needsYou = waitingRows(waitingItems, needsEpisodes.since)) }
         fresh.forEach(::notifyNeedsYou)
     }
