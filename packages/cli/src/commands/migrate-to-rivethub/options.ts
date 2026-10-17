@@ -136,7 +136,8 @@ export const HELP_TEXT = `
     6. Moves ~/.rivetos to ~/.rivethub and links ~/.rivetos back (before the start)
     7. Installs, enables and starts rivethub.service in the old unit's scope
     8. Health: rivethub.service active, gateway /healthz, rh status
-    A failure from step 3 on puts rivetos.service and ~/.rivetos back.
+    A failure or an interrupt (Ctrl-C, SSH drop) from step 3 on puts
+    rivetos.service and ~/.rivetos back. Only one run per node at a time.
 
   Exit codes:
     0  migrated (or already migrated / nothing to roll back)

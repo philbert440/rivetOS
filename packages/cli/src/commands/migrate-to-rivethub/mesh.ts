@@ -8,6 +8,12 @@
  * parallel like update) so the first Postgres adoption finishes before the
  * next node looks at the shared database, and so a bad release stops at the
  * first node instead of reaching all of them.
+ *
+ * A real (non dry) run is started detached on the node (setsid + nohup,
+ * output to a log under ~/.cache/rivethub-migrate) and then followed over a
+ * second SSH connection, so a dropped connection or a timeout here never
+ * kills a node mid-switch: the follow reconnects, and the node's own run
+ * finishes (or recovers) either way.
  */
 
 import { basename, dirname, join } from 'node:path'
@@ -16,10 +22,22 @@ import type { MeshFile, MeshNode } from '../../lib/mesh-file.js'
 import { quoteShellArg } from '../../lib/ssh.js'
 import { EXIT_FAILED, EXIT_OK, EXIT_REFUSED } from './execute.js'
 import type { Host } from './host.js'
+import { RUN_DIR } from './lock.js'
 import { forwardedFlags, type MigrateOptions } from './options.js'
+import { stampOf } from './plan.js'
 
 /** Remote directory (relative to the SSH login's home) for --binary uploads. */
-export const REMOTE_BINARY_DIR = '.cache/rivethub-migrate'
+export const REMOTE_BINARY_DIR = RUN_DIR
+
+/** How long to follow one node's detached run before giving up on it. */
+export const REMOTE_RUN_TIMEOUT_MS = 60 * 60_000
+/** SSH reconnects while following a detached run. */
+export const FOLLOW_RECONNECTS = 12
+const RECONNECT_DELAY_MS = 5_000
+/** sshRun's code for an SSH failure (ssh's own exit 255, or killed). */
+const SSH_FAILED = 255
+/** The detached run is gone without leaving an exit code. */
+export const EXIT_RUN_LOST = 4
 
 export interface MeshDeps {
   host: Host
@@ -66,6 +84,81 @@ export function remoteCommand(root: string, flags: string[]): string {
     '{ echo "this node\'s RivetOS CLI predates migrate-to-rivethub — run rivetos update --mesh first" >&2; exit 3; };',
     `$cli ${args}`,
   ].join(' ')
+}
+
+function runBase(runId: string): string {
+  return `${RUN_DIR}/run-${runId}`
+}
+
+/**
+ * Start `inner` detached from the SSH session: a new session (setsid) that
+ * ignores SIGHUP (nohup), output in <base>.log, exit code in <base>.exit
+ * once it finishes. Returns once the run has written its pid.
+ */
+export function detachedStartCommand(runId: string, inner: string): string {
+  const base = runBase(runId)
+  const script = `echo $$ > ${base}.pid; ( ${inner} ); echo $? > ${base}.exit.tmp && mv ${base}.exit.tmp ${base}.exit`
+  return [
+    `mkdir -p ${RUN_DIR} || exit 1;`,
+    `rm -f ${base}.exit ${base}.pid;`,
+    'if command -v setsid >/dev/null 2>&1; then s=setsid; else s=; fi;',
+    `$s nohup bash -c ${quoteShellArg(script)} > ${base}.log 2>&1 < /dev/null &`,
+    `for i in $(seq 1 50); do [ -s ${base}.pid ] && exit 0; sleep 0.1; done;`,
+    'echo "the migration did not start on this node" >&2; exit 1',
+  ].join(' ')
+}
+
+/**
+ * Stream a detached run's log until it finishes and exit with its code;
+ * EXIT_RUN_LOST when the run died without one (killed, rebooted).
+ */
+export function followCommand(runId: string, fromStart: boolean): string {
+  const base = runBase(runId)
+  return [
+    `tail -n ${fromStart ? '+1' : '20'} -F ${base}.log 2>/dev/null & t=$!;`,
+    `while [ ! -f ${base}.exit ]; do`,
+    `if ! kill -0 "$(cat ${base}.pid 2>/dev/null)" 2>/dev/null && [ ! -f ${base}.exit ]; then`,
+    `kill $t 2>/dev/null; echo "the migration on this node stopped without a result; see ~/${base}.log" >&2; exit ${String(EXIT_RUN_LOST)};`,
+    'fi; sleep 2; done;',
+    `sleep 1; kill $t 2>/dev/null; exit "$(cat ${base}.exit)"`,
+  ].join(' ')
+}
+
+async function runDetached(
+  deps: MeshDeps,
+  address: string,
+  user: string,
+  inner: string,
+  tag: string,
+): Promise<number> {
+  const { host } = deps
+  const runId = stampOf(host.now())
+  const started = await deps.sshRun(address, user, detachedStartCommand(runId, inner), 60_000)
+  if (started !== 0) {
+    host.error(`  ${tag} ❌ could not start the migration on ${address} (exit ${String(started)})`)
+    return started === SSH_FAILED ? EXIT_FAILED : started
+  }
+  host.log(`  ${tag} running detached on the node; its log: ~/${runBase(runId)}.log`)
+  const deadline = host.now().getTime() + REMOTE_RUN_TIMEOUT_MS
+  for (let attempt = 0; ; attempt++) {
+    const left = deadline - host.now().getTime()
+    if (left <= 0) {
+      host.error(
+        `  ${tag} ❌ no result after ${String(REMOTE_RUN_TIMEOUT_MS / 60_000)} min; the run continues on the node — check ~/${runBase(runId)}.log there.`,
+      )
+      return EXIT_FAILED
+    }
+    const code = await deps.sshRun(address, user, followCommand(runId, attempt === 0), left)
+    if (code !== SSH_FAILED) return code
+    if (attempt >= FOLLOW_RECONNECTS) {
+      host.error(
+        `  ${tag} ❌ lost the SSH connection to ${address}; the run continues on the node — check ~/${runBase(runId)}.log there.`,
+      )
+      return EXIT_FAILED
+    }
+    host.error(`  ${tag} ⚠️  lost the SSH connection; the node's run continues. Reconnecting…`)
+    await host.sleep(RECONNECT_DELAY_MS)
+  }
 }
 
 function outcomeOf(code: number, dryRun: boolean): NodeOutcome {
@@ -124,17 +217,20 @@ export async function meshMigrate(opts: MigrateOptions, deps: MeshDeps): Promise
 
     const root = node.installRoot?.trim() || installRoot()
     host.log(`  ${tag} ── ${node.host} as ${user}`)
-    const code = await deps.sshRun(
-      node.host,
-      user,
-      remoteCommand(root, forwardedFlags(opts, remoteBinary)),
-      30 * 60_000,
-    )
-    const outcome = code === 3 ? 'failed' : outcomeOf(code, opts.dryRun)
+    const inner = remoteCommand(root, forwardedFlags(opts, remoteBinary))
+    const code = opts.dryRun
+      ? await deps.sshRun(node.host, user, inner, 30 * 60_000)
+      : await runDetached(deps, node.host, user, inner, tag)
+    const outcome = code === 3 || code === EXIT_RUN_LOST ? 'failed' : outcomeOf(code, opts.dryRun)
     rows.push({
       name: node.name,
       outcome,
-      detail: code === 3 ? 'no capable CLI' : `exit ${String(code)}`,
+      detail:
+        code === 3
+          ? 'no capable CLI'
+          : code === EXIT_RUN_LOST
+            ? 'run lost (see node log)'
+            : `exit ${String(code)}`,
     })
     host.log('')
     if (outcome === 'failed' && !opts.dryRun) {
