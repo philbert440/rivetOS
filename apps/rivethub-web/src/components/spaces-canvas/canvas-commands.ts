@@ -101,8 +101,8 @@ export function mruPreviewId(list: readonly string[], step: number): string | un
 export function removeSpaceMessage(name: string, threadCount: number, liveCount: number): string {
   const threads =
     threadCount === 0
-      ? `It has no threads yet. This can't be undone, and you'll have to make a new one if you want it back.`
-      : `This moves its ${String(threadCount)} thread${threadCount === 1 ? '' : 's'} to History${
+      ? `It has no sessions yet. This can't be undone, and you'll have to make a new one if you want it back.`
+      : `This moves its ${String(threadCount)} session${threadCount === 1 ? '' : 's'} to History${
           liveCount > 0 ? `, ${String(liveCount)} of them still active` : ''
         }. This can't be undone, and you'll have to make a new one if you want it back.`
   return `Remove “${name}”? ${threads}`

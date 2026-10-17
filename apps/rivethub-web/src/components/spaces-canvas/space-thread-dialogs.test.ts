@@ -123,15 +123,12 @@ function setField(selector: string, value: string): void {
   })
 }
 
-function editDialog(
-  space: ReturnType<typeof useSpaces.getState>['spaces'][number],
-  descriptors?: HarnessDescriptor[],
-): ReactNode {
+function editDialog(space: ReturnType<typeof useSpaces.getState>['spaces'][number]): ReactNode {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return createElement(
     QueryClientProvider,
     { client },
-    createElement(SpaceDefaultsDialog, { space, descriptors, onClose: () => undefined }),
+    createElement(SpaceDefaultsDialog, { space, onClose: () => undefined }),
   )
 }
 
@@ -141,6 +138,17 @@ function submitForm(): void {
   act(() => {
     form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
   })
+}
+
+/** Start the card and return the settings it wrote (the card has no
+ *  model or effort pickers; these come from the project, else the agent). */
+function startedSettings(): Record<string, unknown> | undefined {
+  setField('#new-thread-prompt', 'go')
+  act(() => {
+    buttonNamed('Start')?.click()
+  })
+  return Object.values(useChatSettings.getState().byKey).at(-1) as
+    Record<string, unknown> | undefined
 }
 
 function threadDialog(
@@ -162,7 +170,7 @@ function threadDialog(
 }
 
 describe('NewThreadDialog seeding', () => {
-  it('keeps space model and effort when the roster is already cached', () => {
+  it('keeps project model and effort when the roster is already cached', () => {
     roster.agents = [PRESET]
     roster.isLoading = false
     useConnection.getState().addNode({ name: 'den-a', baseUrl: PRESET.sourceNodeBaseUrl })
@@ -179,8 +187,8 @@ describe('NewThreadDialog seeding', () => {
         started = id
       }),
     )
-    expect(document.querySelector('[aria-label="reasoning effort: High"]')).not.toBeNull()
-    expect(document.querySelector('[aria-label="reasoning effort: Off"]')).toBeNull()
+    // No model or effort pickers on the card.
+    expect(document.querySelector('[aria-label^="reasoning effort"]')).toBeNull()
     expect(document.querySelector('[aria-label="Agent"]')?.textContent).toContain('Reviewer')
     setField('#new-thread-prompt', 'ship it')
     const start = buttonNamed('Start')
@@ -198,7 +206,7 @@ describe('NewThreadDialog seeding', () => {
     })
   })
 
-  it('keeps space model and effort when the roster is still loading at open', () => {
+  it('keeps project model and effort when the roster is still loading at open', () => {
     roster.agents = []
     roster.isLoading = true
     useConnection.getState().addNode({ name: 'den-a', baseUrl: PRESET.sourceNodeBaseUrl })
@@ -210,21 +218,16 @@ describe('NewThreadDialog seeding', () => {
       harnessId: 'claude-code',
     })
     mount(threadDialog(spaceId))
-    expect(document.querySelector('[aria-label="reasoning effort: Off"]')).toBeNull()
-    expect(document.querySelector('[aria-label="reasoning effort: High"]')).toBeNull()
     expect(isDisabled(buttonNamed('Start'))).toBe(true)
 
     roster.agents = [PRESET]
     roster.isLoading = false
     rerender(threadDialog(spaceId))
-    expect(document.querySelector('[aria-label="reasoning effort: High"]')).not.toBeNull()
-    expect(document.querySelector('[aria-label="reasoning effort: Off"]')).toBeNull()
     expect(document.querySelector('[aria-label="Agent"]')?.textContent).toContain('Reviewer')
-    setField('#new-thread-prompt', 'ship it')
-    expect(isDisabled(buttonNamed('Start'))).toBe(false)
+    expect(startedSettings()).toMatchObject({ model: 'm2', effort: 'high' })
   })
 
-  it('re-applies the next space overrides when the agent id does not change', () => {
+  it('re-applies the next project overrides when the agent id does not change', () => {
     roster.agents = [PRESET]
     roster.isLoading = false
     const first = useSpaces.getState().addSpace('Alpha')
@@ -242,11 +245,8 @@ describe('NewThreadDialog seeding', () => {
       harnessId: 'claude-code',
     })
     mount(threadDialog(first))
-    expect(document.querySelector('[aria-label="reasoning effort: High"]')).not.toBeNull()
     rerender(threadDialog(second))
-    expect(document.querySelector('[aria-label="reasoning effort: Low"]')).not.toBeNull()
-    expect(document.querySelector('[aria-label="reasoning effort: Off"]')).toBeNull()
-    expect(document.querySelector('[aria-label="reasoning effort: High"]')).toBeNull()
+    expect(startedSettings()).toMatchObject({ model: 'm3', effort: 'low' })
   })
 
   it('says when the saved node is off the roster and starts on the hub', () => {
@@ -289,7 +289,7 @@ describe('NewThreadDialog seeding', () => {
     ).toBe(base)
   })
 
-  it("carries the space's deleted preset when the agent is left untouched", () => {
+  it("carries the project's deleted preset when the agent is left untouched", () => {
     roster.agents = [PRESET]
     roster.isLoading = false
     const spaceId = useSpaces.getState().addSpace('Home')
@@ -324,7 +324,7 @@ describe('NewThreadDialog seeding', () => {
     })
   })
 
-  it('copies the newly picked preset after the space seed', () => {
+  it('copies the newly picked preset after the project seed', () => {
     roster.agents = [PRESET, OTHER]
     roster.isLoading = false
     useConnection.getState().addNode({ name: 'den-a', baseUrl: PRESET.sourceNodeBaseUrl })
@@ -337,7 +337,6 @@ describe('NewThreadDialog seeding', () => {
       harnessId: 'claude-code',
     })
     mount(threadDialog(spaceId))
-    expect(document.querySelector('[aria-label="reasoning effort: High"]')).not.toBeNull()
     const agent = document.querySelector('[aria-label="Agent"]')
     if (!agent) throw new Error('missing agent picker')
     act(() => {
@@ -350,11 +349,10 @@ describe('NewThreadDialog seeding', () => {
     act(() => {
       other?.click()
     })
-    expect(document.querySelector('[aria-label="reasoning effort: Low"]')).not.toBeNull()
-    expect(document.querySelector('[aria-label="reasoning effort: High"]')).toBeNull()
+    expect(startedSettings()).toMatchObject({ agentId: OTHER.id, effort: 'low' })
   })
 
-  it('re-applies overrides when the unlocked space selector changes and the agent does not', () => {
+  it('re-applies overrides when the unlocked project selector changes and the agent does not', () => {
     roster.agents = [PRESET, OTHER]
     roster.isLoading = false
     const first = useSpaces.getState().addSpace('Alpha')
@@ -372,9 +370,8 @@ describe('NewThreadDialog seeding', () => {
       harnessId: 'claude-code',
     })
     mount(threadDialog(undefined))
-    expect(document.querySelector('[aria-label="reasoning effort: High"]')).not.toBeNull()
-    const space = document.querySelector('[aria-label="Space"]')
-    if (!space) throw new Error('missing space picker')
+    const space = document.querySelector('[aria-label="Project"]')
+    if (!space) throw new Error('missing project picker')
     act(() => {
       space.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
@@ -385,8 +382,6 @@ describe('NewThreadDialog seeding', () => {
     act(() => {
       beta?.click()
     })
-    expect(document.querySelector('[aria-label="reasoning effort: Medium"]')).not.toBeNull()
-    expect(document.querySelector('[aria-label="reasoning effort: Off"]')).toBeNull()
     const agent = document.querySelector('[aria-label="Agent"]')
     if (!agent) throw new Error('missing agent picker')
     act(() => {
@@ -399,74 +394,109 @@ describe('NewThreadDialog seeding', () => {
     act(() => {
       other?.click()
     })
-    expect(document.querySelector('[aria-label="reasoning effort: Low"]')).not.toBeNull()
-    expect(document.querySelector('[aria-label="reasoning effort: Medium"]')).toBeNull()
+    // OTHER's den is off this roster, so it starts on the hub; effort still copies.
+    expect(startedSettings()).toMatchObject({ effort: 'low' })
   })
 })
 
-describe('SpaceDefaultsDialog save while the roster loads', () => {
-  it('does not clear a stored preset on Save or Enter before the roster resolves', () => {
-    roster.agents = []
-    roster.isLoading = true
+describe('NewThreadDialog workspace', () => {
+  function homeWith(
+    defaults: Parameters<ReturnType<typeof useSpaces.getState>['setSpaceDefaults']>[1],
+  ): string {
+    roster.agents = [PRESET]
+    roster.isLoading = false
+    useConnection.getState().addNode({ name: 'den-a', baseUrl: PRESET.sourceNodeBaseUrl })
     const spaceId = useSpaces.getState().addSpace('Home')
-    useSpaces.getState().setSpaceDefaults(spaceId, {
-      agentId: PRESET.id,
-      harnessId: 'claude-code',
-      model: 'm2',
-      effort: 'high',
-    })
-    const space = (): NonNullable<ReturnType<typeof useSpaces.getState>['spaces'][number]> => {
-      const found = useSpaces.getState().spaces.find((row) => row.id === spaceId)
-      if (!found) throw new Error('missing space')
-      return found
-    }
+    useSpaces.getState().setSpaceDefaults(spaceId, defaults)
+    return spaceId
+  }
+  function workspaceText(): string {
+    return document.querySelector('[data-new-session-workspace]')?.textContent ?? ''
+  }
+
+  it("shows the agent's directory and sends none when the project has no directory", () => {
+    mount(threadDialog(homeWith({ agentId: PRESET.id, harnessId: 'claude-code' })))
+    expect(workspaceText()).toContain(PRESET.directory)
+    expect(startedSettings()?.directory).toBeUndefined()
+  })
+
+  it("starts in the project's directory over the agent's", () => {
     mount(
-      createElement(SpaceDefaultsDialog, {
-        space: space(),
-        onClose: () => undefined,
-      }),
+      threadDialog(
+        homeWith({ agentId: PRESET.id, harnessId: 'claude-code', directory: '/srv/app' }),
+      ),
     )
-    expect(isDisabled(buttonNamed('Save'))).toBe(true)
-    setField('[aria-label="Space name"]', 'Renamed')
-    act(() => {
-      buttonNamed('Save')?.click()
-    })
-    submitForm()
-    expect(space().name).toBe('Home')
-    expect(space().defaults).toMatchObject({
-      agentId: PRESET.id,
-      harnessId: 'claude-code',
-      model: 'm2',
-      effort: 'high',
-    })
-
-    roster.agents = [PRESET]
-    roster.isLoading = false
-    rerender(
-      createElement(SpaceDefaultsDialog, {
-        space: space(),
-        onClose: () => undefined,
-      }),
-    )
-    expect(isDisabled(buttonNamed('Save'))).toBe(false)
-    submitForm()
-    expect(space().name).toBe('Renamed')
-    expect(space().defaults).toMatchObject({
-      agentId: PRESET.id,
-      harnessId: 'claude-code',
-    })
+    expect(workspaceText()).toContain('/srv/app')
+    expect(workspaceText()).toContain('project')
+    expect(startedSettings()).toMatchObject({ agentId: PRESET.id, directory: '/srv/app' })
   })
 
-  it('clears a stored model the newly chosen harness does not offer', () => {
-    const codex = {
-      ...OTHER,
-      id: 'preset-codex',
-      name: 'Codex',
-      harnessId: 'codex' as const,
-      model: 'a',
+  it('a folder picked on the card wins for this session only', () => {
+    const spaceId = homeWith({
+      agentId: PRESET.id,
+      harnessId: 'claude-code',
+      directory: '/srv/app',
+    })
+    mount(threadDialog(spaceId))
+    const line = document.querySelector('[data-new-session-workspace]')?.querySelector('button')
+    if (!line) throw new Error('missing workspace line')
+    act(() => (line as HTMLElement).click())
+    setField('[aria-label="Workspace folder"]', 'relative/path')
+    expect(isDisabled(buttonNamed('Use'))).toBe(true)
+    setField('[aria-label="Workspace folder"]', '/tmp/scratch/')
+    act(() => buttonNamed('Use')?.click())
+    expect(workspaceText()).toContain('/tmp/scratch')
+    expect(workspaceText()).toContain('this session')
+    expect(startedSettings()).toMatchObject({ directory: '/tmp/scratch' })
+    // The project keeps its own directory.
+    expect(useSpaces.getState().spaces.find((x) => x.id === spaceId)?.defaults?.directory).toBe(
+      '/srv/app',
+    )
+  })
+})
+
+describe('SpaceDefaultsDialog', () => {
+  const shellGlobal = globalThis as { rivetShell?: unknown }
+  const hubUrl = useConnection.getState().baseUrl
+
+  afterEach(() => {
+    delete shellGlobal.rivetShell
+    useConnection.setState({ baseUrl: hubUrl })
+  })
+
+  function project(): NonNullable<ReturnType<typeof useSpaces.getState>['spaces'][number]> {
+    const found = useSpaces.getState().spaces[0]
+    if (!found) throw new Error('missing project')
+    return found
+  }
+
+  /** The required bridge surface plus a folder chooser that answers `picked`. */
+  function desktopShell(picked: string | undefined): ReturnType<typeof vi.fn> {
+    const pickDirectory = vi.fn(async () => picked)
+    const noop = async (): Promise<void> => undefined
+    shellGlobal.rivetShell = {
+      kind: 'electron',
+      mtlsProxyPort: async () => 0,
+      openExternal: noop,
+      clipboardWriteText: noop,
+      clipboardReadText: async () => '',
+      sendNotification: noop,
+      setUnread: noop,
+      pickDirectory,
     }
-    roster.agents = [PRESET, codex]
-    roster.isLoading = false
+    return pickDirectory
+  }
+
+  it('has no agent, model or effort fields', () => {
+    useSpaces.getState().addSpace('Home')
+    mount(editDialog(project()))
+    expect(document.getElementById('space-agent')).toBeNull()
+    expect(document.querySelector('[aria-label^="model:"]')).toBeNull()
+    expect(document.querySelector('[aria-label="No default effort"]')).toBeNull()
+    expect(document.getElementById('space-directory')).not.toBeNull()
+  })
+
+  it('saves name and directory, and drops agent, model and effort the project carried', () => {
     const spaceId = useSpaces.getState().addSpace('Home')
     useSpaces.getState().setSpaceDefaults(spaceId, {
       agentId: PRESET.id,
@@ -474,175 +504,84 @@ describe('SpaceDefaultsDialog save while the roster loads', () => {
       model: 'm2',
       effort: 'high',
     })
-    const descriptors: HarnessDescriptor[] = [
-      {
-        harnessId: 'claude-code',
-        capabilities: {
-          interrupt: true,
-          resume: true,
-          approvals: false,
-          liveStream: true,
-          listSessions: true,
-          launchModel: true,
-          models: [
-            { id: 'm1', label: 'M1' },
-            { id: 'm2', label: 'M2' },
-          ],
-        },
-      },
-      {
-        harnessId: 'codex',
-        capabilities: {
-          interrupt: true,
-          resume: true,
-          approvals: false,
-          liveStream: true,
-          listSessions: true,
-          launchModel: true,
-          models: [{ id: 'a', label: 'Model A' }],
-        },
-      },
-    ]
-    const space = useSpaces.getState().spaces[0]
-    if (!space) throw new Error('missing space')
-    mount(createElement(SpaceDefaultsDialog, { space, descriptors, onClose: () => undefined }))
-    expect(document.querySelector('[aria-label="model: M2"]')).not.toBeNull()
-    const agent = document.querySelector('[id="space-agent"]')
-    if (!agent) throw new Error('missing agent picker')
-    act(() => {
-      agent.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
-    const picked = [...document.querySelectorAll('button')].find(
-      (button) => button.textContent?.trim() === 'Codex',
-    )
-    expect(picked).toBeTruthy()
-    act(() => {
-      picked?.click()
-    })
-    expect(document.querySelector('[aria-label="model: None"]')).not.toBeNull()
-    expect(document.querySelector('[aria-label="model: M2"]')).toBeNull()
+    mount(editDialog(project()))
+    setField('[aria-label="Project name"]', 'Renamed')
+    setField('#space-directory', '/srv/app/')
     submitForm()
-    expect(useSpaces.getState().spaces[0]?.defaults).toMatchObject({
-      agentId: codex.id,
-      harnessId: 'codex',
-    })
-    expect(useSpaces.getState().spaces[0]?.defaults?.model).toBeUndefined()
-  })
-
-  it('keeps the stored preset when the roster is already cached', () => {
-    roster.agents = [PRESET]
-    roster.isLoading = false
-    const spaceId = useSpaces.getState().addSpace('Home')
-    useSpaces.getState().setSpaceDefaults(spaceId, {
-      agentId: PRESET.id,
-      harnessId: 'claude-code',
-      model: 'm2',
-    })
-    const space = useSpaces.getState().spaces[0]
-    if (!space) throw new Error('missing space')
-    mount(createElement(SpaceDefaultsDialog, { space, onClose: () => undefined }))
-    expect(isDisabled(buttonNamed('Save'))).toBe(false)
-    submitForm()
-    expect(useSpaces.getState().spaces[0]?.defaults?.agentId).toBe(PRESET.id)
-    expect(useSpaces.getState().spaces[0]?.defaults?.harnessId).toBe('claude-code')
-  })
-
-  it('shows a missing preset and Clear drops it', () => {
-    roster.agents = [PRESET]
-    roster.isLoading = false
-    const spaceId = useSpaces.getState().addSpace('Home')
-    useSpaces.getState().setSpaceDefaults(spaceId, {
-      agentId: 'gone',
-      harnessId: 'claude-code',
-      model: 'm2',
-      effort: 'high',
-    })
-    const space = useSpaces.getState().spaces[0]
-    if (!space) throw new Error('missing space')
-    mount(editDialog(space))
-    expect(document.body.textContent).toContain('(missing preset)')
-    const clear = document.querySelector('[aria-label="Clear missing preset"]')
-    if (!clear) throw new Error('missing clear')
-    act(() => {
-      ;(clear as HTMLButtonElement).click()
-    })
-    expect(document.body.textContent).not.toContain('(missing preset)')
-    submitForm()
-    expect(useSpaces.getState().spaces[0]?.defaults?.agentId).toBeUndefined()
-    expect(useSpaces.getState().spaces[0]?.defaults?.harnessId).toBeUndefined()
-    expect(useSpaces.getState().spaces[0]?.defaults?.model).toBe('m2')
-  })
-
-  it('clears agent, model, and effort when each field is set to none', () => {
-    roster.agents = [PRESET]
-    roster.isLoading = false
-    const spaceId = useSpaces.getState().addSpace('Home')
-    useSpaces.getState().setSpaceDefaults(spaceId, {
-      agentId: PRESET.id,
-      harnessId: 'claude-code',
-      model: 'm2',
-      effort: 'high',
-    })
-    const descriptors: HarnessDescriptor[] = [
-      {
-        harnessId: 'claude-code',
-        capabilities: {
-          interrupt: true,
-          resume: true,
-          approvals: false,
-          liveStream: true,
-          listSessions: true,
-          launchModel: true,
-          models: [{ id: 'm2', label: 'M2' }],
-        },
-      },
-    ]
-    const space = useSpaces.getState().spaces[0]
-    if (!space) throw new Error('missing space')
-    mount(editDialog(space, descriptors))
-    const model = document.querySelector('[aria-label="model: M2"]')
-    if (!model) throw new Error('missing model picker')
-    act(() => {
-      model.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
-    const noneModel = [...document.querySelectorAll('button')].find(
-      (button) =>
-        button.textContent?.trim() === 'None' &&
-        button.getAttribute('aria-label') !== 'No default effort',
-    )
-    expect(noneModel).toBeTruthy()
-    act(() => {
-      noneModel?.click()
-    })
-    expect(document.querySelector('[aria-label="model: None"]')).not.toBeNull()
-    const effortNone = document.querySelector('[aria-label="No default effort"]')
-    if (!effortNone) throw new Error('missing effort none')
-    act(() => {
-      ;(effortNone as HTMLButtonElement).click()
-    })
-    const agent = document.querySelector('[id="space-agent"]')
-    if (!agent) throw new Error('missing agent picker')
-    act(() => {
-      agent.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
-    const agentHeader = [...document.querySelectorAll('div')].find(
-      (el) => el.children.length === 0 && el.textContent === 'Agent',
-    )
-    const agentMenu = agentHeader?.parentElement?.parentElement
-    const noneAgent = agentMenu
-      ? [...agentMenu.querySelectorAll('button')].find(
-          (button) => button.textContent?.trim() === 'None',
-        )
-      : undefined
-    expect(noneAgent).toBeTruthy()
-    act(() => {
-      noneAgent?.click()
-    })
-    submitForm()
-    const saved = useSpaces.getState().spaces[0]?.defaults
+    expect(project().name).toBe('Renamed')
+    const saved = project().defaults
+    expect(saved?.directory).toBe('/srv/app')
     expect(saved?.agentId).toBeUndefined()
     expect(saved?.harnessId).toBeUndefined()
     expect(saved?.model).toBeUndefined()
     expect(saved?.effort).toBeUndefined()
+  })
+
+  it('will not save a relative directory', () => {
+    useSpaces.getState().addSpace('Home')
+    mount(editDialog(project()))
+    setField('#space-directory', 'relative/path')
+    expect(isDisabled(buttonNamed('Save'))).toBe(true)
+    expect(document.body.textContent).toContain('Use a full path that starts with /')
+  })
+
+  it('offers Browse only inside the desktop shell', () => {
+    useSpaces.getState().addSpace('Home')
+    mount(editDialog(project()))
+    expect(document.querySelector('[data-browse-directory]')).toBeNull()
+  })
+
+  it('offers Browse only when the node is this machine, since the den checks the path', () => {
+    desktopShell('/home/rivet/code/app')
+    useConnection.setState({ baseUrl: 'http://192.168.1.30:8787' })
+    const spaceId = useSpaces.getState().addSpace('Home')
+    mount(editDialog(project()))
+    expect(document.querySelector('[data-browse-directory]')).toBeNull()
+    act(() => root?.unmount())
+    host?.remove()
+
+    // A loopback node set on the project: this machine's own den.
+    useSpaces.getState().setSpaceDefaults(spaceId, { node: 'http://127.0.0.1:5174' })
+    mount(editDialog(project()))
+    expect(document.querySelector('[data-browse-directory]')).not.toBeNull()
+    act(() => root?.unmount())
+    host?.remove()
+
+    // A remote node set on the project, even with the hub on loopback.
+    useConnection.setState({ baseUrl: 'http://localhost:5174' })
+    useSpaces.getState().setSpaceDefaults(spaceId, { node: 'https://den-b.mesh:5174' })
+    mount(editDialog(project()))
+    expect(document.querySelector('[data-browse-directory]')).toBeNull()
+  })
+
+  it('fills the directory from the folder chooser, opening at the current one', async () => {
+    const pickDirectory = desktopShell('/home/rivet/code/app')
+    useConnection.setState({ baseUrl: 'http://localhost:5174' })
+    const spaceId = useSpaces.getState().addSpace('Home')
+    useSpaces.getState().setSpaceDefaults(spaceId, { directory: '/home/rivet' })
+    mount(editDialog(project()))
+    const browse = document.querySelector('[data-browse-directory]')
+    if (!browse) throw new Error('missing Browse')
+    await act(async () => {
+      ;(browse as HTMLButtonElement).click()
+    })
+    expect(pickDirectory).toHaveBeenCalledWith('/home/rivet')
+    expect((document.getElementById('space-directory') as HTMLInputElement).value).toBe(
+      '/home/rivet/code/app',
+    )
+    submitForm()
+    expect(project().defaults?.directory).toBe('/home/rivet/code/app')
+  })
+
+  it('keeps the directory when the folder chooser is cancelled', async () => {
+    desktopShell(undefined)
+    useConnection.setState({ baseUrl: 'http://localhost:5174' })
+    const spaceId = useSpaces.getState().addSpace('Home')
+    useSpaces.getState().setSpaceDefaults(spaceId, { directory: '/srv/app' })
+    mount(editDialog(project()))
+    await act(async () => {
+      ;(document.querySelector('[data-browse-directory]') as HTMLButtonElement).click()
+    })
+    expect((document.getElementById('space-directory') as HTMLInputElement).value).toBe('/srv/app')
   })
 })

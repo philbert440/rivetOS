@@ -1,6 +1,10 @@
 /**
- * New thread: a prompt for an agent, or History in pick mode. Prompt is the
- * default. Esc / Cancel close without writing. From History hands the canvas
+ * New session: a prompt for an agent, or History in pick mode. Prompt is the
+ * default. The same card opens from a project's + New session and from
+ * History's + new. Model and effort are not on the card — they come from
+ * the project, else the agent. The Workspace line shows where the session
+ * starts (the project's directory, else the agent's); clicking it picks
+ * another folder for this session only. Esc / Cancel close without writing. From History hands the canvas
  * the target space; the panel places the chosen row.
  *
  * When the chosen space has defaults, the Prompt fields start from them;
@@ -17,15 +21,12 @@
 import { useEffect, useRef, useState, type JSX } from 'react'
 import * as Dialog from '@radix-ui/react-dialog'
 import type { HarnessDescriptor, ThinkingLevel } from '@rivetos/types'
-import { launchModelOptions } from '../../lib/conversation-model-options.js'
 import { urlLabel } from '../../lib/node-name.js'
 import { useRosterAgents } from '../../lib/use-agent-roster.js'
 import { useConnection } from '../../stores/connection.js'
 import { usePreferences } from '../../stores/preferences.js'
-import type { SpaceDefaults } from '../../stores/spaces.js'
+import { asDirectory, type SpaceDefaults } from '../../stores/spaces.js'
 import { Select } from '../select.js'
-import { EffortPicker } from '../pickers/effort-picker.js'
-import { ModelPicker } from '../pickers/model-picker.js'
 import {
   applyChooser,
   initialThreadFields,
@@ -57,6 +58,10 @@ export function NewThreadDialog(props: {
   const [prompt, setPrompt] = useState('')
   const [model, setModel] = useState('')
   const [effort, setEffort] = useState<ThinkingLevel>('medium')
+  // This session's folder when picked on the card; '' = the default below.
+  const [dirOverride, setDirOverride] = useState('')
+  const [dirEditing, setDirEditing] = useState(false)
+  const [dirDraft, setDirDraft] = useState('')
   // Start stays shut until the space seed has landed. A stored preset's
   // roster row is not known while that query is loading.
   const [seedReady, setSeedReady] = useState(false)
@@ -128,15 +133,20 @@ export function NewThreadDialog(props: {
     ? offRosterStartNotice(nodeResolved.unavailable, baseUrl)
     : undefined
 
-  const launch = launchModelOptions({
-    preBind: true,
-    harnessId: agent?.harnessId,
-    registry: props.descriptors,
-    model,
-  })
-  const modelOptions = [{ value: '', label: launch.defaultModelLabel }, ...launch.models]
-  const directory = agents.find((row) => row.id === agentId)?.directory
-  const startsIn = startsInDirectory(directory)
+  const projectDirectory = props.spaces.find((space) => space.id === target)?.defaults?.directory
+  const agentDirectory = agents.find((row) => row.id === agentId)?.directory
+  // Sent only when it is not simply the agent's own (the den's default).
+  const sessionDirectory = dirOverride || projectDirectory
+  const shownDirectory = sessionDirectory ?? agentDirectory
+  const startsIn = startsInDirectory(shownDirectory)
+  const dirDraftBad = dirDraft.trim() !== '' && asDirectory(dirDraft) === undefined
+  const commitDirDraft = (): void => {
+    if (dirDraftBad) return
+    const picked = asDirectory(dirDraft)
+    // Picking the default again is no override.
+    setDirOverride(picked && picked !== (projectDirectory ?? agentDirectory) ? picked : '')
+    setDirEditing(false)
+  }
 
   // Same guard as the Start button: Enter must not start before the space's
   // defaults are seeded (an unseeded start would ignore the preset's node).
@@ -152,6 +162,7 @@ export function NewThreadDialog(props: {
       model: model || undefined,
       effort,
       node: agent ? undefined : defaults?.node,
+      directory: sessionDirectory,
       missingPreset:
         !agent &&
         !agentTouched &&
@@ -177,6 +188,12 @@ export function NewThreadDialog(props: {
         <Dialog.Content
           className="fixed top-1/2 left-1/2 z-50 w-[28rem] max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 border border-line bg-panel p-4 shadow-pop outline-none material:rounded-3xl material:border-transparent material:bg-surface material:p-6"
           title={startsIn}
+          onEscapeKeyDown={(event) => {
+            // Esc in the folder field closes the field, not the card.
+            if (!dirEditing) return
+            event.preventDefault()
+            setDirEditing(false)
+          }}
           onOpenAutoFocus={(event) => {
             event.preventDefault()
             const field = document.getElementById('new-thread-prompt')
@@ -184,10 +201,10 @@ export function NewThreadDialog(props: {
           }}
         >
           <Dialog.Title className="mb-5 text-sm leading-relaxed text-ink-dim classic:mb-3 classic:text-ink">
-            New thread
+            New session
           </Dialog.Title>
           <Dialog.Description className="sr-only">
-            Send a prompt, or add a thread from History.
+            Send a prompt, or add a session from History.
             {startsIn ? ` ${startsIn}.` : ''}
           </Dialog.Description>
           <div className="mb-3 flex gap-1" role="tablist" aria-label="How to start">
@@ -214,7 +231,7 @@ export function NewThreadDialog(props: {
           </div>
           {locked ? (
             <p className="mb-3 text-xs text-ink-dim">
-              Space ·{' '}
+              Project ·{' '}
               <span className="text-ink">{props.spaces.find((s) => s.id === locked)?.name}</span>
             </p>
           ) : (
@@ -223,8 +240,8 @@ export function NewThreadDialog(props: {
                 value={spaceId}
                 options={props.spaces.map((space) => ({ value: space.id, label: space.name }))}
                 onChange={setSpaceId}
-                aria-label="Space"
-                label="Space"
+                aria-label="Project"
+                label="Project"
                 className="w-full"
               />
             </div>
@@ -244,15 +261,69 @@ export function NewThreadDialog(props: {
               label="Agent"
               className="w-full"
             />
-            {startsIn ? (
-              <p className="mt-1 text-xs text-ink-dim">
-                {startsIn}
-                {agent?.sourceNodeBaseUrl
-                  ? ` on ${agents.find((row) => row.id === agentId)?.node?.trim() || urlLabel(agent.sourceNodeBaseUrl)}`
-                  : ''}
-              </p>
-            ) : null}
             {nodeNotice ? <p className="mt-1 text-xs text-ink-dim">{nodeNotice}</p> : null}
+          </div>
+          <span className="mb-1 block text-xs text-ink-dim">Workspace</span>
+          <div className="mb-3" data-new-session-workspace="">
+            {dirEditing ? (
+              <>
+                <div className="flex gap-1">
+                  <input
+                    aria-label="Workspace folder"
+                    aria-invalid={dirDraftBad || undefined}
+                    autoFocus
+                    value={dirDraft}
+                    spellCheck={false}
+                    placeholder={projectDirectory ?? agentDirectory ?? '/path/to/folder'}
+                    onChange={(event) => setDirDraft(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') {
+                        event.preventDefault()
+                        commitDirDraft()
+                      }
+                    }}
+                    className="min-w-0 flex-1 border border-line bg-bg px-2 py-1.5 font-mono text-xs text-ink outline-none aria-invalid:border-red material:rounded-lg"
+                  />
+                  <button
+                    type="button"
+                    disabled={dirDraftBad}
+                    onClick={commitDirDraft}
+                    className="border border-line px-2 py-1 text-xs text-ink hover:text-em disabled:opacity-40 material:rounded-pill"
+                  >
+                    Use
+                  </button>
+                </div>
+                <p className={`mt-1 text-xs ${dirDraftBad ? 'text-red' : 'text-ink-dim'}`}>
+                  {dirDraftBad
+                    ? 'Use a full path that starts with /'
+                    : 'For this session only. Leave empty for the default.'}
+                </p>
+              </>
+            ) : (
+              <button
+                type="button"
+                title="Change the folder for this session"
+                onClick={() => {
+                  setDirDraft(dirOverride || shownDirectory || '')
+                  setDirEditing(true)
+                }}
+                className="flex w-full items-baseline gap-2 border border-line px-2 py-1.5 text-left text-xs hover:border-em material:rounded-lg"
+              >
+                <span className="min-w-0 flex-1 truncate font-mono text-ink">
+                  {shownDirectory ?? 'Default folder'}
+                </span>
+                <span className="shrink-0 text-ink-dim">
+                  {dirOverride ? 'this session' : projectDirectory ? 'project' : ''}
+                  {(() => {
+                    const where = agent?.sourceNodeBaseUrl
+                      ? agents.find((row) => row.id === agentId)?.node?.trim() ||
+                        urlLabel(agent.sourceNodeBaseUrl)
+                      : undefined
+                    return where ? `${dirOverride || projectDirectory ? ' · ' : ''}on ${where}` : ''
+                  })()}
+                </span>
+              </button>
+            )}
           </div>
           <label className="mb-1 block text-xs text-ink-dim" htmlFor="new-thread-prompt">
             What should it do?
@@ -269,17 +340,8 @@ export function NewThreadDialog(props: {
             }}
             rows={4}
             placeholder="What should it do?"
-            className="mb-3 w-full resize-none border border-line bg-bg px-2 py-1.5 text-sm text-ink outline-none placeholder:text-ink-dim material:rounded-lg"
+            className="mb-4 w-full resize-none border border-line bg-bg px-2 py-1.5 text-sm text-ink outline-none placeholder:text-ink-dim material:rounded-lg"
           />
-          <div className="mb-4 flex flex-wrap items-center gap-1">
-            <ModelPicker
-              value={model}
-              options={modelOptions}
-              onChange={setModel}
-              disabled={modelOptions.length === 0}
-            />
-            <EffortPicker value={effort} onChange={setEffort} />
-          </div>
           <div className="flex justify-end gap-2">
             <button
               type="button"

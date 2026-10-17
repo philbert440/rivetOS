@@ -67,8 +67,8 @@ describe('narrow session header wiring (chat.tsx source)', () => {
     expect(src).toContain('flex h-12 flex-nowrap items-center')
   })
 
-  it('labels the history button Conversations and points it at the drawer', () => {
-    expect(src).toContain('aria-label="Conversations"')
+  it('labels the history button Workspace and points it at the drawer', () => {
+    expect(src).toContain('aria-label="Workspace"')
     expect(src).toContain('aria-controls="hub-history"')
     expect(src).toContain('id="hub-history"')
   })

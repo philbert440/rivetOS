@@ -181,10 +181,8 @@ export function DrawerItem(props: {
           type="button"
           onClick={props.onToggleNest}
           aria-expanded={props.expanded === true}
-          aria-label={
-            props.expanded ? 'collapse nested conversations' : 'expand nested conversations'
-          }
-          title={props.expanded ? 'collapse nested conversations' : 'expand nested conversations'}
+          aria-label={props.expanded ? 'collapse nested sessions' : 'expand nested sessions'}
+          title={props.expanded ? 'collapse nested sessions' : 'expand nested sessions'}
           className="px-1 py-2 text-xs text-ink-dim hover:text-ink classic:text-[11px]"
         >
           {props.expanded ? '▾' : '▸'}
@@ -246,7 +244,7 @@ export function DrawerItem(props: {
         {kids > 0 && !props.expanded && (
           <span
             className="shrink-0 text-[11px] text-ink-dim classic:text-[10px]"
-            title="nested conversations"
+            title="nested sessions"
           >
             {kids}
           </span>
@@ -288,7 +286,7 @@ export function DrawerItem(props: {
             setDraft(customName ?? props.item.title)
             setEditing(true)
           }}
-          aria-label="rename conversation"
+          aria-label="rename session"
           title="rename"
           className="px-1 py-2 text-ink-dim hover:text-em"
         >
@@ -308,7 +306,7 @@ export function DrawerItem(props: {
           <button
             type="button"
             onClick={props.onUnarchive}
-            aria-label="unarchive conversation"
+            aria-label="unarchive session"
             title="unarchive"
             className="px-1 py-2 pr-2 text-ink-dim hover:text-em"
           >
@@ -318,7 +316,7 @@ export function DrawerItem(props: {
           <button
             type="button"
             onClick={props.onArchive}
-            aria-label="archive conversation"
+            aria-label="archive session"
             title="archive (hides the row — the session itself is untouched)"
             className="px-1 py-2 pr-2 text-ink-dim hover:text-em"
           >

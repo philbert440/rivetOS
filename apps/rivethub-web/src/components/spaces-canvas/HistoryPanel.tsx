@@ -59,6 +59,8 @@ export function HistoryPanel(props: {
   panelRef: RefObject<HTMLElement | null>
   /** Pick mode: place the chosen row into a space. Cancel writes nothing. */
   pick?: { title: string; onCancel: () => void }
+  /** `+ new`: the canvas opens its new-session card. Without it, a bare draft. */
+  onNew?: () => void
   onOpen: (id: string) => void
   onDragPointerDown: (event: ReactPointerEvent<HTMLDivElement>, item: ChatItem) => void
   /** Panel width in px; the left-edge handle resizes it. */
@@ -215,7 +217,7 @@ export function HistoryPanel(props: {
         ) : (
           <button
             type="button"
-            onClick={() => startNewConversation()}
+            onClick={() => (props.onNew ? props.onNew() : startNewConversation())}
             className="border border-line px-2 py-1 text-xs text-ink-dim hover:bg-ink/6 hover:text-em classic:hover:bg-transparent classic:hover:border-em material:rounded-pill"
           >
             + new
@@ -224,7 +226,7 @@ export function HistoryPanel(props: {
       </div>
       {/* History follows the sidebar's selected agent, like the
           conversations list. Say so, with a one-click way back to all of it:
-          a quiet filter reads as "History is missing my threads". */}
+          a quiet filter reads as "History is missing my sessions". */}
       {agentId && !props.pick ? (
         <div data-history-filter="" className="px-3 pt-2">
           <span className="inline-flex max-w-full items-center gap-1.5 rounded-lg border border-line bg-surface px-2.5 py-1 text-xs text-ink classic:bg-panel classic:px-2 classic:py-0.5 classic:text-[11px]">

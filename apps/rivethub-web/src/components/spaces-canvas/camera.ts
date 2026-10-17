@@ -4,15 +4,22 @@
  * tested without a DOM. Skin (type, colour, radius) is not part of this
  * module; only the geometry is.
  *
- * Altitudes: everything (mock "mesh", zoom capped below LIVE_LO), space
+ * Altitudes: everything (mock "mesh", zoom capped below the live band), space
  * (mock "canvas"), thread (mock "terminal", the open tile fills the
  * viewport at 100%).
  */
 
 export const TW = 880
-export const TH = 560
-export const GAP = 110
-export const PAD = 90
+export const TH = 210
+export const GAP = 80
+export const PAD = 70
+/**
+ * The region's top band holds the "active · waiting on you" count and, under
+ * it, the first row's title pills. Both grow with --inv as the camera pulls
+ * back (count capped at 22px top + 1.2 × 30px; pills at --ch 2.2, about
+ * 65px), so PAD alone let the pills cover the count past ~1.5× out.
+ */
+export const PAD_TOP = 130
 export const CGAP = 300
 /** Two tile columns plus the region's own padding. */
 export const REG_W = PAD * 2 + TW * 2 + GAP
@@ -55,7 +62,12 @@ export interface LayoutRegion {
   count: number
   /** Starting directory, when a later slice has one. Adds a label line. */
   dir?: string
+  /** Fixed height in place of regH(count), for a box that holds no tiles. */
+  h?: number
 }
+
+/** Height of the "+ New space" box. It holds no tiles, so a short strip. */
+export const NEW_SPACE_H = 240
 
 export interface TileSlot {
   regionId: string
@@ -91,7 +103,7 @@ export function tileSlot(regionId: string, origin: Pick<Rect, 'x' | 'y'>, index:
     regionId,
     index,
     x: origin.x + PAD + (index % 2) * (TW + GAP),
-    y: origin.y + PAD + Math.floor(index / 2) * (TH + GAP),
+    y: origin.y + PAD_TOP + Math.floor(index / 2) * (TH + GAP),
     w: TW,
     h: TH,
   }
@@ -100,7 +112,7 @@ export function tileSlot(regionId: string, origin: Pick<Rect, 'x' | 'y'>, index:
 /** Region height for `n` threads. The +1 is the mock's phantom new-thread slot. */
 export function regH(n: number): number {
   const rows = Math.max(1, Math.ceil((Math.max(0, n) + 1) / 2))
-  return PAD * 2 + rows * TH + (rows - 1) * GAP
+  return PAD_TOP + PAD + rows * TH + (rows - 1) * GAP
 }
 
 /**
@@ -128,7 +140,7 @@ export function layout(items: readonly LayoutRegion[], vp: Viewport): LayoutResu
   const pad = insets('everything', vp)
   const bw = Math.max(40, vp.w - pad.l - pad.r)
   const bh = Math.max(40, vp.h - pad.t - pad.b)
-  const sized = items.map((n) => ({ n, h: regH(n.count) }))
+  const sized = items.map((n) => ({ n, h: n.h ?? regH(n.count) }))
   if (sized.length === 0) {
     return {
       regions: [],
@@ -169,7 +181,7 @@ export function layout(items: readonly LayoutRegion[], vp: Viewport): LayoutResu
       bestCols = cols
     }
   }
-  const zd = Math.min(bestZ, LIVE_LO - 0.01)
+  const zd = Math.min(bestZ, liveBand(vp).lo - 0.01)
   const lp = labelPx(zd) / zd
   const gapY = Math.max(lp + 40, 160)
   const hs = rowHs(bestCols)
@@ -203,13 +215,25 @@ export function fit(rect: Rect, mode: Altitude, vp: Viewport): Cam {
   const bh = Math.max(40, vp.h - i.t - i.b)
   const rw = rect.w > 0 ? rect.w : 1
   const rh = rect.h > 0 ? rect.h : 1
-  const capped = mode === 'everything' ? LIVE_LO - 0.01 : 1
+  const band = liveBand(vp)
+  const capped = mode === 'everything' ? band.lo - 0.01 : 1
   const z = Math.min(capped, bw / rw, bh / rh)
   const safeZ = z > 0 ? z : 0.01
   const bcx = i.l + bw / 2
   const bcy = i.t + bh / 2
+  const cx = rect.x + rect.w / 2 - (bcx - vp.w / 2) / safeZ
+  // A space too tall to fit above the live band would never show its
+  // minis. Hold the band's top instead and frame from the space's top edge;
+  // the rest is a pan away.
+  if (mode === 'space' && safeZ < band.hi) {
+    return {
+      cx: rect.x + rect.w / 2 - (bcx - vp.w / 2) / band.hi,
+      cy: rect.y - (i.t - vp.h / 2) / band.hi,
+      z: band.hi,
+    }
+  }
   return {
-    cx: rect.x + rect.w / 2 - (bcx - vp.w / 2) / safeZ,
+    cx,
     cy: rect.y + rect.h / 2 - (bcy - vp.h / 2) / safeZ,
     z: safeZ,
   }
@@ -223,12 +247,30 @@ export function focusRect(tile: { x: number; y: number }, vp: Viewport): Rect {
   return { x: tile.x + TW / 2 - w / 2, y: tile.y + TH / 2 - h / 2, w, h }
 }
 
+/** Zoom at which one space's width fills the Space inset box. */
+export function spaceWidthZoom(vp: Viewport): number {
+  const i = insets('space', vp)
+  return Math.max(40, vp.w - i.l - i.r) / REG_W
+}
+
+/**
+ * Zoom band where cards crossfade to live minis. It scales with the
+ * viewport, a fixed share below a space's width-fit zoom, so Everything
+ * (capped just under `lo`) can frame a canvas of one or two spaces nearly
+ * as large as Space would. LIVE_LO / LIVE_HI are the floor on small screens.
+ */
+export function liveBand(vp: Viewport): { lo: number; hi: number } {
+  const s = spaceWidthZoom(vp)
+  return { lo: Math.max(LIVE_LO, s * 0.9), hi: Math.max(LIVE_HI, s * 0.98) }
+}
+
 /** World transform. `live` crossfades cards (0) and minis (1) between the two zooms. */
 export function apply(cam: Cam, vp: Viewport): { tx: number; ty: number; z: number; live: number } {
   const z = cam.z
   const tx = vp.w / 2 - cam.cx * z
   const ty = vp.h / 2 - cam.cy * z
-  const live = Math.min(1, Math.max(0, (z - LIVE_LO) / (LIVE_HI - LIVE_LO)))
+  const band = liveBand(vp)
+  const live = Math.min(1, Math.max(0, (z - band.lo) / (band.hi - band.lo)))
   return { tx, ty, z, live }
 }
 
@@ -291,7 +333,7 @@ export function flyStep(from: Cam, to: Cam, t: number): Cam {
   }
 }
 
-/** Hand zoom never enters thread. Below LIVE_LO the canvas is everything. */
-export function altitudeFromZoom(z: number): 'everything' | 'space' {
-  return z < LIVE_LO ? 'everything' : 'space'
+/** Hand zoom never enters thread. Below the live band the canvas is everything. */
+export function altitudeFromZoom(z: number, vp: Viewport): 'everything' | 'space' {
+  return z < liveBand(vp).lo ? 'everything' : 'space'
 }

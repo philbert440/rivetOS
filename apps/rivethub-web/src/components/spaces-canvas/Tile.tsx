@@ -265,8 +265,9 @@ export const Tile = memo(function Tile(props: TileProps): JSX.Element {
           every line, so the face is a size container and each size is capped
           by the tile's own height (cqh): the content always fits. At
           Everything the last-message line drops (theme.css) to give the
-          title, model and status the room. The session title leads; the
-          model sits under it, a step smaller. */}
+          title, model and status the room. The session title leads at the
+          top and wraps to two lines so several words show; the model and status share
+          the row under it, the status on the right under the corner actions. */}
       <div
         data-face="card"
         aria-hidden="true"
@@ -278,56 +279,66 @@ export const Tile = memo(function Tile(props: TileProps): JSX.Element {
       >
         <div
           data-face-body=""
-          className="flex h-full min-w-0 flex-col justify-center overflow-hidden"
+          className="flex h-full min-w-0 flex-col justify-start overflow-hidden"
           style={{
             gap: 'min(calc(8px * var(--cs, 1)), 4cqh)',
-            padding: 'min(calc(18px * var(--cs, 1)), 9cqh) min(calc(24px * var(--cs, 1)), 7cqw)',
+            paddingTop: 'min(calc(14px * var(--cs, 1)), 7cqh)',
+            paddingBottom: 'min(calc(18px * var(--cs, 1)), 9cqh)',
+            paddingLeft: 'min(calc(24px * var(--cs, 1)), 7cqw)',
+            paddingRight: 'min(calc(12px * var(--cs, 1)), 4cqw)',
           }}
         >
           <div
-            className="shrink-0 truncate text-ink"
+            className="line-clamp-2 shrink-0 break-words text-ink"
             style={{
-              fontSize: 'min(calc(22px * var(--cs, 1)), var(--face-title-cap, 15cqh))',
+              fontSize: 'min(calc(19px * var(--cs, 1)), var(--face-title-cap, 13cqh))',
               lineHeight: 1.25,
-              // Clear the corner actions, which sit inside the tile here.
-              paddingRight: everything ? 'min(calc(44px * var(--cs, 1)), 30cqw)' : undefined,
+              // At Everything the corner actions sit inside the tile, on
+              // this row; leave just their width.
+              paddingRight: everything ? 'min(calc(52px * var(--cs, 1)), 24cqw)' : undefined,
             }}
           >
             {title}
           </div>
           <div
-            className="flex shrink-0 items-center text-ink-dim"
-            style={{
-              fontSize: 'min(calc(16px * var(--cs, 1)), var(--face-name-cap, 10cqh))',
-              lineHeight: 1.3,
-              gap: '0.45em',
-            }}
+            data-face-head=""
+            className="flex min-w-0 shrink-0 items-center justify-between text-ink-dim"
+            style={{ gap: '0.8em' }}
           >
+            <div
+              className="flex min-w-0 items-center"
+              style={{
+                fontSize: 'min(calc(13px * var(--cs, 1)), var(--face-name-cap, 9cqh))',
+                lineHeight: 1.3,
+                gap: '0.45em',
+              }}
+            >
+              <span
+                className="sc-accent shrink-0 rounded-full"
+                data-harness={harness}
+                style={{ width: '0.62em', height: '0.62em' }}
+              />
+              <span className="truncate">{chip}</span>
+            </div>
             <span
-              className="sc-accent shrink-0 rounded-full"
-              data-harness={harness}
-              style={{ width: '0.62em', height: '0.62em' }}
-            />
-            <span className="truncate">{chip}</span>
+              className={`shrink-0 rounded-full font-mono leading-none uppercase ${
+                status === 'needs'
+                  ? 'bg-warn text-bg'
+                  : status === 'working'
+                    ? 'bg-em/15 text-em'
+                    : status === 'done'
+                      ? 'text-em'
+                      : 'bg-panel-2 text-ink-dim'
+              }`}
+              style={{
+                fontSize: 'min(calc(10px * var(--cs, 1)), var(--face-pill-cap, 7cqh))',
+                letterSpacing: '0.06em',
+                padding: '0.45em 0.8em',
+              }}
+            >
+              {tilePill(status)}
+            </span>
           </div>
-          <span
-            className={`shrink-0 self-start rounded-full font-mono leading-none uppercase ${
-              status === 'needs'
-                ? 'bg-warn text-bg'
-                : status === 'working'
-                  ? 'bg-em/15 text-em'
-                  : status === 'done'
-                    ? 'text-em'
-                    : 'bg-panel-2 text-ink-dim'
-            }`}
-            style={{
-              fontSize: 'min(calc(10px * var(--cs, 1)), var(--face-pill-cap, 7cqh))',
-              letterSpacing: '0.06em',
-              padding: '0.45em 0.8em',
-            }}
-          >
-            {tilePill(status)}
-          </span>
           {last ? (
             <div
               data-face-last=""

@@ -5,7 +5,18 @@
  * shell capabilities anywhere the shell would not go itself.
  */
 
-import { app, clipboard, ipcMain, Notification, shell, type IpcMainInvokeEvent } from 'electron'
+import {
+  app,
+  BrowserWindow,
+  clipboard,
+  dialog,
+  ipcMain,
+  Notification,
+  shell,
+  type IpcMainInvokeEvent,
+  type OpenDialogOptions,
+} from 'electron'
+import { isAbsolute } from 'node:path'
 import type { PipeState } from './mtls-pipe.js'
 import type { SettingsStore } from './settings-store.js'
 import { readTerminalConfigs } from './terminal-config.js'
@@ -139,6 +150,26 @@ export function registerIpc(deps: IpcDeps): void {
   })
 
   guarded('app:version', () => app.getVersion())
+
+  // Native folder chooser (Edit project → Directory). The renderer may only
+  // suggest where it opens; the path that comes back is whatever the user
+  // picked, and nothing is read or written here.
+  guarded('dialog:pickDirectory', async (e, startIn: unknown): Promise<string | undefined> => {
+    const defaultPath =
+      typeof startIn === 'string' && startIn.length <= 4096 && isAbsolute(startIn)
+        ? startIn
+        : app.getPath('home')
+    const options: OpenDialogOptions = {
+      title: 'Choose a project directory',
+      defaultPath,
+      properties: ['openDirectory', 'createDirectory'],
+    }
+    const win = BrowserWindow.fromWebContents(e.sender)
+    const result = win
+      ? await dialog.showOpenDialog(win, options)
+      : await dialog.showOpenDialog(options)
+    return result.canceled ? undefined : result.filePaths[0]
+  })
 
   // In-app update (settings → Updates): the renderer names only the gateway
   // base it is connected to; the manifest fetch, entry validation, URL

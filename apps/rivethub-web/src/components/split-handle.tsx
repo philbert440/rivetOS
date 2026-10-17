@@ -59,7 +59,7 @@ export function SplitHandle(props: {
     <div
       role="separator"
       aria-orientation="vertical"
-      aria-label={props.label ?? 'resize conversations pane'}
+      aria-label={props.label ?? 'resize workspace pane'}
       aria-valuemin={min}
       aria-valuemax={max}
       aria-valuenow={props.width}

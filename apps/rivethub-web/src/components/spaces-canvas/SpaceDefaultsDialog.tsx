@@ -1,112 +1,51 @@
 /**
- * Edit a space: name plus optional defaults for threads started here.
- * Running threads are not rewritten. The directory line is the preset's
- * own directory, shown read-only — the client never stores or sends a cwd.
+ * Edit a project: its name, the directory its sessions start in, and the
+ * node they start on. Running sessions are not rewritten. The project
+ * directory wins over every agent's own; left empty, each agent starts in
+ * its preset directory. Agent, model and effort are chosen per session, so
+ * Save clears any the project still carries from before.
  */
 
-import { useEffect, useRef, useState, type JSX } from 'react'
+import { useState, type JSX } from 'react'
 import * as Dialog from '@radix-ui/react-dialog'
-import type { HarnessDescriptor, HarnessId, ThinkingLevel } from '@rivetos/types'
-import { launchModelOptions } from '../../lib/conversation-model-options.js'
-import { urlLabel } from '../../lib/node-name.js'
-import { useRosterAgents } from '../../lib/use-agent-roster.js'
-import { useSpaces, type SpaceDef } from '../../stores/spaces.js'
-import { Select } from '../select.js'
-import { EffortPicker } from '../pickers/effort-picker.js'
-import { ModelPicker } from '../pickers/model-picker.js'
+import { FolderOpen } from 'lucide-react'
+import { isLocalDenUrl } from '../../lib/gateway-url.js'
+import { rivetShell } from '../../lib/shell-bridge.js'
+import { useConnection } from '../../stores/connection.js'
+import { asDirectory, useSpaces, type SpaceDef } from '../../stores/spaces.js'
 import { NodePicker } from '../pickers/node-picker.js'
-import type { SpaceRosterAgent } from './new-thread.js'
-import { startsInDirectoryOn } from './space-defaults.js'
 
-export function SpaceDefaultsDialog(props: {
-  space: SpaceDef
-  descriptors?: HarnessDescriptor[]
-  onClose: () => void
-}): JSX.Element {
+export function SpaceDefaultsDialog(props: { space: SpaceDef; onClose: () => void }): JSX.Element {
   const stored = props.space.defaults
-  const { agents: rosterAgents, isLoading } = useRosterAgents()
-  const agents: SpaceRosterAgent[] = rosterAgents.filter((row) => row.sourceNodeBaseUrl.length > 0)
   const [name, setName] = useState(props.space.name)
-  const [agentId, setAgentId] = useState('')
-  const [missingId, setMissingId] = useState<string | undefined>(undefined)
-  const [model, setModel] = useState(stored?.model ?? '')
-  const [effort, setEffort] = useState<ThinkingLevel | undefined>(stored?.effort)
   const [node, setNode] = useState(stored?.node ?? '')
-  // A stored preset must not be saved as "none" while the roster query is
-  // still in flight — that write clears agentId and harnessId.
-  const [ready, setReady] = useState(!stored?.agentId)
-  const seeded = useRef(false)
+  const [directory, setDirectory] = useState(stored?.directory ?? '')
+  const directoryBad = directory.trim() !== '' && asDirectory(directory) === undefined
+  // The directory is checked and used on the node, so the chooser (which
+  // browses this machine) is offered only when that node is this machine's
+  // own den. Desktop only: the browser has no way to hand back a real path.
+  const hubUrl = useConnection((state) => state.baseUrl)
+  const shell = rivetShell()
+  const canBrowse = typeof shell?.pickDirectory === 'function' && isLocalDenUrl(node || hubUrl)
 
-  useEffect(() => {
-    if (seeded.current) return
-    const storedAgent = stored?.agentId
-    if (storedAgent && isLoading) return
-    seeded.current = true
-    const found = agents.find((row) => row.id === storedAgent)
-    if (storedAgent && !found) {
-      setMissingId(storedAgent)
-      setAgentId('')
-    } else {
-      setMissingId(undefined)
-      setAgentId(found?.id ?? '')
-    }
-    setReady(true)
-  }, [agents, isLoading, stored])
-
-  const agent = agents.find((row) => row.id === agentId)
-  const harnessId: HarnessId | undefined =
-    agent?.harnessId ?? (missingId ? stored?.harnessId : undefined)
-  const launch = launchModelOptions({
-    preBind: true,
-    harnessId,
-    registry: props.descriptors,
-    model,
-  })
-  // A stored model from the previous harness must not stay selected once
-  // the new sheet does not offer it. Same rule as the chat launch picker.
-  useEffect(() => {
-    if (launch.clearModel) setModel('')
-  }, [launch.clearModel])
-  const modelOptions = [{ value: '', label: 'None' }, ...launch.models]
-  const nodeLabel = agent?.node?.trim() || (agent ? urlLabel(agent.sourceNodeBaseUrl) : '')
-  const startsIn = startsInDirectoryOn(agent?.directory, nodeLabel)
-  const showNode = ready && !agent && !missingId
+  const browse = async (): Promise<void> => {
+    if (!shell?.pickDirectory) return
+    const picked = await shell.pickDirectory(asDirectory(directory))
+    if (picked) setDirectory(picked)
+  }
 
   const save = (): void => {
-    if (!ready) return
     const trimmed = name.trim()
-    if (!trimmed) return
-    let nextAgent: string | undefined
-    let nextHarness: HarnessId | undefined
-    let nextNode: string | undefined
-    if (missingId && !agent) {
-      nextAgent = missingId
-      nextHarness = stored?.harnessId
-      nextNode = stored?.node
-    } else if (agent) {
-      nextAgent = agent.id
-      nextHarness = agent.harnessId
-      nextNode = undefined
-    } else {
-      nextAgent = undefined
-      nextHarness = undefined
-      nextNode = node || undefined
-    }
-    const patch: {
-      agentId?: string
-      model?: string
-      effort?: ThinkingLevel
-      harnessId?: HarnessId
-      node?: string
-    } = {
-      agentId: nextAgent,
-      model: model || undefined,
-      effort,
-      harnessId: nextHarness,
-      node: nextNode,
-    }
+    if (!trimmed || directoryBad) return
     useSpaces.getState().renameSpace(props.space.id, trimmed)
-    useSpaces.getState().setSpaceDefaults(props.space.id, patch)
+    useSpaces.getState().setSpaceDefaults(props.space.id, {
+      agentId: undefined,
+      model: undefined,
+      effort: undefined,
+      harnessId: undefined,
+      node: node || undefined,
+      directory: asDirectory(directory),
+    })
     props.onClose()
   }
 
@@ -121,10 +60,10 @@ export function SpaceDefaultsDialog(props: {
         <Dialog.Overlay className="fixed inset-0 z-50 bg-black/40 classic:bg-bg/70" />
         <Dialog.Content className="fixed top-1/2 left-1/2 z-50 w-[28rem] max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 border border-line bg-panel p-4 shadow-pop outline-none material:rounded-3xl material:border-transparent material:bg-surface material:p-6">
           <Dialog.Title className="mb-5 text-sm leading-relaxed text-ink-dim classic:mb-3 classic:text-ink">
-            Edit space
+            Edit project
           </Dialog.Title>
           <Dialog.Description className="mb-3 text-xs text-ink-dim">
-            New threads in this space start with these. Threads already running are not changed.
+            New sessions in this project start with these. Sessions already running are not changed.
           </Dialog.Description>
           <form
             onSubmit={(event) => {
@@ -138,91 +77,47 @@ export function SpaceDefaultsDialog(props: {
             <input
               id="space-name"
               autoFocus
-              aria-label="Space name"
+              aria-label="Project name"
               value={name}
               onChange={(event) => setName(event.target.value)}
-              placeholder="Space name"
+              placeholder="Project name"
               className="mb-3 w-full border border-line bg-bg px-2 py-1.5 text-sm text-ink outline-none material:rounded-lg"
             />
-            <label className="mb-1 block text-xs text-ink-dim" htmlFor="space-agent">
-              Agent
+            <label className="mb-1 block text-xs text-ink-dim" htmlFor="space-directory">
+              Directory on the node
             </label>
-            {missingId ? (
-              <p className="mb-2 flex items-center justify-between gap-2 text-xs text-ink-dim">
-                <span>(missing preset)</span>
+            <div className="flex items-stretch gap-2">
+              <input
+                id="space-directory"
+                aria-label="Project directory"
+                aria-invalid={directoryBad || undefined}
+                value={directory}
+                onChange={(event) => setDirectory(event.target.value)}
+                placeholder="Each agent's own directory"
+                spellCheck={false}
+                className="min-w-0 flex-1 border border-line bg-bg px-2 py-1.5 font-mono text-sm text-ink outline-none placeholder:font-sans placeholder:text-ink-dim aria-invalid:border-red material:rounded-lg"
+              />
+              {canBrowse ? (
                 <button
                   type="button"
-                  aria-label="Clear missing preset"
-                  className="border border-line px-2 py-1 text-ink hover:text-em material:rounded-pill material:hover:bg-ink/6"
-                  onClick={() => setMissingId(undefined)}
+                  data-browse-directory=""
+                  onClick={() => void browse()}
+                  className="flex shrink-0 items-center gap-1.5 border border-line px-3 text-xs text-ink hover:text-em material:rounded-pill material:hover:bg-ink/6"
                 >
-                  Clear
+                  <FolderOpen aria-hidden="true" className="size-4" />
+                  Browse…
                 </button>
-              </p>
-            ) : null}
-            <div className="mb-3">
-              <Select
-                id="space-agent"
-                value={agentId}
-                options={[
-                  { value: '', label: 'None' },
-                  ...agents.map((row) => ({ value: row.id, label: row.name })),
-                ]}
-                onChange={(value) => {
-                  const previousHarness =
-                    agents.find((row) => row.id === agentId)?.harnessId ??
-                    (missingId ? stored?.harnessId : undefined)
-                  const nextHarness = agents.find((row) => row.id === value)?.harnessId
-                  setAgentId(value)
-                  if (value) setMissingId(undefined)
-                  if (nextHarness !== previousHarness) setModel('')
-                }}
-                label="Agent"
-                className="w-full"
-              />
-              {startsIn ? <p className="mt-1 text-xs text-ink-dim">{startsIn}</p> : null}
+              ) : null}
             </div>
+            <p className={`mb-3 mt-1 text-xs ${directoryBad ? 'text-red' : 'text-ink-dim'}`}>
+              {directoryBad
+                ? 'Use a full path that starts with /'
+                : 'A folder on the node below. Every agent started here works in it, unless you pick another for that session.'}
+            </p>
             <div className="mb-3">
-              <span className="mb-1 block text-xs text-ink-dim">Model</span>
-              <ModelPicker
-                value={model}
-                options={modelOptions}
-                onChange={(value) => setModel(value)}
-              />
+              <span className="mb-1 block text-xs text-ink-dim">Node</span>
+              <NodePicker selected={node} onSelect={setNode} />
             </div>
-            <div className="mb-3">
-              <span className="mb-1 block text-xs text-ink-dim">Effort</span>
-              <div className="flex flex-wrap items-center gap-1">
-                <button
-                  type="button"
-                  aria-pressed={effort === undefined}
-                  aria-label="No default effort"
-                  onClick={() => setEffort(undefined)}
-                  className={`border px-2 py-1 text-xs ${
-                    effort === undefined ? 'border-em text-em' : 'border-line text-ink-dim'
-                  }`}
-                >
-                  None
-                </button>
-                {effort !== undefined ? (
-                  <EffortPicker value={effort} onChange={setEffort} />
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => setEffort('medium')}
-                    className="border border-line px-2 py-1 text-xs text-ink-dim hover:text-ink material:rounded-pill material:hover:bg-ink/6"
-                  >
-                    Choose
-                  </button>
-                )}
-              </div>
-            </div>
-            {showNode ? (
-              <div className="mb-3">
-                <span className="mb-1 block text-xs text-ink-dim">Node</span>
-                <NodePicker selected={node} onSelect={setNode} />
-              </div>
-            ) : null}
             <div className="flex justify-end gap-2">
               <button
                 type="button"
@@ -233,7 +128,7 @@ export function SpaceDefaultsDialog(props: {
               </button>
               <button
                 type="submit"
-                disabled={!name.trim() || !ready}
+                disabled={!name.trim() || directoryBad}
                 className="bg-em px-3 py-1.5 text-xs font-medium text-on-em hover:bg-em-dim disabled:opacity-40 classic:bg-em-dim classic:hover:bg-em classic:text-bg"
               >
                 Save

@@ -13,7 +13,7 @@ export function ConversationEmpty(props: { className?: string }): JSX.Element {
       className={props.className ?? 'flex flex-1 flex-col items-center justify-center gap-2'}
     >
       <RhMark className="text-5xl opacity-90" />
-      <div className="text-sm text-ink-dim">Pick a conversation or start a new one.</div>
+      <div className="text-sm text-ink-dim">Pick a session or start a new one.</div>
     </div>
   )
 }

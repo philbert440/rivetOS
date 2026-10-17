@@ -3,6 +3,7 @@ import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
 import {
   Bell,
   Folder,
+  Keyboard,
   Library,
   ListChecks,
   Menu,
@@ -13,6 +14,8 @@ import {
 import { useNotifications } from '../stores/notifications.js'
 import { useExperimental } from '../stores/experimental.js'
 import { useSidebarPrefs } from '../stores/sidebar-prefs.js'
+import { useCanvasDock } from '../stores/canvas-dock.js'
+import { useConversationView } from '../stores/conversation-view.js'
 import { shouldCloseDrawerOnSelection } from '../lib/drawer-selection.js'
 import { focusInForeignDialog, matchHubKey } from '../lib/hub-keys.js'
 import { useKeyLabel } from '../lib/use-key-label.js'
@@ -91,6 +94,63 @@ function NavLink(props: {
   )
 }
 
+/** Opens the canvas shortcuts dock (bottom left of the canvas). Off the
+ *  workspace it goes there first. Badged with the "needs you" count while
+ *  the dock is shut. Only when the canvas is on — the dock lives in it. */
+function ShortcutsNav(props: { collapsed: boolean }): JSX.Element | null {
+  const navigate = useNavigate()
+  const pathname = useRouterState({ select: (s) => s.location.pathname })
+  const canvasEnabled = useConversationView((s) => s.canvasEnabled)
+  const open = useCanvasDock((s) => s.open)
+  const needs = useCanvasDock((s) => s.needs)
+  const narrow = useIsNarrow()
+  if (!canvasEnabled) return null
+  const onChat = pathname === '/'
+  const shown = open && onChat
+  return (
+    <Tooltip label="Shortcuts" disabled={!props.collapsed} block>
+      <button
+        type="button"
+        data-dock-toggle=""
+        aria-label={shown ? 'Hide shortcuts' : 'Show shortcuts'}
+        aria-expanded={shown}
+        className={cn(navClass(shown, props.collapsed), 'relative')}
+        onClick={() => {
+          if (shouldCloseDrawerOnSelection(narrow)) {
+            useSidebarPrefs.getState().setDrawerOpen(false)
+          }
+          if (!onChat) {
+            useCanvasDock.getState().setOpen(true)
+            void navigate({ to: '/' })
+            return
+          }
+          useCanvasDock.getState().toggle()
+        }}
+      >
+        <Keyboard
+          className={cn(
+            'size-[18px] shrink-0 classic:size-4',
+            !props.collapsed && 'mr-3 classic:mr-2',
+          )}
+          aria-hidden
+        />
+        {!props.collapsed && 'Shortcuts'}
+        {!shown && needs > 0 ? (
+          <span
+            data-dock-needs=""
+            className={cn(
+              'text-xs text-warn',
+              props.collapsed ? 'absolute right-1 top-0.5' : 'ml-auto',
+            )}
+          >
+            {needs}
+          </span>
+        ) : null}
+      </button>
+    </Tooltip>
+  )
+}
+
 function ConversationsNav(props: { collapsed: boolean }): JSX.Element {
   const navigate = useNavigate()
   const pathname = useRouterState({ select: (s) => s.location.pathname })
@@ -100,10 +160,10 @@ function ConversationsNav(props: { collapsed: boolean }): JSX.Element {
   const narrow = useIsNarrow()
 
   return (
-    <Tooltip label="Conversations" disabled={!props.collapsed} block>
+    <Tooltip label="Workspace" disabled={!props.collapsed} block>
       <button
         type="button"
-        aria-label="Conversations"
+        aria-label="Workspace"
         aria-expanded={!narrow && onChat ? !paneHidden : undefined}
         aria-controls={!narrow && onChat ? 'conversations-pane' : undefined}
         className={navClass(onChat, props.collapsed)}
@@ -135,7 +195,7 @@ function ConversationsNav(props: { collapsed: boolean }): JSX.Element {
           )}
           aria-hidden
         />
-        {!props.collapsed && <span className="min-w-0 truncate">Conversations</span>}
+        {!props.collapsed && <span className="min-w-0 truncate">Workspace</span>}
       </button>
     </Tooltip>
   )
@@ -200,6 +260,7 @@ export function Sidebar(): JSX.Element {
   const setRailCollapsed = useSidebarPrefs((s) => s.setRailCollapsed)
   const drawerOpen = useSidebarPrefs((s) => s.drawerOpen)
   const setDrawerOpen = useSidebarPrefs((s) => s.setDrawerOpen)
+  const canvasEnabled = useConversationView((s) => s.canvasEnabled)
   const experimental = useExperimental((s) => s.experimental)
   const primaryItems = visibleNav(PRIMARY_NAV, experimental)
   const secondaryItems = visibleNav(SECONDARY_NAV, experimental)
@@ -343,10 +404,13 @@ export function Sidebar(): JSX.Element {
         )}
       </nav>
 
-      <AgentsSection compact={collapsed} />
+      {/* With the canvas on, the roster lives in its Agents pop-out; the rail
+          keeps only the headless part (Ctrl+Tab, the History filter). */}
+      {canvasEnabled ? <AgentsSection headless /> : <AgentsSection compact={collapsed} />}
 
       <div className="mt-auto flex flex-col">
         <div className={cn('flex flex-col gap-1 pb-1', collapsed ? 'px-1' : 'px-2')}>
+          <ShortcutsNav collapsed={collapsed} />
           <NavLink {...SETTINGS} collapsed={collapsed} />
         </div>
         <NodeSwitcher compact={collapsed} />

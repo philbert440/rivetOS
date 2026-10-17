@@ -7,14 +7,10 @@
  */
 
 import type { MeshDenNode } from '@rivetos/types'
-import { gatewayOrigin, isValidGatewayUrl } from './gateway-url.js'
+import { gatewayOrigin, isLoopbackHost, isValidGatewayUrl } from './gateway-url.js'
 
 /** Den listen port. Implicit http/https defaults (80/443) are never this. */
 export const DEN_PORT = 5174
-
-function isLoopbackHost(host: string): boolean {
-  return host === '127.0.0.1' || host === 'localhost' || host === '::1'
-}
 
 /**
  * LAN / mesh hosts whose den lives on DEN_PORT. Public names keep URL

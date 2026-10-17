@@ -875,6 +875,42 @@ describe('POST .../sessions { agentId }', () => {
     })
   })
 
+  it('passes a session directory to the preset, and checks it like POST /term', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'den-session-dir-'))
+    const asked: Parameters<Resolve>[1][] = []
+    try {
+      await withRoutes(
+        (id, explicit) => {
+          asked.push(explicit)
+          return preset(id, explicit).then((launch) =>
+            launch.ok && explicit.directory ? { ...launch, cwd: explicit.directory } : launch,
+          )
+        },
+        async (base, driver) => {
+          const sessions = '/api/harnesses/claude-code/sessions'
+          expect((await post(base, sessions, { agentId: 'a1', directory: `${dir}/` })).status).toBe(
+            201,
+          )
+          expect(asked[0]).toEqual({ command: 'claude', directory: dir })
+          // No preset: the directory is the cwd.
+          expect((await post(base, sessions, { directory: dir })).status).toBe(201)
+          expect(driver.calls.started.map((s) => s.cwd)).toEqual([dir, dir])
+
+          expect((await post(base, sessions, { agentId: 'a1', directory: 'rel' })).status).toBe(
+            400,
+          )
+          const absent = await post(base, sessions, { directory: join(dir, 'no-such-dir') })
+          expect(absent.status).toBe(400)
+          expect(((await absent.json()) as { error: string }).error).toMatch(/does not exist$/)
+          expect((await post(base, sessions, { directory: dir, cwd: dir })).status).toBe(400)
+          expect(driver.calls.started).toHaveLength(2)
+        },
+      )
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it("passes the resolver's refusal through, and 501s without a resolver", async () => {
     await withRoutes(
       () => Promise.resolve({ ok: false, status: 404, body: { error: 'agent not found' } }),

@@ -17,6 +17,7 @@ import { Bot, ChevronDown, ChevronRight, Pencil, Plus, Trash2, X } from 'lucide-
 import { type HarnessId } from '@rivetos/types'
 import { GatewayError } from '@rivetos/gateway-client'
 import { useConnection } from '../stores/connection.js'
+import { useCanvasDock } from '../stores/canvas-dock.js'
 import { agentDraftDirty, captureAgentDraft } from '../lib/agent-draft-dirty.js'
 import { healthzQueryOptions, useMeshNodeName, useNodeName, urlLabel } from '../lib/node-name.js'
 import { useNodeDiscovery } from '../lib/use-node-discovery.js'
@@ -961,8 +962,22 @@ function sortOrderEcho(sent: number | null): number | undefined {
   return sent === null ? undefined : sent
 }
 
-export function AgentsSection(props: { compact?: boolean }): JSX.Element {
+export function AgentsSection(props: {
+  compact?: boolean
+  /** Rendered in the canvas Agents pop-out: always expanded, no fold
+   *  header, and the rail instance keeps the Ctrl+Tab cycle. */
+  popout?: boolean
+  /** Row click hands the agent here instead of reopening its pinned
+   *  session — the canvas pop-out starts a fresh session with it. */
+  onPick?: (agentId: string) => void
+  /** Renders nothing but keeps the roster's app-wide duties running —
+   *  the Ctrl+Tab cycle and the History agent filter — for when the list
+   *  itself lives in the canvas Agents pop-out rather than the rail. */
+  headless?: boolean
+}): JSX.Element | null {
   const compact = props.compact ?? false
+  const popout = props.popout ?? false
+  const headless = props.headless ?? false
   const queryClient = useQueryClient()
   const navigate = useNavigate()
   const { baseUrl, transportEpoch } = useConnection()
@@ -970,7 +985,8 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
   const { addDraft, setActive } = useChat()
   const activeSession = useChat((s) => s.active)
   const chatSettings = useChatSettings()
-  const [collapsed, setCollapsed] = useState(false)
+  const [foldedState, setCollapsed] = useState(false)
+  const collapsed = props.headless === true || (!popout && foldedState)
   const [editing, setEditing] = useState<RosterAgent | null>(null)
   const [creating, setCreating] = useState(false)
   const [duplicating, setDuplicating] = useState<{ source: RosterAgent; draft: AgentDraft } | null>(
@@ -1373,15 +1389,28 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
   // last targeted agent, reset whenever the active session catches up).
   const cycleCursor = useRef<string | undefined>(undefined)
   const dialogOpen = editing !== null || creating || duplicating !== null
-  const cycleRef = useRef({ agents, currentAgentId, handleOpen, dialogOpen })
-  cycleRef.current = { agents, currentAgentId, handleOpen, dialogOpen }
+  const cycleRef = useRef({ agents, currentAgentId, handleOpen, dialogOpen, navigate })
+  cycleRef.current = { agents, currentAgentId, handleOpen, dialogOpen, navigate }
   useEffect(() => {
     cycleCursor.current = undefined
   }, [currentAgentId])
   useEffect(() => {
+    if (popout) return
     const onKey = (e: KeyboardEvent): void => {
       const action = matchHubKey(e)
       if (action !== 'agent-next' && action !== 'agent-prev') return
+      if (headless) {
+        // The roster lives in the canvas Agents pop-out: Ctrl+Tab opens it
+        // with a row focused, and inside it the pop-out steps the rows.
+        if (document.activeElement?.closest('[data-agents-popout]')) return
+        if (focusInForeignDialog(document.activeElement)) return
+        e.preventDefault()
+        e.stopPropagation()
+        if (e.repeat) return
+        if (window.location.pathname !== '/') void cycleRef.current.navigate({ to: '/' })
+        useCanvasDock.getState().focusAgents(action === 'agent-next' ? 'first' : 'last')
+        return
+      }
       if (e.repeat) {
         e.preventDefault()
         e.stopPropagation()
@@ -1421,61 +1450,78 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
       cancelQueuedKeyboardOpen()
       window.removeEventListener('keydown', onKey, { capture: true })
     }
-  }, [])
+  }, [popout, headless])
+
+  if (props.headless) return null
 
   return (
-    <div className={compact ? 'border-t border-line px-1 py-2' : 'border-t border-line px-2 py-2'}>
+    <div
+      className={
+        popout
+          ? 'px-2 py-2'
+          : compact
+            ? 'border-t border-line px-1 py-2'
+            : 'border-t border-line px-2 py-2'
+      }
+    >
       {dialog.element}
       <div className="flex w-full items-center justify-between">
-        <Tooltip
-          label={currentAgent ? `Agents — current: ${currentAgent.name}` : 'Agents'}
-          disabled={!compact}
-          block
-        >
-          <button
-            type="button"
-            onClick={() => setCollapsed((c) => !c)}
-            aria-label={
-              collapsed && currentAgent ? `Agents, current: ${currentAgent.name}` : 'Agents'
-            }
-            aria-expanded={!collapsed}
-            className={
-              compact
-                ? 'relative flex w-full items-center justify-center rounded py-2 text-ink-dim hover:bg-panel-2 hover:text-ink'
-                : 'flex min-w-0 flex-1 items-center rounded px-3 py-2 text-sm text-ink-dim hover:bg-panel-2 hover:text-ink'
-            }
+        {popout ? (
+          <span className="flex min-w-0 flex-1 items-center px-2 py-1 text-xs text-ink-dim">
+            <Bot className="mr-2 size-4 shrink-0" aria-hidden />
+            Drag onto + to start a session
+          </span>
+        ) : (
+          <Tooltip
+            label={currentAgent ? `Agents — current: ${currentAgent.name}` : 'Agents'}
+            disabled={!compact}
+            block
           >
-            <Bot className={compact ? 'size-4 shrink-0' : 'mr-2 size-4 shrink-0'} aria-hidden />
-            {!compact && <span>Agents</span>}
-            {!compact &&
-              (collapsed ? (
-                <ChevronRight className="ml-1 size-3 shrink-0 text-ink-dim" />
-              ) : (
-                <ChevronDown className="ml-1 size-3 shrink-0 text-ink-dim" />
-              ))}
-            {/* Folded list hides the highlighted row — keep the current agent visible. */}
-            {collapsed &&
-              currentAgent &&
-              currentAccent &&
-              (compact ? (
-                <span className="absolute left-1/2 top-1.5 ml-1" aria-hidden>
-                  <AgentTile accent={currentAccent} halo />
-                </span>
-              ) : (
-                <span className="ml-auto flex min-w-0 items-center gap-1.5 pl-2 text-xs text-em">
-                  <AgentTile
-                    accent={currentAccent}
-                    initials={agentInitials(currentAgent.name)}
-                    icon={modelIconKey({
-                      model: currentAgent.model,
-                      harnessId: currentAgent.harnessId,
-                    })}
-                  />
-                  <span className="min-w-0 truncate">{currentAgent.name}</span>
-                </span>
-              ))}
-          </button>
-        </Tooltip>
+            <button
+              type="button"
+              onClick={() => setCollapsed((c) => !c)}
+              aria-label={
+                collapsed && currentAgent ? `Agents, current: ${currentAgent.name}` : 'Agents'
+              }
+              aria-expanded={!collapsed}
+              className={
+                compact
+                  ? 'relative flex w-full items-center justify-center rounded py-2 text-ink-dim hover:bg-panel-2 hover:text-ink'
+                  : 'flex min-w-0 flex-1 items-center rounded px-3 py-2 text-sm text-ink-dim hover:bg-panel-2 hover:text-ink'
+              }
+            >
+              <Bot className={compact ? 'size-4 shrink-0' : 'mr-2 size-4 shrink-0'} aria-hidden />
+              {!compact && <span>Agents</span>}
+              {!compact &&
+                (collapsed ? (
+                  <ChevronRight className="ml-1 size-3 shrink-0 text-ink-dim" />
+                ) : (
+                  <ChevronDown className="ml-1 size-3 shrink-0 text-ink-dim" />
+                ))}
+              {/* Folded list hides the highlighted row — keep the current agent visible. */}
+              {collapsed &&
+                currentAgent &&
+                currentAccent &&
+                (compact ? (
+                  <span className="absolute left-1/2 top-1.5 ml-1" aria-hidden>
+                    <AgentTile accent={currentAccent} halo />
+                  </span>
+                ) : (
+                  <span className="ml-auto flex min-w-0 items-center gap-1.5 pl-2 text-xs text-em">
+                    <AgentTile
+                      accent={currentAccent}
+                      initials={agentInitials(currentAgent.name)}
+                      icon={modelIconKey({
+                        model: currentAgent.model,
+                        harnessId: currentAgent.harnessId,
+                      })}
+                    />
+                    <span className="min-w-0 truncate">{currentAgent.name}</span>
+                  </span>
+                ))}
+            </button>
+          </Tooltip>
+        )}
         {!collapsed && !compact && (
           <button
             type="button"
@@ -1507,7 +1553,10 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
                 compact={compact}
                 current={agent.id === currentAgentId}
                 nodeKnown={Boolean(agent.sourceNodeBaseUrl)}
-                onOpen={() => handleOpen(agent)}
+                onOpen={() => {
+                  if (props.onPick) props.onPick(agent.id)
+                  else handleOpen(agent)
+                }}
                 onEdit={() => {
                   setCreating(false)
                   setDuplicating(null)

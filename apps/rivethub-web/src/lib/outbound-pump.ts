@@ -362,7 +362,7 @@ export function createOutboundPump(opts: OutboundPumpOptions): OutboundPump {
       if (disposed) return
       for (const [id, delivery] of deliveries) {
         if (!delivery.accepted) continue
-        restore(id, 'delivery unconfirmed: connection lost; check the conversation before retrying')
+        restore(id, 'delivery unconfirmed: connection lost; check the session before retrying')
       }
     },
     onUndelivered: (deliveryId, note) => {

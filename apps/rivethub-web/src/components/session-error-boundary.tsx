@@ -34,7 +34,7 @@ export class SessionErrorBoundary extends Component<
     if (this.state.error) {
       return (
         <div className="flex min-w-0 flex-1 flex-col items-center justify-center gap-3 p-8">
-          <div className="text-sm font-semibold text-red">conversation crashed</div>
+          <div className="text-sm font-semibold text-red">session crashed</div>
           <p className="max-w-md text-center text-sm text-ink-dim">
             Something went wrong rendering this chat. You can go back to the list without quitting
             the app.

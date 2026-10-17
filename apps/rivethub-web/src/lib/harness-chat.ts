@@ -370,7 +370,7 @@ export function chatItems(input: {
     .map((id) => ({
       key: id,
       kind: 'draft',
-      title: 'new conversation',
+      title: 'new session',
       updatedAt: input.draftCreatedAt?.[id] ?? 0,
     }))
   return sortByRecency([...items.values(), ...drafts])

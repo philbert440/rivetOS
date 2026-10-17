@@ -61,10 +61,13 @@ export function termSpawnBody(input: {
   effort?: string
   /** False when the preset has no harnessId. Omitted means "send agentId if set". */
   presetHasHarness?: boolean
+  /** Session working directory (the project's); wins over the preset's. */
+  directory?: string
 }): TermSpawnRequest {
   const agentId = input.presetHasHarness === false ? undefined : input.agentId?.trim() || undefined
   const model = input.model?.trim() || undefined
   const effort = input.effort?.trim() || undefined
+  const directory = input.directory?.trim() || undefined
   return {
     session: input.sessionId,
     ...(input.command ? { command: input.command } : {}),
@@ -72,6 +75,7 @@ export function termSpawnBody(input: {
     ...(agentId ? { agentId } : {}),
     ...(model ? { model } : {}),
     ...(effort ? { effort } : {}),
+    ...(directory ? { directory } : {}),
   }
 }
 

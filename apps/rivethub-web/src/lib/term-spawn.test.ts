@@ -16,6 +16,15 @@ import {
 } from './term-spawn.js'
 
 describe('termSpawnBody', () => {
+  it("sends the session directory (the project's) when set, trimmed", () => {
+    expect(termSpawnBody({ sessionId: 's', agentId: 'a', directory: ' /srv/app ' })).toEqual({
+      session: 's',
+      agentId: 'a',
+      directory: '/srv/app',
+    })
+    expect(termSpawnBody({ sessionId: 's', directory: '  ' })).toEqual({ session: 's' })
+  })
+
   it('includes agentId together with the thread model and effort', () => {
     expect(
       termSpawnBody({

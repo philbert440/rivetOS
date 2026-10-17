@@ -1300,6 +1300,52 @@ describe('POST /term { agentId }', () => {
     expect(fakeSpawns).toEqual([])
   })
 
+  it('spawns in a session directory over the preset directory, and checks it', async () => {
+    const { base, stateDir } = await start('', 60_000, { term: true, mux: 'none' })
+    const created = await post(base, '/api/agents', { name: 'Reviewer', harnessId: 'claude-code' })
+    const agent = ((await created.json()) as { agent: AgentPreset }).agent
+    const project = join(stateDir, 'project')
+    mkdirSync(project)
+
+    fakeSpawns.length = 0
+    const spawned = await post(base, '/term', { agentId: agent.id, directory: `${project}/` })
+    expect(spawned.status).toBe(201)
+    expect(((await spawned.json()) as { cwd?: string }).cwd).toBe(project)
+    expect(fakeSpawns[0].cwd).toBe(project)
+
+    // No preset: the directory still applies to a plain roster spawn.
+    fakeSpawns.length = 0
+    const plain = await post(base, '/term', { command: 'shell', directory: project })
+    expect(plain.status).toBe(201)
+    expect(((await plain.json()) as { cwd?: string }).cwd).toBe(project)
+    expect(fakeSpawns[0].cwd).toBe(project)
+
+    fakeSpawns.length = 0
+    const relative = await post(base, '/term', { agentId: agent.id, directory: 'project' })
+    expect(relative.status).toBe(400)
+    const absent = await post(base, '/term', {
+      agentId: agent.id,
+      directory: join(stateDir, 'no-such-dir'),
+    })
+    expect(absent.status).toBe(400)
+    expect(((await absent.json()) as { error: string }).error).toMatch(/does not exist$/)
+    expect(fakeSpawns).toEqual([])
+  })
+
+  it('takes a session directory for a preset that has none', async () => {
+    const { base, stateDir } = await start('', 60_000, { term: true, mux: 'none' })
+    writeFileSync(
+      join(stateDir, 'agents.json'),
+      JSON.stringify({
+        agents: [storedPreset({ id: 'nodir', name: 'NoDir', harnessId: 'claude-code' })],
+      }),
+    )
+    fakeSpawns.length = 0
+    const res = await post(base, '/term', { agentId: 'nodir', directory: stateDir })
+    expect(res.status).toBe(201)
+    expect(fakeSpawns[0].cwd).toBe(stateDir)
+  })
+
   it('409s a preset with no directory and 500s when the directory cannot be created', async () => {
     const { base, stateDir } = await start('', 60_000, { term: true, mux: 'none' })
     const blocked = join(stateDir, 'not-a-directory')

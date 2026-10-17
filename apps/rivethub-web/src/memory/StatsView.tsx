@@ -51,7 +51,7 @@ export function StatsView(props: {
       {s && s.conversations === 0 && (
         <div className="empty">
           <strong>No captured sessions yet</strong>
-          Talk in Conversations and they show up here.
+          Talk in Workspace and they show up here.
         </div>
       )}
 
