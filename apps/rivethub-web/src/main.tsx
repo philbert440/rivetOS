@@ -18,6 +18,7 @@ import { applyBootNodeParam } from './lib/boot-node-param.js'
 import { installClipboardBridge } from './lib/clipboard.js'
 import { installShellKeys } from './lib/shell-keys.js'
 import { hydrateSettingsIfEmpty, installSettingsSync } from './lib/settings-sync.js'
+import { rehydrateFileBackedStores } from './lib/settings-rehydrate.js'
 import { installOmarchySync } from './lib/omarchy-sync.js'
 import { adoptStoredRemoteUi } from './lib/remote-ui.js'
 import { useConnection } from './stores/connection.js'
@@ -53,13 +54,15 @@ if (!rootEl) throw new Error('missing #root element')
 
 // Boot: never leave the local/bundled dist for a remote node's UI.
 // 1) Hydrate missing keys from the shell's JSON file (existing values win).
-// 2) Refresh the connection store from storage (module init ran before 1).
+// 2) Refresh the connection + persist stores from storage (module init ran
+//    before 1; a stale store's first write would clobber the restored file).
 // 3) Adopt last-active remote into the gateway (repoint only).
 // 4) Honor ?node= (Android drawer deep-link). Auth is device mTLS.
 // 5) Mount React.
 void hydrateSettingsIfEmpty()
-  .then(() => {
+  .then(async () => {
     useConnection.getState().hydrateFromStorage()
+    await rehydrateFileBackedStores()
     installOmarchySync()
     return adoptStoredRemoteUi((baseUrl) => {
       const { baseUrl: current, setConnection } = useConnection.getState()
