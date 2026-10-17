@@ -42,6 +42,14 @@ export function quoteShellArg(value: string): string {
 }
 
 /**
+ * Like quoteShellArg, but leaves plain paths and words bare so printed
+ * commands stay readable: `/home/rivet/.rivetos` as is, `/srv/rivet home` quoted.
+ */
+export function shellArg(value: string): string {
+  return /^[\w.,\-/@:%+=]+$/.test(value) ? value : quoteShellArg(value)
+}
+
+/**
  * Throw if `value` contains shell metacharacters. Use at the boundary where a
  * user-supplied value (--version, --channel, --ssh-user) first enters a command.
  */

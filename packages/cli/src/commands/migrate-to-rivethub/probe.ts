@@ -8,6 +8,7 @@ import { dirname, join } from 'node:path'
 import { parse as parseYaml } from 'yaml'
 import { resolveEmbeddedPg, resolveEnvVars, type RivetConfig } from '@rivetos/boot'
 import { parseRivetEnv } from '../../lib/env-file.js'
+import { shellArg } from '../../lib/ssh.js'
 import { denProbeHost, parseDenSettings } from '../update/den-deploy.js'
 import type { Host, PathKind, RunResult } from './host.js'
 import type { MigrateOptions } from './options.js'
@@ -208,7 +209,7 @@ export function probeNode(host: Host, opts: MigrateOptions): NodeFacts {
         : undefined
   const validate =
     validator && rawConfig !== undefined
-      ? host.run(`${validator} config validate`, { timeoutMs: 60_000 })
+      ? host.run(`${shellArg(validator)} config validate`, { timeoutMs: 60_000 })
       : undefined
 
   const den = parseDenSettings(rawConfig)

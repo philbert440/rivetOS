@@ -9,6 +9,8 @@
  * through the ~/.rivetos → ~/.rivethub link the plan creates before start).
  */
 
+import { shellArg } from '../../lib/ssh.js'
+
 export type UnitScope = 'system' | 'user' | 'none'
 
 export const TS_UNIT = 'rivetos.service'
@@ -32,13 +34,27 @@ export function asRoot(cmd: string, ctx: ScopeContext): string {
 export function systemctl(scope: 'system' | 'user', args: string, ctx: ScopeContext): string {
   if (scope === 'system') return asRoot(`systemctl ${args}`, ctx)
   const runtime = ctx.runtimeDir ?? `/run/user/${String(ctx.uid)}`
-  return `XDG_RUNTIME_DIR=${runtime} systemctl --user ${args}`
+  return `XDG_RUNTIME_DIR=${shellArg(runtime)} systemctl --user ${args}`
 }
 
 export function unitPath(scope: 'system' | 'user', home: string): string {
   return scope === 'system'
     ? `/etc/systemd/system/${HUB_UNIT}`
     : `${home}/.config/systemd/user/${HUB_UNIT}`
+}
+
+/** Escape systemd specifiers (`%`) in a unit file value. */
+function unitValue(value: string): string {
+  return value.replace(/%/g, '%%')
+}
+
+/**
+ * Quote one word for a unit file (systemd.syntax): double quotes, with \\ and
+ * " escaped, when it has whitespace or quotes; bare otherwise.
+ */
+export function unitWord(value: string): string {
+  const v = unitValue(value)
+  return /[\s"'\\]/.test(v) ? `"${v.replace(/[\\"]/g, '\\$&')}"` : v
 }
 
 export interface UnitInput {
@@ -61,13 +77,13 @@ export function renderHubUnit(input: UnitInput): string {
   ]
   if (scope === 'system') lines.push(`User=${user}`)
   lines.push(
-    `WorkingDirectory=${home}`,
-    `Environment=HOME=${home}`,
-    `Environment=PATH=${home}/.local/bin:/usr/local/bin:/usr/bin:/bin`,
+    `WorkingDirectory=${unitValue(home)}`,
+    `Environment=${unitWord(`HOME=${home}`)}`,
+    `Environment=${unitWord(`PATH=${home}/.local/bin:/usr/local/bin:/usr/bin:/bin`)}`,
     'Environment=TERM=xterm-256color',
     'Environment=RIVETHUB_LOG_LEVEL=info',
-    `EnvironmentFile=-${home}/.rivetos/.env`,
-    `ExecStart=${rhPath} start`,
+    `EnvironmentFile=-${unitValue(home)}/.rivetos/.env`,
+    `ExecStart=${unitWord(rhPath)} start`,
     'Restart=on-failure',
     'RestartSec=5',
     '',

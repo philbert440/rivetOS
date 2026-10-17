@@ -9,6 +9,7 @@
  */
 
 import { join } from 'node:path'
+import { shellArg as q } from '../../lib/ssh.js'
 import type { Host } from './host.js'
 import type { MigrateOptions } from './options.js'
 import { SQLITE_TARGET, type NodeFacts } from './probe.js'
@@ -207,7 +208,7 @@ function installBinariesStep(facts: NodeFacts): Step {
       title: 'Install rh and rivethub-migrate into ~/.local/bin',
       phase: 'prepare',
       commands: pairs.map((p) =>
-        p.from === p.to ? `${p.to} (already in place)` : `install -m 755 ${p.from} ${p.to}`,
+        p.from === p.to ? `${p.to} (already in place)` : `install -m 755 ${q(p.from)} ${q(p.to)}`,
       ),
       run: (host) => {
         host.mkdirp(binDir)
@@ -253,7 +254,7 @@ function memorySteps(facts: NodeFacts, stamp: string): Step[] {
   const mem = facts.memory
   switch (mem.kind) {
     case 'postgres': {
-      const cmd = `${migrate} postgres --config ${facts.configPath}`
+      const cmd = `${q(migrate)} postgres --config ${q(facts.configPath)}`
       return [
         {
           id: 'migrate-postgres',
@@ -268,7 +269,7 @@ function memorySteps(facts: NodeFacts, stamp: string): Step[] {
     case 'pglite': {
       const dump = join(state, 'migrate', `pglite-memory-${stamp}.sql`)
       const target = join(state, SQLITE_TARGET)
-      const importCmd = `${migrate} sqlite --path ${target} --import-pg-dump ${dump}`
+      const importCmd = `${q(migrate)} sqlite --path ${q(target)} --import-pg-dump ${q(dump)}`
       return [
         {
           id: 'dump-pglite',
@@ -292,7 +293,7 @@ function memorySteps(facts: NodeFacts, stamp: string): Step[] {
       ]
     }
     case 'sqlite': {
-      const cmd = `${migrate} sqlite --path ${mem.path}`
+      const cmd = `${q(migrate)} sqlite --path ${q(mem.path)}`
       return [
         {
           id: 'migrate-sqlite',
@@ -324,8 +325,8 @@ function unitSteps(facts: NodeFacts, hubScope: 'system' | 'user'): Step[] {
   const s = (args: string): string => systemctl(hubScope, args, facts.scope)
   const installCmd =
     hubScope === 'system'
-      ? `${asRoot(`install -m 0644 ${staged} ${dest}`, facts.scope)} && ${s('daemon-reload')} && ${s(`enable ${HUB_UNIT}`)}`
-      : `mkdir -p ${join(facts.home, '.config', 'systemd', 'user')} && install -m 0644 ${staged} ${dest} && ${s('daemon-reload')} && ${s(`enable ${HUB_UNIT}`)}`
+      ? `${asRoot(`install -m 0644 ${q(staged)} ${q(dest)}`, facts.scope)} && ${s('daemon-reload')} && ${s(`enable ${HUB_UNIT}`)}`
+      : `mkdir -p ${q(join(facts.home, '.config', 'systemd', 'user'))} && install -m 0644 ${q(staged)} ${q(dest)} && ${s('daemon-reload')} && ${s(`enable ${HUB_UNIT}`)}`
   const startCmd = s(`start ${HUB_UNIT}`)
   return [
     {
@@ -376,8 +377,8 @@ export function planMigration(facts: NodeFacts, opts: MigrateOptions, stamp: str
   const hub = join(home, '.rivethub')
   const backup = join(home, `rivetos-state-${stamp}.tgz`)
   const pidFile = join(legacy, 'rivetos.pid')
-  const backupCmd = `(umask 077 && tar czf ${backup} -C ${home} .rivetos) && chmod 600 ${backup}`
-  const validateCmd = `${facts.installedRh} config validate`
+  const backupCmd = `(umask 077 && tar czf ${q(backup)} -C ${q(home)} .rivetos) && chmod 600 ${q(backup)}`
+  const validateCmd = `${q(facts.installedRh)} config validate`
 
   plan.steps.push(installBinariesStep(facts), {
     id: 'validate-config',
@@ -392,7 +393,7 @@ export function planMigration(facts: NodeFacts, opts: MigrateOptions, stamp: str
   })
   if (facts.memory.kind === 'postgres') {
     const url = facts.memory.url
-    const statusCmd = `${facts.installedMigrate} status postgres --config ${facts.configPath}`
+    const statusCmd = `${q(facts.installedMigrate)} status postgres --config ${q(facts.configPath)}`
     plan.steps.push({
       id: 'postgres-status',
       title: 'Check the database schema (rivethub-migrate status postgres)',
@@ -431,7 +432,10 @@ export function planMigration(facts: NodeFacts, opts: MigrateOptions, stamp: str
       id: 'move-state',
       title: 'Move ~/.rivetos to ~/.rivethub and link it back (before the first start)',
       phase: 'switch',
-      commands: [`rm -f ${pidFile}`, `mv ${legacy} ${hub} && ln -s ${hub} ${legacy}`],
+      commands: [
+        `rm -f ${q(pidFile)}`,
+        `mv ${q(legacy)} ${q(hub)} && ln -s ${q(hub)} ${q(legacy)}`,
+      ],
       run: (host) => {
         host.remove(pidFile)
         host.rename(legacy, hub)
@@ -440,7 +444,7 @@ export function planMigration(facts: NodeFacts, opts: MigrateOptions, stamp: str
       },
     },
     ...unitSteps(facts, hubScope),
-    healthStep('health', HUB_UNIT, hubScope, facts, 'switch', `${facts.installedRh} status`),
+    healthStep('health', HUB_UNIT, hubScope, facts, 'switch', `${q(facts.installedRh)} status`),
   )
 
   if (facts.memory.kind === 'none') {
@@ -531,7 +535,7 @@ function rollbackSteps(
   if (hubScope !== 'none') {
     const s = (args: string): string => systemctl(hubScope, args, facts.scope)
     const dest = unitPath(hubScope, home)
-    const rm = hubScope === 'system' ? asRoot(`rm -f ${dest}`, facts.scope) : `rm -f ${dest}`
+    const rm = hubScope === 'system' ? asRoot(`rm -f ${q(dest)}`, facts.scope) : `rm -f ${q(dest)}`
     const stopCmd = `${s(`disable --now ${HUB_UNIT}`)} 2>/dev/null || true`
     const removeCmd = `${rm} && ${s('daemon-reload')}`
     steps.push({
@@ -551,7 +555,7 @@ function rollbackSteps(
     id: 'restore-state',
     title: 'Put the state directory back at ~/.rivetos',
     phase: 'switch',
-    commands: [`if ~/.rivetos is the link: rm ${legacy}; then mv ${hub} ${legacy}`],
+    commands: [`if ~/.rivetos is the link: rm ${q(legacy)}; then mv ${q(hub)} ${q(legacy)}`],
     run: (host) => {
       const l = host.kind(legacy)
       const h = host.kind(hub)
@@ -577,7 +581,7 @@ function rollbackSteps(
       id: 'park-sqlite',
       title: `Move RivetHub's ${SQLITE_TARGET} aside (PGlite stays the RivetOS store)`,
       phase: 'switch',
-      commands: [`mv ${target} ${target}.rivethub-${stamp} (and its -wal/-shm)`],
+      commands: [`mv ${q(target)} ${q(`${target}.rivethub-${stamp}`)} (and its -wal/-shm)`],
       run: (host) => {
         let moved = 0
         for (const suffix of ['', '-wal', '-shm']) {

@@ -374,6 +374,20 @@ describe('dry run', () => {
     expect(out).not.toContain('status postgres')
   })
 
+  it('shell-quotes paths under a home with spaces', async () => {
+    const host = fakeHost({ home: '/srv/rivet home' })
+    expect(await migrateToRivethub(['--dry-run'], host)).toBe(0)
+    const out = host.output()
+    expect(out).toContain(
+      "tar czf '/srv/rivet home/rivetos-state-20261016T120000Z.tgz' -C '/srv/rivet home' .rivetos",
+    )
+    expect(out).toContain("mv '/srv/rivet home/.rivetos' '/srv/rivet home/.rivethub'")
+    expect(out).toContain("--config '/srv/rivet home/.rivetos/config.yaml'")
+    expect(out).toContain(
+      "sudo -n install -m 0644 '/srv/rivet home/.rivethub/migrate/rivethub.service'",
+    )
+  })
+
   it('uses the user manager for a user unit', async () => {
     const host = fakeHost({ tsUnit: 'user' })
     expect(await migrateToRivethub(['--dry-run'], host)).toBe(0)
@@ -582,6 +596,20 @@ describe('rivethub.service unit', () => {
     expect(unit).toContain('EnvironmentFile=-/home/rivet/.rivetos/.env')
     expect(unit).toContain('ExecStart=/home/rivet/.local/bin/rh start')
     expect(unit).toContain('WantedBy=multi-user.target')
+  })
+
+  it('quotes a home with spaces and escapes specifiers', () => {
+    const unit = renderHubUnit({
+      scope: 'user',
+      user: 'rivet',
+      home: '/srv/rivet home',
+      rhPath: '/srv/rivet home/.local/bin/rh',
+    })
+    expect(unit).toContain('Environment="HOME=/srv/rivet home"')
+    expect(unit).toContain('ExecStart="/srv/rivet home/.local/bin/rh" start')
+    expect(renderHubUnit({ scope: 'user', user: 'r', home: '/h/100%', rhPath: '/h/rh' })).toContain(
+      'WorkingDirectory=/h/100%%',
+    )
   })
 
   it('omits User= and targets default.target in user scope', () => {
