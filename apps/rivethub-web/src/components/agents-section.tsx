@@ -9,12 +9,12 @@
  * RivetGateway on an https base cannot authenticate from the desktop shell.
  */
 
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type JSX } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type JSX } from 'react'
 import * as Dialog from '@radix-ui/react-dialog'
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { Bot, ChevronDown, ChevronRight, Pencil, Plus, Trash2, X } from 'lucide-react'
-import { migrateAgentPreset, type HarnessId } from '@rivetos/types'
+import { type HarnessId } from '@rivetos/types'
 import { GatewayError } from '@rivetos/gateway-client'
 import { useConnection } from '../stores/connection.js'
 import { agentDraftDirty, captureAgentDraft } from '../lib/agent-draft-dirty.js'
@@ -46,6 +46,7 @@ import {
   modelOptionsFor,
 } from '../lib/harness-options.js'
 import { rosterCommandFor } from '../lib/harness-chat.js'
+import { placeNewDraft } from '../lib/new-conversation.js'
 import { uuidv4 } from '../lib/uuid.js'
 import {
   agentForSession,
@@ -62,22 +63,15 @@ import {
   agentThreadSettings,
   agentUpdateTarget,
   aggregateAgentActivity,
-  dedupeRosterAgents,
   meshDenName,
   nodeOptionLabel,
   pointersToPoll,
   sessionPointerMatches,
   uniqueRosterNodes,
-  type ListedAgents,
-  type NodeChoice,
   type ResolvedRosterAgent,
 } from '../lib/agent-roster.js'
-import {
-  applyPendingOrder,
-  moveAgentId,
-  sortOrderWrites,
-  sortRosterAgents,
-} from '../lib/agent-order.js'
+import { applyPendingOrder, moveAgentId, sortOrderWrites } from '../lib/agent-order.js'
+import { listedNodeDirectory, useRosterAgents } from '../lib/use-agent-roster.js'
 import {
   createPressScheduler,
   cycleAgentId,
@@ -99,18 +93,11 @@ import { useSidebarPrefs } from '../stores/sidebar-prefs.js'
 import { useAgentFilter } from '../stores/agent-filter.js'
 import { Tooltip } from './ui/tooltip.js'
 import { cn } from '../lib/utils.js'
+import { AGENT_DRAG_MIME } from '../lib/agent-drag.js'
+import { modelIconKey, type ModelIconKey } from '../lib/model-icon.js'
+import { ModelIcon } from './model-icon.js'
 
 type RosterAgent = ResolvedRosterAgent
-
-type NodeListMeta = {
-  node?: string
-  directoryRoot?: string
-  sharedDir?: string
-  backend?: 'postgres' | 'file'
-}
-
-const nodeListMeta = new Map<string, NodeListMeta>()
-const lastGoodSliceByNode = new Map<string, ListedAgents & NodeListMeta>()
 
 /** Safety cap on the status fan-out. Pointers are unique per (agent, node),
  *  so the real bound is roster size — this only guards a pathological map. */
@@ -224,7 +211,7 @@ function AgentEditor({
   )
   const nodeLocked = Boolean(agent)
   const hostingNode = useMeshNodeName(agent?.sourceNodeBaseUrl ?? '')
-  const directoryRoot = nodeListMeta.get(nodeBaseUrl)?.directoryRoot
+  const directoryRoot = listedNodeDirectory(nodeBaseUrl)
   const catalogQuery = useQuery({
     queryKey: ['agent-catalog', nodeBaseUrl, transportEpoch],
     queryFn: async ({ signal }) => (await gatewayFor(nodeBaseUrl)).catalog(signal),
@@ -313,8 +300,8 @@ function AgentEditor({
           {
             ...duplicate.source,
             directoryRoot:
-              nodeListMeta.get(duplicate.source.sourceNodeBaseUrl)?.directoryRoot ??
-              nodeListMeta.get(duplicate.source.listedBaseUrl)?.directoryRoot,
+              listedNodeDirectory(duplicate.source.sourceNodeBaseUrl) ??
+              listedNodeDirectory(duplicate.source.listedBaseUrl),
           },
           { nodeBaseUrl, harnesses },
         )
@@ -695,11 +682,16 @@ function agentAccent(agent: Pick<RosterAgent, 'color' | 'harnessId' | 'model'>):
 function AgentTile(props: {
   accent: string
   initials?: string
+  /** Brand logo for the agent's model / harness; replaces the initials. */
+  icon?: ModelIconKey
   compact?: boolean
   current?: boolean
   /** Folded rail badge only: separate a dark accent from the Bot stroke. */
   halo?: boolean
 }): JSX.Element {
+  // A logo sits on a neutral chip (brand colours, or ink for single-colour
+  // marks); without one the initials sit on the agent's accent.
+  const logo = props.icon !== undefined && props.initials !== undefined
   return (
     <span
       className={cn(
@@ -711,8 +703,8 @@ function AgentTile(props: {
             : 'size-6 text-[10px] classic:size-5',
       )}
       style={{
-        background: props.accent,
-        color: inkOn(props.accent),
+        background: logo ? 'var(--color-panel-2)' : props.accent,
+        color: logo ? 'var(--color-ink)' : inkOn(props.accent),
         ...(props.current
           ? { boxShadow: `0 0 0 2px var(--color-em-container), 0 0 0 3.5px ${props.accent}` }
           : props.halo
@@ -721,7 +713,16 @@ function AgentTile(props: {
       }}
       aria-hidden
     >
-      {props.initials}
+      {logo && props.icon ? (
+        <ModelIcon
+          icon={props.icon}
+          className={
+            props.compact ? 'text-base classic:text-[12px]' : 'text-[14px] classic:text-[12px]'
+          }
+        />
+      ) : (
+        props.initials
+      )}
     </span>
   )
 }
@@ -841,6 +842,7 @@ function AgentRow({
     <AgentTile
       accent={accent}
       initials={agentInitials(agent.name)}
+      icon={modelIconKey({ model: agent.model, harnessId: agent.harnessId })}
       compact={compact}
       current={current}
     />
@@ -963,7 +965,7 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
   const compact = props.compact ?? false
   const queryClient = useQueryClient()
   const navigate = useNavigate()
-  const { baseUrl, roster, transportEpoch } = useConnection()
+  const { baseUrl, transportEpoch } = useConnection()
   // Whole-store useChat() keeps the marker fresh; agentForSession is not reactive.
   const { addDraft, setActive } = useChat()
   const activeSession = useChat((s) => s.active)
@@ -976,68 +978,11 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
   )
   const dialog = useConfirmDialog()
 
-  const uniqueNodes: NodeChoice[] = uniqueRosterNodes(roster, baseUrl)
-  const { mesh } = useNodeDiscovery()
-  const meshNodes = mesh.isError ? [] : (mesh.data?.nodes ?? [])
-  const probes = useQueries({ queries: uniqueNodes.map((n) => healthzQueryOptions(n.baseUrl)) })
-  const rosterForResolve: NodeChoice[] = uniqueNodes.map((n, i) => {
-    const node = probes[i]?.data?.node || undefined
-    return { name: n.name, baseUrl: n.baseUrl, ...(node ? { node } : {}) }
-  })
-  // Sorted roster URLs only. Healthz nodes and mesh aliases are applied when
-  // deduping the cached lists, so a probe resolving does not refetch every den.
-  const rosterUrlKey = uniqueNodes
-    .map((n) => n.baseUrl.trim().replace(/\/+$/, ''))
-    .filter((url) => url !== '')
-    .sort()
-    .join('|')
-
-  const nodeQueries = useQuery({
-    queryKey: ['agents-all-nodes', rosterUrlKey, transportEpoch],
-    queryFn: async ({ signal }) => {
-      const results = await Promise.all(
-        uniqueNodes.map(async (node) => {
-          try {
-            const res = await (await gatewayFor(node.baseUrl)).agentsList(signal)
-            const slice: ListedAgents & NodeListMeta = {
-              baseUrl: node.baseUrl,
-              node: res.node,
-              directoryRoot: res.directoryRoot,
-              sharedDir: res.sharedDir,
-              backend: res.backend,
-              agents: res.agents.map((agent) => migrateAgentPreset(agent)),
-            }
-            lastGoodSliceByNode.set(node.baseUrl, slice)
-            nodeListMeta.set(node.baseUrl, slice)
-            return slice
-          } catch (err) {
-            if (signal.aborted) throw err
-            const kept = lastGoodSliceByNode.get(node.baseUrl)
-            if (kept) {
-              nodeListMeta.set(node.baseUrl, kept)
-              return kept
-            }
-            return { baseUrl: node.baseUrl, agents: [] }
-          }
-        }),
-      )
-      return results
-    },
-    placeholderData: (prev) => prev,
-  })
-
-  const storedAgents = sortRosterAgents(
-    dedupeRosterAgents(nodeQueries.data ?? [], {
-      currentBaseUrl: baseUrl,
-      mesh: meshNodes,
-      roster: rosterForResolve,
-    }),
-  )
+  const { agents: storedAgents, isLoading } = useRosterAgents()
   // Optimistic order while a reorder saves. Cleared only when this save is
   // still the latest request; a queued save keeps the order on screen.
   const [pendingOrder, setPendingOrder] = useState<string[] | null>(null)
   const agents = applyPendingOrder(storedAgents, pendingOrder)
-  const isLoading = nodeQueries.isLoading
 
   // Latest sortOrder this client knows. Re-seeded from the query whenever no
   // save is pending, then updated from each successful PATCH so the next save
@@ -1253,6 +1198,7 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
     applyAgentSettings(sessionId, agent, nodeUrl, opts)
     setSessionNodeBinding(sessionId, nodeUrl, currentBase)
     addDraft(sessionId)
+    placeNewDraft(sessionId)
     setActive(sessionId)
     useSidebarPrefs.getState().setDrawerOpen(false)
     void navigate({ to: '/', replace: true })
@@ -1517,7 +1463,14 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
                 </span>
               ) : (
                 <span className="ml-auto flex min-w-0 items-center gap-1.5 pl-2 text-xs text-em">
-                  <AgentTile accent={currentAccent} initials={agentInitials(currentAgent.name)} />
+                  <AgentTile
+                    accent={currentAccent}
+                    initials={agentInitials(currentAgent.name)}
+                    icon={modelIconKey({
+                      model: currentAgent.model,
+                      harnessId: currentAgent.harnessId,
+                    })}
+                  />
                   <span className="min-w-0 truncate">{currentAgent.name}</span>
                 </span>
               ))}
@@ -1577,9 +1530,25 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
                 }}
               />
             )
-            // Compact rows are not draggable. No wrapper classes or handlers —
-            // a border here used to grow every row, including the rail.
-            if (compact) return <Fragment key={agent.id}>{row}</Fragment>
+            // Compact rows do not reorder, but they can still be dragged out
+            // onto an empty canvas thread slot (copy only, no drop target
+            // here). The wrapper carries no classes — a border here used to
+            // grow every row, including the rail.
+            if (compact) {
+              return (
+                <div
+                  key={agent.id}
+                  draggable
+                  data-agent-drag={agent.id}
+                  onDragStart={(e) => {
+                    e.dataTransfer.effectAllowed = 'copy'
+                    e.dataTransfer.setData(AGENT_DRAG_MIME, agent.id)
+                  }}
+                >
+                  {row}
+                </div>
+              )
+            }
             const showBefore = dropIndex === index
             const showAfter = dropIndex === index + 1 && index === agents.length - 1
             return (
@@ -1589,8 +1558,11 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
                 title="drag or Alt+↑/↓ to reorder"
                 onDragStart={(e) => {
                   setDragId(agent.id)
-                  e.dataTransfer.effectAllowed = 'move'
+                  // copyMove: a reorder within the rail, or a copy onto an
+                  // empty canvas thread slot (which starts a session).
+                  e.dataTransfer.effectAllowed = 'copyMove'
                   e.dataTransfer.setData('text/plain', agent.id)
+                  e.dataTransfer.setData(AGENT_DRAG_MIME, agent.id)
                 }}
                 onDragOver={(e) => {
                   if (dragId === null) return

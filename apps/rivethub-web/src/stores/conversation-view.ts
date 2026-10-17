@@ -15,13 +15,21 @@ const KEY = 'rivethub.conversationView'
 interface ConversationViewState {
   defaultView: SessionViewMode
   setDefaultView: (view: SessionViewMode) => void
+  /** Desktop spaces canvas. Off by default so the list view stays pixel-identical. */
+  canvasEnabled: boolean
+  setCanvasEnabled: (on: boolean) => void
 }
 
-type Persisted = Pick<ConversationViewState, 'defaultView'>
+type Persisted = Pick<ConversationViewState, 'defaultView' | 'canvasEnabled'>
 
 /** Anything but an explicit 'terminal' is the historical default, chat. */
 export function normalizeDefaultView(raw: unknown): SessionViewMode {
   return raw === 'terminal' ? 'terminal' : 'chat'
+}
+
+/** Missing or non-true values stay off — a stored default-view record predates the flag. */
+export function normalizeCanvasEnabled(raw: unknown): boolean {
+  return raw === true
 }
 
 export const useConversationView = create<ConversationViewState>()(
@@ -29,6 +37,8 @@ export const useConversationView = create<ConversationViewState>()(
     (set) => ({
       defaultView: 'chat',
       setDefaultView: (view) => set({ defaultView: normalizeDefaultView(view) }),
+      canvasEnabled: false,
+      setCanvasEnabled: (on) => set({ canvasEnabled: on }),
     }),
     {
       name: KEY,
@@ -58,11 +68,17 @@ export const useConversationView = create<ConversationViewState>()(
           }
         },
       })),
-      partialize: (s): Persisted => ({ defaultView: s.defaultView }),
+      partialize: (s): Persisted => ({
+        defaultView: s.defaultView,
+        canvasEnabled: s.canvasEnabled,
+      }),
       merge: (persisted, current) => ({
         ...current,
         defaultView: normalizeDefaultView(
           (persisted as Partial<Persisted> | undefined)?.defaultView,
+        ),
+        canvasEnabled: normalizeCanvasEnabled(
+          (persisted as Partial<Persisted> | undefined)?.canvasEnabled,
         ),
       }),
     },

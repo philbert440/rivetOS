@@ -15,8 +15,11 @@ const SETTINGS_KEYS = [
   'rivethub.theme',
   'rivethub.chatSettings',
   'rivethub.sessionNames',
+  'rivethub.spaces',
   'rivethub.remoteUi',
   'rivethub.agent.lastSession',
+  'rivethub.keyBindings',
+  'rivethub.preferences',
 ] as const
 
 /**

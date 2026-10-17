@@ -1,18 +1,39 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { hubPageTitle, railHeaderClass, railToggle } from './sidebar-chrome.js'
+import { hubPageTitle, navItemActive, railHeaderClass, railToggle } from './sidebar-chrome.js'
 
 describe('hubPageTitle', () => {
   it('labels the mobile top bar from the pathname', () => {
     expect(hubPageTitle('/')).toBe('RivetHub')
-    expect(hubPageTitle('/sessions')).toBe('Sessions')
-    expect(hubPageTitle('/sessions/abc')).toBe('Sessions')
+    // Sessions is a Memory tab, not a rail item.
+    expect(hubPageTitle('/sessions')).toBe('Memory')
+    expect(hubPageTitle('/sessions/abc')).toBe('Memory')
     expect(hubPageTitle('/memory')).toBe('Memory')
     expect(hubPageTitle('/memory/foo')).toBe('Memory')
     expect(hubPageTitle('/files')).toBe('Files')
     expect(hubPageTitle('/tasks')).toBe('Tasks')
     expect(hubPageTitle('/workflows')).toBe('Workflows')
     expect(hubPageTitle('/settings')).toBe('Settings')
+  })
+})
+
+describe('navItemActive', () => {
+  it('lights an item on its route and children only', () => {
+    expect(navItemActive('/memory', '/memory')).toBe(true)
+    expect(navItemActive('/memory/foo', '/memory')).toBe(true)
+    expect(navItemActive('/memoryx', '/memory')).toBe(false)
+    expect(navItemActive('/sessions', '/memory')).toBe(false)
+  })
+
+  it('keeps a host item lit on the routes it hosts as tabs', () => {
+    expect(navItemActive('/sessions', '/memory', ['/sessions'])).toBe(true)
+    expect(navItemActive('/sessions/abc', '/memory', ['/sessions'])).toBe(true)
+    expect(navItemActive('/settings', '/memory', ['/sessions'])).toBe(false)
+  })
+
+  it('matches root exactly', () => {
+    expect(navItemActive('/', '/')).toBe(true)
+    expect(navItemActive('/memory', '/')).toBe(false)
   })
 })
 

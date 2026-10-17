@@ -121,11 +121,16 @@ describe('omarchyAppTokens', () => {
       '--color-surface',
     ])
     for (const name of [...declared]) {
-      // Font, corner-radius and elevation tokens are type/shape, not palette.
+      // Font, corner-radius, elevation and canvas-face size caps are
+      // type/shape, not palette;
+      // harness accents are fixed identity colours (same per harness in every
+      // theme).
       if (
         name.startsWith('--font-') ||
         name.startsWith('--radius') ||
         name.startsWith('--shadow-') ||
+        name.startsWith('--face-') ||
+        name.startsWith('--harness-accent-') ||
         aliases.has(name)
       ) {
         declared.delete(name)

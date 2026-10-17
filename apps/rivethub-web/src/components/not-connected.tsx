@@ -16,7 +16,8 @@ export function NotConnected(): JSX.Element {
       <RhMark className="text-5xl opacity-90" />
       <div className="text-sm text-ink-dim">No node connected.</div>
       <Link
-        to="/settings"
+        to="/settings/$tab"
+        params={{ tab: 'node' }}
         className="rounded-pill bg-em px-4 py-2 text-sm font-medium text-on-em hover:bg-em-dim classic:bg-em-dim classic:hover:bg-em classic:text-bg"
       >
         Connect to a node

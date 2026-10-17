@@ -11,6 +11,7 @@ import { useChat } from '../stores/chat.js'
 import { useChatSettings } from '../stores/chat-settings.js'
 import { useSessionNames } from '../stores/session-names.js'
 import { useArchived } from '../stores/archived.js'
+import { useSpaces } from '../stores/spaces.js'
 import { clearSessionMode } from './session-mode.js'
 import { clearSystemPromptSent } from './system-prompt-sent.js'
 import { clearAgentSessionPointer, listAgentSessions } from './agent-session.js'
@@ -21,6 +22,7 @@ export function discardDraft(baseUrl: string, sessionId: string): void {
   useSessionNames.getState().set(key, '') // empty clears the override
   useChatSettings.getState().clear(key)
   useArchived.getState().unarchive(key)
+  useSpaces.getState().unplace(key)
   clearSessionMode(key)
   clearSystemPromptSent(sessionId)
   // Reverse bind (written by setAgentLastSession) names the owning agent;

@@ -3,29 +3,20 @@
  * reconnect → transcript-restore strip. Weekend slice: no composer.
  */
 
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState, type JSX } from 'react'
+import { useEffect, useMemo, useReducer, useRef, useState, type JSX } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useParams } from '@tanstack/react-router'
 import { Check, ChevronDown, Copy, ExternalLink, RefreshCw } from 'lucide-react'
-import type {
-  HarnessSessionSummary,
-  HarnessStatusFrame,
-  HarnessTranscriptTurn,
-  SessionMessage,
-} from '@rivetos/types'
+import type { HarnessStatusFrame, HarnessTranscriptTurn, SessionMessage } from '@rivetos/types'
 import { NotConnected, useGatewayReady } from '../components/not-connected.js'
+import { MemoryHubNav } from '../memory/MemoryHubNav.js'
 import { Select } from '../components/select.js'
 import { ContextBar } from '../components/context-bar.js'
 import { Transcript } from '../components/transcript.js'
 import { Button } from '../components/ui/button.js'
 import { accentFor } from '../lib/agent-accent.js'
 import { copyTextToClipboard } from '../lib/clipboard.js'
-import {
-  applyRegistryEventToPlaneSessions,
-  chatItems,
-  fetchHarnessPlaneSessions,
-  shortNativeId,
-} from '../lib/harness-chat.js'
+import { shortNativeId } from '../lib/harness-chat.js'
 import { attachHarnessSession, type SessionContextStamp } from '../lib/harness-attach.js'
 import {
   applyTranscriptEvent,
@@ -41,7 +32,6 @@ import {
   cwdBasename,
   filterSessionList,
   harnessFilterOptions,
-  sessionListRows,
   type SessionListRow,
   type SessionStatusFilter,
 } from '../lib/session-list.js'
@@ -54,6 +44,7 @@ import {
 import { createSyncLog, syncLogReducer, type SyncCause } from '../lib/session-sync-log.js'
 import { useIsNarrow } from '../lib/use-narrow.js'
 import {
+  acceptedTagOptions,
   filterRowsByTag,
   groupRowsByTag,
   tagIdentity,
@@ -68,6 +59,7 @@ import { useSessionTagsLookup, useTagEndpoint, useTagMutations } from '../lib/us
 import { AddTagInline, TagChips } from '../components/tag-chips.js'
 import { cn } from '../lib/utils.js'
 import { useConnection } from '../stores/connection.js'
+import { useSessionRows } from '../lib/use-session-rows.js'
 
 function relativeUpdated(ms: number, now = Date.now()): string {
   if (!ms) return '—'
@@ -93,7 +85,7 @@ const STATUS_PILL: Record<string, string> = {
   error: 'border-red/40 bg-red/10 text-red',
 }
 
-function StatusPill(props: { status?: string; blocked?: boolean }): JSX.Element | null {
+export function StatusPill(props: { status?: string; blocked?: boolean }): JSX.Element | null {
   if (!props.status && !props.blocked) return null
   return (
     <span className="inline-flex items-center gap-1">
@@ -116,7 +108,7 @@ function StatusPill(props: { status?: string; blocked?: boolean }): JSX.Element 
   )
 }
 
-function HarnessBadge(props: { harnessId?: string; command?: string }): JSX.Element | null {
+export function HarnessBadge(props: { harnessId?: string; command?: string }): JSX.Element | null {
   const label = props.harnessId ?? props.command
   if (!label) return null
   const color = accentFor({ harnessId: props.harnessId, command: props.command })
@@ -160,10 +152,6 @@ function CopyableId(props: { value: string; label?: string }): JSX.Element {
 // ---------------------------------------------------------------------------
 
 export function SessionsPage(): JSX.Element {
-  const baseUrl = useConnection((s) => s.baseUrl)
-  const transportEpoch = useConnection((s) => s.transportEpoch)
-  const connected = useGatewayReady()
-  const queryClient = useQueryClient()
   const navigate = useNavigate()
   const narrow = useIsNarrow()
   const [harnessFilter, setHarnessFilter] = useState('')
@@ -171,106 +159,8 @@ export function SessionsPage(): JSX.Element {
   const [textFilter, setTextFilter] = useState('')
   const [groupKey, setGroupKey] = useState('')
   const [tagFilter, setTagFilter] = useState('')
-  const [listResyncedAt, setListResyncedAt] = useState<number | undefined>()
   const tagEndpoint = useTagEndpoint()
-
-  const registryQuery = useQuery({
-    queryKey: ['harnesses', baseUrl],
-    queryFn: ({ signal }) => useConnection.getState().gateway.harnesses(signal),
-    staleTime: 300_000,
-    enabled: connected,
-  })
-  const descriptors = registryQuery.data?.harnesses
-
-  const planeQueryKey = ['harness-plane-sessions', baseUrl, descriptors?.length ?? 0] as const
-  const planeQuery = useQuery({
-    queryKey: planeQueryKey,
-    queryFn: ({ signal }) =>
-      fetchHarnessPlaneSessions(useConnection.getState().gateway, descriptors, signal),
-    enabled: connected && (descriptors?.length ?? 0) > 0,
-  })
-
-  const legacyQuery = useQuery({
-    queryKey: ['harness-sessions', baseUrl],
-    queryFn: ({ signal }) => useConnection.getState().gateway.harnessSessions(signal),
-    enabled: connected,
-  })
-
-  // Same reconciliation refetch as the chat drawer. Debounced: the list walks
-  // every harness store synchronously on the den loop that echoes PTY bytes.
-  // A stream reopen still refetches immediately (no replay).
-  const invalidateTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
-  const invalidateSessionsNow = useCallback((): void => {
-    void queryClient.invalidateQueries({ queryKey: ['harness-sessions', baseUrl] })
-    void queryClient.invalidateQueries({ queryKey: ['harness-plane-sessions', baseUrl] })
-  }, [queryClient, baseUrl])
-  const invalidateSessions = useCallback((): void => {
-    if (invalidateTimer.current !== undefined) return
-    invalidateTimer.current = setTimeout(() => {
-      invalidateTimer.current = undefined
-      invalidateSessionsNow()
-    }, 1_000)
-  }, [invalidateSessionsNow])
-  useEffect(() => {
-    return () => {
-      if (invalidateTimer.current !== undefined) {
-        clearTimeout(invalidateTimer.current)
-        invalidateTimer.current = undefined
-      }
-    }
-  }, [baseUrl])
-
-  const hasDrivers = (descriptors?.length ?? 0) > 0
-  useEffect(() => {
-    if (!connected || !hasDrivers) return
-    let opens = 0
-    const sub = useConnection.getState().gateway.watchHarnesses(
-      (event) => {
-        if (event.type !== 'session-created' && event.type !== 'session-updated') return
-        queryClient.setQueryData<HarnessSessionSummary[]>(planeQueryKey, (prev) =>
-          applyRegistryEventToPlaneSessions(prev, event),
-        )
-        invalidateSessions()
-      },
-      undefined,
-      {
-        onStatus: (status) => {
-          if (status !== 'open') return
-          opens += 1
-          // Registry stream has no replay — refetch on every reopen.
-          if (opens > 1) {
-            invalidateSessionsNow()
-            setListResyncedAt(Date.now())
-          }
-        },
-      },
-    )
-    return () => sub.close()
-  }, [
-    connected,
-    hasDrivers,
-    baseUrl,
-    transportEpoch,
-    queryClient,
-    descriptors?.length,
-    invalidateSessions,
-    invalidateSessionsNow,
-  ])
-
-  const items = useMemo(
-    () =>
-      chatItems({
-        drafts: [],
-        harnessSessions: planeQuery.data ?? [],
-        legacySessions: legacyQuery.data?.sessions ?? [],
-      }),
-    [planeQuery.data, legacyQuery.data?.sessions],
-  )
-
-  const rows = useMemo(
-    () => sessionListRows(items, planeQuery.data ?? []),
-    [items, planeQuery.data],
-  )
+  const { connected, rows, loadError, listResyncedAt } = useSessionRows()
 
   const filtered = useMemo(
     () =>
@@ -305,18 +195,7 @@ export function SessionsPage(): JSX.Element {
     () => (groupKey ? groupRowsByTag(tagged, tagMap, groupKey) : null),
     [tagged, tagMap, groupKey],
   )
-  const tagFilterOptions = useMemo(() => {
-    const seen = new Map<string, string>()
-    for (const tags of tagMap.values())
-      for (const t of tags)
-        if (t.state === 'accepted') seen.set(tagIdentity(t), `${t.key}:${t.display || t.value}`)
-    return [
-      { value: '', label: 'any tag' },
-      ...[...seen.entries()]
-        .sort((a, b) => a[1].localeCompare(b[1]))
-        .map(([value, label]) => ({ value, label })),
-    ]
-  }, [tagMap])
+  const tagFilterOptions = useMemo(() => acceptedTagOptions(tagMap), [tagMap])
   // A filter whose tag is gone (removed, or datahub dropped) would leave an
   // empty list with no way back: settleTagFilters says what to keep.
   const hasTagEndpoint = tagEndpoint !== null
@@ -342,226 +221,227 @@ export function SessionsPage(): JSX.Element {
   }
 
   return (
-    <div className="mx-auto flex max-w-5xl flex-col gap-4 px-4 py-8 md:px-6">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-[22px] font-semibold text-ink classic:text-em classic:text-lg">
-            Sessions
-          </h1>
-          {listResyncedAt !== undefined && (
-            <p className="mt-0.5 text-xs text-ink-dim classic:text-[11px]">
-              list resynced {formatClock(listResyncedAt)}
+    <div className="flex h-full min-h-0 flex-col">
+      <MemoryHubNav tab="sessions" />
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="mx-auto flex max-w-5xl flex-col gap-4 px-4 py-8 md:px-6">
+          <div className="flex flex-wrap items-end justify-between gap-3">
+            <div>
+              <h1 className="text-[22px] font-semibold text-ink classic:text-em classic:text-lg">
+                Sessions
+              </h1>
+              {listResyncedAt !== undefined && (
+                <p className="mt-0.5 text-xs text-ink-dim classic:text-[11px]">
+                  list resynced {formatClock(listResyncedAt)}
+                </p>
+              )}
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Select
+                value={harnessFilter}
+                title="harness filter"
+                label="Harness"
+                onChange={setHarnessFilter}
+                options={harnessOptions}
+              />
+              <Select
+                value={statusFilter}
+                title="status filter"
+                label="Status"
+                onChange={(v) => setStatusFilter(v as SessionStatusFilter)}
+                options={[
+                  { value: 'all', label: 'All' },
+                  { value: 'live', label: 'Live' },
+                  { value: 'ended', label: 'Ended' },
+                ]}
+              />
+              {tagEndpoint && (
+                <Select
+                  value={tagFilter}
+                  title="tag filter"
+                  label="Tag"
+                  onChange={setTagFilter}
+                  options={tagFilterOptions}
+                />
+              )}
+              {tagEndpoint && tagKeyChoices.length > 0 && (
+                <Select
+                  value={groupKey}
+                  title="group by tag key"
+                  label="Group"
+                  onChange={setGroupKey}
+                  options={[
+                    { value: '', label: 'no grouping' },
+                    ...tagKeyChoices.map((k) => ({ value: k, label: `by ${k}` })),
+                  ]}
+                />
+              )}
+              <input
+                type="search"
+                value={textFilter}
+                onChange={(e) => setTextFilter(e.target.value)}
+                placeholder="Filter title / cwd"
+                aria-label="Filter title or cwd"
+                className="min-w-[10rem] rounded border border-line bg-panel px-2 py-1.5 text-sm text-ink placeholder:text-ink-dim"
+              />
+            </div>
+          </div>
+
+          {loadError && <div className="text-sm text-red">{loadError}</div>}
+
+          {tagEndpoint && tagLookupError && (
+            <div className="text-xs text-warn classic:text-[11px]" role="alert">
+              tags unavailable: {tagLookupError.message}. Sessions are listed without them.
+            </div>
+          )}
+          {tagEndpoint && tagMutations.error && (
+            <div className="text-xs text-warn classic:text-[11px]" role="alert">
+              tag update failed: {tagMutations.error.message}
+            </div>
+          )}
+
+          {narrow ? (
+            <ul className="flex flex-col gap-2">
+              {(groups ?? [{ label: '', identity: '', rows: tagged }]).map((group) => (
+                <li key={group.identity || '__all'} className="flex flex-col gap-2">
+                  {group.label && (
+                    <div className="mt-2 text-xs text-ink-dim classic:text-[11px]">
+                      {group.label} · {group.rows.length}
+                    </div>
+                  )}
+                  <ul className="flex flex-col gap-2">
+                    {group.rows.map((row) => (
+                      <li
+                        key={row.key}
+                        className="flex flex-col gap-1 rounded-2xl border border-transparent bg-panel-2 hover:bg-line/60 classic:bg-panel classic:border-line classic:hover:border-em"
+                      >
+                        {/* The row opens the session; chips are siblings of that
+                        button, never nested inside it. */}
+                        <button
+                          type="button"
+                          onClick={() => openRow(row)}
+                          className="flex w-full flex-col gap-1 px-4 pt-3 text-left"
+                        >
+                          <span className="truncate text-sm text-ink">
+                            {row.title || shortNativeId(row.key)}
+                          </span>
+                          <span className="flex flex-wrap items-center gap-2">
+                            <HarnessBadge harnessId={row.harnessId} command={row.command} />
+                            <StatusPill status={row.status} blocked={row.blocked} />
+                            <span className="text-xs text-ink-dim classic:text-[11px]">
+                              {relativeUpdated(row.updatedAt)}
+                            </span>
+                          </span>
+                        </button>
+                        {rowTags(row).length > 0 && (
+                          <div className="px-4 pb-3">
+                            <TagChips
+                              tags={rowTags(row)}
+                              max={4}
+                              onClick={onTagClick}
+                              onAccept={(id) => void tagMutations.decide([id], 'accepted')}
+                              onReject={(id) => void tagMutations.decide([id], 'rejected')}
+                              busy={tagMutations.busy}
+                            />
+                          </div>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <div className="overflow-x-auto rounded border border-line">
+              <table className="w-full min-w-[40rem] border-collapse text-left text-sm">
+                <thead className="border-b border-line bg-panel-2/60 text-xs text-ink-dim classic:text-[11px]">
+                  <tr>
+                    <th className="px-3 py-2 font-medium">Title</th>
+                    <th className="px-3 py-2 font-medium">Harness</th>
+                    <th className="px-3 py-2 font-medium">Status</th>
+                    <th className="px-3 py-2 font-medium">Updated</th>
+                    {tagEndpoint && <th className="px-3 py-2 font-medium">Tags</th>}
+                    <th className="px-3 py-2 font-medium">cwd</th>
+                    <th className="px-3 py-2 font-medium">Id</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(groups ?? [{ label: '', identity: '', rows: tagged }]).flatMap((group) => [
+                    ...(group.label
+                      ? [
+                          <tr
+                            key={`g-${group.identity || 'untagged'}`}
+                            className="border-b border-line/60 bg-panel-2/30"
+                          >
+                            <td
+                              colSpan={tagEndpoint ? 7 : 6}
+                              className="px-3 py-1.5 text-xs text-ink-dim classic:text-[11px]"
+                            >
+                              {group.label} · {group.rows.length}
+                            </td>
+                          </tr>,
+                        ]
+                      : []),
+                    ...group.rows.map((row) => (
+                      <tr
+                        key={`${group.identity}/${row.key}`}
+                        className="cursor-pointer border-b border-line/60 hover:bg-panel-2/40"
+                        onClick={() => openRow(row)}
+                      >
+                        <td className="max-w-[14rem] truncate px-3 py-2 text-ink">
+                          {row.title || shortNativeId(row.key)}
+                        </td>
+                        <td className="px-4 py-2 classic:px-3">
+                          <HarnessBadge harnessId={row.harnessId} command={row.command} />
+                        </td>
+                        <td className="px-4 py-2 classic:px-3">
+                          <StatusPill status={row.status} blocked={row.blocked} />
+                        </td>
+                        <td className="px-3 py-2 font-mono text-[11px] text-ink-dim">
+                          {relativeUpdated(row.updatedAt)}
+                        </td>
+                        {tagEndpoint && (
+                          <td className="max-w-[16rem] px-3 py-2">
+                            <TagChips
+                              tags={rowTags(row)}
+                              max={3}
+                              onClick={onTagClick}
+                              onAccept={(id) => void tagMutations.decide([id], 'accepted')}
+                              onReject={(id) => void tagMutations.decide([id], 'rejected')}
+                              busy={tagMutations.busy}
+                            />
+                          </td>
+                        )}
+                        <td className="max-w-[8rem] truncate px-3 py-2 font-mono text-[11px] text-ink-dim">
+                          {cwdBasename(row.cwd) ?? '—'}
+                        </td>
+                        <td className="px-3 py-2 font-mono text-[11px] text-ink-dim">
+                          {shortNativeId(row.sessionId ?? row.key)}
+                        </td>
+                      </tr>
+                    )),
+                  ])}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {tagged.length === 0 && (
+            <p className="text-sm text-ink-dim">
+              no sessions
+              {harnessFilter || statusFilter !== 'all' || textFilter.trim() || tagFilter
+                ? ' match these filters'
+                : ''}
             </p>
           )}
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <Select
-            value={harnessFilter}
-            title="harness filter"
-            label="Harness"
-            onChange={setHarnessFilter}
-            options={harnessOptions}
-          />
-          <Select
-            value={statusFilter}
-            title="status filter"
-            label="Status"
-            onChange={(v) => setStatusFilter(v as SessionStatusFilter)}
-            options={[
-              { value: 'all', label: 'All' },
-              { value: 'live', label: 'Live' },
-              { value: 'ended', label: 'Ended' },
-            ]}
-          />
-          {tagEndpoint && (
-            <Select
-              value={tagFilter}
-              title="tag filter"
-              label="Tag"
-              onChange={setTagFilter}
-              options={tagFilterOptions}
-            />
-          )}
-          {tagEndpoint && tagKeyChoices.length > 0 && (
-            <Select
-              value={groupKey}
-              title="group by tag key"
-              label="Group"
-              onChange={setGroupKey}
-              options={[
-                { value: '', label: 'no grouping' },
-                ...tagKeyChoices.map((k) => ({ value: k, label: `by ${k}` })),
-              ]}
-            />
-          )}
-          <input
-            type="search"
-            value={textFilter}
-            onChange={(e) => setTextFilter(e.target.value)}
-            placeholder="Filter title / cwd"
-            aria-label="Filter title or cwd"
-            className="min-w-[10rem] rounded border border-line bg-panel px-2 py-1.5 text-sm text-ink placeholder:text-ink-dim"
-          />
-        </div>
       </div>
-
-      {(planeQuery.isError || legacyQuery.isError) && (
-        <div className="text-sm text-red">
-          {planeQuery.error?.message ?? legacyQuery.error?.message ?? 'failed to load sessions'}
-        </div>
-      )}
-
-      {tagEndpoint && tagLookupError && (
-        <div className="text-xs text-warn classic:text-[11px]" role="alert">
-          tags unavailable: {tagLookupError.message}. Sessions are listed without them.
-        </div>
-      )}
-      {tagEndpoint && tagMutations.error && (
-        <div className="text-xs text-warn classic:text-[11px]" role="alert">
-          tag update failed: {tagMutations.error.message}
-        </div>
-      )}
-
-      {narrow ? (
-        <ul className="flex flex-col gap-2">
-          {(groups ?? [{ label: '', identity: '', rows: tagged }]).map((group) => (
-            <li key={group.identity || '__all'} className="flex flex-col gap-2">
-              {group.label && (
-                <div className="mt-2 text-xs text-ink-dim classic:text-[11px]">
-                  {group.label} · {group.rows.length}
-                </div>
-              )}
-              <ul className="flex flex-col gap-2">
-                {group.rows.map((row) => (
-                  <li
-                    key={row.key}
-                    className="flex flex-col gap-1 rounded-2xl border border-transparent bg-panel-2 hover:bg-line/60 classic:bg-panel classic:border-line classic:hover:border-em"
-                  >
-                    {/* The row opens the session; chips are siblings of that
-                        button, never nested inside it. */}
-                    <button
-                      type="button"
-                      onClick={() => openRow(row)}
-                      className="flex w-full flex-col gap-1 px-4 pt-3 text-left"
-                    >
-                      <span className="truncate text-sm text-ink">
-                        {row.title || shortNativeId(row.key)}
-                      </span>
-                      <span className="flex flex-wrap items-center gap-2">
-                        <HarnessBadge harnessId={row.harnessId} command={row.command} />
-                        <StatusPill status={row.status} blocked={row.blocked} />
-                        <span className="text-xs text-ink-dim classic:text-[11px]">
-                          {relativeUpdated(row.updatedAt)}
-                        </span>
-                      </span>
-                    </button>
-                    {rowTags(row).length > 0 && (
-                      <div className="px-4 pb-3">
-                        <TagChips
-                          tags={rowTags(row)}
-                          max={4}
-                          onClick={onTagClick}
-                          onAccept={(id) => void tagMutations.decide([id], 'accepted')}
-                          onReject={(id) => void tagMutations.decide([id], 'rejected')}
-                          busy={tagMutations.busy}
-                        />
-                      </div>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <div className="overflow-x-auto rounded border border-line">
-          <table className="w-full min-w-[40rem] border-collapse text-left text-sm">
-            <thead className="border-b border-line bg-panel-2/60 text-xs text-ink-dim classic:text-[11px]">
-              <tr>
-                <th className="px-3 py-2 font-medium">Title</th>
-                <th className="px-3 py-2 font-medium">Harness</th>
-                <th className="px-3 py-2 font-medium">Status</th>
-                <th className="px-3 py-2 font-medium">Updated</th>
-                {tagEndpoint && <th className="px-3 py-2 font-medium">Tags</th>}
-                <th className="px-3 py-2 font-medium">cwd</th>
-                <th className="px-3 py-2 font-medium">Id</th>
-              </tr>
-            </thead>
-            <tbody>
-              {(groups ?? [{ label: '', identity: '', rows: tagged }]).flatMap((group) => [
-                ...(group.label
-                  ? [
-                      <tr
-                        key={`g-${group.identity || 'untagged'}`}
-                        className="border-b border-line/60 bg-panel-2/30"
-                      >
-                        <td
-                          colSpan={tagEndpoint ? 7 : 6}
-                          className="px-3 py-1.5 text-xs text-ink-dim classic:text-[11px]"
-                        >
-                          {group.label} · {group.rows.length}
-                        </td>
-                      </tr>,
-                    ]
-                  : []),
-                ...group.rows.map((row) => (
-                  <tr
-                    key={`${group.identity}/${row.key}`}
-                    className="cursor-pointer border-b border-line/60 hover:bg-panel-2/40"
-                    onClick={() => openRow(row)}
-                  >
-                    <td className="max-w-[14rem] truncate px-3 py-2 text-ink">
-                      {row.title || shortNativeId(row.key)}
-                    </td>
-                    <td className="px-3 py-2">
-                      <HarnessBadge harnessId={row.harnessId} command={row.command} />
-                    </td>
-                    <td className="px-3 py-2">
-                      <StatusPill status={row.status} blocked={row.blocked} />
-                    </td>
-                    <td className="px-3 py-2 font-mono text-[11px] text-ink-dim">
-                      {relativeUpdated(row.updatedAt)}
-                    </td>
-                    {tagEndpoint && (
-                      <td className="max-w-[16rem] px-3 py-2">
-                        <TagChips
-                          tags={rowTags(row)}
-                          max={3}
-                          onClick={onTagClick}
-                          onAccept={(id) => void tagMutations.decide([id], 'accepted')}
-                          onReject={(id) => void tagMutations.decide([id], 'rejected')}
-                          busy={tagMutations.busy}
-                        />
-                      </td>
-                    )}
-                    <td className="max-w-[8rem] truncate px-3 py-2 font-mono text-[11px] text-ink-dim">
-                      {cwdBasename(row.cwd) ?? '—'}
-                    </td>
-                    <td className="px-3 py-2 font-mono text-[11px] text-ink-dim">
-                      {shortNativeId(row.sessionId ?? row.key)}
-                    </td>
-                  </tr>
-                )),
-              ])}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      {tagged.length === 0 && (
-        <p className="text-sm text-ink-dim">
-          no sessions
-          {harnessFilter || statusFilter !== 'all' || textFilter.trim() || tagFilter
-            ? ' match these filters'
-            : ''}
-        </p>
-      )}
     </div>
   )
 }
 
 /** Router param for the detail route — encoded canonical, or raw bare key. */
-function sessionPathParam(row: SessionListRow): string {
+export function sessionPathParam(row: SessionListRow): string {
   return sessionRouteParam(row.sessionId ?? row.key)
 }
 
@@ -884,6 +764,7 @@ export function SessionDetailPage(): JSX.Element {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
+      <MemoryHubNav tab="sessions" />
       <ConnectionStrip strip={strip} />
 
       <div

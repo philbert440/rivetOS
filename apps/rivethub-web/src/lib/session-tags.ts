@@ -28,6 +28,19 @@ export function tagIdentity(tag: Pick<AnyTag, 'key' | 'value'>): string {
   return `${tag.key}:${tag.value}`
 }
 
+/** Tag filter choices: every accepted tag in the map, by label, after "any tag". */
+export function acceptedTagOptions(map: Map<string, AnyTag[]>): { value: string; label: string }[] {
+  const seen = new Map<string, string>()
+  for (const tags of map.values())
+    for (const t of tags) if (t.state === 'accepted') seen.set(tagIdentity(t), tagLabel(t))
+  return [
+    { value: '', label: 'any tag' },
+    ...[...seen.entries()]
+      .sort((a, b) => a[1].localeCompare(b[1]))
+      .map(([value, label]) => ({ value, label })),
+  ]
+}
+
 /** Accepted first, then suggested; within a state by key then value. Rejected dropped. */
 export function sortTagsForChips<T extends AnyTag>(tags: readonly T[]): T[] {
   const rank = (t: AnyTag): number => (t.state === 'accepted' ? 0 : t.state === 'suggested' ? 1 : 2)

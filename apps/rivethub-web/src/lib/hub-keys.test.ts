@@ -1,11 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  bindingProblem,
+  CANVAS_KEYS,
   createPressScheduler,
   cycleAgentId,
   focusInForeignDialog,
   isCurrentSeq,
+  matchCanvasAction,
+  matchCanvasChord,
+  matchCanvasNav,
+  keyLabel,
   matchHubKey,
 } from './hub-keys.js'
+import { combo } from './key-combo.js'
+import { useKeyBindings } from '../stores/key-bindings.js'
 
 type KeyFields = Parameters<typeof matchHubKey>[0]
 
@@ -74,6 +82,149 @@ describe('matchHubKey', () => {
     expect(
       matchHubKey(keyEvent({ key: 'f', code: 'KeyF', ctrlKey: true, shiftKey: true })),
     ).toBeNull()
+  })
+})
+
+describe('matchCanvasChord', () => {
+  it('maps Ctrl+Space and Ctrl+0, and leaves Shift/Alt/Meta alone', () => {
+    expect(matchCanvasChord(keyEvent({ code: 'Space', ctrlKey: true }))).toBe('zoom-toggle')
+    expect(matchCanvasChord(keyEvent({ code: 'Digit0', ctrlKey: true }))).toBe('everything')
+    expect(matchCanvasChord(keyEvent({ code: 'Space', ctrlKey: true, shiftKey: true }))).toBeNull()
+    expect(matchCanvasChord(keyEvent({ code: 'Space', ctrlKey: true, altKey: true }))).toBeNull()
+    expect(matchCanvasChord(keyEvent({ code: 'Space', ctrlKey: true, metaKey: true }))).toBeNull()
+    expect(matchCanvasChord(keyEvent({ code: 'Space' }))).toBeNull()
+  })
+
+  it('does not steal the existing hub chords', () => {
+    expect(matchHubKey(keyEvent({ key: ' ', code: 'Space', ctrlKey: true }))).toBeNull()
+    expect(matchHubKey(keyEvent({ key: '0', code: 'Digit0', ctrlKey: true }))).toBeNull()
+  })
+})
+
+describe('matchCanvasNav', () => {
+  it('maps arrows and jkl, Enter, and Esc', () => {
+    expect(matchCanvasNav(keyEvent({ key: 'ArrowLeft' }))).toBe('left')
+    expect(matchCanvasNav(keyEvent({ key: 'h' }))).toBeNull()
+    expect(matchCanvasNav(keyEvent({ key: 'l' }))).toBe('right')
+    expect(matchCanvasNav(keyEvent({ key: 'k' }))).toBe('up')
+    expect(matchCanvasNav(keyEvent({ key: 'j' }))).toBe('down')
+    expect(matchCanvasNav(keyEvent({ key: 'Enter' }))).toBe('open')
+    expect(matchCanvasNav(keyEvent({ key: 'Escape' }))).toBe('out')
+  })
+
+  it('ignores modified keys', () => {
+    expect(matchCanvasNav(keyEvent({ key: 'ArrowLeft', ctrlKey: true }))).toBeNull()
+    expect(matchCanvasNav(keyEvent({ key: 'l', shiftKey: true }))).toBeNull()
+    expect(matchCanvasNav(keyEvent({ key: 'Escape', altKey: true }))).toBeNull()
+  })
+})
+
+describe('matchCanvasAction', () => {
+  it('maps space, history, find, move, and remove keys', () => {
+    expect(matchCanvasAction(keyEvent({ key: 'n' }))).toBe('new-space')
+    expect(matchCanvasAction(keyEvent({ key: 'e' }))).toBe('rename-space')
+    expect(matchCanvasAction(keyEvent({ key: 't' }))).toBe('new-thread')
+    expect(matchCanvasAction(keyEvent({ key: 'h' }))).toBe('history')
+    expect(matchCanvasAction(keyEvent({ key: 'm' }))).toBe('move')
+    expect(matchCanvasAction(keyEvent({ key: '/' }))).toBe('find')
+    expect(matchCanvasAction(keyEvent({ key: 'Delete' }))).toBe('remove-thread')
+    expect(matchCanvasAction(keyEvent({ key: 'Delete', shiftKey: true }))).toBe('remove-space')
+    expect(matchCanvasAction(keyEvent({ key: 'Backspace' }))).toBeNull()
+    expect(matchCanvasAction(keyEvent({ key: 'Backspace', shiftKey: true }))).toBeNull()
+  })
+
+  it('maps Ctrl+J and Ctrl+` and ignores Alt, Meta, and Shift chords', () => {
+    expect(matchCanvasAction(keyEvent({ key: 'j', code: 'KeyJ', ctrlKey: true }))).toBe(
+      'next-waiting',
+    )
+    expect(matchCanvasAction(keyEvent({ key: '`', code: 'Backquote', ctrlKey: true }))).toBe('mru')
+    expect(
+      matchCanvasAction(keyEvent({ key: 'j', code: 'KeyJ', ctrlKey: true, shiftKey: true })),
+    ).toBe(null)
+    expect(matchCanvasAction(keyEvent({ key: 'h', altKey: true }))).toBeNull()
+    expect(
+      matchCanvasAction(keyEvent({ key: '`', code: 'Backquote', ctrlKey: true, metaKey: true })),
+    ).toBe(null)
+    expect(matchCanvasAction(keyEvent({ key: 'l' }))).toBeNull()
+  })
+})
+
+/**
+ * Browser `KeyboardEvent` fields are prototype getters. Object spread copies
+ * only own properties, which is what used to drop every canvas chord and nav.
+ */
+class PrototypeKeyEvent {
+  #key: string
+  #code: string
+  #ctrlKey: boolean
+  #shiftKey: boolean
+  #altKey: boolean
+  #metaKey: boolean
+  #repeat: boolean
+
+  constructor(init: {
+    key?: string
+    code?: string
+    ctrlKey?: boolean
+    shiftKey?: boolean
+    altKey?: boolean
+    metaKey?: boolean
+    repeat?: boolean
+  }) {
+    this.#key = init.key ?? ''
+    this.#code = init.code ?? ''
+    this.#ctrlKey = init.ctrlKey === true
+    this.#shiftKey = init.shiftKey === true
+    this.#altKey = init.altKey === true
+    this.#metaKey = init.metaKey === true
+    this.#repeat = init.repeat === true
+  }
+
+  get key(): string {
+    return this.#key
+  }
+
+  get code(): string {
+    return this.#code
+  }
+
+  get ctrlKey(): boolean {
+    return this.#ctrlKey
+  }
+
+  get shiftKey(): boolean {
+    return this.#shiftKey
+  }
+
+  get altKey(): boolean {
+    return this.#altKey
+  }
+
+  get metaKey(): boolean {
+    return this.#metaKey
+  }
+
+  get repeat(): boolean {
+    return this.#repeat
+  }
+}
+
+describe('canvas keys on a prototype-getter event', () => {
+  it('matches every CANVAS_KEYS entry when spread would drop the fields', () => {
+    for (const entry of CANVAS_KEYS) {
+      const event = new PrototypeKeyEvent(entry.probe)
+      expect(Object.hasOwn(event, 'key')).toBe(false)
+      expect(Object.hasOwn(event, 'code')).toBe(false)
+      expect(Object.hasOwn(event, 'ctrlKey')).toBe(false)
+      const spread = { key: '', ...event }
+      expect(spread.key).toBe('')
+      expect(spread).not.toHaveProperty('code')
+      expect(spread).not.toHaveProperty('ctrlKey')
+      const chord = entry.handler === 'chord' ? matchCanvasChord(event) : null
+      const nav = entry.handler === 'nav' ? matchCanvasNav(event) : null
+      const action = entry.handler === 'action' ? matchCanvasAction(event) : null
+      expect(chord ?? nav ?? action).toBe(entry.id)
+    }
   })
 })
 
@@ -215,5 +366,44 @@ describe('createPressScheduler', () => {
     vi.advanceTimersByTime(200)
     expect(opened).toEqual([2])
     expect(isCurrentSeq(2, current)).toBe(true)
+  })
+})
+
+describe('rebinding', () => {
+  afterEach(() => {
+    useKeyBindings.setState({ overrides: {}, recording: false })
+  })
+
+  it('a rebound shortcut replaces its default everywhere it is matched', () => {
+    useKeyBindings.getState().setBinding('history', [combo('y')])
+    expect(matchCanvasAction(keyEvent({ key: 'y' }))).toBe('history')
+    expect(matchCanvasAction(keyEvent({ key: 'h' }))).toBeNull()
+    expect(keyLabel('history')).toBe('Y')
+    useKeyBindings
+      .getState()
+      .setBinding('new-conversation', [combo('n', { code: 'KeyN', alt: true })])
+    expect(matchHubKey(keyEvent({ key: 'n', code: 'KeyN', altKey: true }))).toBe('new-conversation')
+    expect(matchHubKey(keyEvent({ key: 't', code: 'KeyT', ctrlKey: true }))).toBeNull()
+  })
+
+  it('an emptied binding is unbound, and reset restores the default', () => {
+    useKeyBindings.getState().setBinding('find', [])
+    expect(matchCanvasAction(keyEvent({ key: '/' }))).toBeNull()
+    expect(keyLabel('find')).toBe('')
+    useKeyBindings.getState().resetBinding('find')
+    expect(matchCanvasAction(keyEvent({ key: '/' }))).toBe('find')
+  })
+
+  it('matches nothing while Settings is recording a key', () => {
+    useKeyBindings.getState().setRecording(true)
+    expect(matchHubKey(keyEvent({ key: 'Tab', code: 'Tab', ctrlKey: true }))).toBeNull()
+    expect(matchCanvasAction(keyEvent({ key: 'h' }))).toBeNull()
+  })
+
+  it('refuses a key already in use, or a bare key where typing happens', () => {
+    expect(bindingProblem('new-thread', combo('h'))).toBe('H is already History.')
+    expect(bindingProblem('new-conversation', combo('x'))).toMatch(/Needs Ctrl, Alt or Super/)
+    expect(bindingProblem('zoom-toggle', combo('z'))).toMatch(/Needs Ctrl, Alt or Super/)
+    expect(bindingProblem('new-thread', combo('y'))).toBeUndefined()
   })
 })

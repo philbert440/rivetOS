@@ -8,6 +8,7 @@ import {
   presetHasHarnessFlag,
   listedAgentIds,
   recoverDeletedAgentSpawn,
+  settledRosterAgentIds,
   recoverDeletedAgentSpawnUsingCache,
   spawnOnceWithCommandFallback,
   termSpawnBody,
@@ -442,5 +443,60 @@ describe('presetHasHarnessFlag', () => {
         presetHasHarness: presetHasHarnessFlag(settings),
       }).agentId,
     ).toBe('reviewer')
+  })
+
+  it('sends agentId for a deleted preset with no harness, and omits it for a live one', async () => {
+    const deleted = { agentId: 'gone' }
+    expect(presetHasHarnessFlag(deleted, ['reviewer'])).toBe(true)
+    expect(presetHasHarnessFlag(deleted, [])).toBe(true)
+    const deletedBody = termSpawnBody({
+      sessionId: 'sess-1',
+      agentId: deleted.agentId,
+      model: 'm2',
+      presetHasHarness: presetHasHarnessFlag(deleted, ['reviewer']),
+    })
+    expect(deletedBody.agentId).toBe('gone')
+    const spawned = await recoverDeletedAgentSpawn(async (req) => {
+      if (req.agentId) throw new GatewayError(404, 'agent not found', undefined)
+      return 'pty'
+    }, deletedBody)
+    expect(spawned.droppedAgentId).toBe(true)
+    expect(DELETED_PRESET_NOTICE).toBe('Preset not found on this node; opened without it')
+
+    const live = { agentId: 'reviewer' }
+    expect(presetHasHarnessFlag(live)).toBe(false)
+    expect(presetHasHarnessFlag(live, ['reviewer'])).toBe(false)
+    expect(
+      termSpawnBody({
+        sessionId: 'sess-1',
+        agentId: live.agentId,
+        model: 'm2',
+        presetHasHarness: presetHasHarnessFlag(live, ['reviewer']),
+      }),
+    ).toEqual({ session: 'sess-1', model: 'm2' })
+  })
+})
+
+describe('settledRosterAgentIds', () => {
+  it('is unknown until an active agents-all-nodes query has succeeded', () => {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: Infinity } },
+    })
+    expect(settledRosterAgentIds(client)).toBeUndefined()
+    const key = ['agents-all-nodes', 'https://live.example', 2]
+    const listed = [{ baseUrl: 'https://live.example', agents: [{ id: 'reviewer' }] }]
+    client.setQueryData(key, listed)
+    expect(settledRosterAgentIds(client)).toBeUndefined()
+    const observer = new QueryObserver(client, {
+      queryKey: key,
+      queryFn: () => listed,
+      staleTime: Infinity,
+    })
+    const unsubscribe = observer.subscribe(() => undefined)
+    try {
+      expect(settledRosterAgentIds(client)).toEqual(['reviewer'])
+    } finally {
+      unsubscribe()
+    }
   })
 })

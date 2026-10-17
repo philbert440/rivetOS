@@ -63,7 +63,8 @@ function WikiNotConfigured(props: { needNode: boolean }): JSX.Element {
           : 'Point RivetHub at datahub (the mesh memory wiki host). The wiki is readable memory summaries, not the chat node.'}
       </p>
       <Link
-        to="/settings"
+        to="/settings/$tab"
+        params={{ tab: 'node' }}
         className="rounded-pill bg-em px-4 py-2 text-sm font-medium text-on-em hover:bg-em-dim classic:bg-em-dim classic:hover:bg-em classic:text-bg"
       >
         Open Settings

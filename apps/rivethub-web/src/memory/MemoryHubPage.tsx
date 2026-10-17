@@ -12,6 +12,8 @@ import { useWikiEndpoint } from '../lib/wiki-client.js'
 import { BrowseView } from './BrowseView.js'
 import { MemoryHubNav, type MemoryTab } from './MemoryHubNav.js'
 import { SearchView } from './SearchView.js'
+import { SessionsSearchView } from './SessionsSearchView.js'
+import { useExperimental } from '../stores/experimental.js'
 import { StatsView } from './StatsView.js'
 import { TagsView } from './TagsView.js'
 
@@ -22,6 +24,7 @@ export function MemoryHubPage(): JSX.Element {
   const search = useSearch({ strict: false })
   const tab: MemoryTab = search.tab ?? 'search'
   const { endpoint, pending, needNode } = useWikiEndpoint()
+  const memoryHome = useExperimental((s) => s.experimental.memoryHome)
 
   function openSession(sessionId: string): void {
     void navigate({ to: '/', search: { session: sessionId } })
@@ -41,7 +44,8 @@ export function MemoryHubPage(): JSX.Element {
           the mesh.
         </p>
         <Link
-          to="/settings"
+          to="/settings/$tab"
+          params={{ tab: 'node' }}
           className="rounded-pill bg-em px-4 py-2 text-sm font-medium text-on-em hover:bg-em-dim classic:bg-em-dim classic:hover:bg-em classic:text-bg"
         >
           Open Settings
@@ -62,7 +66,14 @@ export function MemoryHubPage(): JSX.Element {
           </div>
         ) : (
           <div className="rivet-memory-surfaces p-4">
-            {tab === 'search' && (
+            {tab === 'search' && memoryHome && (
+              <SessionsSearchView
+                gateway={endpoint.gateway}
+                baseUrl={endpoint.baseUrl}
+                onOpenSession={openSession}
+              />
+            )}
+            {tab === 'search' && !memoryHome && (
               <SearchView
                 gateway={endpoint.gateway}
                 baseUrl={endpoint.baseUrl}
