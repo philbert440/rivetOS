@@ -118,6 +118,7 @@
     <string name="inbox_row_unread">Unread</string>
     <string name="inbox_task_unavailable">Task details are not available in this build yet.</string>
     <string name="notif_channel_tasks">Task updates</string>
+    <string name="notif_channel_sessions">Conversations</string>
     <string name="everything_archived">everything is archived</string>
 
     <string name="mode_chat">Chat</string>

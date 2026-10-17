@@ -919,6 +919,7 @@ class HubViewModel(private val c: AppContainer, inboxLabels: InboxLabels) : View
                     title = needsYouTitle,
                     body = agentFinishedBody(title, sessionId),
                     atMs = System.currentTimeMillis(),
+                    sessionId = sessionId,
                 ),
             )
         }
@@ -994,6 +995,7 @@ class HubViewModel(private val c: AppContainer, inboxLabels: InboxLabels) : View
                     title = agentFinishedTitle,
                     body = agentFinishedBody(title, sessionId),
                     atMs = System.currentTimeMillis(),
+                    sessionId = sessionId,
                 ),
             )
         }

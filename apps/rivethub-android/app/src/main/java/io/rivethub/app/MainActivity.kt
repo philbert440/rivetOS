@@ -25,6 +25,9 @@ import io.rivethub.app.ui.theme.resolveRivetColors
 import io.rivethub.app.ui.theme.themeModeOf
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.launch
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -50,11 +53,13 @@ import io.rivethub.app.plane.NarrowLaunchTarget
 import io.rivethub.app.plane.ConsumedTaps
 import io.rivethub.app.plane.OpenTaskTap
 import io.rivethub.app.plane.openTaskFromIntent
+import io.rivethub.app.plane.openSessionFromIntent
 import io.rivethub.app.plane.pairingLinkFromIntent
 import io.rivethub.app.plane.rememberConsumedTap
 import io.rivethub.app.plane.chatHomeNav
 import io.rivethub.app.plane.displayTitle
 import io.rivethub.app.plane.findChatItem
+import io.rivethub.app.plane.findLocatedChat
 import io.rivethub.app.plane.isDraftSessionId
 import io.rivethub.app.plane.narrowLaunchTarget
 import io.rivethub.app.plane.persistableLastSession
@@ -138,8 +143,9 @@ class MainActivity : ComponentActivity() {
                     openStream = { uri -> contentResolver.openInputStream(uri) },
                     shareUris = pendingShare,
                     onShareConsumed = { pendingShare = emptyList() },
-                    openTaskId = pendingTap?.taskId,
+                    openTaskId = pendingTap?.takeIf { it.sessionId == null }?.taskId,
                     onOpenTaskConsumed = { consumeOpenTask() },
+                    openSessionId = pendingTap?.sessionId,
                     pairingLink = pendingPairing,
                     onPairingLinkConsumed = { consumePairing() },
                 )
@@ -169,9 +175,15 @@ class MainActivity : ComponentActivity() {
      * onCreate (the intent the system restores after process death).
      */
     private fun readOpenTask(intent: android.content.Intent?, fromLaunch: Boolean) {
+        val nonce = intent?.getStringExtra(TaskNotifier.EXTRA_OPEN_TASK_NONCE)
         val tap = openTaskFromIntent(
             extra = intent?.getStringExtra(TaskNotifier.EXTRA_OPEN_TASK_ID),
-            nonce = intent?.getStringExtra(TaskNotifier.EXTRA_OPEN_TASK_NONCE),
+            nonce = nonce,
+            consumed = consumedTaps,
+            fromLaunch = fromLaunch,
+        ) ?: openSessionFromIntent(
+            extra = intent?.getStringExtra(TaskNotifier.EXTRA_OPEN_SESSION_ID),
+            nonce = nonce,
             consumed = consumedTaps,
             fromLaunch = fromLaunch,
         ) ?: return
@@ -189,6 +201,7 @@ class MainActivity : ComponentActivity() {
         consumedTaps = rememberConsumedTap(consumedTaps, tap)
         pendingTap = null
         intent?.removeExtra(TaskNotifier.EXTRA_OPEN_TASK_ID)
+        intent?.removeExtra(TaskNotifier.EXTRA_OPEN_SESSION_ID)
         intent?.removeExtra(TaskNotifier.EXTRA_OPEN_TASK_NONCE)
     }
 
@@ -263,6 +276,9 @@ internal class ScreenStores : ViewModel() {
  *  fires — the mesh loads node-by-node and `loading` never cleanly settles. */
 private const val LAUNCH_SETTLE_MS = 600L
 
+/** How long a tapped session notice waits for the roster to list its conversation. */
+private const val OPEN_SESSION_WAIT_MS = 10_000L
+
 private fun Screen.storeKey(): String? = when (this) {
     is Screen.Chat -> "chat:${nodeDenUrl}:$sessionKey"
     else -> null
@@ -276,6 +292,7 @@ fun App(
     onShareConsumed: () -> Unit = {},
     openTaskId: String? = null,
     onOpenTaskConsumed: () -> Unit = {},
+    openSessionId: String? = null,
     pairingLink: String? = null,
     onPairingLinkConsumed: () -> Unit = {},
 ) {
@@ -450,6 +467,24 @@ fun App(
             }
             NewConversationAction.PickAgent -> Unit
         }
+    }
+    // A tapped needs-you / finished-reply notice opens that conversation. On a
+    // cold start the roster may not have landed yet: wait briefly for its row,
+    // else the tap just brings the app up.
+    LaunchedEffect(openSessionId) {
+        val sessionId = openSessionId ?: return@LaunchedEffect
+        onOpenTaskConsumed()
+        if (nav.current == Screen.Enroll) return@LaunchedEffect
+        val row = withTimeoutOrNull(OPEN_SESSION_WAIT_MS) {
+            hubVm.state.map { findLocatedChat(it.items, sessionId) }.filterNotNull().first()
+        } ?: return@LaunchedEffect
+        if (nav.current == Screen.Enroll) return@LaunchedEffect
+        if ((nav.current as? Screen.Chat)?.sessionKey == row.item.key) return@LaunchedEffect
+        if (nav.current == Screen.Gallery) {
+            nav.popTo { it != Screen.Gallery }
+            if (nav.current == Screen.Gallery) nav.replaceAll(Screen.Hub)
+        }
+        openRowScreen(row)
     }
     // Left-nav Conversations → the chat home, never a list screen
     // (2026-09-04): the ACTIVE session when one is on the stack; otherwise the

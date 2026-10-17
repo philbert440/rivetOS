@@ -29,6 +29,8 @@ data class InboxEntry(
     val taskId: String? = null,
     val href: String? = null,
     val read: Boolean = false,
+    /** Session notices (needs you / agent finished): the conversation a tap opens. */
+    val sessionId: String? = null,
 )
 
 /**
