@@ -300,7 +300,7 @@ fun App(
     val p = prefs
     val colors = RivetTheme.colors
     if (p == null) {
-        Box(Modifier.fillMaxSize().background(colors.bg))
+        Box(Modifier.fillMaxSize().background(colors.page))
         return
     }
     // Home IS the chat surface (2026-09-04: the conversations list is
@@ -616,7 +616,7 @@ fun App(
         }
     }
 
-    Box(Modifier.fillMaxSize().background(colors.bg)) {
+    Box(Modifier.fillMaxSize().background(colors.page)) {
     when (val s = nav.current) {
         Screen.Enroll -> EnrollScreen(
             c,

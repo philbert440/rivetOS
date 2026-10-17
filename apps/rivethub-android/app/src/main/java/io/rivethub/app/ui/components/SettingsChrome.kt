@@ -71,7 +71,7 @@ private fun Modifier.drawTopPad(color: Color): Modifier =
 /**
  * Settings tab row — rivethub-web `pages/settings.tsx` narrow layout (a
  * horizontally scrolling row of tabs above the content). Square chips per the
- * Omarchy shape rule: the active tab is `panel2` + `em`, the rest `inkDim`.
+ * Omarchy shape rule: the active tab is `emContainer` + `onEmContainer`, the rest `inkDim`.
  */
 @Composable
 fun SettingsTabRow(
@@ -92,7 +92,7 @@ fun SettingsTabRow(
             Box(
                 Modifier
                     .sizeIn(minHeight = Dimens.touchTarget)
-                    .then(if (active) Modifier.background(colors.panel2) else Modifier)
+                    .then(if (active) Modifier.background(colors.emContainer) else Modifier)
                     .semantics {
                         this.selected = active
                     }
@@ -100,7 +100,7 @@ fun SettingsTabRow(
                     .padding(horizontal = 16.dp, vertical = 8.dp),
                 contentAlignment = Alignment.Center,
             ) {
-                Text(label, color = if (active) colors.em else colors.inkDim, style = RivetType.sm)
+                Text(label, color = if (active) colors.onEmContainer else colors.inkDim, style = RivetType.sm)
             }
         }
     }
