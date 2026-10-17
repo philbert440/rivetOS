@@ -70,7 +70,22 @@ export interface NodeFacts {
   gatewayAnswers: boolean
   /** ~/.rivetos/memory.sqlite (the PGlite import target) exists. */
   sqliteTargetExists: boolean
+  /** Sizes for the free-space check; a field is undefined when it could not be measured. */
+  disk: DiskFacts
   scope: ScopeContext
+}
+
+export interface DiskFacts {
+  /** Bytes under ~/.rivetos (the backup tarball is at most about this). */
+  stateBytes?: number
+  /** Free bytes on the home filesystem (backup, dump and import land there). */
+  homeFree?: number
+  /** Bytes in the PGlite data directory (dump + SQLite import headroom). */
+  pgliteBytes?: number
+  /** Bytes of an external SQLite file and its -wal/-shm (copied aside). */
+  sqliteBytes?: number
+  /** Free bytes where the external SQLite file lives. */
+  sqliteFree?: number
 }
 
 export const SQLITE_TARGET = 'memory.sqlite'
@@ -147,6 +162,36 @@ export function detectMemory(
   const url = fromConfig || host.env.RIVETOS_PG_URL?.trim() || fromFile
   if (url) return { kind: 'postgres', url }
   return { kind: 'none' }
+}
+
+/** Leading integer of the last output line of a du / df command. */
+function bytesFrom(host: Host, cmd: string): number | undefined {
+  const res = host.run(cmd, { timeoutMs: 120_000 })
+  if (res.code !== 0) return undefined
+  const m = /^(\d+)/.exec(res.stdout.trim().split('\n').slice(-1)[0]?.trim() ?? '')
+  return m ? Number(m[1]) : undefined
+}
+
+export function probeDisk(host: Host, legacy: string, memory: MemoryFacts): DiskFacts {
+  const du = (paths: string[]): number | undefined =>
+    bytesFrom(host, `du -scb ${paths.map(shellArg).join(' ')} 2>/dev/null | tail -n 1`)
+  const free = (path: string): number | undefined =>
+    bytesFrom(host, `df -P -B1 ${shellArg(path)} 2>/dev/null | awk 'NR==2 {print $4}'`)
+  const disk: DiskFacts = {
+    stateBytes: host.kind(legacy) === 'dir' ? du([legacy]) : undefined,
+    homeFree: free(host.home),
+  }
+  if (memory.kind === 'pglite' && host.kind(memory.dataDir) === 'dir') {
+    disk.pgliteBytes = du([memory.dataDir])
+  }
+  if (memory.kind === 'sqlite' && memory.external && memory.exists) {
+    const files = ['', '-wal', '-shm']
+      .map((suffix) => memory.path + suffix)
+      .filter((p) => host.kind(p) === 'file')
+    disk.sqliteBytes = du(files)
+    disk.sqliteFree = free(dirname(memory.path))
+  }
+  return disk
 }
 
 function unitScope(host: Host, unit: string, scope: ScopeContext): UnitScope {
@@ -264,6 +309,7 @@ export function probeNode(host: Host, opts: MigrateOptions): NodeFacts {
     gatewayPort: den.port,
     gatewayAnswers: host.run(healthCheck, { timeoutMs: 10_000 }).code === 0,
     sqliteTargetExists: host.kind(join(stateRoot, SQLITE_TARGET)) !== 'missing',
+    disk: opts.rollback ? {} : probeDisk(host, legacyPath, memory),
     scope,
   }
 }

@@ -40,6 +40,8 @@ export interface RunOptions {
 }
 
 export interface Host {
+  /** This process (written into the run lock). */
+  pid: number
   home: string
   uid: number
   user: string
@@ -55,6 +57,8 @@ export interface Host {
   ownerUid(path: string): number | undefined
   mkdirp(path: string): void
   writeFile(path: string, data: string | Uint8Array, mode: number): void
+  /** Create a file that must not exist yet; false when it already does. */
+  createExclusive(path: string, data: string, mode: number): boolean
   copyExecutable(from: string, to: string): void
   rename(from: string, to: string): void
   symlink(target: string, path: string): void
@@ -77,6 +81,7 @@ export function realHost(): Host {
     // keep $USER
   }
   return {
+    pid: process.pid,
     home,
     uid: typeof process.getuid === 'function' ? process.getuid() : -1,
     user,
@@ -143,6 +148,15 @@ export function realHost(): Host {
     writeFile(path, data, mode) {
       writeFileSync(path, data, { mode })
       chmodSync(path, mode)
+    },
+    createExclusive(path, data, mode) {
+      try {
+        writeFileSync(path, data, { mode, flag: 'wx' })
+        return true
+      } catch (err: unknown) {
+        if ((err as NodeJS.ErrnoException).code === 'EEXIST') return false
+        throw err
+      }
     },
     copyExecutable(from, to) {
       const tmp = `${to}.${String(process.pid)}.tmp`

@@ -34,6 +34,10 @@ interface Scenario {
   failOn?: string[]
   insideTsService?: boolean
   arch?: string
+  /** du / df results (bytes); unset means the probe output is unreadable. */
+  disk?: { state?: number; free?: number; pglite?: number }
+  /** Pids that `kill -0` reports alive. */
+  alivePids?: number[]
 }
 
 interface FakeHost extends Host {
@@ -81,6 +85,7 @@ function fakeHost(s: Scenario = {}): FakeHost {
   let clock = Date.parse('2026-10-16T12:00:00Z')
 
   const host: FakeHost = {
+    pid: 4242,
     home,
     uid,
     user,
@@ -105,6 +110,14 @@ function fakeHost(s: Scenario = {}): FakeHost {
       const ok = (stdout = ''): RunResult => ({ code: 0, stdout, stderr: '' })
       const no: RunResult = { code: 1, stdout: '', stderr: '' }
       if (s.failOn?.some((f) => cmd.includes(f))) return { code: 1, stdout: '', stderr: 'boom' }
+      const killed = /^kill -0 (\d+)/.exec(cmd)
+      if (killed) return (s.alivePids ?? []).includes(Number(killed[1])) ? ok() : no
+      if (cmd.startsWith('du -scb')) {
+        const pglite = cmd.includes('pglite') && !cmd.includes(`${legacy} `)
+        const bytes = pglite ? s.disk?.pglite : s.disk?.state
+        return bytes === undefined ? ok() : ok(`${String(bytes)}\ttotal`)
+      }
+      if (cmd.startsWith('df ')) return s.disk?.free === undefined ? ok() : ok(String(s.disk.free))
       if (cmd.startsWith('systemctl cat rivetos.service')) return tsUnit === 'system' ? ok() : no
       if (cmd.includes('systemctl --user cat rivetos.service')) return tsUnit === 'user' ? ok() : no
       if (cmd.startsWith('systemctl cat rivethub.service')) return hubUnit === 'system' ? ok() : no
@@ -153,6 +166,13 @@ function fakeHost(s: Scenario = {}): FakeHost {
       paths.set(p, 'file')
       texts.set(p, typeof data === 'string' ? data : new TextDecoder().decode(data))
     },
+    createExclusive: (p, data) => {
+      if ((paths.get(p) ?? 'missing') !== 'missing') return false
+      host.writes.push(`lock ${p}`)
+      paths.set(p, 'file')
+      texts.set(p, data)
+      return true
+    },
     copyExecutable: (from, to) => {
       host.writes.push(`copy ${from} ${to}`)
       host.events.push(`copy ${from} ${to}`)
@@ -181,6 +201,7 @@ function fakeHost(s: Scenario = {}): FakeHost {
       host.writes.push(`remove ${p}`)
       host.events.push(`remove ${p}`)
       paths.delete(p)
+      texts.delete(p)
       links.delete(p)
     },
     download: () => Promise.reject(new Error('no network in tests')),
@@ -334,6 +355,74 @@ describe('preflight refusals', () => {
       paths: { '/home/rivet/.rivetos/memory.sqlite': 'file' },
     })
     expect(r.join('\n')).toMatch(/memory\.sqlite already exists/)
+  })
+})
+
+describe('free space', () => {
+  const MiB = 1024 * 1024
+
+  it('refuses when the backup does not fit in home', () => {
+    const r = refusalsFor({ disk: { state: 900 * MiB, free: 1000 * MiB } })
+    expect(r.join('\n')).toMatch(/Not enough free space in \/home\/rivet: the backup needs/)
+  })
+
+  it('passes with room for the backup', () => {
+    expect(refusalsFor({ disk: { state: 100 * MiB, free: 10_000 * MiB } })).toEqual([])
+  })
+
+  it('counts the PGlite dump and import', () => {
+    const disk = { state: 100 * MiB, pglite: 1000 * MiB, free: 1500 * MiB }
+    expect(refusalsFor({ disk }).join('\n')).toEqual('')
+    const paths = { '/home/rivet/.rivetos/pglite': 'dir' } as const
+    expect(refusalsFor({ config: PGLITE, disk, paths }).join('\n')).toMatch(
+      /backup, PGlite dump and SQLite import need about 2\.3 GiB/,
+    )
+  })
+
+  it('notes, rather than refuses, when du/df cannot be read', async () => {
+    const host = fakeHost({})
+    expect(await migrateToRivethub(['--dry-run'], host)).toBe(0)
+    expect(host.output()).toMatch(/Could not measure the free space/)
+  })
+})
+
+describe('run lock', () => {
+  const LOCK = '/home/rivet/.cache/rivethub-migrate/migrate.lock'
+  const bin = { '/opt/rh/rh': 'file', '/opt/rh/rivethub-migrate': 'file' } as const
+
+  function locked(pid: number, alive: boolean): FakeHost {
+    const host = fakeHost({ paths: { ...bin }, alivePids: alive ? [pid] : [] })
+    host.createExclusive(LOCK, JSON.stringify({ pid }), 0o600)
+    host.writes.length = 0
+    return host
+  }
+
+  it('takes the lock for the run and releases it', async () => {
+    const host = fakeHost({ paths: { ...bin } })
+    expect(await migrateToRivethub(['--binary', '/opt/rh/rh'], host)).toBe(0)
+    expect(host.writes.slice(0, 2)).toEqual([
+      `mkdir /home/rivet/.cache/rivethub-migrate`,
+      `lock ${LOCK}`,
+    ])
+    expect(host.writes).toContain(`remove ${LOCK}`)
+    expect(host.paths.get(LOCK)).toBeUndefined()
+  })
+
+  it('refuses while another run holds it, for a migration, a rollback and a dry run', async () => {
+    for (const args of [['--binary', '/opt/rh/rh'], ['--rollback'], ['--dry-run']]) {
+      const host = locked(777, true)
+      expect(await migrateToRivethub(args, host)).toBe(2)
+      expect(host.errors.join('\n')).toMatch(/pid 777\) is in progress/)
+      expect(host.calls.filter((c) => MUTATING.test(c))).toEqual([])
+      expect(host.paths.get(LOCK)).toBe('file')
+    }
+  })
+
+  it('takes over a stale lock', async () => {
+    const host = locked(777, false)
+    expect(await migrateToRivethub(['--binary', '/opt/rh/rh'], host)).toBe(0)
+    expect(host.output()).toMatch(/Removing a stale lock/)
+    expect(host.paths.get(LOCK)).toBeUndefined()
   })
 })
 

@@ -23,6 +23,7 @@ import { resolveSshUser } from '../lib/ssh.js'
 import { EXIT_REFUSED, executePlan } from './migrate-to-rivethub/execute.js'
 import { realHost, type Host } from './migrate-to-rivethub/host.js'
 import { meshMigrate } from './migrate-to-rivethub/mesh.js'
+import { acquireLock, lockHolder, lockPath } from './migrate-to-rivethub/lock.js'
 import { HELP_TEXT, parseMigrateArgs, type MigrateOptions } from './migrate-to-rivethub/options.js'
 import { planMigration, planRollback, stampOf } from './migrate-to-rivethub/plan.js'
 import { probeNode, type NodeFacts } from './migrate-to-rivethub/probe.js'
@@ -50,11 +51,36 @@ function describe(facts: NodeFacts): string[] {
   ]
 }
 
+function refuseLocked(host: Host, path: string, holder: number | undefined): number {
+  host.error(
+    holder === undefined
+      ? `  ❌ Could not take the run lock ${path}; another run may have just started. Try again.`
+      : `  ❌ Another migrate-to-rivethub run (pid ${String(holder)}) is in progress on this node. Wait for it to finish; if that process is not a migration, remove ${path}.`,
+  )
+  return EXIT_REFUSED
+}
+
 /** Migrate or roll back this node only. */
 export async function migrateLocal(opts: MigrateOptions, host: Host): Promise<number> {
   host.log(
     `🔩 RivetHub ${opts.rollback ? 'rollback' : 'migration'}${opts.dryRun ? ' (dry run)' : ''}`,
   )
+  const lock = lockPath(host.home)
+  if (opts.dryRun) {
+    const holder = lockHolder(host, lock)
+    if (holder !== undefined) return refuseLocked(host, lock, holder)
+    return runLocal(opts, host)
+  }
+  const held = acquireLock(host, lock, opts.rollback ? 'rollback' : 'migrate')
+  if (!held.ok) return refuseLocked(host, lock, held.holder)
+  try {
+    return await runLocal(opts, host)
+  } finally {
+    held.release()
+  }
+}
+
+async function runLocal(opts: MigrateOptions, host: Host): Promise<number> {
   const facts = probeNode(host, opts)
   for (const line of describe(facts)) host.log(line)
   host.log('')

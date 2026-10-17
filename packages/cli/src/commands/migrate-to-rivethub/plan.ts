@@ -187,6 +187,7 @@ export function migrationRefusals(facts: NodeFacts): string[] {
       `${sqliteBackupPath(facts.memory.path)} already exists (left by an earlier run). Move it aside first; the migration writes its pre-migration copy there.`,
     )
   }
+  r.push(...diskRefusals(facts))
   if (facts.validate && facts.validate.code !== 0) {
     r.push(
       `rh config validate rejected ${facts.configPath}:\n      ${lastLines(
@@ -194,6 +195,42 @@ export function migrationRefusals(facts: NodeFacts): string[] {
         8,
       )}`,
     )
+  }
+  return r
+}
+
+/** Slack on top of the measured sizes (binaries, unit, logs, rounding). */
+export const DISK_MARGIN_BYTES = 256 * 1024 * 1024
+
+function size(bytes: number): string {
+  const mib = bytes / (1024 * 1024)
+  return mib >= 1024 ? `${(mib / 1024).toFixed(1)} GiB` : `${mib.toFixed(0)} MiB`
+}
+
+/**
+ * Free space on the home filesystem for the backup tarball (at most the size
+ * of ~/.rivetos), and on PGlite nodes the dump plus the SQLite import (each
+ * up to the size of the data directory); an external SQLite file needs room
+ * for its copy next to it.
+ */
+export function diskRefusals(facts: NodeFacts): string[] {
+  const { disk } = facts
+  const r: string[] = []
+  if (disk.stateBytes !== undefined && disk.homeFree !== undefined) {
+    const need = disk.stateBytes + 2 * (disk.pgliteBytes ?? 0) + DISK_MARGIN_BYTES
+    if (disk.homeFree < need) {
+      r.push(
+        `Not enough free space in ${facts.home}: the backup${disk.pgliteBytes ? ', PGlite dump and SQLite import need' : ' needs'} about ${size(need)}, ${size(disk.homeFree)} is free.`,
+      )
+    }
+  }
+  if (facts.memory.kind === 'sqlite' && disk.sqliteBytes !== undefined) {
+    const need = disk.sqliteBytes + DISK_MARGIN_BYTES
+    if (disk.sqliteFree !== undefined && disk.sqliteFree < need) {
+      r.push(
+        `Not enough free space next to ${facts.memory.path} for its pre-migration copy: about ${size(need)} needed, ${size(disk.sqliteFree)} free.`,
+      )
+    }
   }
   return r
 }
@@ -490,6 +527,11 @@ export function planMigration(facts: NodeFacts, opts: MigrateOptions, stamp: str
 
   if (facts.memory.kind === 'none') {
     plan.notes.push('No memory backend in config.yaml; the memory step is skipped.')
+  }
+  if (facts.disk.stateBytes === undefined || facts.disk.homeFree === undefined) {
+    plan.notes.push(
+      `Could not measure the free space in ${facts.home} (du/df); make sure the backup fits.`,
+    )
   }
   if (facts.memory.kind === 'postgres') {
     plan.notes.push(
