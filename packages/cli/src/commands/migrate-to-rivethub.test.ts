@@ -899,3 +899,62 @@ describe('stampOf', () => {
     expect(stampOf(new Date('2026-10-16T05:07:09.123Z'))).toBe('20261016T050709Z')
   })
 })
+
+describe('ACP adapter preflight', () => {
+  const parsed = parseMigrateArgs([])
+  if (!parsed.ok) throw new Error(parsed.error)
+  const opts = parsed.opts
+  const config = [
+    'memory:',
+    '  postgres:',
+    '    connection_string: postgres://u:s3cret@db.example/rivet',
+    'agents:',
+    '  claude:',
+    '    provider: claude-cli',
+    '  hermes:',
+    '    provider: hermes-cli',
+    'providers:',
+    '  claude-cli:',
+    '    type: claude-cli',
+    '  hermes-cli:',
+    '    type: hermes-cli',
+    '  spare:',
+    '    type: claude-cli',
+    '',
+  ].join('\n')
+
+  it('refuses with the install command when an agent provider lacks its adapter', () => {
+    const host = fakeHost({ config, failOn: ['claude-agent-acp', 'hermes acp --check'] })
+    const facts = probeNode(host, opts)
+    expect(facts.harnessGaps).toHaveLength(2)
+    const refusals = planMigration(facts, opts, stampOf(host.now())).refusals
+    expect(refusals.some((r) => r.includes('claude-cli') && r.includes('claude-agent-acp'))).toBe(
+      true,
+    )
+    expect(refusals.some((r) => r.includes('hermes-cli') && r.includes("'.[acp]'"))).toBe(true)
+  })
+
+  it('passes when the adapters answer, and looks for them on ~/.local/bin too', () => {
+    const host = fakeHost({ config })
+    const facts = probeNode(host, opts)
+    expect(facts.harnessGaps).toEqual([])
+    const checks = host.calls.filter(
+      (c) => c.includes('claude-agent-acp') || c.includes('hermes acp'),
+    )
+    expect(checks).toHaveLength(2)
+    const envs = host.calls
+      .map((c, i) => [c, host.envs[i]] as const)
+      .filter(([c]) => c.includes('claude-agent-acp'))
+      .map(([, env]) => env?.PATH ?? '')
+    expect(envs.every((path) => path.startsWith('/home/rivet/.local/bin:'))).toBe(true)
+  })
+
+  it('ignores adapter providers that no agent uses', () => {
+    const host = fakeHost({
+      config: config.replace('    provider: claude-cli', '    provider: hermes-cli'),
+      failOn: ['claude-agent-acp'],
+    })
+    expect(probeNode(host, opts).harnessGaps).toEqual([])
+    expect(host.calls.some((c) => c.includes('claude-agent-acp'))).toBe(false)
+  })
+})

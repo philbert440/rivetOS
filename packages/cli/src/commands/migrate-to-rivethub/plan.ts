@@ -130,6 +130,7 @@ export function migrationRefusals(facts: NodeFacts): string[] {
     )
   }
   if (!facts.configExists) r.push(`No config at ${facts.configPath}.`)
+  r.push(...facts.harnessGaps)
   if (facts.memory.kind === 'unreadable') {
     r.push(`Cannot parse ${facts.configPath}: ${facts.memory.reason}`)
   }

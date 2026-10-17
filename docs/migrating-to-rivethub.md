@@ -103,8 +103,9 @@ units), `HOME`, a `PATH` that starts with `~/.local/bin`, `TERM`,
 ## Harness adapters
 
 RivetHub drives CLI agents over ACP, so each `*-cli` provider needs its ACP
-adapter on the node before the switch, or RivetHub starts with that provider
-degraded (`/healthz` lists it under `degradedProviders`; the rest keep working):
+adapter on the node before the switch. The preflight checks every adapter a
+configured agent needs and refuses with the install command when one is missing
+(without it RivetHub would start with that provider degraded):
 
 - **Claude Code** (`claude-cli`): `@agentclientprotocol/claude-agent-acp`, e.g.
   `npm install --prefix ~/.local/lib/acp @agentclientprotocol/claude-agent-acp`

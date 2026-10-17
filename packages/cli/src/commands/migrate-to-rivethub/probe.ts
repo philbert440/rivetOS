@@ -73,6 +73,8 @@ export interface NodeFacts {
   /** Sizes for the free-space check; a field is undefined when it could not be measured. */
   disk: DiskFacts
   scope: ScopeContext
+  /** ACP adapters RivetHub needs for providers this node's agents use, and which are missing. */
+  harnessGaps: string[]
 }
 
 export interface DiskFacts {
@@ -228,6 +230,46 @@ function ownershipBlockers(host: Host, legacy: string, memory: MemoryFacts): str
   return blockers
 }
 
+/** Provider types whose RivetHub adapter is a separate install. */
+const ADAPTERS: Record<string, { check: string; fix: string }> = {
+  'claude-cli': {
+    check: 'command -v claude-agent-acp >/dev/null 2>&1',
+    fix: 'the Claude Code ACP adapter is not installed: npm install --prefix ~/.local/lib/acp @agentclientprotocol/claude-agent-acp && ln -s ~/.local/lib/acp/node_modules/.bin/claude-agent-acp ~/.local/bin/claude-agent-acp',
+  },
+  'hermes-cli': {
+    check: 'hermes acp --check >/dev/null 2>&1',
+    fix: "`hermes acp --check` fails: install Hermes's ACP extras in its checkout (pip install -e '.[acp]', or uv pip install --python venv/bin/python -e '.[acp]')",
+  },
+}
+
+export function detectHarnessGaps(rawConfig: string | undefined, host: Host): string[] {
+  if (rawConfig === undefined) return []
+  let config: Record<string, unknown>
+  try {
+    config = (parseYaml(rawConfig) ?? {}) as Record<string, unknown>
+  } catch {
+    return []
+  }
+  const providers = (config.providers ?? {}) as Record<string, { type?: unknown } | null>
+  const agents = (config.agents ?? {}) as Record<string, { provider?: unknown } | null>
+  const used = new Set<string>()
+  for (const agent of Object.values(agents)) {
+    const id = agent?.provider
+    if (typeof id !== 'string') continue
+    const type = providers[id]?.type
+    if (typeof type === 'string' && type in ADAPTERS) used.add(type)
+  }
+  const gaps: string[] = []
+  for (const type of [...used].sort()) {
+    const adapter = ADAPTERS[type]
+    const path = `${join(host.home, '.local', 'bin')}:${host.env.PATH ?? '/usr/bin:/bin'}`
+    if (host.run(adapter.check, { timeoutMs: 30_000, env: { PATH: path } }).code !== 0) {
+      gaps.push(`Agents use the ${type} provider, but ${adapter.fix}.`)
+    }
+  }
+  return gaps
+}
+
 export function probeNode(host: Host, opts: MigrateOptions): NodeFacts {
   const legacyPath = join(host.home, '.rivetos')
   const hubPath = join(host.home, '.rivethub')
@@ -311,5 +353,6 @@ export function probeNode(host: Host, opts: MigrateOptions): NodeFacts {
     sqliteTargetExists: host.kind(join(stateRoot, SQLITE_TARGET)) !== 'missing',
     disk: opts.rollback ? {} : probeDisk(host, legacyPath, memory),
     scope,
+    harnessGaps: detectHarnessGaps(rawConfig, host),
   }
 }
