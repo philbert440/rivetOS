@@ -27,6 +27,8 @@ data class ChatItem(
     val pin: Boolean = false,
     /** Epoch ms the session was created; 0 when unknown or unparsable. */
     val createdAt: Long = 0,
+    /** Waiting on the user — "Needs you" (plane/NeedsYou.kt). */
+    val blocked: Boolean = false,
 )
 
 /** Den roster tokens per harness id — UI/spawn labels, never key material. */
@@ -93,6 +95,7 @@ fun chatItems(
             status = summary.status,
             updatedAt = if (parsed != 0L) parsed else (legacy?.updatedAt ?: 0L),
             createdAt = parseIsoMillis(summary.createdAt),
+            blocked = summary.blocked == true && summary.status != "ended",
         )
     }
 

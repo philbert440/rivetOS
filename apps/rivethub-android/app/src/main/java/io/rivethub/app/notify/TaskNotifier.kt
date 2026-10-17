@@ -14,6 +14,8 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import io.rivethub.app.MainActivity
 import io.rivethub.app.R
+import io.rivethub.app.plane.INBOX_KIND_AGENT_FINISHED
+import io.rivethub.app.plane.INBOX_KIND_NEEDS_YOU
 import io.rivethub.app.plane.InboxEntry
 import io.rivethub.app.plane.SystemNotifier
 import io.rivethub.app.plane.systemNotificationId
@@ -37,6 +39,15 @@ class TaskNotifier(context: Context) : SystemNotifier {
             NotificationManager.IMPORTANCE_DEFAULT,
         )
         mgr.createNotificationChannel(channel)
+        // Needs you / agent finished get their own channel so they can be
+        // silenced or raised apart from task updates in the OS settings.
+        mgr.createNotificationChannel(
+            NotificationChannel(
+                CHANNEL_SESSIONS,
+                app.getString(R.string.notif_channel_sessions),
+                NotificationManager.IMPORTANCE_DEFAULT,
+            ),
+        )
     }
 
     @SuppressLint("MissingPermission") // checked inline below (API 33+) and guarded by the catch
@@ -56,6 +67,7 @@ class TaskNotifier(context: Context) : SystemNotifier {
                 Intent.FLAG_ACTIVITY_SINGLE_TOP or
                 Intent.FLAG_ACTIVITY_CLEAR_TOP
             entry.taskId?.let { putExtra(EXTRA_OPEN_TASK_ID, it) }
+            entry.sessionId?.let { putExtra(EXTRA_OPEN_SESSION_ID, it) }
             // Per-post nonce: a fresh tap for the same task opens again, a
             // re-read of an already-consumed intent does not (plane/OpenTaskTap.kt).
             putExtra(EXTRA_OPEN_TASK_NONCE, System.currentTimeMillis().toString())
@@ -66,7 +78,12 @@ class TaskNotifier(context: Context) : SystemNotifier {
             open,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
-        val n = NotificationCompat.Builder(app, CHANNEL_TASKS)
+        val channel = if (entry.kind == INBOX_KIND_NEEDS_YOU || entry.kind == INBOX_KIND_AGENT_FINISHED) {
+            CHANNEL_SESSIONS
+        } else {
+            CHANNEL_TASKS
+        }
+        val n = NotificationCompat.Builder(app, channel)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(entry.title)
             .setContentText(entry.body)
@@ -85,6 +102,9 @@ class TaskNotifier(context: Context) : SystemNotifier {
 
     companion object {
         const val CHANNEL_TASKS = "tasks"
+        const val CHANNEL_SESSIONS = "sessions"
+        /** Intent extra carrying the conversation a tapped session notice opens. */
+        const val EXTRA_OPEN_SESSION_ID = "open_session_id"
         /** Intent extra carrying the completed task's id from a tapped notification. */
         const val EXTRA_OPEN_TASK_ID = "open_task_id"
         /** Intent extra: nonce stamped when the notification was posted. */

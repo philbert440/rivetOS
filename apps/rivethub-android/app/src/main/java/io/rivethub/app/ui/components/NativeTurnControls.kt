@@ -15,8 +15,9 @@ import io.rivethub.app.ui.theme.RivetTheme
 import io.rivethub.app.ui.theme.RivetType
 
 /**
- * Protocol-owned Codex Model / Effort row above the composer.
- * Twin of rivethub-web `chat.tsx` nativeModels row.
+ * Per-turn Model / Effort row above the composer — twin of the rivethub-web
+ * composer turn pickers (#805, `lib/conversation-model-options.ts`). The first
+ * option of each list is the "" default (session / harness / effort default).
  */
 @Composable
 fun NativeTurnControls(

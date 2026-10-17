@@ -102,6 +102,8 @@ data class HarnessSessionSummary(
      * adoption signal M3b looks for.
      */
     val redirectedTo: String? = null,
+    /** Waiting on the user (permission prompt / question). Absent when not waiting. */
+    val blocked: Boolean? = null,
 )
 
 @Serializable
@@ -283,6 +285,8 @@ sealed class HarnessEvent {
         val previousSessionId: String? = null,
         val supersedes: String? = null,
         val updatedAt: String? = null,
+        /** The den sets `blocked: true` while the session waits on the user and omits it otherwise. */
+        val blocked: Boolean = false,
     ) : HarnessEvent()
     data class Error(
         val sessionId: String,
@@ -440,6 +444,7 @@ fun parseHarnessEvent(el: JsonObject): HarnessEvent {
             previousSessionId = el.str("previousSessionId"),
             supersedes = el.str("supersedes"),
             updatedAt = el.str("updatedAt"),
+            blocked = el["blocked"]?.jsonPrimitive?.booleanOrNull == true,
         )
         "error" -> HarnessEvent.Error(
             sessionId = sessionId,

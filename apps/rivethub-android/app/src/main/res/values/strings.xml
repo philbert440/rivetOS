@@ -118,6 +118,7 @@
     <string name="inbox_row_unread">Unread</string>
     <string name="inbox_task_unavailable">Task details are not available in this build yet.</string>
     <string name="notif_channel_tasks">Task updates</string>
+    <string name="notif_channel_sessions">Conversations</string>
     <string name="everything_archived">everything is archived</string>
 
     <string name="mode_chat">Chat</string>
@@ -242,6 +243,9 @@
     <string name="error_image_unsupported">The selected model does not accept image inputs.</string>
     <string name="harness_native_model">Model</string>
     <string name="harness_native_effort">Effort</string>
+    <string name="turn_model_session_default">Session default (%1$s)</string>
+    <string name="turn_model_harness_default">Harness default</string>
+    <string name="turn_effort_default">Default effort</string>
     <string name="ws_disconnected">disconnected</string>
     <string name="jump_latest">latest</string>
     <string name="ask_user_free">Or type a reply</string>
@@ -415,4 +419,29 @@
     <string name="footer_memory">Memory</string>
     <string name="footer_settings">Settings</string>
     <string name="agents_picker_title">Start a conversation with</string>
+    <!-- Settings tabs (plane/SettingsTabs.kt) and General settings (desktop parity) -->
+    <string name="settings_tab_general">General</string>
+    <string name="settings_tab_appearance">Appearance</string>
+    <string name="settings_tab_node">Node &amp; Mesh</string>
+    <string name="settings_tab_device">Device</string>
+    <string name="settings_tab_advanced">Advanced</string>
+    <string name="section_gateway">Gateway</string>
+    <string name="section_new_conversations">New conversations</string>
+    <string name="default_agent">Default agent</string>
+    <string name="default_agent_none">None</string>
+    <string name="default_agent_helper">Used by + new when the open chat and the current agent don\'t pick one. An agent that has left the roster is skipped.</string>
+    <string name="settings_auto_scroll">Jump to the newest message</string>
+    <string name="settings_auto_scroll_helper">Scroll down when a reply arrives, a turn ends or the agent starts writing, even if you had scrolled up.</string>
+    <string name="settings_agent_finished">When an agent finishes a reply</string>
+    <string name="settings_agent_finished_helper">Notify when a conversation you are not looking at goes quiet. Needs the app to be running.</string>
+    <string name="action_system_notification_settings">Sound and style…</string>
+    <string name="settings_system_notifications_helper">Sound, vibration and priority are set in Android\'s notification settings for RivetHub.</string>
+    <string name="notif_agent_finished_title">Agent finished replying</string>
+    <string name="settings_build_stamp">RivetHub %1$s · build %2$d</string>
+    <!-- Needs you (plane/NeedsYou.kt) -->
+    <string name="needs_you_count">Needs you · %1$d</string>
+    <string name="needs_you_next">Open next</string>
+    <string name="notif_needs_you_title">An agent needs you</string>
+    <string name="settings_needs_you">When an agent needs you</string>
+    <string name="settings_needs_you_helper">Notify when a conversation stops to wait for your answer or approval. Needs the app to be running.</string>
 </resources>

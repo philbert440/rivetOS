@@ -6,6 +6,8 @@ data class SessionUpdatedPatch(
     val sessionId: String,
     val status: String,
     val previousSessionId: String? = null,
+    /** Each `session-updated` frame is the current truth for `blocked`. */
+    val blocked: Boolean = false,
 )
 
 /**
@@ -35,9 +37,10 @@ fun patchSessionUpdated(
     val i = snapshot.indexOfFirst { it.sessionId == lookFor || it.sessionId == patch.sessionId }
     if (i < 0) return snapshot
     val cur = snapshot[i]
-    if (cur.sessionId == patch.sessionId && cur.status == patch.status) return snapshot
+    val blocked = patch.blocked.takeIf { it }
+    if (cur.sessionId == patch.sessionId && cur.status == patch.status && cur.blocked == blocked) return snapshot
     val next = snapshot.toMutableList()
-    next[i] = cur.copy(sessionId = patch.sessionId, status = patch.status)
+    next[i] = cur.copy(sessionId = patch.sessionId, status = patch.status, blocked = blocked)
     if (patch.previousSessionId != null && patch.previousSessionId != patch.sessionId) {
         return next.filterIndexed { idx, s -> idx == i || s.sessionId != patch.sessionId }
     }
@@ -51,6 +54,7 @@ fun applyRegistryEvent(
     summary: HarnessSessionSummary? = null,
     previousSessionId: String? = null,
     status: String? = null,
+    blocked: Boolean = false,
 ): List<HarnessSessionSummary>? {
     if (type == "session-created") {
         if (summary == null) return prev
@@ -60,7 +64,7 @@ fun applyRegistryEvent(
         if (prev == null || status == null) return prev
         return patchSessionUpdated(
             prev,
-            SessionUpdatedPatch(sessionId = sessionId, status = status, previousSessionId = previousSessionId),
+            SessionUpdatedPatch(sessionId = sessionId, status = status, previousSessionId = previousSessionId, blocked = blocked),
         )
     }
     return prev

@@ -78,7 +78,7 @@ fun PairingScannerDialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false),
     ) {
-        Box(Modifier.fillMaxSize().background(colors.bg)) {
+        Box(Modifier.fillMaxSize().background(colors.page)) {
             QrCameraView(
                 accept = accept,
                 onCode = onCode,

@@ -89,3 +89,28 @@ fun buildNodeSheet(
 
 fun discoveredNodeLabel(name: String, sessions: Int?): String =
     if (sessions != null) "+ $name ($sessions sessions)" else "+ $name"
+
+/**
+ * Hide the drawer node footer in a single-node setup — twin of rivethub-web
+ * `lib/node-picker-visibility.ts shouldHideNodePickers` (#800, #813).
+ *
+ * The only saved node is the entry URL (no extra nodes) and it is the active
+ * view. [meshNodeUrls] is the mesh roster's den URLs, or null while discovery
+ * is pending or has failed: a single saved node stays hidden then (no flash on
+ * load), and shows only once the mesh confirms a peer worth saving. A second
+ * saved node always shows the picker, whatever discovery says.
+ */
+fun shouldHideNodePickers(
+    entryUrl: String,
+    extraUrls: Set<String>,
+    activeUrl: String,
+    meshNodeUrls: List<String>?,
+): Boolean {
+    val entry = normUrl(entryUrl)
+    if (entry.isEmpty()) return false
+    val extras = extraUrls.map(::normUrl).filter { it.isNotEmpty() && it != entry }
+    if (extras.isNotEmpty()) return false
+    if (normUrl(activeUrl) != entry) return false
+    if (meshNodeUrls == null) return true
+    return meshNodeUrls.all { normUrl(it) == entry }
+}

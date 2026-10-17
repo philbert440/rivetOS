@@ -76,7 +76,9 @@ import io.rivethub.app.plane.SpawnConflict
 import io.rivethub.app.plane.TermStatus
 import io.rivethub.app.plane.modelDisplayLabel
 import io.rivethub.app.plane.terminalTitle
+import io.rivethub.app.plane.TranscriptEdge
 import io.rivethub.app.plane.TranscriptPin
+import io.rivethub.app.plane.arrivalJump
 import io.rivethub.app.plane.accentFor
 import io.rivethub.app.plane.composerCanSend
 import io.rivethub.app.plane.composerIsEnabled
@@ -281,7 +283,10 @@ fun HarnessChatScreen(
     val sessionItem = remember(hubState.items, st.sessionId) {
         findChatItem(hubState.items.map { it.item }, st.sessionId)
     }
-    val nativeModels = remember(vm, st.sheet, st.transport) { vm.nativeModels() }
+    // Per-turn model/effort (#805): only on a protocol-owned conversation whose
+    // harness declares turnOptions. "" = the session's / harness's own default.
+    val turnOpts = vm.turnOptions()
+    val nativeModels = turnOpts.models
     val displayTitle = sessionItem?.let { displayTitle(it, hubState.titleOverrides) }
         ?: hubState.titleOverrides[st.sessionId] ?: st.title
     val headerContext = context.takeIf { st.turns.any { it.role == "assistant" && it.complete != false } }
@@ -289,8 +294,8 @@ fun HarnessChatScreen(
         title = displayTitle,
         draft = st.draft,
         agentName = agent?.name,
-        modelLabel = st.sheet?.models?.find { it.id == st.model }?.label?.takeIf { it.isNotBlank() }
-            ?: nativeModels.find { it.first == st.model }?.second?.takeIf { it.isNotBlank() },
+        modelLabel = turnOpts.selectedModel?.label?.takeIf { it.isNotBlank() }
+            ?: st.sheet?.models?.find { it.id == st.model }?.label?.takeIf { it.isNotBlank() },
         harnessLabel = harnessLabel(harnessId ?: agent?.harnessId),
         context = headerContext,
         newChatLabel = stringResource(R.string.new_chat),
@@ -484,13 +489,28 @@ fun HarnessChatScreen(
                 onCancel = vm::cancelQueued,
             )
             if (nativeModels.isNotEmpty()) {
+                val sessionDefault = turnOpts.sessionDefaultLabel
                 NativeTurnControls(
-                    models = nativeModels.map { SelectOption(it.first, it.second) },
-                    model = st.model,
-                    onModel = vm::setModel,
-                    efforts = vm.effortOptions().map { SelectOption(it.first, it.second) },
-                    effort = st.effort,
-                    onEffort = vm::setEffort,
+                    models = listOf(
+                        SelectOption(
+                            "",
+                            if (sessionDefault != null) {
+                                stringResource(R.string.turn_model_session_default, sessionDefault)
+                            } else {
+                                stringResource(R.string.turn_model_harness_default)
+                            },
+                        ),
+                    ) + nativeModels.map { SelectOption(it.id, it.label) },
+                    model = turnOpts.effectiveModel.orEmpty(),
+                    onModel = { vm.setTurnPick(it, turnOpts.effectiveEffort) },
+                    efforts = if (turnOpts.efforts.isEmpty()) {
+                        emptyList()
+                    } else {
+                        listOf(SelectOption("", stringResource(R.string.turn_effort_default))) +
+                            turnOpts.efforts.map { SelectOption(it.id, it.label) }
+                    },
+                    effort = turnOpts.effectiveEffort.orEmpty(),
+                    onEffort = { vm.setTurnPick(turnOpts.effectiveModel, it) },
                     enabled = composerEnabled,
                 )
             }
@@ -705,6 +725,25 @@ private fun ChatTranscript(
             pinned = false
             list.animateScrollToItem(jumpToTurn)
             onJumpConsumed()
+        }
+    }
+    // Arrival jump (plane/TranscriptPin.kt arrivalJump, Settings → General
+    // "Jump to the newest message"): a new last message, a finished turn, or
+    // thinking giving way to text re-pins and scrolls even when scrolled up.
+    val lastTurn = st.turns.lastOrNull()
+    val edge = TranscriptEdge(
+        lastId = lastTurn?.let { "${it.role}:${it.text.hashCode()}" },
+        live = st.inFlight,
+        reasoning = st.liveReasoning.isNotEmpty() && st.liveText.isEmpty(),
+    )
+    var lastEdge by remember(pin) { mutableStateOf<TranscriptEdge?>(null) }
+    LaunchedEffect(edge) {
+        val prev = lastEdge
+        lastEdge = edge
+        if (prev != null && st.autoScroll && jumpToTurn == null && arrivalJump(prev, edge)) {
+            pin.jump()
+            pinned = true
+            runCatching { list.scrollToItem(count) }
         }
     }
     LaunchedEffect(count, st.liveText.length, st.liveReasoning.length, st.liveTools.size, jumpToTurn) {
