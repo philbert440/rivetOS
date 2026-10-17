@@ -47,8 +47,11 @@ export interface Step {
   commands: string[]
   /** A failure is a refusal (exit 2) rather than a failed step (exit 1). */
   refuseOnFailure?: boolean
-  /** Throws on failure; may return a line of detail for the log. */
-  run(host: Host): Promise<string | undefined>
+  /**
+   * Throws on failure; may return a line of detail for the log. `signal`
+   * aborts on SIGINT/SIGTERM/SIGHUP so long waits stop early.
+   */
+  run(host: Host, signal?: AbortSignal): Promise<string | undefined>
 }
 
 export interface Plan {
@@ -82,10 +85,16 @@ function sh(host: Host, cmd: string, label: string, env?: Record<string, string>
   return res.stdout.trim()
 }
 
-async function poll(host: Host, timeoutMs: number, ok: () => boolean): Promise<boolean> {
+async function poll(
+  host: Host,
+  timeoutMs: number,
+  ok: () => boolean,
+  signal?: AbortSignal,
+): Promise<boolean> {
   const deadline = host.now().getTime() + timeoutMs
   for (;;) {
     if (ok()) return true
+    if (signal?.aborted) throw new Error('interrupted')
     if (host.now().getTime() >= deadline) return false
     await host.sleep(POLL_MS)
   }
@@ -571,13 +580,14 @@ function healthStep(
     title: `Health check (${unit})`,
     phase,
     commands,
-    run: async (host) => {
+    run: async (host, signal) => {
       const healthy = await poll(
         host,
         HEALTH_TIMEOUT_MS,
         () =>
           (!active || host.run(active).code === 0) &&
           host.run(facts.healthCheck, { timeoutMs: 10_000 }).code === 0,
+        signal,
       )
       if (!healthy) {
         throw new Error(

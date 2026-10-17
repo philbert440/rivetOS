@@ -50,6 +50,10 @@ interface FakeHost extends Host {
   writes: string[]
   paths: Map<string, PathKind>
   gatewayUp: boolean
+  /** The trapped-signal handler while one is installed. */
+  interruptHandler?: (signal: string) => void
+  /** Deliver SIGINT/SIGTERM/SIGHUP when a command containing `needle` runs. */
+  interruptOn?: { needle: string; signal: string }
   output(): string
 }
 
@@ -107,6 +111,10 @@ function fakeHost(s: Scenario = {}): FakeHost {
       host.calls.push(cmd)
       host.events.push(cmd)
       host.envs.push(opts?.env)
+      if (host.interruptOn && cmd.includes(host.interruptOn.needle)) {
+        if (!host.interruptHandler) throw new Error(`no trap installed at "${cmd}"`)
+        host.interruptHandler(host.interruptOn.signal)
+      }
       const ok = (stdout = ''): RunResult => ({ code: 0, stdout, stderr: '' })
       const no: RunResult = { code: 1, stdout: '', stderr: '' }
       if (s.failOn?.some((f) => cmd.includes(f))) return { code: 1, stdout: '', stderr: 'boom' }
@@ -218,6 +226,12 @@ function fakeHost(s: Scenario = {}): FakeHost {
     },
     log: (line) => host.logs.push(line),
     error: (line) => host.errors.push(line),
+    onInterrupt: (handler) => {
+      host.interruptHandler = handler
+      return () => {
+        host.interruptHandler = undefined
+      }
+    },
   }
   return host
 }
@@ -721,6 +735,64 @@ describe('external SQLite memory', () => {
       }),
     )
     expect(r.join('\n')).toMatch(/memory\.sqlite\.pre-rivethub already exists/)
+  })
+})
+
+describe('interrupts', () => {
+  const bin = { '/opt/rh/rh': 'file', '/opt/rh/rivethub-migrate': 'file' } as const
+
+  it('does not trap signals before the running node changes', async () => {
+    const host = fakeHost({ paths: { ...bin } })
+    const trapped: Record<string, boolean> = {}
+    const run = host.run.bind(host)
+    host.run = (cmd, o) => {
+      for (const needle of ['status postgres', 'disable --now rivetos.service']) {
+        if (cmd.includes(needle)) trapped[needle] = host.interruptHandler !== undefined
+      }
+      return run(cmd, o)
+    }
+    expect(await migrateToRivethub(['--binary', '/opt/rh/rh'], host)).toBe(0)
+    expect(trapped).toEqual({ 'status postgres': false, 'disable --now rivetos.service': true })
+    expect(host.interruptHandler).toBeUndefined()
+  })
+
+  it('puts RivetOS back after the current step on SIGHUP, once', async () => {
+    const host = fakeHost({ paths: { ...bin } })
+    host.interruptOn = { needle: 'tar czf', signal: 'SIGHUP' }
+    expect(await migrateToRivethub(['--binary', '/opt/rh/rh'], host)).toBe(1)
+    const tar = host.calls.findIndex((c) => c.includes('tar czf'))
+    expect(tar).toBeGreaterThan(-1)
+    expect(host.calls.some((c) => c.includes('rivethub-migrate postgres'))).toBe(false)
+    expect(host.calls.filter((c) => c.includes('enable --now rivetos.service'))).toHaveLength(1)
+    expect(host.paths.get('/home/rivet/.rivetos')).toBe('dir')
+    expect(host.errors.join('\n')).toMatch(/interrupted \(SIGHUP\); the RivetOS runtime is back/)
+    expect(host.interruptHandler).toBeUndefined()
+  })
+
+  it('cuts the health wait short and undoes the move', async () => {
+    const host = fakeHost({
+      paths: { ...bin },
+      failOn: ['is-active --quiet rivethub.service'],
+    })
+    host.interruptOn = { needle: 'is-active --quiet rivethub.service', signal: 'SIGINT' }
+    const start = host.now().getTime()
+    expect(await migrateToRivethub(['--binary', '/opt/rh/rh'], host)).toBe(1)
+    // The 120 s wait stopped at the first poll; recovery's own wait is short.
+    expect(host.now().getTime() - start).toBeLessThan(30_000)
+    expect(host.output()).toMatch(/interrupted/)
+    expect(host.paths.get('/home/rivet/.rivetos')).toBe('dir')
+    expect(host.calls.filter((c) => c.includes('enable --now rivetos.service'))).toHaveLength(1)
+  })
+
+  it('stops a rollback between steps and says to re-run it', async () => {
+    const host = fakeHost({
+      hubUnit: 'system',
+      paths: { '/home/rivet/.rivetos': 'symlink', '/home/rivet/.rivethub': 'dir' },
+    })
+    host.interruptOn = { needle: 'disable --now rivethub.service', signal: 'SIGTERM' }
+    expect(await migrateToRivethub(['--rollback'], host)).toBe(1)
+    expect(host.calls.some((c) => c.includes('enable --now rivetos.service'))).toBe(false)
+    expect(host.errors.join('\n')).toMatch(/Rollback interrupted \(SIGTERM\).*--rollback/)
   })
 })
 

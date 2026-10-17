@@ -70,6 +70,17 @@ export interface Host {
   sleep(ms: number): Promise<void>
   log(line: string): void
   error(line: string): void
+  /**
+   * Call `handler` on SIGINT / SIGTERM / SIGHUP instead of dying, until the
+   * returned function is called. Used while the node is half switched.
+   */
+  onInterrupt(handler: (signal: string) => void): () => void
+}
+
+const INTERRUPTS = ['SIGINT', 'SIGTERM', 'SIGHUP'] as const
+
+function ignore(): void {
+  // stdout/stderr may be gone (closed terminal, dropped SSH session)
 }
 
 export function realHost(): Host {
@@ -185,10 +196,31 @@ export function realHost(): Host {
     now: () => new Date(),
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
     log: (line) => {
-      console.log(line)
+      try {
+        console.log(line)
+      } catch {
+        ignore()
+      }
     },
     error: (line) => {
-      console.error(line)
+      try {
+        console.error(line)
+      } catch {
+        ignore()
+      }
+    },
+    onInterrupt(handler) {
+      const listener = (signal: NodeJS.Signals): void => {
+        // After a hangup, writes to the dead terminal fail with EIO/EPIPE;
+        // they must not crash the process while it puts the node back.
+        process.stdout.on('error', ignore)
+        process.stderr.on('error', ignore)
+        handler(signal)
+      }
+      for (const signal of INTERRUPTS) process.on(signal, listener)
+      return () => {
+        for (const signal of INTERRUPTS) process.off(signal, listener)
+      }
     },
   }
 }

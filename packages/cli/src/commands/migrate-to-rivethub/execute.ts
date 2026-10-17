@@ -18,10 +18,15 @@ export function printPlan(plan: Plan, host: Host, indent = '  '): void {
   for (const note of plan.notes) host.log(`${indent}ℹ️  ${note}`)
 }
 
-async function runStep(step: Step, host: Host, label: string): Promise<Error | undefined> {
+async function runStep(
+  step: Step,
+  host: Host,
+  label: string,
+  signal?: AbortSignal,
+): Promise<Error | undefined> {
   host.log(`  ${label} ${step.title}`)
   try {
-    const detail = await step.run(host)
+    const detail = await step.run(host, signal)
     host.log(`    ✅ ${detail ?? 'done'}`)
     return undefined
   } catch (err: unknown) {
@@ -60,10 +65,62 @@ export async function executePlan(plan: Plan, host: Host, dryRun: boolean): Prom
     return EXIT_OK
   }
 
+  // From the first switch step on, an interrupt (Ctrl-C, a dropped SSH
+  // session, systemctl stop) must not leave the node half switched: the
+  // signal is trapped, the running step finishes (or a wait is cut short),
+  // and the recovery runs once before the process exits.
+  const abort = new AbortController()
+  let interrupted: string | undefined
+  let release: (() => void) | undefined
+  const trap = (): void => {
+    release ??= host.onInterrupt((signal) => {
+      if (interrupted) {
+        host.error(`  ⚠️  ${signal} again — still finishing up, please wait.`)
+        return
+      }
+      interrupted = signal
+      host.error(
+        `  ⚠️  ${signal}: finishing the current step, then ${plan.mode === 'migrate' ? 'putting RivetOS back' : 'stopping'}.`,
+      )
+      abort.abort()
+    })
+  }
+  try {
+    return await runSteps(plan, host, what, trap, abort.signal, () => interrupted)
+  } finally {
+    release?.()
+  }
+}
+
+async function runSteps(
+  plan: Plan,
+  host: Host,
+  what: string,
+  trap: () => void,
+  signal: AbortSignal,
+  interrupted: () => string | undefined,
+): Promise<number> {
   const total = plan.steps.length
   for (let i = 0; i < total; i++) {
     const step = plan.steps[i]
-    const failed = await runStep(step, host, `[${String(i + 1)}/${String(total)}]`)
+    if (step.phase === 'switch') trap()
+    const failed = await runStep(step, host, `[${String(i + 1)}/${String(total)}]`, signal)
+    const sig = interrupted()
+    if (!failed && sig && i < total - 1) {
+      if (plan.mode === 'rollback') {
+        host.error(
+          `  ❌ Rollback interrupted (${sig}) after "${step.title}". Re-run: ${ROLLBACK_HINT}`,
+        )
+        return EXIT_FAILED
+      }
+      const restored = await recover(plan, host)
+      host.error(
+        restored
+          ? `  ❌ Migration interrupted (${sig}); the RivetOS runtime is back.`
+          : `  ❌ Migration interrupted (${sig}) and the automatic recovery did not finish. Run: ${ROLLBACK_HINT}`,
+      )
+      return EXIT_FAILED
+    }
     if (!failed) continue
 
     if (step.refuseOnFailure) {
