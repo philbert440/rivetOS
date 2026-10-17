@@ -39,6 +39,44 @@ object RivetPalette {
     const val LightWarn = 0xFFB45309L
     const val LightLink = 0xFF0969DAL
     const val LightAssistant = 0xFF3C4756L
+
+    // Material style (an explicit Light or Dark choice) — theme.css
+    // html[data-style='material'] blocks: tonal surfaces from the emerald seed.
+    const val MaterialDarkBg = 0xFF0F1512L
+    const val MaterialDarkPanel = 0xFF141A17L
+    const val MaterialDarkSurface = 0xFF181E1BL
+    const val MaterialDarkPanel2 = 0xFF232A26L
+    const val MaterialDarkLine = 0xFF353D39L
+    const val MaterialDarkCodeBg = 0xFF111714L
+    const val MaterialDarkInk = 0xFFDEE4DFL
+    const val MaterialDarkInkDim = 0xFFA7B2ABL
+    const val MaterialDarkEm = 0xFF6CDBACL
+    const val MaterialDarkEmDim = 0xFF4FC497L
+    const val MaterialDarkOnEm = 0xFF003825L
+    const val MaterialDarkEmContainer = 0xFF1F4535L
+    const val MaterialDarkOnEmContainer = 0xFFA6F2CDL
+    const val MaterialDarkRed = 0xFFFFB4ABL
+    const val MaterialDarkWarn = 0xFFF5C56BL
+    const val MaterialDarkLink = 0xFF8ECBFFL
+    const val MaterialDarkAssistant = 0xFFD3DBD5L
+
+    const val MaterialLightBg = 0xFFE9F0EBL
+    const val MaterialLightPanel = 0xFFF2F7F3L
+    const val MaterialLightSurface = 0xFFFBFDFBL
+    const val MaterialLightPanel2 = 0xFFE4EBE6L
+    const val MaterialLightLine = 0xFFC6D0C9L
+    const val MaterialLightCodeBg = 0xFFEDF2EEL
+    const val MaterialLightInk = 0xFF171D1AL
+    const val MaterialLightInkDim = 0xFF56615BL
+    const val MaterialLightEm = 0xFF006C4CL
+    const val MaterialLightEmDim = 0xFF00573DL
+    const val MaterialLightOnEm = 0xFFFFFFFFL
+    const val MaterialLightEmContainer = 0xFFC4ECD8L
+    const val MaterialLightOnEmContainer = 0xFF002114L
+    const val MaterialLightRed = 0xFFBA1A1AL
+    const val MaterialLightWarn = 0xFF8A5100L
+    const val MaterialLightLink = 0xFF0B57D0L
+    const val MaterialLightAssistant = 0xFF2C3530L
 }
 
 @Immutable
@@ -56,6 +94,17 @@ data class RivetColors(
     val warn: Color,
     val link: Color,
     val assistant: Color,
+    /** `--color-surface`: the page tile. Classic paints it as [panel]. */
+    val surface: Color = panel,
+    /** `--color-on-em`: ink on a filled accent (primary button, send). */
+    val onEm: Color = bg,
+    /** `--color-em-container`: selected fill (active nav, open conversation). */
+    val emContainer: Color = panel2,
+    /** `--color-on-em-container`: ink on [emContainer]. */
+    val onEmContainer: Color = em,
+    /** The phone page behind a screen's content. Classic shows [bg] (web
+     *  `classic:bg-transparent` at phone width); Material the [surface] tile. */
+    val page: Color = bg,
 )
 
 private fun token(argb: Long): Color = Color(argb)
@@ -90,6 +139,48 @@ val RivetLight = RivetColors(
     warn = token(RivetPalette.LightWarn),
     link = token(RivetPalette.LightLink),
     assistant = token(RivetPalette.LightAssistant),
+)
+
+val MaterialDark = RivetColors(
+    bg = token(RivetPalette.MaterialDarkBg),
+    panel = token(RivetPalette.MaterialDarkPanel),
+    panel2 = token(RivetPalette.MaterialDarkPanel2),
+    line = token(RivetPalette.MaterialDarkLine),
+    codeBg = token(RivetPalette.MaterialDarkCodeBg),
+    ink = token(RivetPalette.MaterialDarkInk),
+    inkDim = token(RivetPalette.MaterialDarkInkDim),
+    em = token(RivetPalette.MaterialDarkEm),
+    emDim = token(RivetPalette.MaterialDarkEmDim),
+    red = token(RivetPalette.MaterialDarkRed),
+    warn = token(RivetPalette.MaterialDarkWarn),
+    link = token(RivetPalette.MaterialDarkLink),
+    assistant = token(RivetPalette.MaterialDarkAssistant),
+    surface = token(RivetPalette.MaterialDarkSurface),
+    onEm = token(RivetPalette.MaterialDarkOnEm),
+    emContainer = token(RivetPalette.MaterialDarkEmContainer),
+    onEmContainer = token(RivetPalette.MaterialDarkOnEmContainer),
+    page = token(RivetPalette.MaterialDarkSurface),
+)
+
+val MaterialLight = RivetColors(
+    bg = token(RivetPalette.MaterialLightBg),
+    panel = token(RivetPalette.MaterialLightPanel),
+    panel2 = token(RivetPalette.MaterialLightPanel2),
+    line = token(RivetPalette.MaterialLightLine),
+    codeBg = token(RivetPalette.MaterialLightCodeBg),
+    ink = token(RivetPalette.MaterialLightInk),
+    inkDim = token(RivetPalette.MaterialLightInkDim),
+    em = token(RivetPalette.MaterialLightEm),
+    emDim = token(RivetPalette.MaterialLightEmDim),
+    red = token(RivetPalette.MaterialLightRed),
+    warn = token(RivetPalette.MaterialLightWarn),
+    link = token(RivetPalette.MaterialLightLink),
+    assistant = token(RivetPalette.MaterialLightAssistant),
+    surface = token(RivetPalette.MaterialLightSurface),
+    onEm = token(RivetPalette.MaterialLightOnEm),
+    emContainer = token(RivetPalette.MaterialLightEmContainer),
+    onEmContainer = token(RivetPalette.MaterialLightOnEmContainer),
+    page = token(RivetPalette.MaterialLightSurface),
 )
 
 /** An Omarchy palette's tokens (`plane/OmarchyTheme.kt`) as app colors. */

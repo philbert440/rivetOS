@@ -27,6 +27,7 @@ import io.rivethub.app.ui.theme.Radius
 import io.rivethub.app.ui.theme.RivetTheme
 import io.rivethub.app.ui.theme.RivetType
 import io.rivethub.app.ui.theme.Shape
+import io.rivethub.app.ui.theme.UiStyle
 
 /**
  * Desktop popover stand-in: `rounded-lg border line bg panel2 p-2`.
@@ -39,11 +40,14 @@ fun RivetModalSheet(
     content: @Composable ColumnScope.() -> Unit,
 ) {
     val colors = RivetTheme.colors
-    val shape = RoundedCornerShape(topStart = Shape.card, topEnd = Shape.card)
+    val material = RivetTheme.style == UiStyle.Material
+    // Material: desktop dialogs' `rounded-3xl bg-surface`; classic keeps the panel-2 popover.
+    val corner = if (material) 28.dp else Shape.card
+    val shape = RoundedCornerShape(topStart = corner, topEnd = corner)
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-        containerColor = colors.panel2,
+        containerColor = if (material) colors.surface else colors.panel2,
         contentColor = colors.ink,
         tonalElevation = 0.dp,
         dragHandle = {

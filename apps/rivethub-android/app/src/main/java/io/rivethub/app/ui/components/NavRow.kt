@@ -48,12 +48,12 @@ fun NavRow(
     val pressed by interaction.collectIsPressedAsState()
     val fg = when {
         !enabled -> colors.inkDim
-        active -> colors.em
+        active -> colors.onEmContainer
         pressed -> colors.ink
         else -> colors.inkDim
     }
     val bg = when {
-        active -> colors.panel2
+        active -> colors.emContainer
         pressed && enabled -> colors.panel2
         else -> androidx.compose.ui.graphics.Color.Transparent
     }

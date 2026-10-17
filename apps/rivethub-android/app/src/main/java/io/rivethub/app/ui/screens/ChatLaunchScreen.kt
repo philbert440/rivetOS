@@ -45,7 +45,7 @@ import io.rivethub.app.ui.theme.RivetType
 @Composable
 fun ChatLaunchScreen(onOpenDrawer: () -> Unit, onNew: () -> Unit) {
     val colors = RivetTheme.colors
-    Column(Modifier.fillMaxSize().background(colors.bg)) {
+    Column(Modifier.fillMaxSize().background(colors.page)) {
         TopBar(
             title = stringResource(R.string.brand_rivethub),
             onOpenDrawer = onOpenDrawer,

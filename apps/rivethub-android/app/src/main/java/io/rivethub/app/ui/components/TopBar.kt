@@ -26,6 +26,7 @@ import androidx.compose.ui.unit.dp
 import io.rivethub.app.R
 import io.rivethub.app.ui.theme.Dimens
 import io.rivethub.app.ui.theme.RivetTheme
+import io.rivethub.app.ui.theme.UiStyle
 import io.rivethub.app.ui.theme.RivetType
 
 /**
@@ -53,12 +54,15 @@ fun TopBar(
     padStatusBar: Boolean = true,
 ) {
     val colors = RivetTheme.colors
+    // Material: web `bg-surface`, no rule; classic: `classic:bg-panel/80 classic:border-b`.
+    val material = RivetTheme.style == UiStyle.Material
     Row(
         modifier
             .fillMaxWidth()
-            .background(colors.panel.copy(alpha = 0.8f))
+            .background(if (material) colors.surface else colors.panel.copy(alpha = 0.8f))
             .then(if (padStatusBar) Modifier.statusBarsPadding() else Modifier)
             .drawBehind {
+                if (material) return@drawBehind
                 val y = size.height - Dimens.line.toPx() / 2f
                 drawLine(colors.line, Offset(0f, y), Offset(size.width, y), Dimens.line.toPx())
             }
