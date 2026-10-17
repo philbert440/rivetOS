@@ -157,4 +157,20 @@ class TurnPickTest {
         assertNull(decodeTurnPick(""))
         assertNull(decodeTurnPick("\ta\thigh"))
     }
+
+    @Test
+    fun `boot seeds the session model from the row when the summary lookup is skipped`() {
+        // Row arrived with its transport: no lookup, its model is the session default.
+        val seeded = bootSummaryModel(lookedUp = false, draft = false, listedModel = null, presetModel = "b")
+        assertEquals("b", seeded)
+        val r = opts("codex", null, currentModel = seeded)
+        assertEquals("Model B", r.sessionDefaultLabel)
+        assertEquals("b", r.selectedModel?.id)
+        // A listed summary wins; a lookup that found nothing stays unknown.
+        assertEquals("a", bootSummaryModel(lookedUp = true, draft = false, listedModel = "a", presetModel = "b"))
+        assertNull(bootSummaryModel(lookedUp = true, draft = false, listedModel = null, presetModel = "b"))
+        // Drafts and rows without a model have no session default.
+        assertNull(bootSummaryModel(lookedUp = false, draft = true, listedModel = null, presetModel = "b"))
+        assertNull(bootSummaryModel(lookedUp = false, draft = false, listedModel = null, presetModel = " "))
+    }
 }

@@ -120,3 +120,16 @@ fun conversationModelOptions(
         selectedModel = selected,
     )
 }
+
+/**
+ * The session's own model at boot. A listed summary wins; when the lookup was
+ * skipped (the drawer row already carried its transport) the row's model —
+ * passed in as the preset — stands in, so the picker reads "Session default
+ * (X)" and image checks use X rather than the harness default. Drafts have no
+ * session model yet.
+ */
+fun bootSummaryModel(lookedUp: Boolean, draft: Boolean, listedModel: String?, presetModel: String): String? = when {
+    lookedUp -> listedModel?.trim()?.takeIf { it.isNotEmpty() }
+    draft -> null
+    else -> presetModel.trim().takeIf { it.isNotEmpty() }
+}

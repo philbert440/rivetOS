@@ -117,6 +117,7 @@ import io.rivethub.app.plane.conversationModelOptions
 import io.rivethub.app.plane.conversationProtocolOwnership
 import io.rivethub.app.plane.decodeTurnPick
 import io.rivethub.app.plane.encodeTurnPick
+import io.rivethub.app.plane.bootSummaryModel
 import io.rivethub.app.plane.optimisticUserText
 import io.rivethub.app.plane.attachmentFetchUrl
 import io.rivethub.app.plane.imageSourceNamespace
@@ -1164,7 +1165,8 @@ class HarnessChatViewModel(
             var summaryEffort: String? = null
             // Drafts and rows that arrived with their transport need no lookup.
             var summaryReady = true
-            if (!_state.value.draft && hid != null && caps != null && initialTransport == null) {
+            val lookUp = !_state.value.draft && hid != null && caps != null && initialTransport == null
+            if (lookUp) {
                 val listed = withContext(Dispatchers.IO) { runCatching { hg.listSessions(hid, caps) } }
                 summaryReady = listed.isSuccess
                 val sessions = listed.getOrDefault(emptyList())
@@ -1175,6 +1177,7 @@ class HarnessChatViewModel(
                     summaryEffort = row.effort
                 }
             }
+            summaryModel = bootSummaryModel(lookUp, _state.value.draft, summaryModel, presetModel)
             val nativeModels = nativeTurnModels(sheet, transport)
             val model = when {
                 nativeModels.isNotEmpty() ->
