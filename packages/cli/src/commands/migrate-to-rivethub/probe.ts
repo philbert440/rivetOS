@@ -17,7 +17,15 @@ import { HUB_UNIT, systemctl, TS_UNIT, type ScopeContext, type UnitScope } from 
 export type MemoryFacts =
   | { kind: 'postgres'; url: string }
   | { kind: 'pglite'; dataDir: string; lockPid?: number; lockAlive: boolean }
-  | { kind: 'sqlite'; path: string; exists: boolean }
+  | {
+      kind: 'sqlite'
+      path: string
+      exists: boolean
+      /** Outside ~/.rivetos, so not in the state tarball and not moved. */
+      external: boolean
+      /** The pre-migration copy (sqliteBackupPath) exists. */
+      backupExists: boolean
+    }
   | { kind: 'none' }
   | { kind: 'unreadable'; reason: string }
 
@@ -66,6 +74,11 @@ export interface NodeFacts {
 }
 
 export const SQLITE_TARGET = 'memory.sqlite'
+
+/** Pre-migration copy of an external SQLite file (plus -wal/-shm), restored on rollback. */
+export function sqliteBackupPath(path: string): string {
+  return `${path}.pre-rivethub`
+}
 
 function expandHome(path: string, home: string): string {
   if (path === '~') return home
@@ -117,7 +130,16 @@ export function detectMemory(
   const sqlite = memory?.sqlite as { path?: unknown } | undefined
   if (sqlite && typeof sqlite.path === 'string' && sqlite.path.trim() !== '') {
     const path = expandHome(sqlite.path.trim(), host.home)
-    return { kind: 'sqlite', path, exists: host.kind(path) === 'file' }
+    const inState = [join(host.home, '.rivetos'), join(host.home, '.rivethub')].some((root) =>
+      path.startsWith(`${root}/`),
+    )
+    return {
+      kind: 'sqlite',
+      path,
+      exists: host.kind(path) === 'file',
+      external: !inState,
+      backupExists: host.kind(sqliteBackupPath(path)) !== 'missing',
+    }
   }
   const pg = memory?.postgres as { connection_string?: unknown } | undefined
   const fromConfig = typeof pg?.connection_string === 'string' ? pg.connection_string.trim() : ''

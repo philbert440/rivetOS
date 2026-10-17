@@ -551,6 +551,90 @@ describe('migration run', () => {
   })
 })
 
+describe('external SQLite memory', () => {
+  const SQLITE = 'memory:\n  sqlite:\n    path: /data/rivet/memory.sqlite\n'
+  const scenario = (extra: Partial<Scenario> = {}): Scenario => ({
+    config: SQLITE,
+    paths: {
+      '/opt/rh/rh': 'file',
+      '/opt/rh/rivethub-migrate': 'file',
+      '/data/rivet/memory.sqlite': 'file',
+      '/data/rivet/memory.sqlite-wal': 'file',
+    },
+    ...extra,
+  })
+  /** The fake runs no cp: mark the copies as made when the backup command runs. */
+  function copying(host: FakeHost): FakeHost {
+    const run = host.run.bind(host)
+    host.run = (cmd, o) => {
+      const res = run(cmd, o)
+      if (cmd.includes('.pre-rivethub') && res.code === 0) {
+        host.paths.set('/data/rivet/memory.sqlite.pre-rivethub', 'file')
+        host.paths.set('/data/rivet/memory.sqlite.pre-rivethub-wal', 'file')
+      }
+      return res
+    }
+    return host
+  }
+
+  it('copies the file aside before the in-place schema change', async () => {
+    const host = copying(fakeHost(scenario()))
+    expect(await migrateToRivethub(['--binary', '/opt/rh/rh'], host)).toBe(0)
+    const backup = host.calls.findIndex((c) =>
+      c.includes('b=/data/rivet/memory.sqlite.pre-rivethub'),
+    )
+    const migrate = host.calls.findIndex((c) =>
+      c.includes('rivethub-migrate sqlite --path /data/rivet/memory.sqlite'),
+    )
+    expect(backup).toBeGreaterThan(host.calls.findIndex((c) => c.includes('tar czf')))
+    expect(backup).toBeLessThan(migrate)
+  })
+
+  it('restores the copy when the migration fails after the schema change', async () => {
+    const host = copying(fakeHost(scenario({ failOn: ['start rivethub.service'] })))
+    expect(await migrateToRivethub(['--binary', '/opt/rh/rh'], host)).toBe(1)
+    expect(host.writes).toContain(
+      'rename /data/rivet/memory.sqlite /data/rivet/memory.sqlite.rivethub-20261016T120000Z',
+    )
+    expect(host.writes).toContain(
+      'rename /data/rivet/memory.sqlite.pre-rivethub /data/rivet/memory.sqlite',
+    )
+    expect(host.writes).toContain(
+      'rename /data/rivet/memory.sqlite.pre-rivethub-wal /data/rivet/memory.sqlite-wal',
+    )
+    expect(host.paths.get('/data/rivet/memory.sqlite.pre-rivethub')).toBeUndefined()
+  })
+
+  it('plans the restore on --rollback and leaves an in-tree file to the state move', () => {
+    const migrated = {
+      hubUnit: 'system' as const,
+      paths: {
+        '/home/rivet/.rivetos': 'symlink' as const,
+        '/home/rivet/.rivethub': 'dir' as const,
+      },
+    }
+    const ext = facts({ ...migrated, config: SQLITE }, ['--rollback']).facts
+    expect(planRollback(ext, 'S').steps.map((s) => s.id)).toContain('restore-sqlite')
+    const inTree = facts(
+      { ...migrated, config: 'memory:\n  sqlite:\n    path: ~/.rivetos/memory.sqlite\n' },
+      ['--rollback'],
+    ).facts
+    expect(planRollback(inTree, 'S').steps.map((s) => s.id)).not.toContain('restore-sqlite')
+  })
+
+  it('refuses when a pre-migration copy is already there', () => {
+    const r = refusalsFor(
+      scenario({
+        paths: {
+          '/data/rivet/memory.sqlite': 'file',
+          '/data/rivet/memory.sqlite.pre-rivethub': 'file',
+        },
+      }),
+    )
+    expect(r.join('\n')).toMatch(/memory\.sqlite\.pre-rivethub already exists/)
+  })
+})
+
 describe('rollback planning', () => {
   const migrated: Scenario = {
     hubUnit: 'system',

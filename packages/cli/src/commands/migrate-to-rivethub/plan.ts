@@ -12,7 +12,7 @@ import { join } from 'node:path'
 import { shellArg as q } from '../../lib/ssh.js'
 import type { Host } from './host.js'
 import type { MigrateOptions } from './options.js'
-import { SQLITE_TARGET, type NodeFacts } from './probe.js'
+import { sqliteBackupPath, SQLITE_TARGET, type NodeFacts } from './probe.js'
 import {
   latestReleaseApiUrl,
   parseChecksum,
@@ -182,6 +182,11 @@ export function migrationRefusals(facts: NodeFacts): string[] {
   if (facts.memory.kind === 'sqlite' && !facts.memory.exists) {
     r.push(`memory.sqlite.path points at ${facts.memory.path}, which does not exist.`)
   }
+  if (facts.memory.kind === 'sqlite' && facts.memory.external && facts.memory.backupExists) {
+    r.push(
+      `${sqliteBackupPath(facts.memory.path)} already exists (left by an earlier run). Move it aside first; the migration writes its pre-migration copy there.`,
+    )
+  }
   if (facts.validate && facts.validate.code !== 0) {
     r.push(
       `rh config validate rejected ${facts.configPath}:\n      ${lastLines(
@@ -307,7 +312,30 @@ function memorySteps(facts: NodeFacts, stamp: string): Step[] {
     }
     case 'sqlite': {
       const cmd = `${q(migrate)} sqlite --path ${q(mem.path)}`
+      // A file outside ~/.rivetos is not in the state tarball: copy it (and
+      // its -wal/-shm) before the in-place schema change, so a rollback can
+      // put the RivetOS version back. The main file is copied last, so its
+      // copy existing means the set is complete.
+      const backup = sqliteBackupPath(mem.path)
+      const backupCmd =
+        `p=${q(mem.path)}; b=${q(backup)}; for s in -wal -shm ''; do rm -f "$b$s"; ` +
+        `if [ -e "$p$s" ]; then cp -p "$p$s" "$b$s.partial" && mv "$b$s.partial" "$b$s" || exit 1; fi; done`
+      const backupStep: Step[] = mem.external
+        ? [
+            {
+              id: 'backup-sqlite',
+              title: 'Copy the SQLite memory file aside (it lives outside ~/.rivetos)',
+              phase: 'switch',
+              commands: [backupCmd],
+              run: (host) => {
+                sh(host, backupCmd, 'SQLite backup')
+                return Promise.resolve(backup)
+              },
+            },
+          ]
+        : []
       return [
+        ...backupStep,
         {
           id: 'migrate-sqlite',
           title: 'Bring the SQLite memory file to the RivetHub schema',
@@ -607,6 +635,29 @@ function rollbackSteps(
     })
   }
 
+  if (facts.memory.kind === 'sqlite' && facts.memory.external) {
+    const path = facts.memory.path
+    const backup = sqliteBackupPath(path)
+    const parked = `${path}.rivethub-${stamp}`
+    steps.push({
+      id: 'restore-sqlite',
+      title: "Put the pre-migration SQLite memory file back (RivetHub's copy is parked)",
+      phase: 'switch',
+      commands: [`mv ${q(path)} ${q(parked)}; mv ${q(backup)} ${q(path)} (and their -wal/-shm)`],
+      run: (host) => {
+        if (host.kind(backup) === 'missing')
+          return Promise.resolve('no pre-migration copy; left as is')
+        for (const suffix of ['', '-wal', '-shm']) {
+          if (host.kind(path + suffix) !== 'missing') host.rename(path + suffix, parked + suffix)
+        }
+        for (const suffix of ['-wal', '-shm', '']) {
+          if (host.kind(backup + suffix) !== 'missing') host.rename(backup + suffix, path + suffix)
+        }
+        return Promise.resolve(`restored ${path}; RivetHub's copy parked as ${parked}`)
+      },
+    })
+  }
+
   if (facts.tsUnit !== 'none') {
     const startCmd = systemctl(facts.tsUnit, `enable --now ${TS_UNIT}`, facts.scope)
     steps.push(
@@ -661,6 +712,11 @@ export function planRollback(facts: NodeFacts, stamp: string): Plan {
   if (facts.memory.kind === 'pglite') {
     plan.notes.push(
       'Memory written while RivetHub ran is in the parked SQLite file, not in PGlite.',
+    )
+  }
+  if (facts.memory.kind === 'sqlite' && facts.memory.external) {
+    plan.notes.push(
+      `Memory written while RivetHub ran stays in the parked ${facts.memory.path}.rivethub-<stamp>.`,
     )
   }
   plan.steps = rollbackSteps(facts, facts.hubUnit, stamp, 'rollback')
