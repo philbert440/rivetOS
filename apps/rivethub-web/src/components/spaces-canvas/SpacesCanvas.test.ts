@@ -1840,21 +1840,37 @@ describe('ThreadMini backfill', () => {
     vi.restoreAllMocks()
   })
 
+  let rendered: ((updatedAt: number) => void) | undefined
+  let updated = 1
+
   function mountMini(strict: boolean): void {
     host = document.createElement('div')
     document.body.appendChild(host)
     root = createRoot(host)
-    const mini = createElement(
-      QueryClientProvider,
-      { client: client() },
-      createElement(ThreadMini, { item: row('mini-1', 'Mini') }),
-    )
-    act(() => {
+    const queries = client()
+    updated = 1
+    rendered = (updatedAt) => {
+      const mini = createElement(
+        QueryClientProvider,
+        { client: queries },
+        createElement(ThreadMini, { item: { ...row('mini-1', 'Mini'), updatedAt } }),
+      )
       root?.render(strict ? createElement(StrictMode, null, mini) : mini)
+    }
+    act(() => {
+      rendered?.(updated)
     })
   }
 
-  it('debounces a global dirty bump and still seeds immediately', async () => {
+  /** The session lists refetched and this row moved. */
+  function touch(): void {
+    updated += 1
+    act(() => {
+      rendered?.(updated)
+    })
+  }
+
+  it('ignores a global dirty bump when its own row did not change', async () => {
     vi.useFakeTimers()
     const sessionMessages = vi
       .spyOn(useConnection.getState().gateway, 'sessionMessages')
@@ -1867,6 +1883,23 @@ describe('ThreadMini backfill', () => {
     act(() => {
       useChat.setState({ sessionsDirty: useChat.getState().sessionsDirty + 1 })
     })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(MINI_BACKFILL_MAX_WAIT_MS)
+    })
+    expect(sessionMessages).toHaveBeenCalledTimes(1)
+  })
+
+  it('debounces a change to its own row and still seeds immediately', async () => {
+    vi.useFakeTimers()
+    const sessionMessages = vi
+      .spyOn(useConnection.getState().gateway, 'sessionMessages')
+      .mockResolvedValue({ messages: [] })
+    mountMini(false)
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(sessionMessages).toHaveBeenCalledTimes(1)
+    touch()
     expect(sessionMessages).toHaveBeenCalledTimes(1)
     await act(async () => {
       await vi.advanceTimersByTimeAsync(MINI_BACKFILL_DEBOUNCE_MS - 1)
@@ -1894,7 +1927,7 @@ describe('ThreadMini backfill', () => {
     expect(sessionMessages).toHaveBeenCalledTimes(2)
   })
 
-  it('keeps the first seed and refetches by the max wait while dirty keeps bumping', async () => {
+  it('keeps the first seed and refetches by the max wait while its row keeps changing', async () => {
     vi.useFakeTimers()
     const signals: AbortSignal[] = []
     const sessionMessages = vi
@@ -1912,18 +1945,14 @@ describe('ThreadMini backfill', () => {
     if (!first) throw new Error('missing seed signal')
     const step = 500
     for (let t = 0; t < MINI_BACKFILL_MAX_WAIT_MS - step; t += step) {
-      act(() => {
-        useChat.setState({ sessionsDirty: useChat.getState().sessionsDirty + 1 })
-      })
+      touch()
       await act(async () => {
         await vi.advanceTimersByTimeAsync(step)
       })
       expect(sessionMessages).toHaveBeenCalledTimes(1)
       expect(first.aborted).toBe(false)
     }
-    act(() => {
-      useChat.setState({ sessionsDirty: useChat.getState().sessionsDirty + 1 })
-    })
+    touch()
     await act(async () => {
       await vi.advanceTimersByTimeAsync(step)
     })
