@@ -34,6 +34,7 @@ const file: Record<string, unknown> = {
   },
   'rivethub.preferences': { state: { autoScroll: false }, version: 0 },
   'rivethub.keyBindings': { state: { overrides: { 'new-chat': [] } }, version: 0 },
+  'rivethub.theme': 'light',
 }
 const settingsSet = vi.fn(async (key: string, value: unknown) => {
   file[key] = value
@@ -57,11 +58,13 @@ const { rehydrateFileBackedStores } = await import('./settings-rehydrate.js')
 const { useSpaces } = await import('../stores/spaces.js')
 const { usePreferences } = await import('../stores/preferences.js')
 const { useKeyBindings } = await import('../stores/key-bindings.js')
+const { useTheme } = await import('../stores/theme.js')
 
 describe('rehydrateFileBackedStores', () => {
   it('picks up the restored file so the first write keeps it', async () => {
     installSettingsSync()
     expect(usePreferences.getState().autoScroll).toBe(true)
+    expect(useTheme.getState().preferenceExplicit).toBe(false)
 
     await hydrateSettingsIfEmpty()
     await rehydrateFileBackedStores()
@@ -69,11 +72,15 @@ describe('rehydrateFileBackedStores', () => {
     expect(useSpaces.getState().spaces.map((s) => s.id)).toEqual(['work'])
     expect(usePreferences.getState().autoScroll).toBe(false)
     expect(useKeyBindings.getState().overrides).toEqual({ 'new-chat': [] })
+    // Theme is not a persist store; it re-reads rivethub.theme explicitly.
+    expect(useTheme.getState().preference).toBe('light')
+    expect(useTheme.getState().preferenceExplicit).toBe(true)
 
     // A write after boot persists on top of the restored data, not defaults.
     useSpaces.getState().addSpace('Play')
     const spaces = (file['rivethub.spaces'] as { state: { spaces: { name: string }[] } }).state
       .spaces
     expect(spaces.map((s) => s.name)).toEqual(['Work', 'Play'])
+    expect(file['rivethub.theme']).toBe('light')
   })
 })

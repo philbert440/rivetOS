@@ -53,6 +53,9 @@ interface ThemeState {
   setOmarchy: (v: OmarchySnapshot | null) => void
   /** Apply a built-in Omarchy palette and switch to it. */
   applyPreset: (id: string) => boolean
+  /** Re-read preference + Omarchy snapshot from localStorage. The store reads
+   *  them at import, before main.tsx's async settings.json restore lands. */
+  hydrateFromStorage: () => void
 }
 
 const media = (): MediaQueryList | undefined =>
@@ -122,6 +125,15 @@ export const useTheme = create<ThemeState>()((set, get) => ({
     get().setOmarchy({ name: preset.name, colors, source: 'preset' })
     get().setPreference('omarchy')
     return true
+  },
+  hydrateFromStorage(): void {
+    const stored = safeLoadStoredPreference()
+    const omarchy = loadOmarchy()
+    set({
+      preference: effectivePreference(stored, omarchy !== null),
+      preferenceExplicit: stored !== null,
+      omarchy,
+    })
   },
 }))
 
