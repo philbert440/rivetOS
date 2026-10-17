@@ -12,6 +12,7 @@ import { parseMigrateArgs } from './migrate-to-rivethub/options.js'
 import { planMigration, planRollback, stampOf } from './migrate-to-rivethub/plan.js'
 import { probeNode } from './migrate-to-rivethub/probe.js'
 import { renderHubUnit } from './migrate-to-rivethub/unit.js'
+import { sha256Hex } from './migrate-to-rivethub/release.js'
 
 interface Scenario {
   uid?: number
@@ -353,7 +354,8 @@ describe('dry run', () => {
       'mv /home/rivet/.rivetos /home/rivet/.rivethub && ln -s /home/rivet/.rivethub /home/rivet/.rivetos',
     )
     expect(out).not.toMatch(/Wait for RivetHub/)
-    expect(out).toContain('releases/latest/download/rh')
+    expect(out).toContain('api.github.com/repos/philbert440/rivethub-runtime/releases/latest')
+    expect(out).toContain('releases/download/<tag>/rh')
     expect(out).toContain('nothing was changed')
     expect(out).not.toContain('s3cret')
     expect(host.writes).toEqual([])
@@ -371,6 +373,7 @@ describe('dry run', () => {
       /rivethub-migrate sqlite --path \/home\/rivet\/\.rivetos\/memory\.sqlite --import-pg-dump/,
     )
     expect(out).toContain('releases/download/v0.2.0/rh')
+    expect(out).not.toContain('api.github.com')
     expect(out).not.toContain('status postgres')
   })
 
@@ -448,6 +451,33 @@ describe('migration run', () => {
     const i = host.calls.findIndex((c) => c.includes('rivethub-migrate postgres'))
     expect(host.envs[i]).toEqual({ RIVETHUB_PG_URL: 'postgres://u:s3cret@db.example/rivet' })
     expect(host.calls.join('\n')).not.toContain('s3cret')
+  })
+
+  it('resolves the latest tag once and downloads both binaries from it', async () => {
+    const host = fakeHost({})
+    const rh = new TextEncoder().encode('rh-bytes')
+    const mig = new TextEncoder().encode('migrate-bytes')
+    const urls: string[] = []
+    const files: Record<string, Uint8Array> = {
+      'releases/latest': new TextEncoder().encode('{"tag_name":"v0.3.1"}'),
+      '/rh': rh,
+      '/rh.sha256': new TextEncoder().encode(`${sha256Hex(rh)}  rh\n`),
+      '/rivethub-migrate': mig,
+      '/rivethub-migrate.sha256': new TextEncoder().encode(sha256Hex(mig)),
+    }
+    host.download = (url) => {
+      urls.push(url)
+      const key = Object.keys(files).find((k) => url.endsWith(k))
+      return key ? Promise.resolve(files[key]) : Promise.reject(new Error(url))
+    }
+    expect(await migrateToRivethub([], host)).toBe(0)
+    expect(urls[0]).toMatch(/api\.github\.com\/.*\/releases\/latest$/)
+    expect(urls.slice(1)).toEqual(
+      ['rh', 'rh.sha256', 'rivethub-migrate', 'rivethub-migrate.sha256'].map(
+        (a) => `https://github.com/philbert440/rivethub-runtime/releases/download/v0.3.1/${a}`,
+      ),
+    )
+    expect(host.output()).toContain('v0.3.1: checksums verified')
   })
 
   it('stages a PGlite dump and imports it before starting RivetHub', async () => {

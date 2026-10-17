@@ -14,7 +14,9 @@ import type { Host } from './host.js'
 import type { MigrateOptions } from './options.js'
 import { SQLITE_TARGET, type NodeFacts } from './probe.js'
 import {
+  latestReleaseApiUrl,
   parseChecksum,
+  parseReleaseTag,
   releaseAssetUrl,
   releaseSupportsHost,
   RIVETHUB_RELEASE,
@@ -217,16 +219,27 @@ function installBinariesStep(facts: NodeFacts): Step {
       },
     }
   }
-  const tag = facts.binary.tag
+  const pinned = facts.binary.tag
+  // Without --version the latest tag is resolved once, so rh and
+  // rivethub-migrate always come from the same release.
   return {
     id: 'install-binaries',
-    title: `Download RivetHub ${tag ?? '(latest release)'} into ~/.local/bin`,
+    title: `Download RivetHub ${pinned ?? '(latest release)'} into ~/.local/bin`,
     phase: 'prepare',
-    commands: targets.map(
-      (t) =>
-        `download ${releaseAssetUrl(t.asset, tag)} → ${t.dest} (sha256 from ${RIVETHUB_RELEASE.checksumAsset(t.asset)})`,
-    ),
+    commands: [
+      ...(pinned ? [] : [`resolve the latest release tag (${latestReleaseApiUrl()})`]),
+      ...targets.map(
+        (t) =>
+          `download ${releaseAssetUrl(t.asset, pinned ?? '<tag>')} → ${t.dest} (sha256 from ${RIVETHUB_RELEASE.checksumAsset(t.asset)})`,
+      ),
+    ],
     run: async (host) => {
+      let tag = pinned
+      if (!tag) {
+        const json = new TextDecoder().decode(await host.download(latestReleaseApiUrl()))
+        tag = parseReleaseTag(json)
+        if (!tag) throw new Error(`${latestReleaseApiUrl()} did not name a release tag`)
+      }
       host.mkdirp(binDir)
       for (const t of targets) {
         const bytes = await host.download(releaseAssetUrl(t.asset, tag))
@@ -243,7 +256,7 @@ function installBinariesStep(facts: NodeFacts): Step {
         host.writeFile(tmp, bytes, 0o755)
         host.rename(tmp, t.dest)
       }
-      return 'checksums verified'
+      return `${tag}: checksums verified`
     },
   }
 }

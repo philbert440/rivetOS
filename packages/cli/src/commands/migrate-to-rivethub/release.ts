@@ -32,6 +32,21 @@ export function releaseAssetUrl(asset: string, tag?: string): string {
   return tag ? `${base}/download/${tag}/${asset}` : `${base}/latest/download/${asset}`
 }
 
+/** GitHub API endpoint naming the latest release. */
+export function latestReleaseApiUrl(): string {
+  return `https://api.github.com/repos/${RIVETHUB_RELEASE.repo}/releases/latest`
+}
+
+/** `tag_name` of a GitHub release JSON document, when it is a safe tag. */
+export function parseReleaseTag(text: string): string | undefined {
+  try {
+    const tag = (JSON.parse(text) as { tag_name?: unknown }).tag_name
+    return typeof tag === 'string' && /^[\w.\-]+$/.test(tag) ? tag : undefined
+  } catch {
+    return undefined
+  }
+}
+
 /** First token of a checksum file, validated as a SHA-256 hex digest. */
 export function parseChecksum(text: string): string | undefined {
   const token = text.trim().split(/\s+/)[0]?.toLowerCase() ?? ''
