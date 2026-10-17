@@ -57,14 +57,19 @@ migrated safely: no `~/.rivetos`, an existing `~/.rivethub` or
 `rivethub.service`, a system unit without sudo, a unit that runs as a
 different user, unwritable state or home directories, a runtime still
 answering on the gateway port with no unit to stop, a config that
-`rh config validate` rejects, or a PGlite node that already has a
-`memory.sqlite`. Nothing has changed at that point.
+`rh config validate` rejects, a PGlite node that already has a
+`memory.sqlite`, not enough free space in the home directory for the backup
+(and, on PGlite nodes, the dump and import), or another
+`migrate-to-rivethub` run (migration or rollback) already in progress on the
+node (`~/.cache/rivethub-migrate/migrate.lock`; a lock whose process is gone
+is taken over). Nothing has changed at that point.
 
 Then, in order:
 
 1. Install `rh` and `rivethub-migrate` into `~/.local/bin`, from the GitHub
    release of `philbert440/rivethub-runtime` (each asset checked against its
-   `.sha256`) or from `--binary`.
+   `.sha256`; without `--version` the latest tag is resolved once, so both
+   come from the same release) or from `--binary`.
 2. `rh config validate` against `~/.rivetos/config.yaml`; for Postgres nodes,
    `rivethub-migrate status postgres`.
 3. Stop and disable `rivetos.service`.
@@ -81,8 +86,15 @@ Then, in order:
 If any step from 3 on fails, including RivetHub never becoming healthy, the
 command puts RivetOS back on its own: it stops and removes `rivethub.service`,
 removes the link and moves `~/.rivethub` back to `~/.rivetos`, and re-enables
-`rivetos.service`. When it reports success, RivetHub is running and healthy;
+`rivetos.service`. The same happens when the run is interrupted from step 3
+on (Ctrl-C, a dropped SSH session, SIGTERM): the current step finishes, then
+RivetOS is put back. When it reports success, RivetHub is running and healthy;
 going back after that is `--rollback`.
+
+With `--mesh`, each remote node's run is started detached on that node
+(`setsid nohup`, log in `~/.cache/rivethub-migrate/run-<stamp>.log`) and
+followed over SSH; a dropped connection reconnects, and the node's run
+finishes or recovers on its own either way.
 
 The unit carries the old unit's semantics: `User=` the install owner (system
 units), `HOME`, a `PATH` that starts with `~/.local/bin`, `TERM`,
@@ -130,7 +142,10 @@ non-empty target; it leaves a receipt, so `rh local` does not import again.
 The PGlite directory itself is left untouched.
 
 **Memory, SQLite nodes.** `rivethub-migrate sqlite` brings the existing file to
-the RivetHub schema in place.
+the RivetHub schema in place. A file outside `~/.rivetos` is not in the backup
+tarball, so it is first copied (with its `-wal`/`-shm`) to
+`<file>.pre-rivethub`; a rollback puts that copy back and parks RivetHub's
+version as `<file>.rivethub-<stamp>`.
 
 ## What stays compatible
 
@@ -224,13 +239,13 @@ by starting the old unit again.
    environment file supply them.
 3. **Translate the tuning.**
 
-   | TypeScript | RivetHub |
-   |---|---|
-   | `WIKI_EXTRACTION=1` | `RIVETHUB_WIKI_EXTRACTION=1` (required for `wiki-builder`; without it the worker refuses to start) |
-   | `COMPACT_CONCURRENCY`, `EMBED_CONCURRENCY` | `RIVETHUB_WORKER_CONCURRENCY` per unit |
-   | `COMPACT_LEAF_TOKENS` / `_BRANCH_` / `_ROOT_` | `RIVETHUB_SUMMARY_LEAF_TOKENS` / `_BRANCH_` / `_ROOT_` |
-   | `EMBED_API_TIMEOUT_MS` | `RIVETHUB_EMBED_TIMEOUT_MS` |
-   | `EMBED_CHARS_PER_CHUNK` | `memory.postgres.chars_per_chunk` |
+   | TypeScript                                    | RivetHub                                                                                           |
+   | --------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+   | `WIKI_EXTRACTION=1`                           | `RIVETHUB_WIKI_EXTRACTION=1` (required for `wiki-builder`; without it the worker refuses to start) |
+   | `COMPACT_CONCURRENCY`, `EMBED_CONCURRENCY`    | `RIVETHUB_WORKER_CONCURRENCY` per unit                                                             |
+   | `COMPACT_LEAF_TOKENS` / `_BRANCH_` / `_ROOT_` | `RIVETHUB_SUMMARY_LEAF_TOKENS` / `_BRANCH_` / `_ROOT_`                                             |
+   | `EMBED_API_TIMEOUT_MS`                        | `RIVETHUB_EMBED_TIMEOUT_MS`                                                                        |
+   | `EMBED_CHARS_PER_CHUNK`                       | `memory.postgres.chars_per_chunk`                                                                  |
 
 4. **Check, then switch.** `rh worker --role <role> --check` with the unit's
    environment, then `systemctl disable --now` the TypeScript unit and
