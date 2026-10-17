@@ -25,7 +25,7 @@ fun TasksScreen(vm: TasksViewModel, onOpenDrawer: () -> Unit, onOpenTask: (Strin
     var creating by remember { mutableStateOf(false) }
     val colors = RivetTheme.colors
     LaunchedEffect(Unit) { vm.refresh() }
-    Column(Modifier.fillMaxSize().background(colors.bg)) {
+    Column(Modifier.fillMaxSize().background(colors.page)) {
         TopBar(stringResource(R.string.tasks_title), onOpenDrawer)
         Row(Modifier.fillMaxWidth().padding(12.dp), horizontalArrangement = Arrangement.SpaceBetween) {
             RivetSelect(state.filter, statusFilterOptions().map {

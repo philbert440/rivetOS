@@ -31,7 +31,7 @@ fun TaskDetailScreen(vm: TasksViewModel, id: String, onBack: () -> Unit) {
     var confirmKill by remember(id) { mutableStateOf(false) }
     val colors = RivetTheme.colors
     LaunchedEffect(id) { vm.open(id) }
-    Column(Modifier.fillMaxSize().background(colors.bg)) {
+    Column(Modifier.fillMaxSize().background(colors.page)) {
         Row(Modifier.fillMaxWidth().background(colors.panel).statusBarsPadding().height(Dimens.pageHeader),
             verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.size(Dimens.touchTarget).clickable(role = Role.Button, onClick = onBack), contentAlignment = Alignment.Center) {

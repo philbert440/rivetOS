@@ -73,7 +73,7 @@ fun MemoryTopicScreen(
     val colors = RivetTheme.colors
     LaunchedEffect(slug) { vm.openTopic(slug) }
 
-    Column(Modifier.fillMaxSize().background(colors.bg)) {
+    Column(Modifier.fillMaxSize().background(colors.page)) {
         MemoryTopicHeader(title = t.page?.title ?: slug, onBack = onBack)
         Column(
             Modifier

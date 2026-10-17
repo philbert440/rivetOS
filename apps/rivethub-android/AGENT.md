@@ -272,6 +272,15 @@ Agent rows show a letter tile (`AgentTile`: `plane/AgentAccent.kt agentInitials`
 `plane/OmarchyTheme.kt` (port of web `omarchyAppTokens`; `OmarchyThemeTest` pins parity with the web
 output). The palette brings its own light/dark (`resolveRivetColors`).
 
+**Two UI styles, as desktop (`lib/theme.ts` uiStyleFor).** An explicit Light or Dark choice renders
+**Material** (`UiStyle.Material`): the theme.css `html[data-style='material']` palettes
+(`MaterialDark`/`MaterialLight`), rounded `Radius`, `RivetFonts.Sans` = platform sans (Roboto), mono
+kept for code/paths/terminal. System and Omarchy render **classic** (everything below: square, mono).
+`resolveRivetColors` returns `ResolvedTheme(colors, dark, style)`; `LocalUiStyle` / `RivetTheme.style`
+carry it. `RivetColors` mirrors the web's `surface`, `onEm`, `emContainer`/`onEmContainer` (selected
+fill) and adds `page` (the phone page: `bg` in classic, `surface` in Material); classic derives them
+from the palette so its look is unchanged. `UiStyleTest` pins the rule and the Material hex values.
+
 **Drawer gestures (`ui/components/RivetDrawerHost.kt`, pure rules `plane/DrawerSwipe.kt`).** The
 sheet follows the finger from the left edge and settles by fling (≥ 400dp/s) or halfway. On the hub
 home only (`HubDrawer(excludeBackGesture = true)`), the edge zone is max(24dp, system Back-gesture
@@ -313,14 +322,16 @@ Every visual decision traces to a desktop file under `apps/rivethub-web` (`theme
 Do not invent Material chrome.
 
 Tailwind → Compose: `text-lg` 18sp semibold · `text-sm` 14sp · `text-xs` 13sp · mono
-`text-[11px]`/`[10px]`/`[9px]` 11/10/9sp. Sans = `RivetFonts.Sans` (JetBrains Mono, like mono), mono =
-`RivetFonts.Mono` (JetBrains Mono). Spacing: 1 Tailwind unit = 4dp. Radius: square, as the
-desktop's Omarchy look: every `rounded*` maps to 0dp except `rounded-full` (999). Icons: `size-4` 16dp
+`text-[11px]`/`[10px]`/`[9px]` 11/10/9sp. Sans = `RivetFonts.Sans` (JetBrains Mono in classic, Roboto in Material), mono =
+`RivetFonts.Mono` (JetBrains Mono). Spacing: 1 Tailwind unit = 4dp. Radius: square in classic, as the
+desktop's Omarchy look: every `rounded*` maps to 0dp except `rounded-full` (999); Material uses the
+desktop scale (8/10/12/16/20dp). Icons: `size-4` 16dp
 · `size-3` 12dp · `size-7` 28dp. Lucide drawables only (`R.drawable.lucide_*`) in D1a/D1b
 surfaces — no `Icons.*`. App root is flat `bg` (no blueprint grid). Touch targets: keep desktop paddings for the look, add 44dp hit areas.
 
-Phone shape tokens (`ui/theme/Dimens.kt`): every `Radius` is 0dp except `Radius.full`, so every
-`Shape` token is square. `Shape.row` for Pill, HarnessChip, both segmented-control layers and selected
+Phone shape tokens (`ui/theme/Dimens.kt`): in classic every `Radius` is 0dp except `Radius.full`, so
+every `Shape` token is square; in Material they round (`Radius`/`Shape` are composable getters on
+`LocalUiStyle`). `Shape.row` for Pill, HarnessChip, both segmented-control layers and selected
 NavRow (40dp); `Shape.card` for sheets, composer cards and cards; `Shape.bubble` for message bubbles;
 `Shape.control` for buttons, fields and select triggers; `Shape.tight` for code, tool rows and tags.
 Round on purpose (`Radius.full` / `CircleShape`): toggle tracks and knobs, status dots, round icon

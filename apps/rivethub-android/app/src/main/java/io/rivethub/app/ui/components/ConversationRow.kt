@@ -53,7 +53,7 @@ fun ConversationRowChrome(
     // chat.tsx:642-644 — idle rows are `text-ink-dim` (`group-hover:text-ink`
     // has no phone analog; the ripple covers press), active rows `text-em`.
     // Archived rows share the idle colour: the source distinguishes them only by section.
-    val titleColor = if (active && !archived) colors.em else colors.inkDim
+    val titleColor = if (active && !archived) colors.onEmContainer else colors.inkDim
     // UX-SPEC §2: pill rows are one 36dp line (title ellipsised); the
     // in-flight dot is the pulsing status dot below either way.
     val rowSize = if (pill) {
@@ -109,7 +109,7 @@ fun ConversationRowChrome(
         .fillMaxWidth()
         .padding(bottom = 4.dp)
         .clip(RoundedCornerShape(Shape.row))
-        .background(if (active) colors.panel2 else Color.Transparent)
+        .background(if (active) colors.emContainer else Color.Transparent)
     if (!swipeEnabled) {
         Box(wrap) { row() }
         return

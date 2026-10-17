@@ -1,41 +1,57 @@
 package io.rivethub.app.ui.theme
 
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.ReadOnlyComposable
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
 /**
- * Desktop radius scale. The Omarchy-style redesign squares every corner
- * (theme.css `--radius*: 0`); only [full] — status dots, toggles, round
- * icon buttons — stays round, as `rounded-full` does on the web.
- *
- * [md]/[lg]/[xl]/[xxl] are kept as named 0.dp aliases so call sites that
- * still say `Radius.xl` (bubbles, cards) compile; they are not distinct sizes.
+ * Desktop radius scale, per UI style ([LocalUiStyle]). Classic (the
+ * Omarchy-style redesign) squares every corner (theme.css `--radius*: 0`),
+ * so [md]/[lg]/[xl]/[xxl] are 0.dp there too. Material rounds them, on the
+ * desktop scale: `rounded` 8 · md 10 · lg 12 · xl 16 · 2xl 20. [full] —
+ * status dots, toggles, round icon buttons — is round in both, as
+ * `rounded-full` is on the web.
  */
 object Radius {
-    val sm = 0.dp
-    /** Alias of [sm] — every non-[full] radius is 0.dp. */
-    val md = 0.dp
-    /** Alias of [sm] — every non-[full] radius is 0.dp. */
-    val lg = 0.dp
-    /** Alias of [sm] — every non-[full] radius is 0.dp. */
-    val xl = 0.dp
-    /** Alias of [sm] — every non-[full] radius is 0.dp. */
-    val xxl = 0.dp
+    val sm: Dp
+        @Composable @ReadOnlyComposable get() = styled(8.dp)
+    val md: Dp
+        @Composable @ReadOnlyComposable get() = styled(10.dp)
+    val lg: Dp
+        @Composable @ReadOnlyComposable get() = styled(12.dp)
+    val xl: Dp
+        @Composable @ReadOnlyComposable get() = styled(16.dp)
+    val xxl: Dp
+        @Composable @ReadOnlyComposable get() = styled(20.dp)
     val full = 999.dp
+
+    @Composable
+    @ReadOnlyComposable
+    private fun styled(material: Dp): Dp = if (LocalUiStyle.current == UiStyle.Material) material else 0.dp
 }
 
 // Semantic phone shapes, shared across components.
 object Shape {
-    val row = Radius.sm
-    val card = Radius.xl
-    val bubble = Radius.xxl
-    val control = Radius.md
-    val tight = Radius.sm
+    val row: Dp
+        @Composable @ReadOnlyComposable get() = Radius.sm
+    val card: Dp
+        @Composable @ReadOnlyComposable get() = Radius.xl
+    val bubble: Dp
+        @Composable @ReadOnlyComposable get() = Radius.xxl
+    val control: Dp
+        @Composable @ReadOnlyComposable get() = Radius.md
+    val tight: Dp
+        @Composable @ReadOnlyComposable get() = Radius.sm
 }
 
 object Dimens {
-    val radius4 = Radius.sm
-    val radius6 = Radius.md
-    val radius8 = Radius.lg
+    val radius4: Dp
+        @Composable @ReadOnlyComposable get() = Radius.sm
+    val radius6: Dp
+        @Composable @ReadOnlyComposable get() = Radius.md
+    val radius8: Dp
+        @Composable @ReadOnlyComposable get() = Radius.lg
     val radiusPill = Radius.full
 
     val touchTarget = 44.dp
