@@ -88,6 +88,21 @@ The unit carries the old unit's semantics: `User=` the install owner (system
 units), `HOME`, a `PATH` that starts with `~/.local/bin`, `TERM`,
 `EnvironmentFile=-~/.rivetos/.env` (valid through the link), and `ExecStart=~/.local/bin/rh start`.
 
+## Harness adapters
+
+RivetHub drives CLI agents over ACP, so each `*-cli` provider needs its ACP
+adapter on the node before the switch, or RivetHub starts with that provider
+degraded (`/healthz` lists it under `degradedProviders`; the rest keep working):
+
+- **Claude Code** (`claude-cli`): `@agentclientprotocol/claude-agent-acp`, e.g.
+  `npm install --prefix ~/.local/lib/acp @agentclientprotocol/claude-agent-acp`
+  and link `~/.local/lib/acp/node_modules/.bin/claude-agent-acp` into `~/.local/bin`.
+- **Hermes** (`hermes-cli`): Hermes's ACP extras, installed into Hermes's own
+  environment (`pip install -e '.[acp]'`, or `uv pip install --python venv/bin/python -e '.[acp]'`
+  in the Hermes checkout); `hermes acp --check` must report OK.
+
+After installing an adapter on a migrated node, restart `rivethub.service`.
+
 ## What moves
 
 |                          | RivetOS                             | RivetHub                                           |
