@@ -457,9 +457,11 @@ describe('NewThreadDialog workspace', () => {
 
 describe('SpaceDefaultsDialog', () => {
   const shellGlobal = globalThis as { rivetShell?: unknown }
+  const hubUrl = useConnection.getState().baseUrl
 
   afterEach(() => {
     delete shellGlobal.rivetShell
+    useConnection.setState({ baseUrl: hubUrl })
   })
 
   function project(): NonNullable<ReturnType<typeof useSpaces.getState>['spaces'][number]> {
@@ -529,8 +531,32 @@ describe('SpaceDefaultsDialog', () => {
     expect(document.querySelector('[data-browse-directory]')).toBeNull()
   })
 
+  it('offers Browse only when the node is this machine, since the den checks the path', () => {
+    desktopShell('/home/rivet/code/app')
+    useConnection.setState({ baseUrl: 'http://192.168.1.30:8787' })
+    const spaceId = useSpaces.getState().addSpace('Home')
+    mount(editDialog(project()))
+    expect(document.querySelector('[data-browse-directory]')).toBeNull()
+    act(() => root?.unmount())
+    host?.remove()
+
+    // A loopback node set on the project: this machine's own den.
+    useSpaces.getState().setSpaceDefaults(spaceId, { node: 'http://127.0.0.1:5174' })
+    mount(editDialog(project()))
+    expect(document.querySelector('[data-browse-directory]')).not.toBeNull()
+    act(() => root?.unmount())
+    host?.remove()
+
+    // A remote node set on the project, even with the hub on loopback.
+    useConnection.setState({ baseUrl: 'http://localhost:5174' })
+    useSpaces.getState().setSpaceDefaults(spaceId, { node: 'https://den-b.mesh:5174' })
+    mount(editDialog(project()))
+    expect(document.querySelector('[data-browse-directory]')).toBeNull()
+  })
+
   it('fills the directory from the folder chooser, opening at the current one', async () => {
     const pickDirectory = desktopShell('/home/rivet/code/app')
+    useConnection.setState({ baseUrl: 'http://localhost:5174' })
     const spaceId = useSpaces.getState().addSpace('Home')
     useSpaces.getState().setSpaceDefaults(spaceId, { directory: '/home/rivet' })
     mount(editDialog(project()))
@@ -549,6 +575,7 @@ describe('SpaceDefaultsDialog', () => {
 
   it('keeps the directory when the folder chooser is cancelled', async () => {
     desktopShell(undefined)
+    useConnection.setState({ baseUrl: 'http://localhost:5174' })
     const spaceId = useSpaces.getState().addSpace('Home')
     useSpaces.getState().setSpaceDefaults(spaceId, { directory: '/srv/app' })
     mount(editDialog(project()))

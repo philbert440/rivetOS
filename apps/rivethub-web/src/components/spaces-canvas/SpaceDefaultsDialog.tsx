@@ -9,7 +9,9 @@
 import { useState, type JSX } from 'react'
 import * as Dialog from '@radix-ui/react-dialog'
 import { FolderOpen } from 'lucide-react'
+import { isLocalDenUrl } from '../../lib/gateway-url.js'
 import { rivetShell } from '../../lib/shell-bridge.js'
+import { useConnection } from '../../stores/connection.js'
 import { asDirectory, useSpaces, type SpaceDef } from '../../stores/spaces.js'
 import { NodePicker } from '../pickers/node-picker.js'
 
@@ -19,9 +21,12 @@ export function SpaceDefaultsDialog(props: { space: SpaceDef; onClose: () => voi
   const [node, setNode] = useState(stored?.node ?? '')
   const [directory, setDirectory] = useState(stored?.directory ?? '')
   const directoryBad = directory.trim() !== '' && asDirectory(directory) === undefined
-  // Desktop only: the browser has no way to hand back a real path.
+  // The directory is checked and used on the node, so the chooser (which
+  // browses this machine) is offered only when that node is this machine's
+  // own den. Desktop only: the browser has no way to hand back a real path.
+  const hubUrl = useConnection((state) => state.baseUrl)
   const shell = rivetShell()
-  const canBrowse = typeof shell?.pickDirectory === 'function'
+  const canBrowse = typeof shell?.pickDirectory === 'function' && isLocalDenUrl(node || hubUrl)
 
   const browse = async (): Promise<void> => {
     if (!shell?.pickDirectory) return
@@ -79,7 +84,7 @@ export function SpaceDefaultsDialog(props: { space: SpaceDef; onClose: () => voi
               className="mb-3 w-full border border-line bg-bg px-2 py-1.5 text-sm text-ink outline-none material:rounded-lg"
             />
             <label className="mb-1 block text-xs text-ink-dim" htmlFor="space-directory">
-              Directory
+              Directory on the node
             </label>
             <div className="flex items-stretch gap-2">
               <input
@@ -107,7 +112,7 @@ export function SpaceDefaultsDialog(props: { space: SpaceDef; onClose: () => voi
             <p className={`mb-3 mt-1 text-xs ${directoryBad ? 'text-red' : 'text-ink-dim'}`}>
               {directoryBad
                 ? 'Use a full path that starts with /'
-                : 'Every agent started here works in this folder, unless you pick another for that session.'}
+                : 'A folder on the node below. Every agent started here works in it, unless you pick another for that session.'}
             </p>
             <div className="mb-3">
               <span className="mb-1 block text-xs text-ink-dim">Node</span>

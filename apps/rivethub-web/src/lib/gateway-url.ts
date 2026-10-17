@@ -38,3 +38,22 @@ export function gatewayOrigin(url: string): string | null {
   }
   return null
 }
+
+/** `localhost`, 127.0.0.1 or ::1 (bracketed or not). */
+export function isLoopbackHost(host: string): boolean {
+  const h = host.toLowerCase().replace(/^\[|\]$/g, '')
+  return h === '127.0.0.1' || h === 'localhost' || h === '::1'
+}
+
+/**
+ * True when a den base URL is this machine's own den (a loopback origin),
+ * so a path picked here also exists there. A den reached over the mesh may
+ * be another machine, so it is never assumed local.
+ */
+export function isLocalDenUrl(url: string): boolean {
+  try {
+    return isLoopbackHost(new URL(url.trim()).hostname)
+  } catch {
+    return false
+  }
+}
