@@ -353,7 +353,13 @@ function unitSteps(facts: NodeFacts, hubScope: 'system' | 'user'): Step[] {
 export function planMigration(facts: NodeFacts, opts: MigrateOptions, stamp: string): Plan {
   const plan: Plan = { mode: 'migrate', refusals: [], steps: [], recovery: [], notes: [] }
   if (facts.legacy === 'symlink' && facts.hub === 'dir') {
-    plan.done = `Already migrated: ~/.rivetos → ${facts.legacyTarget ?? '~/.rivethub'}.`
+    if (facts.hubUnit !== 'none') {
+      plan.done = `Already migrated: ~/.rivetos → ${facts.legacyTarget ?? '~/.rivethub'}.`
+      return plan
+    }
+    plan.refusals.push(
+      `~/.rivetos is already linked to ~/.rivethub, but no ${HUB_UNIT} is installed — a migration stopped part way. Run --rollback, then migrate again.`,
+    )
     return plan
   }
   if (facts.legacy === 'missing' && facts.hub === 'dir') {

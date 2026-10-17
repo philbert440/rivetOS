@@ -250,11 +250,21 @@ describe('preflight refusals', () => {
 
   it('reports an already-migrated node as done, not refused', () => {
     const { facts: f, opts } = facts({
+      hubUnit: 'system',
       paths: { '/home/rivet/.rivetos': 'symlink', '/home/rivet/.rivethub': 'dir' },
     })
     const plan = planMigration(f, opts, 'S')
     expect(plan.done).toMatch(/Already migrated/)
     expect(plan.steps).toEqual([])
+  })
+
+  it('does not call a linked node migrated when rivethub.service is missing', () => {
+    const { facts: f, opts } = facts({
+      paths: { '/home/rivet/.rivetos': 'symlink', '/home/rivet/.rivethub': 'dir' },
+    })
+    const plan = planMigration(f, opts, 'S')
+    expect(plan.done).toBeUndefined()
+    expect(plan.refusals.join('\n')).toMatch(/no rivethub\.service is installed.*--rollback/)
   })
 
   it('refuses when ~/.rivethub already exists', () => {
