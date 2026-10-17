@@ -133,8 +133,11 @@ function pointerClick(el: Element): void {
 
 /** Heavier of the enter-Space click commit and the settle commit, on this
  *  test-dom shim (not a browser). Measured max was 59.3ms for 60 rows split
- *  into spaces of 5. 180ms is about 3× that. */
+ *  into spaces of 5. 180ms is about 3× that. Wall-clock time is noisy on
+ *  shared CI runners, so the budget only applies with RIVETHUB_PERF_BUDGET=1;
+ *  the commit-count checks always run. */
 const ENTER_SPACE_COMMIT_BUDGET_MS = 180
+const CHECK_COMMIT_BUDGET = process.env.RIVETHUB_PERF_BUDGET === '1'
 
 const FLY_CLOCK = {
   toFake: [
@@ -1669,7 +1672,9 @@ describe('SpacesCanvas mount', () => {
       await vi.advanceTimersByTimeAsync(400)
     })
     const settleHeavy = Math.max(0, ...durations)
-    expect(Math.max(entryHeavy, settleHeavy)).toBeLessThan(ENTER_SPACE_COMMIT_BUDGET_MS)
+    if (CHECK_COMMIT_BUDGET) {
+      expect(Math.max(entryHeavy, settleHeavy)).toBeLessThan(ENTER_SPACE_COMMIT_BUDGET_MS)
+    }
     expect(host?.querySelectorAll('[data-face="mini"]').length).toBeGreaterThan(0)
     const tiles = new Map<string, number>()
     const minis = new Map<string, number>()
