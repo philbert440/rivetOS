@@ -181,6 +181,16 @@ function AgentsSettingsBlock(): JSX.Element {
 
 export function SettingsPage(): JSX.Element {
   const tab = settingsTab(useParams({ strict: false }).tab)
+  // Unsaved Node-tab drafts live above the tab switch: the sections unmount
+  // on every tab change and would otherwise drop what was typed.
+  const baseUrl = useConnection((s) => s.baseUrl)
+  const [draftUrl, setDraftUrl] = useState(baseUrl)
+  // The Saved Nodes editor can repoint baseUrl from within this page —
+  // without this sync, Gateway Save would silently revert that edit.
+  useEffect(() => {
+    setDraftUrl(baseUrl)
+  }, [baseUrl])
+  const [draftWiki, setDraftWiki] = useState(() => useWikiSettings.getState().wikiBaseUrl)
   return (
     <div className="mx-auto max-w-4xl px-4 py-8 md:px-6">
       <h1 className="mb-6 text-[22px] font-semibold text-ink classic:text-em classic:text-lg">
@@ -229,10 +239,10 @@ export function SettingsPage(): JSX.Element {
           {tab === 'keyboard' && <KeyBindingsSection />}
           {tab === 'node' && (
             <>
-              <GatewaySection />
+              <GatewaySection draftUrl={draftUrl} setDraftUrl={setDraftUrl} />
               <SavedNodesSection />
               <AgentsSettingsBlock />
-              <DatahubSection />
+              <DatahubSection draftWiki={draftWiki} setDraftWiki={setDraftWiki} />
             </>
           )}
           {tab === 'devices' && (
@@ -259,15 +269,13 @@ export function SettingsPage(): JSX.Element {
 }
 
 /** The connected node's gateway: type an origin, probe it, save it. */
-function GatewaySection(): JSX.Element {
-  const { baseUrl, setConnection } = useConnection()
+function GatewaySection(props: {
+  draftUrl: string
+  setDraftUrl: (url: string) => void
+}): JSX.Element {
+  const { draftUrl, setDraftUrl } = props
+  const setConnection = useConnection((s) => s.setConnection)
   const queryClient = useQueryClient()
-  const [draftUrl, setDraftUrl] = useState(baseUrl)
-  // The Saved Nodes editor below can repoint baseUrl from within this page —
-  // without this sync, Save here would silently revert that edit.
-  useEffect(() => {
-    setDraftUrl(baseUrl)
-  }, [baseUrl])
   const [probe, setProbe] = useState<ProbeState>({ kind: 'idle' })
 
   const test = async (): Promise<void> => {
@@ -466,9 +474,12 @@ function ExperimentalSection(): JSX.Element {
 }
 
 /** Where memory Search / Browse / Stats / wiki are read from. */
-function DatahubSection(): JSX.Element {
-  const { wikiBaseUrl, setWikiBaseUrl } = useWikiSettings()
-  const [draftWiki, setDraftWiki] = useState(wikiBaseUrl)
+function DatahubSection(props: {
+  draftWiki: string
+  setDraftWiki: (url: string) => void
+}): JSX.Element {
+  const { draftWiki, setDraftWiki } = props
+  const setWikiBaseUrl = useWikiSettings((s) => s.setWikiBaseUrl)
   const [wikiNotice, setWikiNotice] = useState('')
   return (
     <>
