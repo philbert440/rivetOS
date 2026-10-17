@@ -61,6 +61,7 @@ import io.rivethub.app.plane.SystemNotifier
 import io.rivethub.app.plane.FinishedTurnTracker
 import io.rivethub.app.plane.INBOX_KIND_NEEDS_YOU
 import io.rivethub.app.plane.NeedsEpisodes
+import io.rivethub.app.plane.RECONNECT_BLOCK_GRACE_MS
 import io.rivethub.app.plane.StatusBlocks
 import io.rivethub.app.plane.withStatusBlocks
 import io.rivethub.app.plane.WaitingRow
@@ -160,7 +161,8 @@ class HubViewModel(private val c: AppContainer, inboxLabels: InboxLabels) : View
     private var refreshJob: Job? = null
     private val registryFrames = Channel<RegistryMail>(Channel.UNLIMITED)
 
-    private data class RegistryMail(val nodeUrl: String, val event: HarnessEvent, val identityGen: Int)
+    /** A registry frame, or (event == null) the node's registry socket (re)opening. */
+    private data class RegistryMail(val nodeUrl: String, val event: HarnessEvent?, val identityGen: Int)
 
     /**
      * The ONE notifications socket (entry node) and its ownership state —
@@ -222,7 +224,11 @@ class HubViewModel(private val c: AppContainer, inboxLabels: InboxLabels) : View
 
     init {
         viewModelScope.launch {
-            for (mail in registryFrames) onRegistry(mail.nodeUrl, mail.event, mail.identityGen)
+            for (mail in registryFrames) {
+                val event = mail.event
+                if (event == null) onRegistryOpen(mail.nodeUrl, mail.identityGen)
+                else onRegistry(mail.nodeUrl, event, mail.identityGen)
+            }
         }
         viewModelScope.launch {
             for (mail in notifFrames) onNotification(mail.gen, mail.frame)
@@ -773,11 +779,30 @@ class HubViewModel(private val c: AppContainer, inboxLabels: InboxLabels) : View
                 onEvent = { event -> registryFrames.trySend(RegistryMail(url, event, identityGen)) },
                 onStatus = { status ->
                     watchStatus[url] = status
+                    // Through the frame channel so the drop is ordered before the new socket's frames.
+                    if (status == WsStatus.OPEN) registryFrames.trySend(RegistryMail(url, null, identityGen))
                     _state.update { it.copy(registryOpen = watchStatus.values.any { s -> s == WsStatus.OPEN }) }
                 },
             )
         }
         _state.update { it.copy(registryOpen = watchStatus.values.any { it == WsStatus.OPEN }) }
+    }
+
+    /**
+     * A node's registry socket (re)opened. Status frames missed while it was
+     * down are never replayed, so its status-derived blocks are dropped; their
+     * waiting episodes are held briefly so a block re-reported right after the
+     * reconnect is the same episode, not a fresh notice.
+     */
+    private fun onRegistryOpen(nodeUrl: String, identityGen: Int) {
+        if (c.identity.generation() != identityGen) return
+        val dropped = statusBlocks[nodeUrl]?.reset().orEmpty()
+        if (dropped.isEmpty()) return
+        val keys = _state.value.items
+            .filter { it.nodeDenUrl.trimEnd('/') == nodeUrl && it.item.sessionId in dropped }
+            .map { it.item.key }
+        needsEpisodes.hold(keys, System.currentTimeMillis() + RECONNECT_BLOCK_GRACE_MS)
+        rebuildItems()
     }
 
     private fun onRegistry(nodeUrl: String, event: HarnessEvent, identityGen: Int) {

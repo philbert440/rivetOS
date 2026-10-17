@@ -19,6 +19,7 @@ data class WaitingRow(val id: String, val since: Long)
 class NeedsEpisodes {
     private val sinceMs = HashMap<String, Long>()
     private val announced = HashSet<String>()
+    private val heldUntil = HashMap<String, Long>()
     private var primed = false
 
     val since: Map<String, Long> get() = sinceMs
@@ -37,7 +38,8 @@ class NeedsEpisodes {
         present: Set<String>? = null,
         settled: (String) -> Boolean = { true },
     ): List<String> {
-        val ended = { id: String -> id !in blocked && (present == null || id in present) }
+        heldUntil.entries.removeAll { (id, until) -> id in blocked || until <= now }
+        val ended = { id: String -> id !in blocked && (present == null || id in present) && id !in heldUntil }
         sinceMs.keys.removeAll(ended)
         announced.removeAll(ended)
         for (id in blocked) sinceMs.putIfAbsent(id, now)
@@ -54,10 +56,21 @@ class NeedsEpisodes {
         return fresh
     }
 
+    /**
+     * Keep [ids]' episodes open until [until] even while they read as not
+     * waiting. A registry reconnect drops status-derived blocks (ACP never
+     * replays status); a block that comes back inside the window continues the
+     * same episode — same [since], no second notice.
+     */
+    fun hold(ids: Collection<String>, until: Long) {
+        for (id in ids) if (id in sinceMs) heldUntil[id] = maxOf(until, heldUntil[id] ?: 0L)
+    }
+
     /** New identity / forget: the next roster primes again. */
     fun clear() {
         sinceMs.clear()
         announced.clear()
+        heldUntil.clear()
         primed = false
     }
 }
@@ -103,10 +116,24 @@ class StatusBlocks {
 
     fun isBlocked(sessionId: String): Boolean = bySession[sessionId]?.isNotEmpty() == true
 
+    /**
+     * The registry socket reconnected: ACP does not replay `status`, so a
+     * clearing frame sent while it was down is lost. Drop every block and let
+     * fresh summaries / later frames re-establish them. Returns the dropped ids.
+     */
+    fun reset(): Set<String> {
+        val dropped = bySession.keys.toSet()
+        bySession.clear()
+        return dropped
+    }
+
     val isEmpty: Boolean get() = bySession.isEmpty()
 
     fun clear() = bySession.clear()
 }
+
+/** How long a reconnect-dropped block may reappear and still continue its episode. */
+const val RECONNECT_BLOCK_GRACE_MS = 60_000L
 
 /** Overlay [blocks] onto [items]: a status-blocked session reads as waiting unless it ended. */
 fun withStatusBlocks(items: List<ChatItem>, blocks: StatusBlocks?): List<ChatItem> {

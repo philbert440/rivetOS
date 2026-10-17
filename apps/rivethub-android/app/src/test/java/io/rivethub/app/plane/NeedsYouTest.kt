@@ -147,4 +147,47 @@ class NeedsYouTest {
         assertTrue(withStatusBlocks(items, b).none { it.blocked })
         assertEquals(items, withStatusBlocks(items, null))
     }
+
+    @Test
+    fun `reset drops every status block and reports them`() {
+        val b = StatusBlocks()
+        b.onStatus("grok:a", "blocked", "protocol")
+        b.onStatus("grok:b", "blocked", "transcript")
+        assertEquals(setOf("grok:a", "grok:b"), b.reset())
+        assertTrue(b.isEmpty)
+        assertFalse(b.isBlocked("grok:a"))
+        assertEquals(emptySet<String>(), b.reset())
+    }
+
+    @Test
+    fun `a block re-reported right after a reconnect is the same episode`() {
+        val e = NeedsEpisodes()
+        e.reconcile(emptySet(), now = 0)
+        assertEquals(listOf("a"), e.reconcile(setOf("a"), now = 10))
+        // Reconnect drops the status block; the episode is held, not ended.
+        e.hold(listOf("a"), until = 10 + RECONNECT_BLOCK_GRACE_MS)
+        assertEquals(emptyList<String>(), e.reconcile(emptySet(), now = 20, present = setOf("a")))
+        assertEquals(10L, e.since["a"])
+        // Same block comes back: no second notice, original stamp kept.
+        assertEquals(emptyList<String>(), e.reconcile(setOf("a"), now = 30, present = setOf("a")))
+        assertEquals(10L, e.since["a"])
+        // Once it is back, the hold is spent: clearing ends the episode as usual.
+        assertEquals(emptyList<String>(), e.reconcile(emptySet(), now = 40, present = setOf("a")))
+        assertNull(e.since["a"])
+    }
+
+    @Test
+    fun `a held episode ends once the grace window passes`() {
+        val e = NeedsEpisodes()
+        e.reconcile(emptySet(), now = 0)
+        assertEquals(listOf("a"), e.reconcile(setOf("a"), now = 10))
+        e.hold(listOf("a", "never-waited"), until = 100)
+        assertNull(e.since["never-waited"])
+        assertEquals(emptyList<String>(), e.reconcile(emptySet(), now = 50, present = setOf("a")))
+        assertEquals(10L, e.since["a"])
+        assertEquals(emptyList<String>(), e.reconcile(emptySet(), now = 100, present = setOf("a")))
+        assertNull(e.since["a"])
+        // A genuinely new wait after that is announced.
+        assertEquals(listOf("a"), e.reconcile(setOf("a"), now = 200, present = setOf("a")))
+    }
 }
