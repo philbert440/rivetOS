@@ -103,6 +103,8 @@ import { holdTileLease, SelectedPrewarm, WarmLease } from './ThreadMini.js'
 import { useCamera } from './use-camera.js'
 
 const TOAST_MS = 7000
+/** Canvases mounted now; the Agents pop-out closes when the last one leaves. */
+let mountedCanvases = 0
 
 /** Buttons, fields, and popup roles keep their own keys. */
 const FOCUS_SINK =
@@ -324,6 +326,8 @@ export function SpacesCanvas(props: {
   const agentsSeq = useCanvasDock((s) => s.agentsSeq)
   const setAgentsOpen = useCanvasDock((s) => s.setAgentsOpen)
   const [agentsDragging, setAgentsDragging] = useState(false)
+  /** The deferred see-through switch; a drag that ends first cancels it. */
+  const agentsDragTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const agentsRef = useRef<HTMLDivElement>(null)
   const label = useKeyLabel()
   const [rosterNotice, setRosterNotice] = useState<string | undefined>()
@@ -816,6 +820,20 @@ export function SpacesCanvas(props: {
     useCanvasDock.getState().setNeeds(needsCount)
   }, [needsCount])
   useEffect(() => () => useCanvasDock.getState().setNeeds(0), [])
+  // Leaving the canvas closes the Agents pop-out, so it does not reopen on
+  // return. Deferred, so StrictMode's remount in the same commit keeps it,
+  // and so does a Ctrl+Tab from another page, which opens it before the
+  // canvas mounts.
+  useEffect(() => {
+    mountedCanvases += 1
+    return () => {
+      mountedCanvases -= 1
+      clearTimeout(agentsDragTimer.current)
+      queueMicrotask(() => {
+        if (mountedCanvases === 0) useCanvasDock.getState().setAgentsOpen(false)
+      })
+    }
+  }, [])
 
   // A press outside the Agents pop-out closes it — but not one inside a
   // dialog it opened (the agent editor, a delete confirm).
@@ -831,6 +849,14 @@ export function SpacesCanvas(props: {
     window.addEventListener('pointerdown', onDown, { capture: true })
     return () => window.removeEventListener('pointerdown', onDown, { capture: true })
   }, [agentsOpen, setAgentsOpen])
+
+  // A pop-out closed mid-drag never sees its dragend; it must not reopen
+  // see-through.
+  useEffect(() => {
+    if (agentsOpen) return
+    clearTimeout(agentsDragTimer.current)
+    setAgentsDragging(false)
+  }, [agentsOpen])
 
   // Ctrl+Tab opens the pop-out with focus on an agent row, so ↑/↓ pick and
   // Enter starts the session. Rows can land a frame or two after the open
@@ -1759,10 +1785,13 @@ export function SpacesCanvas(props: {
             onDragStart={(event) => {
               if (!isAgentDrag([...event.dataTransfer.types])) return
               // Next tick: fading the source in the same tick blanks the
-              // drag image.
-              setTimeout(() => setAgentsDragging(true), 0)
+              // drag image. A drag that ends before then never fades it.
+              clearTimeout(agentsDragTimer.current)
+              agentsDragTimer.current = setTimeout(() => setAgentsDragging(true), 0)
             }}
             onDragEnd={(event) => {
+              clearTimeout(agentsDragTimer.current)
+              agentsDragTimer.current = undefined
               setAgentsDragging(false)
               // A drop that took starts a session; the pop-out has done its job.
               if (event.dataTransfer.dropEffect !== 'none') setAgentsOpen(false)

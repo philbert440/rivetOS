@@ -36,6 +36,7 @@ import { clearSessionNodeBinding, setSessionNodeBinding } from '../../lib/sessio
 import { storageKey } from '../../lib/session-rekey.js'
 import { MINI_BACKFILL_DEBOUNCE_MS, MINI_BACKFILL_MAX_WAIT_MS } from './ThreadMini.js'
 import { resetSessionStreams } from '../../lib/use-session-stream.js'
+import { AGENT_DRAG_MIME } from '../../lib/agent-drag.js'
 import { useCanvasDock } from '../../stores/canvas-dock.js'
 import { useAgentFilter } from '../../stores/agent-filter.js'
 import { useArchived } from '../../stores/archived.js'
@@ -94,7 +95,7 @@ beforeEach(() => {
   useSpaces.setState({ spaces: [], membership: {} })
   useArchived.setState({ keys: [] })
   useAgentFilter.getState().clear()
-  useCanvasDock.setState({ open: false, needs: 0 })
+  useCanvasDock.setState({ open: false, needs: 0, agentsOpen: false })
 })
 
 /** A dock button, opening the tucked dock first (the rail's Shortcuts
@@ -1177,6 +1178,51 @@ describe('SpacesCanvas mount', () => {
     expect(
       matchCanvasNav({ key: 'h', ctrlKey: false, shiftKey: false, altKey: false, metaKey: false }),
     ).toBeNull()
+  })
+
+  it('keeps the Agents pop-out visible when a drag ends before it fades', () => {
+    vi.useFakeTimers()
+    mount([], () => undefined)
+    act(() => useCanvasDock.getState().setAgentsOpen(true))
+    const popout = document.querySelector<HTMLElement>('[data-agents-popout]')
+    if (!popout) throw new Error('missing Agents pop-out')
+    const drag = (type: string): void => {
+      const event = new Event(type, { bubbles: true, cancelable: true })
+      Object.defineProperty(event, 'dataTransfer', {
+        value: { types: [AGENT_DRAG_MIME], dropEffect: 'none' },
+      })
+      popout.dispatchEvent(event)
+    }
+    act(() => {
+      drag('dragstart')
+      drag('dragend')
+    })
+    act(() => {
+      vi.runAllTimers()
+    })
+    expect(popout.style.opacity).toBe('1')
+    expect(popout.style.pointerEvents).toBe('')
+  })
+
+  it('closes the Agents pop-out when the canvas leaves', async () => {
+    mount([], () => undefined)
+    act(() => useCanvasDock.getState().setAgentsOpen(true))
+    act(() => {
+      root?.unmount()
+    })
+    root = undefined
+    await Promise.resolve()
+    expect(useCanvasDock.getState().agentsOpen).toBe(false)
+  })
+
+  it('keeps the Agents pop-out open through a StrictMode remount', async () => {
+    useCanvasDock.getState().setAgentsOpen(true)
+    mount([], () => undefined, { strict: true })
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(useCanvasDock.getState().agentsOpen).toBe(true)
+    expect(document.querySelector('[data-agents-popout]')).not.toBeNull()
   })
 
   it('tucks the dock behind the rail toggle and shows it for Find', () => {
