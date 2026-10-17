@@ -121,6 +121,13 @@ function fakeTranscript(): {
   }
 }
 
+/** No kimi config.toml — tests never read the developer's real ~/.kimi. */
+const missingKimiConfig: SheetReaders = {
+  readText: (): never => {
+    throw new Error('ENOENT')
+  },
+}
+
 function makeDriver(
   opts: {
     rows?: HarnessSession[]
@@ -149,7 +156,7 @@ function makeDriver(
     transcript: opts.transcript,
     cwd: opts.cwd ?? ((): string => '/home/rivet'),
     turnQuietMs: 0,
-    sheetReaders: opts.sheetReaders,
+    sheetReaders: opts.sheetReaders ?? missingKimiConfig,
   })
   return { driver, pty, store, emitDen: (ev) => emit(ev) }
 }

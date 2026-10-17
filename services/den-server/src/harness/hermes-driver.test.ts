@@ -16,6 +16,7 @@ import { HarnessError, type HarnessEvent, type SessionId } from '@rivetos/types'
 import type { HarnessSession } from '../term/harness-sessions.js'
 import { createSessionCwdStore } from '../term/session-cwd.js'
 import { HermesDriver, type HermesPtyHost, type HermesStoreHost } from './hermes-driver.js'
+import type { SheetReaders } from './model-sheets.js'
 import type { DenAgentEventLike } from './pty-harness-driver.js'
 import { createHarnessRegistry, type HarnessRegistry } from './registry.js'
 import { FIVE_FLAGS, pick, runHarnessRotationConformance } from './test/driver-conformance.js'
@@ -27,6 +28,16 @@ const NAT3 = '20260803_090512_1f9ae2'
 const SID = `hermes:${NAT}` as SessionId
 /** A den room the term manager minted, because hermes could not be pinned. */
 const ROOM = 'den-pty-1a2b3c4d'
+
+/**
+ * No ~/.hermes/config.yaml — the sheet must not pick up the developer's real
+ * hermes model config (or probe the endpoint it names).
+ */
+const missingHermesConfig: SheetReaders = {
+  readText: (): never => {
+    throw new Error('ENOENT')
+  },
+}
 
 interface Fakes {
   driver: HermesDriver
@@ -122,6 +133,7 @@ function makeDriver(
     recordSessionCwd: opts.recordSessionCwd,
     sessionCwdMtime: opts.sessionCwdMtime,
     turnQuietMs: 0,
+    sheetReaders: missingHermesConfig,
   })
   return { driver, pty, store, emitDen: (ev) => emit(ev) }
 }
@@ -888,7 +900,11 @@ describe('transcript', () => {
 describe('close', () => {
   it('detaches the den tap', () => {
     const off = vi.fn()
-    const driver = new HermesDriver({ store: fakeStore().host(), events: () => off })
+    const driver = new HermesDriver({
+      store: fakeStore().host(),
+      events: () => off,
+      sheetReaders: missingHermesConfig,
+    })
     driver.close()
     expect(off).toHaveBeenCalledOnce()
   })
