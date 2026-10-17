@@ -15,6 +15,7 @@ import {
   fetchHarnessPlaneSessions,
 } from './harness-chat.js'
 import { sessionListRows, type SessionListRow } from './session-list.js'
+import { useStatusBlocks, withStatusBlocks } from './status-blocks.js'
 import { useConnection } from '../stores/connection.js'
 
 export interface SessionRows {
@@ -79,12 +80,17 @@ export function useSessionRows(): SessionRows {
     }
   }, [baseUrl])
 
+  // ACP drivers report a permission wait only as a registry `status` frame.
+  const statusBlocks = useStatusBlocks()
+  const { observe: observeStatus, reset: resetStatusBlocks } = statusBlocks
+
   const hasDrivers = (descriptors?.length ?? 0) > 0
   useEffect(() => {
     if (!connected || !hasDrivers) return
     let opens = 0
     const sub = useConnection.getState().gateway.watchHarnesses(
       (event) => {
+        observeStatus(event)
         if (event.type !== 'session-created' && event.type !== 'session-updated') return
         queryClient.setQueryData<HarnessSessionSummary[]>(planeQueryKey, (prev) =>
           applyRegistryEventToPlaneSessions(prev, event),
@@ -97,14 +103,19 @@ export function useSessionRows(): SessionRows {
           if (status !== 'open') return
           opens += 1
           // Registry stream has no replay — refetch on every reopen.
+          // Status frames are not replayed either: drop stale blocks.
           if (opens > 1) {
+            resetStatusBlocks()
             invalidateSessionsNow()
             setListResyncedAt(Date.now())
           }
         },
       },
     )
-    return () => sub.close()
+    return () => {
+      sub.close()
+      resetStatusBlocks()
+    }
   }, [
     connected,
     hasDrivers,
@@ -114,6 +125,8 @@ export function useSessionRows(): SessionRows {
     descriptors?.length,
     invalidateSessions,
     invalidateSessionsNow,
+    observeStatus,
+    resetStatusBlocks,
   ])
 
   const items = useMemo(
@@ -127,8 +140,8 @@ export function useSessionRows(): SessionRows {
   )
 
   const rows = useMemo(
-    () => sessionListRows(items, planeQuery.data ?? []),
-    [items, planeQuery.data],
+    () => sessionListRows(items, withStatusBlocks(planeQuery.data, statusBlocks.blocks) ?? []),
+    [items, planeQuery.data, statusBlocks.version],
   )
 
   const loadError =

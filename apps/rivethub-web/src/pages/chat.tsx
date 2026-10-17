@@ -69,6 +69,7 @@ import {
   getAgentSessionsVersion,
 } from '../lib/agent-session.js'
 import { adoptRegistrySession, migrateSessionKey, storageKey } from '../lib/session-rekey.js'
+import { useStatusBlocks, withStatusBlocks } from '../lib/status-blocks.js'
 import { protocolStartPlan } from '../lib/protocol-start.js'
 import { presetsFromAgentsQueryData, sessionPointerMatches } from '../lib/agent-roster.js'
 import {
@@ -257,6 +258,10 @@ export function ChatPage(): JSX.Element {
     if (sessionsDirty > 0) invalidateSessions()
   }, [sessionsDirty, baseUrl, queryClient])
 
+  // ACP drivers (grok / opencode) report a permission wait only as a
+  // registry `status: 'blocked'` frame — overlaid onto blockedIds below.
+  const statusBlocks = useStatusBlocks()
+  const { observe: observeStatus, reset: resetStatusBlocks } = statusBlocks
   // Registry stream: `session-created` / `session-updated` across every driver
   // so the drawer live-updates instead of polling (contract § gateway surface).
   // Fast path: merge the carried summary (or status patch) into the plane
@@ -268,29 +273,58 @@ export function ChatPage(): JSX.Element {
   const hasDrivers = (descriptors?.length ?? 0) > 0
   useEffect(() => {
     if (!connected || !hasDrivers) return
-    const sub = useConnection.getState().gateway.watchHarnesses((event) => {
-      if (event.type !== 'session-created' && event.type !== 'session-updated') return
-      // Identity changes land here first, and for a ROTATION this is the only
-      // place both halves are known: `previousSessionId` shares no native id
-      // with its successor, so nothing derivable from the drawer row could
-      // find the thread the user has open. Adoption is folded in for every
-      // opened thread, not just the active one — a background draft left in
-      // `opened` under its bare id keeps catching bridge frames onto records
-      // no drawer row renders.
-      const previous = event.type === 'session-updated' ? event.previousSessionId : undefined
-      adoptRegistrySession(baseUrl, pageRosterUrls, event.sessionId, previous)
-      queryClient.setQueryData<HarnessSessionSummary[]>(planeQueryKey, (prev) =>
-        applyRegistryEventToPlaneSessions(prev, event),
-      )
-      // Fallback / reconciliation: refetch still runs so a raced merge cannot
-      // leave the cache permanently wrong relative to the node.
-      invalidateSessions()
-    })
-    return () => sub.close()
+    let opens = 0
+    const sub = useConnection.getState().gateway.watchHarnesses(
+      (event) => {
+        observeStatus(event)
+        if (event.type !== 'session-created' && event.type !== 'session-updated') return
+        // Identity changes land here first, and for a ROTATION this is the only
+        // place both halves are known: `previousSessionId` shares no native id
+        // with its successor, so nothing derivable from the drawer row could
+        // find the thread the user has open. Adoption is folded in for every
+        // opened thread, not just the active one — a background draft left in
+        // `opened` under its bare id keeps catching bridge frames onto records
+        // no drawer row renders.
+        const previous = event.type === 'session-updated' ? event.previousSessionId : undefined
+        adoptRegistrySession(baseUrl, pageRosterUrls, event.sessionId, previous)
+        queryClient.setQueryData<HarnessSessionSummary[]>(planeQueryKey, (prev) =>
+          applyRegistryEventToPlaneSessions(prev, event),
+        )
+        // Fallback / reconciliation: refetch still runs so a raced merge cannot
+        // leave the cache permanently wrong relative to the node.
+        invalidateSessions()
+      },
+      undefined,
+      {
+        onStatus: (status) => {
+          if (status !== 'open') return
+          opens += 1
+          // No replay of status frames on reopen: drop stale blocks and let
+          // the refetched summaries re-derive.
+          if (opens > 1) {
+            resetStatusBlocks()
+            invalidateSessions()
+          }
+        },
+      },
+    )
+    return () => {
+      sub.close()
+      resetStatusBlocks()
+    }
     // planeQueryKey fields are baseUrl/token/descriptors.length — listed
     // explicitly so the effect rebinds when the endpoint or driver set
     // changes. transportEpoch rebinds it onto the mTLS pipe gateway.
-  }, [connected, hasDrivers, baseUrl, transportEpoch, queryClient, descriptors?.length])
+  }, [
+    connected,
+    hasDrivers,
+    baseUrl,
+    transportEpoch,
+    queryClient,
+    descriptors?.length,
+    observeStatus,
+    resetStatusBlocks,
+  ])
 
   const active = useChat((s) => s.active)
   // Pin enrichment below reads the house-agents cache by peek (getQueriesData
@@ -393,11 +427,11 @@ export function ChatPage(): JSX.Element {
   }, [baseItems, drafts, pinVersion, houseTick, active, queryClient])
   const blockedIds = useMemo(() => {
     const ids = new Set<string>()
-    for (const summary of planeQuery.data ?? []) {
+    for (const summary of withStatusBlocks(planeQuery.data, statusBlocks.blocks) ?? []) {
       if (summary.blocked) ids.add(summary.sessionId)
     }
     return ids
-  }, [planeQuery.data])
+  }, [planeQuery.data, statusBlocks.version])
   const setActive = useChat((s) => s.setActive)
   const addDraft = useChat((s) => s.addDraft)
   const clearLastActive = useChat((s) => s.clearLastActive)
