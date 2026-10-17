@@ -136,7 +136,8 @@ export function dueSteps(
       sessions += 1
       steps.push({ kind: 'add', sessionKey, literal: entry.literal })
       if (entry.retire) steps.push({ kind: 'retire', sessionKey, literal: entry.retire })
-    } else if (!wanted && entry.retire) {
+    } else if (entry.retire) {
+      // Left every project, or the add landed but retiring the old tag failed.
       sessions += 1
       steps.push({ kind: 'retire', sessionKey, literal: entry.retire })
     }

@@ -166,6 +166,40 @@ describe('project tags', () => {
     expect(ledger).toEqual({})
   })
 
+  it('retries retiring the old tag when the move added the new one but the retire failed', async () => {
+    const { endpoint, tags } = fakeGateway(new Set(['s1']))
+    const decide = endpoint.gateway.memoryTagsDecide.bind(endpoint.gateway)
+    let down = true
+    endpoint.gateway.memoryTagsDecide = async (...args: Parameters<typeof decide>) => {
+      if (down) throw new Error('memory backend unavailable')
+      return decide(...args)
+    }
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const moved = desiredProjectTags({ [`${BASE}::s1`]: 'p2' }, SPACES)
+    let ledger = await syncProjectTags(
+      endpoint,
+      {},
+      desiredProjectTags({ [`${BASE}::s1`]: 'p1' }, SPACES),
+      0,
+    )
+    ledger = await syncProjectTags(endpoint, ledger, moved, 0)
+    expect(ledger.s1).toMatchObject({ applied: true, retire: 'project:Android stuff', tries: 1 })
+    expect(tags.map((t) => [t.value, t.state])).toEqual([
+      ['android-stuff', 'accepted'],
+      ['site', 'accepted'],
+    ])
+    warn.mockRestore()
+
+    down = false
+    ledger = await syncProjectTags(endpoint, ledger, moved, backoffMs(1))
+    expect(tags.map((t) => [t.value, t.state])).toEqual([
+      ['android-stuff', 'rejected'],
+      ['site', 'accepted'],
+    ])
+    expect(ledger.s1?.retire).toBeUndefined()
+    expect(ledger.s1?.applied).toBe(true)
+  })
+
   it('a project rename retags; a same-slug rename does not', async () => {
     const { endpoint, calls } = fakeGateway(new Set(['s1']))
     const rows = { [`${BASE}::s1`]: 'p1' }
