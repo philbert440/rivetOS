@@ -184,7 +184,11 @@ export function HistoryPanel(props: {
       data-history-panel=""
       aria-label={props.pick ? props.pick.title : 'History'}
       data-history-mode={props.pick ? 'pick' : 'browse'}
-      className="absolute inset-y-0 right-0 z-30 flex flex-col border border-line bg-panel material:rounded-2xl material:border-line/40 material:shadow-pop"
+      // top-15 clears the HUD's Agents/History row (top-4 + h-9), and z-20
+      // with the HUD layer mounted later keeps the panel UNDER the HUD: the
+      // buttons never move or get covered, and the Agents pop-out paints
+      // over the panel.
+      className="absolute top-15 right-0 bottom-0 z-20 flex flex-col border border-line bg-panel material:rounded-2xl material:border-line/40 material:shadow-pop"
       style={{
         width: props.width,
         outline: props.highlighted ? '2px solid var(--color-em)' : undefined,

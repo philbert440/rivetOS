@@ -917,6 +917,35 @@ describe('SpacesCanvas mount', () => {
     expect(host?.querySelector('[data-history-row="b"]')).not.toBeNull()
   })
 
+  it('keeps the Agents/History buttons pinned while History opens under them', () => {
+    placeOnHome(['a'])
+    mount([row('a', 'Alpha'), row('b', 'Beta')], () => undefined)
+    const buttons = host?.querySelector('[data-hud-buttons]')
+    if (!(buttons instanceof HTMLElement)) throw new Error('missing HUD buttons')
+    expect(buttons.className).toContain('right-4')
+    expect(buttons.style.right).toBe('')
+    press({ key: 'h' })
+    const panel = document.querySelector('[data-history-panel]')
+    if (!(panel instanceof HTMLElement)) throw new Error('missing history')
+    // The panel starts below the button row and paints under the HUD layer;
+    // the buttons neither step left nor get covered.
+    expect(panel.className).toContain('top-15')
+    expect(panel.className).not.toContain('inset-y-0')
+    expect(panel.className).toContain('z-20')
+    expect(buttons.style.right).toBe('')
+    expect(buttons.className).toContain('right-4')
+    const agents = host?.querySelector('[data-hud-agents]')
+    if (!(agents instanceof HTMLElement)) throw new Error('missing Agents button')
+    act(() => {
+      agents.click()
+    })
+    const popout = document.querySelector('[data-agents-popout]')
+    if (!(popout instanceof HTMLElement)) throw new Error('missing Agents pop-out')
+    expect(popout.className).toContain('right-4')
+    expect(popout.style.right).toBe('')
+    expect(buttons.style.right).toBe('')
+  })
+
   it('does not let Find claim Enter or Escape after an external open', () => {
     const rows = [row('a', 'Alpha'), row('b', 'Beta')]
     placeOnHome(['a', 'b'])

@@ -363,8 +363,13 @@ end of each real space.
 **History** (`HistoryPanel.tsx`) is the session drawer minus placed rows
 (same agent and archive filters, same `DrawerItem`). It opens from the right
 (the top-right History button, or `H`); its left edge resizes it (240–720px,
-`rivethub.canvas.historyWidth`, double-click resets) and the top-right
-buttons step left by its width. While the rail's agent filter is on, History
+`rivethub.canvas.historyWidth`, double-click resets). The top-right
+Agents/History buttons are pinned (`right-4`) and never move: the panel
+starts below the button row (`top-15`) and sits under the HUD layer (`z-20`,
+HUD mounted later in the DOM), so it cannot cover them and the Agents pop-out
+stays anchored under its button, painting over an open History. Only the
+display-only Recent strip (bottom right) steps left of the panel (Phil,
+2026-10-17: the buttons moving when the panel slid out was the irritation). While the rail's agent filter is on, History
 shows an `Only <agent>` chip with ✕ — without it, a thread from another agent
 looks lost. Opening a row opens it at Thread and does not place it. History
 rows are not prewarmed. `Ctrl+Shift+E` still collapses the side panes;
