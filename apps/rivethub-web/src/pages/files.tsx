@@ -12,11 +12,8 @@ import { useConnection } from '../stores/connection.js'
 import { NotConnected, useGatewayReady } from '../components/not-connected.js'
 import { rivetShell } from '../lib/shell-bridge.js'
 import {
-  DISCARD_CONFIRM_OPTS,
-  discardMessage,
   guardClosePreview,
   guardOpenFile,
-  guardPathNav,
   shouldBlockFilesLeave,
 } from '../lib/files-dirty-guard.js'
 import { baseName, joinRel, parentRel, previewKind } from '../lib/files-ui.js'
@@ -44,11 +41,7 @@ export function FilesPage(): JSX.Element {
   const path = pathFromUrl ?? ''
   const setPath = useCallback(
     (next: string): void => {
-      console.log('[FILES] setPath ->', next)
-      void navigate({ to: '/files', search: next ? { path: next } : {} }).then(
-        (r) => console.log('[FILES] navigate resolved', JSON.stringify(r)),
-        (e) => console.log('[FILES] navigate rejected', e),
-      )
+      void navigate({ to: '/files', search: next ? { path: next } : {} })
     },
     [navigate],
   )
@@ -59,8 +52,7 @@ export function FilesPage(): JSX.Element {
   const discardDialog = useConfirmDialog()
   const discardConfirm = discardDialog.confirm
   const filesDirty = useUiInteraction((s) => s.filesDirty)
-  const { setFilesDirty, promptFilesDirty, answerFilesDirty, clearFilesDirty } =
-    useUiInteraction.getState()
+  const { setFilesDirty } = useUiInteraction.getState()
   const [dragging, setDragging] = useState(false)
   const dialog = useConfirmDialog()
   const dragDepth = useRef(0)
@@ -73,15 +65,6 @@ export function FilesPage(): JSX.Element {
     queryFn: ({ signal }) => useConnection.getState().gateway.filesList(path, signal),
     enabled: connected,
   })
-
-  const setEditorDirtyTracked = useCallback(
-    (dirty: boolean) => setFilesDirty(dirty),
-    [setFilesDirty],
-  )
-
-  const clearDirty = useCallback(() => {
-    clearFilesDirty()
-  }, [clearFilesDirty])
 
   const dirtyFileName = previewPath ? baseName(previewPath) : undefined
 
@@ -125,11 +108,7 @@ export function FilesPage(): JSX.Element {
       // Same-path must no-op BEFORE any confirm: an accepted discard that
       // then setPaths to the current value would clear dirty while the pane
       // stays open and leave later closes unguarded.
-      console.log('[FILES] navigateGuarded', next, 'from', path)
-      if (guardPathNav(path, next) === 'noop') {
-        console.log('[FILES] navigateGuarded noop')
-        return
-      }
+      if (next === path) return
       markDirNavigated()
       setPath(next)
     },
@@ -137,14 +116,12 @@ export function FilesPage(): JSX.Element {
   )
 
   useEffect(() => {
-    setEditorDirtyTracked(false)
-  }, [previewPath, setEditorDirtyTracked])
+    setFilesDirty(false)
+  }, [previewPath, setFilesDirty])
 
   const openEntry = useCallback(
     async (child: string, isDir: boolean): Promise<void> => {
-      console.log('[FILES] openEntry', child, 'isDir', isDir, 'path', path)
       if (isDir) {
-        console.log('[FILES] dir branch, navigateGuarded next')
         navigateGuarded(child)
         return
       }
@@ -154,12 +131,12 @@ export function FilesPage(): JSX.Element {
         child,
         fileName: dirtyFileName,
         confirm: discardConfirm,
-        clearDirty,
+        clearDirty: () => useUiInteraction.getState().clearFilesDirty(),
       })
       if (decision !== 'proceed') return
       setPreviewPath(child)
     },
-    [clearDirty, dirtyFileName, discardConfirm, markDirNavigated, navigateGuarded, path, previewPath],
+    [dirtyFileName, discardConfirm, navigateGuarded, path, previewPath],
   )
 
   const openRaw = useCallback(
@@ -321,14 +298,13 @@ export function FilesPage(): JSX.Element {
                   dirty: filesDirty.dirty,
                   fileName: dirtyFileName,
                   confirm: discardConfirm,
-                  clearDirty,
+                  clearDirty: () => useUiInteraction.getState().clearFilesDirty(),
                 })
                 if (decision !== 'proceed') return
                 setPreviewPath(undefined)
               })()
             }}
             onNotice={(n) => ops.showNotice(n)}
-            onDirtyChange={setEditorDirtyTracked}
             downloadUrl={gateway.fileDownloadUrl(previewPath)}
             size={
               (listing.data?.entries ?? []).find((e) => joinRel(path, e.name) === previewPath)?.size

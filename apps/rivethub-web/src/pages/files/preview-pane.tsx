@@ -17,8 +17,6 @@ export function PreviewPane(props: {
   onNotice: (n: Notice) => void
   /** Optional size from the listing — drives previewKind / edit eligibility. */
   size?: number
-  /** Dirty report from the embedded editor. */
-  onDirtyChange: (dirty: boolean) => void
 }): JSX.Element {
   const name = baseName(props.path)
   // Prefer known size; when unknown assume under text cap for extension classification.
@@ -74,7 +72,6 @@ export function PreviewPane(props: {
           size={props.size}
           className="min-h-0 flex-1"
           minHeight="12rem"
-          onDirtyChange={props.onDirtyChange}
         />
       ) : (
         <div className="p-3 text-xs text-ink-dim">

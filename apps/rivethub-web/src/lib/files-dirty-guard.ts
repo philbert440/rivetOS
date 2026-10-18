@@ -30,18 +30,7 @@ export async function confirmDiscard(args: {
   return ok
 }
 
-/**
- * Directory / breadcrumb navigation. Same-path is a no-op BEFORE confirm so
- * an accepted discard cannot clear dirty while the pane stays open.
- * When dirty, callers that change the URL should let the router blocker
- * prompt; this helper only decides same-path vs proceed.
- */
-export function guardPathNav(currentPath: string, nextPath: string): GuardResult {
-  if (nextPath === currentPath) return 'noop'
-  return 'proceed'
-}
-
-/** Open a file in the preview pane (replaces the buffer). Same-file is a no-op. */
+/** Prompt when dirty. On OK, clearDirty then return true. Clean → true, no prompt. */
 export async function guardOpenFile(args: {
   dirty: boolean
   previewPath: string | undefined

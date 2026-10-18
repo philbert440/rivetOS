@@ -1,6 +1,6 @@
 import type { JSX } from 'react'
 import type { FileEntry } from '@rivetos/types'
-import { joinRel, parentRel } from '../../lib/files-ui.js'
+import { joinRel } from '../../lib/files-ui.js'
 import { selectionTextWithin, shouldIgnoreRowActivate } from '../../lib/files-dirty-guard.js'
 import { fmtSize, fmtMtime } from './format.js'
 
@@ -94,7 +94,7 @@ export function FileTable(props: {
                   ) {
                     return
                   }
-                  void props.onOpenEntry(child, e.type === 'dir')
+                  props.onOpenEntry(child, e.type === 'dir')
                 }
                 return (
                   <tr

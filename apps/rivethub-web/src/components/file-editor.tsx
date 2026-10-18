@@ -45,8 +45,6 @@ export interface FileEditorProps {
   size?: number
   /** Called after a successful save with the written text. */
   onSaved?: (text: string) => void
-  /** When text changes (dirty tracking for parents). */
-  onDirtyChange?: (dirty: boolean) => void
   /**
    * Controlled text override — when set, the editor content is driven by the
    * parent (overlay → raw round-trip). Parent must call onTextChange.
@@ -66,7 +64,6 @@ export function FileEditor(props: FileEditorProps): JSX.Element {
     path,
     size,
     onSaved,
-    onDirtyChange,
     text: controlledText,
     onTextChange,
     toolbarExtra,
