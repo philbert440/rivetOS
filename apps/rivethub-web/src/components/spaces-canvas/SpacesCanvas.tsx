@@ -1275,7 +1275,10 @@ export function SpacesCanvas(props: {
   const mruShown =
     previewId !== undefined && !mruHead.includes(previewId) ? [...mruHead, previewId] : mruHead
   const historyOpen = historyWanted || pick !== null
-  // The buttons and dock step left of the open History panel by its width.
+  // The top-right buttons and the Agents pop-out never move: History opens
+  // BELOW the button row (HistoryPanel is top-15) and paints under the HUD
+  // layer, so the buttons are neither displaced nor covered. Only the
+  // display-only Recent strip at bottom right steps left of the open panel.
   const historyRight = historyOpen ? `${String(historyWidth + 16)}px` : '1rem'
   const removeSpace = spaces.find((space) => space.id === removePrompt)
   const removeRows = regions.find((region) => region.id === removePrompt)?.rows ?? []
@@ -1707,12 +1710,13 @@ export function SpacesCanvas(props: {
         </nav>
         {/* Top right: Agents and History. The breadcrumb is the altitude
             control (Everything › project › session), so there is no
-            separate zoom ladder; the shortcuts dock opens from the rail. */}
+            separate zoom ladder; the shortcuts dock opens from the rail.
+            Pinned at right-4: History slides in under this row, so the
+            buttons stay put while the panel opens and closes. */}
         <div
           data-hud=""
-          className="pointer-events-auto absolute top-4 flex items-center gap-2"
-          // History opens on the right; the buttons step left of it.
-          style={{ right: historyRight }}
+          data-hud-buttons=""
+          className="pointer-events-auto absolute top-4 right-4 flex items-center gap-2"
         >
           <button
             type="button"
@@ -1754,11 +1758,12 @@ export function SpacesCanvas(props: {
             role="region"
             aria-label="Agents"
             style={{
-              right: historyRight,
               opacity: agentsDragging ? 0 : 1,
               pointerEvents: agentsDragging ? 'none' : undefined,
             }}
-            className="pointer-events-auto absolute top-15 flex max-h-[calc(100%-5rem)] w-80 flex-col overflow-y-auto border border-line bg-panel material:rounded-2xl material:border-line/40 material:shadow-pop"
+            // Anchored under its button (right-4); with History open it
+            // paints over the panel, as a transient pop-out should.
+            className="pointer-events-auto absolute top-15 right-4 flex max-h-[calc(100%-5rem)] w-80 flex-col overflow-y-auto border border-line bg-panel material:rounded-2xl material:border-line/40 material:shadow-pop"
             onKeyDown={(event) => {
               const hub = matchHubKey(event.nativeEvent)
               const plain = !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey
@@ -2025,7 +2030,9 @@ export function SpacesCanvas(props: {
         {mruStep > 0 ? (
           <div
             data-mru=""
-            className="pointer-events-none absolute right-4 bottom-4 flex max-w-sm gap-1 border border-line bg-panel p-1 text-xs material:rounded-2xl material:border-line/40 material:shadow-pop"
+            className="pointer-events-none absolute bottom-4 flex max-w-sm gap-1 border border-line bg-panel p-1 text-xs material:rounded-2xl material:border-line/40 material:shadow-pop"
+            // Steps left of an open History so the strip stays readable.
+            style={{ right: historyRight }}
           >
             {mruShown.map((id) => (
               <span
