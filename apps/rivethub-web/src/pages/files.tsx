@@ -34,19 +34,9 @@ import {
 import { useGateway } from '../lib/use-gateway.js'
 import { useUiInteraction } from '../stores/ui-interaction.js'
 import { useConfirmDialog } from '../components/confirm-dialog.js'
+import { fmtSize, fmtMtime } from './files/format.js'
+import type { Notice } from './files/notice.js'
 import { FileEditor } from '../components/file-editor.js'
-
-function fmtSize(bytes: number): string {
-  if (bytes < 1024) return `${String(bytes)} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`
-  return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`
-}
-
-function fmtMtime(ms: number): string {
-  const d = new Date(ms)
-  return `${d.toLocaleDateString()} ${d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
-}
 
 /** The previous save's object URL. Kept alive until the NEXT save rather
  *  than revoked on a timer — a timed revoke can race a still-writing
@@ -77,7 +67,6 @@ async function saveViaGateway(url: string, name: string, sizeBytes?: number): Pr
 }
 
 type SortKey = 'name' | 'mtime' | 'size'
-type Notice = { kind: 'ok' | 'err'; text: string }
 
 export function FilesPage(): JSX.Element {
   const baseUrl = useConnection((s) => s.baseUrl)
