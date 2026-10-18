@@ -1,7 +1,8 @@
 /**
  * Wiring pins for the Files page unsaved-edit guard.
- * Behaviour lives in src/lib/files-dirty-guard.test.ts — these only assert
- * the page still routes through that module and the row hit-target markers.
+ * Behaviour lives in src/lib/files-dirty-guard.test.ts (pure helpers) and
+ * src/stores/ui-interaction.test.ts (state); these only assert the page
+ * routes through both and the row hit-target markers.
  */
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
@@ -14,14 +15,20 @@ describe('files page unsaved-edit guard wiring', () => {
     expect(files).toContain('guardPathNav')
     expect(files).toContain('guardOpenFile')
     expect(files).toContain('guardClosePreview')
-    expect(files).toContain('shouldBlockFilesLeave')
+    expect(files).toContain('discardMessage')
     expect(files).toContain('shouldIgnoreRowActivate')
+  })
+
+  it('guard state comes from the ui-interaction store, not a ref', () => {
+    expect(files).toContain("from '../stores/ui-interaction.js'")
+    expect(files).toContain('useUiInteraction((s) => s.filesDirty)')
+    expect(files).not.toContain('editorDirtyRef')
   })
 
   it('blocks route changes while dirty via useBlocker', () => {
     expect(files).toContain('useBlocker({ shouldBlockFn, enableBeforeUnload })')
     expect(files).toContain('const shouldBlockFn = useCallback(')
-    expect(files).toContain('enableBeforeUnload = useCallback(() => editorDirtyRef.current, [])')
+    expect(files).toContain('enableBeforeUnload = useCallback(() => filesDirty.dirty,')
   })
 
   it('same-path navigation no-ops before setPath', () => {
@@ -32,14 +39,5 @@ describe('files page unsaved-edit guard wiring', () => {
     expect(files).toContain('data-no-open')
     expect(files).toContain('cursor-pointer')
     expect(files).toContain('shouldIgnoreRowActivate')
-  })
-
-  it('threads onDirtyChange into the preview editor', () => {
-    expect(files).toContain('onDirtyChange={props.onDirtyChange}')
-    expect(files).toContain('onDirtyChange={setEditorDirtyTracked}')
-  })
-
-  it('renders the discard dialog element', () => {
-    expect(files).toContain('{discardDialog.element}')
   })
 })

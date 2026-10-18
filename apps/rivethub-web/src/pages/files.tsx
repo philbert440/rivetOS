@@ -18,7 +18,8 @@ import {
   guardClosePreview,
   guardOpenFile,
   guardPathNav,
-  shouldBlockFilesLeave,
+  discardMessage,
+  DISCARD_CONFIRM_OPTS,
   selectionTextWithin,
   shouldIgnoreRowActivate,
 } from '../lib/files-dirty-guard.js'
@@ -31,6 +32,7 @@ import {
   readBlobBounded,
 } from '../lib/files-ui.js'
 import { useGateway } from '../lib/use-gateway.js'
+import { useUiInteraction } from '../stores/ui-interaction.js'
 import { useConfirmDialog } from '../components/confirm-dialog.js'
 import { FileEditor } from '../components/file-editor.js'
 
@@ -97,9 +99,11 @@ export function FilesPage(): JSX.Element {
   const [sort, setSort] = useState<SortKey>('name')
   const [selected, setSelected] = useState<Set<string>>(() => new Set())
   const [previewPath, setPreviewPath] = useState<string | undefined>()
-  const editorDirtyRef = useRef(false)
   const discardDialog = useConfirmDialog()
   const discardConfirm = discardDialog.confirm
+  const filesDirty = useUiInteraction((s) => s.filesDirty)
+  const { setFilesDirty, promptFilesDirty, answerFilesDirty, clearFilesDirty } =
+    useUiInteraction.getState()
   const [dragging, setDragging] = useState(false)
   const [notice, setNotice] = useState<Notice | undefined>()
   const [busy, setBusy] = useState(false)
@@ -115,27 +119,37 @@ export function FilesPage(): JSX.Element {
     enabled: connected,
   })
 
-  const setEditorDirtyTracked = useCallback((dirty: boolean) => {
-    editorDirtyRef.current = dirty
-  }, [])
+  const setEditorDirtyTracked = useCallback(
+    (dirty: boolean) => setFilesDirty(dirty),
+    [setFilesDirty],
+  )
 
   const clearDirty = useCallback(() => {
-    setEditorDirtyTracked(false)
-  }, [setEditorDirtyTracked])
+    clearFilesDirty()
+  }, [clearFilesDirty])
 
   const dirtyFileName = previewPath ? baseName(previewPath) : undefined
 
-  const shouldBlockFn = useCallback(
-    async () =>
-      shouldBlockFilesLeave({
-        dirty: editorDirtyRef.current,
-        fileName: dirtyFileName,
-        confirm: discardConfirm,
-        clearDirty,
-      }),
-    [clearDirty, discardConfirm, dirtyFileName],
-  )
-  const enableBeforeUnload = useCallback(() => editorDirtyRef.current, [])
+  const shouldBlockFn = useCallback(async () => {
+    const dirty = filesDirty.dirty
+    promptFilesDirty('leave the page')
+    const ok = dirty
+      ? await discardConfirm(discardMessage(filesDirty.fileName || undefined), {
+          ...DISCARD_CONFIRM_OPTS,
+        })
+      : true
+    answerFilesDirty(ok)
+    if (ok) clearDirty()
+    return ok
+  }, [
+    answerFilesDirty,
+    clearDirty,
+    discardConfirm,
+    filesDirty.dirty,
+    filesDirty.fileName,
+    promptFilesDirty,
+  ])
+  const enableBeforeUnload = useCallback(() => filesDirty.dirty, [filesDirty.dirty])
 
   // Route changes (sidebar leave, ?path= crumbs, browser Back/Forward) go
   // through the router blocker so Cancel never leaves a foreign listing under
@@ -180,7 +194,7 @@ export function FilesPage(): JSX.Element {
         return
       }
       const decision = await guardOpenFile({
-        dirty: editorDirtyRef.current,
+        dirty: filesDirty.dirty,
         previewPath,
         child,
         fileName: dirtyFileName,
@@ -744,7 +758,7 @@ export function FilesPage(): JSX.Element {
             onClose={() => {
               void (async () => {
                 const decision = await guardClosePreview({
-                  dirty: editorDirtyRef.current,
+                  dirty: filesDirty.dirty,
                   fileName: dirtyFileName,
                   confirm: discardConfirm,
                   clearDirty,
