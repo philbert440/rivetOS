@@ -5,8 +5,8 @@ import { useFilesView } from './files-view-store.js'
 
 /**
  * The Files toolbar: filter, sort, and the selection-driven actions row.
- * Stateless: listing data and actions arrive via props; the notice slice it
- * renders is read straight from the files view store.
+ * Stateless — owns no state: listing data and actions arrive via props, and
+ * the notice slice it renders is read straight from the files view store.
  */
 export function FilesToolbar(props: {
   filter: string
