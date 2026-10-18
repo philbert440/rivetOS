@@ -12,6 +12,7 @@ dist/
 # Build artifacts
 **/*.js
 !apps/rivet-android/highlight/src/main/res/raw/prism.js
+!apps/rivethub-web/public/theme-boot.js
 !apps/rivet-android/app/src/main/assets/rivet-bridge-server-v2.js
 **/*.js.map
 **/*.d.ts

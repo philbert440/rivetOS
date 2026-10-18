@@ -101,6 +101,18 @@ process.on('unhandledRejection', (reason) => {
     reason instanceof Error ? (reason.stack ?? reason.message) : reason,
   )
 })
+// A closed stdout/stderr pipe — the launching terminal exited, or the
+// parent's pipe went away — raises EPIPE asynchronously on the stream, not
+// inside the console.error call. Unhandled, that is an uncaughtException;
+// its logger mirrors to stderr, which raises EPIPE again: a 100% CPU loop
+// that fills main.log with nothing but EPIPE lines (seen on 0.6.0). Nothing
+// to report and nowhere to report it, so the stream error is dropped.
+for (const stream of [process.stdout, process.stderr]) {
+  stream.on('error', () => {
+    /* stdio gone */
+  })
+}
+
 app.on('child-process-gone', (_e, details) => {
   logFault(
     'child-process-gone',
