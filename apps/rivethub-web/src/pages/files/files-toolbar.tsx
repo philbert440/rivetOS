@@ -1,21 +1,21 @@
 import type { JSX } from 'react'
 import { Select } from '../../components/select.js'
 import type { FileEntry } from '@rivetos/types'
-import { useFilesView } from './files-view-store.js'
+import { useFilesView, type SortKey } from './files-view-store.js'
 
 /**
  * The Files toolbar: filter, sort, and the selection-driven actions row.
- * Stateless — owns no state: listing data and actions arrive via props, and
- * the notice slice it renders is read straight from the files view store.
+ * Stateless — owns no state: actions arrive via props, and the slices it
+ * renders (notice, selection) are read straight from the files view store.
  */
 export function FilesToolbar(props: {
   filter: string
   onFilter: (v: string) => void
-  sort: string
-  onSort: (v: string) => void
+  sort: SortKey
+  onSort: (v: SortKey) => void
   busy: boolean
-  selected: Set<string>
-  entries: FileEntry[]
+  /** The single selected entry; undefined unless exactly one row is selected. */
+  renameTarget?: FileEntry
   onMkdir: () => void
   onRename: (entry: FileEntry) => void
   onDelete: () => void
@@ -24,10 +24,7 @@ export function FilesToolbar(props: {
   onUpload: (files: FileList) => void
 }): JSX.Element {
   const notice = useFilesView((s) => s.notice)
-  const findSelected = (): FileEntry | undefined => {
-    const name = [...props.selected][0]
-    return props.entries.find((e) => e.name === name)
-  }
+  const selected = useFilesView((s) => s.selected)
 
   const actionCls =
     'rounded-pill border border-line px-2 py-1 text-xs hover:bg-ink/6 disabled:opacity-40 classic:hover:bg-transparent classic:hover:border-em'
@@ -45,7 +42,9 @@ export function FilesToolbar(props: {
           value={props.sort}
           title="sort"
           label="Sort"
-          onChange={props.onSort}
+          // The widget speaks strings; the store speaks SortKey. This is the
+          // boundary where that conversion belongs.
+          onChange={(v) => props.onSort(v as SortKey)}
           options={[
             { value: 'name', label: 'sort: name' },
             { value: 'mtime', label: 'sort: mtime' },
@@ -57,10 +56,9 @@ export function FilesToolbar(props: {
         </button>
         <button
           type="button"
-          disabled={props.busy || props.selected.size !== 1}
+          disabled={props.busy || !props.renameTarget}
           onClick={() => {
-            const entry = findSelected()
-            if (entry) props.onRename(entry)
+            if (props.renameTarget) props.onRename(props.renameTarget)
           }}
           className={actionCls}
         >
@@ -68,7 +66,7 @@ export function FilesToolbar(props: {
         </button>
         <button
           type="button"
-          disabled={props.busy || props.selected.size === 0}
+          disabled={props.busy || selected.size === 0}
           onClick={props.onDelete}
           className="rounded-pill border border-red/40 px-2 py-1 text-xs text-red hover:bg-red/10 disabled:opacity-40 classic:hover:bg-transparent classic:hover:border-red"
         >
@@ -76,7 +74,7 @@ export function FilesToolbar(props: {
         </button>
         <button
           type="button"
-          disabled={props.selected.size === 0}
+          disabled={selected.size === 0}
           onClick={props.onCopyPaths}
           className={actionCls}
         >
@@ -84,7 +82,7 @@ export function FilesToolbar(props: {
         </button>
         <button
           type="button"
-          disabled={props.selected.size === 0}
+          disabled={selected.size === 0}
           onClick={props.onCopyUrls}
           className={actionCls}
         >

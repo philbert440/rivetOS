@@ -27,7 +27,6 @@ import { useFileOps } from './files/use-file-ops.js'
 import { FilesToolbar } from './files/files-toolbar.js'
 import { Breadcrumbs } from './files/breadcrumbs.js'
 import { useFilesView } from './files/files-view-store.js'
-import type { SortKey } from './files/files-view-store.js'
 
 export function FilesPage(): JSX.Element {
   const baseUrl = useConnection((s) => s.baseUrl)
@@ -51,12 +50,15 @@ export function FilesPage(): JSX.Element {
   const previewPath = useFilesView((s) => s.previewPath)
   const { setFilter, setSort, setSelected, toggleSelected, setPreviewPath } =
     useFilesView.getState()
-  const discardDialog = useConfirmDialog()
-  const discardConfirm = discardDialog.confirm
+  // One dialog instance for the whole page. Ops confirms/prompts and the
+  // dirty-guard discards share a single queue, so two modals can never be
+  // open at once (these used to be two independent queues, each rendering
+  // its own dialog).
+  const dialog = useConfirmDialog()
+  const confirm = dialog.confirm
   const filesDirty = useUiInteraction((s) => s.filesDirty)
   const { setFilesDirty } = useUiInteraction.getState()
   const [dragging, setDragging] = useState(false)
-  const dialog = useConfirmDialog()
   const dragDepth = useRef(0)
   /** Ignore openRaw briefly after a dir navigate so a folder double-click
    *  does not act on whatever row lands under the pointer in the child listing. */
@@ -80,10 +82,10 @@ export function FilesPage(): JSX.Element {
     return shouldBlockFilesLeave({
       dirty: filesDirty.dirty,
       fileName: filesDirty.fileName || undefined,
-      confirm: discardConfirm,
+      confirm,
       clearDirty: () => useUiInteraction.getState().clearFilesDirty(),
     })
-  }, [discardConfirm])
+  }, [confirm])
 
   const enableBeforeUnload = useCallback(() => useUiInteraction.getState().filesDirty.dirty, [])
 
@@ -140,13 +142,13 @@ export function FilesPage(): JSX.Element {
         previewPath,
         child,
         fileName: dirtyFileName,
-        confirm: discardConfirm,
+        confirm,
         clearDirty: () => useUiInteraction.getState().clearFilesDirty(),
       })
       if (decision !== 'proceed') return
       setPreviewPath(child)
     },
-    [dirtyFileName, discardConfirm, navigateGuarded, path, previewPath],
+    [confirm, dirtyFileName, navigateGuarded, path, previewPath],
   )
 
   const openRaw = useCallback(
@@ -188,10 +190,17 @@ export function FilesPage(): JSX.Element {
     return list
   }, [listing.data?.entries, filter, sort])
 
+  // The toolbar's Rename target: the single selected entry, resolved here so
+  // the toolbar needs neither `selected` nor `entries`.
+  const renameTarget = useMemo(() => {
+    const [name] = [...selected]
+    return name ? (listing.data?.entries ?? []).find((e) => e.name === name) : undefined
+  }, [selected, listing.data?.entries])
+
   const ops = useFileOps({
     path,
     refresh: () => refresh(),
-    confirm: dialog.confirm,
+    confirm,
     prompt: dialog.prompt,
     onPreviewRenamed: (from, to) => {
       if (previewPath === from) setPreviewPath(to)
@@ -241,17 +250,15 @@ export function FilesPage(): JSX.Element {
       onDrop={onDropFiles}
     >
       {dialog.element}
-      {discardDialog.element}
       <Breadcrumbs path={path} rootLabel={rootLabel} onNavigate={navigateGuarded} />
 
       <FilesToolbar
         filter={filter}
         onFilter={setFilter}
         sort={sort}
-        onSort={(v) => setSort(v as SortKey)}
+        onSort={setSort}
         busy={busy}
-        selected={selected}
-        entries={listing.data?.entries ?? []}
+        renameTarget={renameTarget}
         onMkdir={() => void mkdir()}
         onRename={(entry) => void renameOne(entry)}
         onDelete={() => void deleteSelected(selected, listing.data?.entries ?? [])}
@@ -287,7 +294,7 @@ export function FilesPage(): JSX.Element {
                 const decision = await guardClosePreview({
                   dirty: filesDirty.dirty,
                   fileName: dirtyFileName,
-                  confirm: discardConfirm,
+                  confirm,
                   clearDirty: () => useUiInteraction.getState().clearFilesDirty(),
                 })
                 if (decision !== 'proceed') return
