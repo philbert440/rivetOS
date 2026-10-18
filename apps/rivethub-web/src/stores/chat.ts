@@ -30,7 +30,6 @@ import {
   type HarnessTranscriptEvent,
   type HarnessTranscriptTurn,
   type SessionMessage,
-  type SessionWsFrame,
   type TranscriptWsFrame,
 } from '@rivetos/types'
 import type { SessionContextStamp } from '../lib/harness-attach.js'
@@ -341,6 +340,8 @@ function bestOptimMatch(
 }
 
 let subscription: Subscription | undefined
+/** RivetHub event-stream types that change a node's session list. */
+const SESSION_LIST_EVENTS = new Set(['session.start', 'session.end', 'session.removed', 'turn.end'])
 let currentEndpoint: string | undefined
 /** Sessions with an active transcript watch — re-sent on every reconnect
  *  (server-side subscriptions die with the socket). */
@@ -1317,7 +1318,16 @@ export const useChat = create<ChatState>()(
         }
         const { gateway } = useConnection.getState()
         subscription = gateway.watchSessions(
-          (frame: SessionWsFrame) => {
+          (frame) => {
+            // RivetHub's own snapshot/event frames carry no chat frame for this
+            // store. A session starting, ending or finishing a turn changes the
+            // drawer, which is what the den's sessions-dirty said.
+            if (!('kind' in frame)) {
+              if (SESSION_LIST_EVENTS.has(frame.type)) {
+                set((s) => ({ sessionsDirty: s.sessionsDirty + 1 }))
+              }
+              return
+            }
             // A control-plane session is driven by its own socket; the same den
             // events surface on both, so writing here too would double every
             // delta and re-append every committed turn.

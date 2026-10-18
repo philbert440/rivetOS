@@ -1676,7 +1676,7 @@ function ActiveSession(props: {
         capabilities?.imageAttachments &&
         attachments?.every((a) => a.mime.startsWith('image/'))
       const correlated = await pumpEntry.observe(gw, sid, deliveryId)
-      const accepted = await gw.sendHarnessTurn(sid, {
+      await gw.sendHarnessTurn(sid, {
         deliveryId: correlated ? deliveryId : undefined,
         text: nativeAttachments ? text : referenceText,
         ...(nativeAttachments && attachments?.length ? { attachments } : {}),
@@ -1684,7 +1684,6 @@ function ActiveSession(props: {
         ...(prompt ? { systemPrompt: prompt } : {}),
         ...(bypassDialogGate ? { bypassDialogGate: true } : {}),
       })
-      if (dismissedDialogFrom(accepted)) setDialogDismissedAt(Date.now())
     }
     // A loaded harness summary can route a plain turn before descriptors arrive.
     const sendSessionId = canonicalId ?? (item?.kind === 'harness' ? item.sessionId : undefined)
@@ -1735,10 +1734,8 @@ function ActiveSession(props: {
       try {
         const directory = settings?.directory?.trim()
         const started = await gw.startHarnessSession(plan.harnessId, {
-          ...(plan.agentId ? { agentId: plan.agentId } : {}),
-          ...(directory ? { directory } : {}),
+          ...(directory ? { cwd: directory } : {}),
           ...(launch.spawn.model ? { model: launch.spawn.model } : {}),
-          ...(launch.spawn.effort ? { effort: launch.spawn.effort } : {}),
         })
         writeLaunchState({ launched: true })
         await sendProtocol(started.sessionId)
