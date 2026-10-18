@@ -11,7 +11,6 @@ import type { FileEntry } from '@rivetos/types'
 import { GatewayError } from '@rivetos/gateway-client'
 import { useConnection } from '../stores/connection.js'
 import { NotConnected, useGatewayReady } from '../components/not-connected.js'
-import { Select } from '../components/select.js'
 import { copyTextToClipboard } from '../lib/clipboard.js'
 import { rivetShell } from '../lib/shell-bridge.js'
 import {
@@ -35,6 +34,8 @@ import { useConfirmDialog } from '../components/confirm-dialog.js'
 import { saveViaGateway } from './files/save-via-gateway.js'
 import { PreviewPane } from './files/preview-pane.js'
 import { FileTable } from './files/file-table.js'
+import { FilesToolbar } from './files/files-toolbar.js'
+import { Breadcrumbs } from './files/breadcrumbs.js'
 import type { Notice } from './files/notice.js'
 import { FileEditor } from '../components/file-editor.js'
 
@@ -389,10 +390,7 @@ export function FilesPage(): JSX.Element {
     }
   }
 
-  const crumbs = path === '' ? [] : path.split('/')
   const rootLabel = listing.data?.root ?? '/rivet-shared'
-  const allNames = entries.map((e) => e.name)
-  const allSelected = allNames.length > 0 && allNames.every((n) => selected.has(n))
 
   const onDropFiles = (e: DragEvent): void => {
     e.preventDefault()
@@ -423,123 +421,25 @@ export function FilesPage(): JSX.Element {
     >
       {dialog.element}
       {discardDialog.element}
-      {/* Breadcrumbs */}
-      <div className="flex flex-wrap items-center gap-1 border-b border-line bg-panel/40 px-4 py-2 text-xs">
-        <button
-          type="button"
-          onClick={() => navigateGuarded('')}
-          className={crumbs.length === 0 ? 'text-em' : 'text-ink-dim hover:text-ink'}
-        >
-          {rootLabel}
-        </button>
-        {crumbs.map((seg, i) => (
-          <span key={crumbs.slice(0, i + 1).join('/')} className="flex items-center gap-1">
-            <span className="text-ink-dim">/</span>
-            <button
-              type="button"
-              onClick={() => navigateGuarded(crumbs.slice(0, i + 1).join('/'))}
-              className={i === crumbs.length - 1 ? 'text-em' : 'text-ink-dim hover:text-ink'}
-            >
-              {seg}
-            </button>
-          </span>
-        ))}
-        <span className="ml-auto text-ink-dim">
-          drop files to upload · drag onto a folder to move
-        </span>
-      </div>
+      <Breadcrumbs path={path} rootLabel={rootLabel} onNavigate={navigateGuarded} />
 
-      {/* Toolbar */}
-      <div className="flex flex-wrap items-center gap-2 border-b border-line px-4 py-2">
-        <input
-          value={filter}
-          onChange={(e) => setFilter(e.target.value)}
-          placeholder="Filter…"
-          className="w-40 rounded-lg border border-line bg-panel px-2 py-1 text-xs outline-none focus:border-em"
-        />
-        <Select
-          value={sort}
-          title="sort"
-          label="Sort"
-          onChange={(v) => setSort(v as SortKey)}
-          options={[
-            { value: 'name', label: 'sort: name' },
-            { value: 'mtime', label: 'sort: mtime' },
-            { value: 'size', label: 'sort: size' },
-          ]}
-        />
-        <button
-          type="button"
-          disabled={busy}
-          onClick={() => void mkdir()}
-          className="rounded-pill border border-line px-2 py-1 text-xs hover:bg-ink/6 disabled:opacity-40 classic:hover:bg-transparent classic:hover:border-em"
-        >
-          New folder
-        </button>
-        <button
-          type="button"
-          disabled={busy || selected.size !== 1}
-          onClick={() => {
-            const name = [...selected][0]
-            const entry = (listing.data?.entries ?? []).find((e) => e.name === name)
-            if (entry) void renameOne(entry)
-          }}
-          className="rounded-pill border border-line px-2 py-1 text-xs hover:bg-ink/6 disabled:opacity-40 classic:hover:bg-transparent classic:hover:border-em"
-        >
-          Rename
-        </button>
-        <button
-          type="button"
-          disabled={busy || selected.size === 0}
-          onClick={() => void deleteSelected()}
-          className="rounded-pill border border-red/40 px-2 py-1 text-xs text-red hover:bg-red/10 disabled:opacity-40 classic:hover:bg-transparent classic:hover:border-red"
-        >
-          Delete
-        </button>
-        <button
-          type="button"
-          disabled={selected.size === 0}
-          onClick={() => void copyPaths()}
-          className="rounded-pill border border-line px-2 py-1 text-xs hover:bg-ink/6 disabled:opacity-40 classic:hover:bg-transparent classic:hover:border-em"
-        >
-          Copy path
-        </button>
-        <button
-          type="button"
-          disabled={selected.size === 0}
-          onClick={() => void copyUrls()}
-          className="rounded-pill border border-line px-2 py-1 text-xs hover:bg-ink/6 disabled:opacity-40 classic:hover:bg-transparent classic:hover:border-em"
-        >
-          Copy URL
-        </button>
-        <label className="cursor-pointer rounded-pill border border-line px-2 py-1 text-xs hover:bg-ink/6 classic:hover:bg-transparent classic:hover:border-em">
-          Upload…
-          <input
-            type="file"
-            multiple
-            className="hidden"
-            onChange={(e) => {
-              if (e.target.files?.length) void upload(e.target.files)
-              e.target.value = ''
-            }}
-          />
-        </label>
-      </div>
-
-      {notice && (
-        <div
-          className={`border-b border-line px-4 py-1.5 text-xs ${notice.kind === 'ok' ? 'text-em' : 'text-red'}`}
-        >
-          {notice.text}
-          <button
-            type="button"
-            onClick={() => setNotice(undefined)}
-            className="ml-3 text-ink-dim hover:text-ink"
-          >
-            ✕
-          </button>
-        </div>
-      )}
+      <FilesToolbar
+        filter={filter}
+        onFilter={setFilter}
+        sort={sort}
+        onSort={(v) => setSort(v as SortKey)}
+        busy={busy}
+        selected={selected}
+        entries={listing.data?.entries ?? []}
+        notice={notice}
+        onDismissNotice={() => setNotice(undefined)}
+        onMkdir={() => void mkdir()}
+        onRename={(entry) => void renameOne(entry)}
+        onDelete={() => void deleteSelected()}
+        onCopyPaths={() => void copyPaths()}
+        onCopyUrls={() => void copyUrls()}
+        onUpload={(files) => void upload(files)}
+      />
 
       <div className="flex min-h-0 flex-1">
         <FileTable
