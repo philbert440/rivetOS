@@ -144,7 +144,7 @@ export function StatsView(props: {
                     </span>
                     {q.dead > 0 && (
                       <span className="tag">
-                        {q.dead} failed jobs (historical total) · run rivetos doctor for recovery
+                        {q.dead} failed jobs (historical total) · see the node's worker logs for
                         details
                       </span>
                     )}

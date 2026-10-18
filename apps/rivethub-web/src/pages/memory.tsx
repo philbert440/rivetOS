@@ -243,7 +243,7 @@ export function MemoryPage(): JSX.Element {
             <h1 className="mb-1 border-b border-line pb-2 text-2xl font-semibold">
               Results for “{debounced}”
             </h1>
-            <p className="mb-6 text-sm text-ink-dim">From RivetOS memory</p>
+            <p className="mb-6 text-sm text-ink-dim">From RivetHub memory</p>
             <TopicList
               topics={topics}
               empty="Nothing matched — try Gaps, or a broader term."
@@ -298,10 +298,10 @@ function MainPage(props: {
         Main page
       </h1>
       <p className="mb-2 text-sm text-ink-dim">
-        From RivetOS memory — the distilled record of what is currently true.
+        From RivetHub memory — the distilled record of what is currently true.
       </p>
       <p className="mb-8 text-[15px] leading-relaxed text-ink">
-        The living encyclopedia of RivetOS memory —{' '}
+        The living encyclopedia of RivetHub memory —{' '}
         <strong className="text-em">{props.total}</strong> topic
         {props.total === 1 ? '' : 's'} distilled from conversation history, updated as new summaries
         land. Broad topics hold the current picture; sections and{' '}
@@ -696,7 +696,7 @@ function ArticleBody(props: {
         {p.title}
       </h1>
       <p className="mt-1 text-sm text-ink-dim">
-        From RivetOS memory — the distilled record of what is currently true.
+        From RivetHub memory — the distilled record of what is currently true.
       </p>
 
       <nav className="mt-4 flex flex-wrap items-center gap-4 border-b border-line pb-2 text-sm">
