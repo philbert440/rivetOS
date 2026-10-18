@@ -13,6 +13,7 @@ import { javascript } from '@codemirror/lang-javascript'
 import { markdown } from '@codemirror/lang-markdown'
 import { GatewayError } from '@rivetos/gateway-client'
 import { useConnection } from '../stores/connection.js'
+import { useUiInteraction } from '../stores/ui-interaction.js'
 import { useResolvedTheme } from '../stores/theme.js'
 import { editorThemeFor } from '../lib/editor-theme.js'
 import { languageForPath, type EditorLanguage } from '../lib/editor-lang.js'
@@ -88,7 +89,6 @@ export function FileEditor(props: FileEditorProps): JSX.Element {
   const [loadError, setLoadError] = useState<string | undefined>()
   const [saveError, setSaveError] = useState<string | undefined>()
   const [saving, setSaving] = useState(false)
-  const [dirty, setDirty] = useState(false)
   const [readOnlyReason, setReadOnlyReason] = useState<string | undefined>()
 
   const name = baseName(path)
@@ -98,13 +98,11 @@ export function FileEditor(props: FileEditorProps): JSX.Element {
   const looksText = size === undefined ? previewKind(name, 1) === 'text' : kind === 'text'
   const readOnly = Boolean(forceReadOnly || readOnlyReason || !looksText)
 
-  const setDirtyState = useCallback(
-    (d: boolean) => {
-      setDirty(d)
-      onDirtyChange?.(d)
-    },
-    [onDirtyChange],
-  )
+  // Dirty is protocol state — it lives in the ui-interaction store keyed by
+  // the tracked file; the editor only reports divergence and reads it back
+  // for the modified badge.
+  const dirty = useUiInteraction((s) => s.filesDirty.dirty)
+  const { setFilesDirty: setDirtyState } = useUiInteraction.getState()
 
   // Create editor once
   useEffect(() => {
