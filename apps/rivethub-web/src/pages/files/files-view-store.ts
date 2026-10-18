@@ -3,7 +3,7 @@
  * Zustand store so all Files components stay stateless and share one source.
  */
 
-import { create } from 'zustand'
+import { create, type StoreApi } from 'zustand'
 
 export type SortKey = 'name' | 'mtime' | 'size'
 
@@ -19,7 +19,7 @@ interface FilesViewState {
   setPreviewPath: (previewPath: string | undefined) => void
 }
 
-export const useFilesView = create<FilesViewState>((set) => ({
+export const useFilesView = create<FilesViewState>((set: StoreApi<FilesViewState>['setState']) => ({
   filter: '',
   sort: 'name',
   selected: new Set<string>(),
@@ -34,15 +34,5 @@ export const useFilesView = create<FilesViewState>((set) => ({
       else selected.add(name)
       return { selected }
     }),
-  setPreviewPath: (previewPath) => set({ previewPath }),
+  setPreviewPath: (previewPath: string | undefined) => set({ previewPath }),
 }))
-
-export function useFilesViewActions(): {
-  setFilter: (filter: string) => void
-  setSort: (sort: SortKey) => void
-  setSelected: (selected: Set<string>) => void
-  toggleSelected: (name: string) => void
-  setPreviewPath: (previewPath: string | undefined) => void
-} {
-  return useFilesView.getState()
-}
