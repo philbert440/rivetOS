@@ -97,8 +97,7 @@ export function FilesPage(): JSX.Element {
   // Path landed (blocker already resolved any dirty prompt). Drop selection
   // and close the preview — no after-the-fact confirm.
   useEffect(() => {
-    setSelected(new Set())
-    setPreviewPath(undefined)
+    useFilesView.setState({ selected: new Set<string>(), previewPath: undefined })
   }, [path])
 
   const markDirNavigated = useCallback((): void => {
