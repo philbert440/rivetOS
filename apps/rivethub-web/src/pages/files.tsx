@@ -4,30 +4,22 @@
  * upload into the current dir, and drag rows onto folders to move.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type JSX } from 'react'
+import { type DragEvent, type JSX, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useBlocker, useNavigate, useSearch } from '@tanstack/react-router'
 import type { FileEntry } from '@rivetos/types'
-import { GatewayError } from '@rivetos/gateway-client'
 import { useConnection } from '../stores/connection.js'
 import { NotConnected, useGatewayReady } from '../components/not-connected.js'
-import { copyTextToClipboard } from '../lib/clipboard.js'
 import { rivetShell } from '../lib/shell-bridge.js'
 import {
+  DISCARD_CONFIRM_OPTS,
+  discardMessage,
   guardClosePreview,
   guardOpenFile,
   guardPathNav,
-  discardMessage,
-  DISCARD_CONFIRM_OPTS,
+  shouldBlockFilesLeave,
 } from '../lib/files-dirty-guard.js'
-import {
-  baseName,
-  downloadTooLargeError,
-  joinRel,
-  parentRel,
-  previewKind,
-  readBlobBounded,
-} from '../lib/files-ui.js'
+import { baseName, joinRel, parentRel, previewKind } from '../lib/files-ui.js'
 import { useGateway } from '../lib/use-gateway.js'
 import { useUiInteraction } from '../stores/ui-interaction.js'
 import { useConfirmDialog } from '../components/confirm-dialog.js'
@@ -37,7 +29,6 @@ import { FileTable } from './files/file-table.js'
 import { useFileOps } from './files/use-file-ops.js'
 import { FilesToolbar } from './files/files-toolbar.js'
 import { Breadcrumbs } from './files/breadcrumbs.js'
-import { FileEditor } from '../components/file-editor.js'
 
 type SortKey = 'name' | 'mtime' | 'size'
 
@@ -53,7 +44,11 @@ export function FilesPage(): JSX.Element {
   const path = pathFromUrl ?? ''
   const setPath = useCallback(
     (next: string): void => {
-      void navigate({ to: '/files', search: next ? { path: next } : {} })
+      console.log('[FILES] setPath ->', next)
+      void navigate({ to: '/files', search: next ? { path: next } : {} }).then(
+        (r) => console.log('[FILES] navigate resolved', JSON.stringify(r)),
+        (e) => console.log('[FILES] navigate rejected', e),
+      )
     },
     [navigate],
   )
@@ -90,26 +85,22 @@ export function FilesPage(): JSX.Element {
 
   const dirtyFileName = previewPath ? baseName(previewPath) : undefined
 
+  // Blocker callbacks must have stable identity: the router tears down and
+  // re-registers the blocker when these change, and a re-register that lands
+  // mid-navigation silently swallows it. Read the store imperatively at call
+  // time instead of subscribing (the store is still the single source).
   const shouldBlockFn = useCallback(async () => {
-    const dirty = filesDirty.dirty
-    promptFilesDirty('leave the page')
-    const ok = dirty
-      ? await discardConfirm(discardMessage(filesDirty.fileName || undefined), {
-          ...DISCARD_CONFIRM_OPTS,
-        })
-      : true
-    answerFilesDirty(ok)
-    if (ok) clearDirty()
-    return ok
-  }, [
-    answerFilesDirty,
-    clearDirty,
-    discardConfirm,
-    filesDirty.dirty,
-    filesDirty.fileName,
-    promptFilesDirty,
-  ])
-  const enableBeforeUnload = useCallback(() => filesDirty.dirty, [filesDirty.dirty])
+    const { filesDirty } = useUiInteraction.getState()
+    // useBlocker contract: return true to BLOCK. Clean → false (proceed).
+    return shouldBlockFilesLeave({
+      dirty: filesDirty.dirty,
+      fileName: filesDirty.fileName || undefined,
+      confirm: discardConfirm,
+      clearDirty: () => useUiInteraction.getState().clearFilesDirty(),
+    })
+  }, [discardConfirm])
+
+  const enableBeforeUnload = useCallback(() => useUiInteraction.getState().filesDirty.dirty, [])
 
   // Route changes (sidebar leave, ?path= crumbs, browser Back/Forward) go
   // through the router blocker so Cancel never leaves a foreign listing under
@@ -134,7 +125,11 @@ export function FilesPage(): JSX.Element {
       // Same-path must no-op BEFORE any confirm: an accepted discard that
       // then setPaths to the current value would clear dirty while the pane
       // stays open and leave later closes unguarded.
-      if (guardPathNav(path, next) === 'noop') return
+      console.log('[FILES] navigateGuarded', next, 'from', path)
+      if (guardPathNav(path, next) === 'noop') {
+        console.log('[FILES] navigateGuarded noop')
+        return
+      }
       markDirNavigated()
       setPath(next)
     },
@@ -147,10 +142,10 @@ export function FilesPage(): JSX.Element {
 
   const openEntry = useCallback(
     async (child: string, isDir: boolean): Promise<void> => {
+      console.log('[FILES] openEntry', child, 'isDir', isDir, 'path', path)
       if (isDir) {
-        if (guardPathNav(path, child) === 'noop') return
-        markDirNavigated()
-        setPath(child)
+        console.log('[FILES] dir branch, navigateGuarded next')
+        navigateGuarded(child)
         return
       }
       const decision = await guardOpenFile({
@@ -164,7 +159,7 @@ export function FilesPage(): JSX.Element {
       if (decision !== 'proceed') return
       setPreviewPath(child)
     },
-    [clearDirty, dirtyFileName, discardConfirm, markDirNavigated, path, previewPath, setPath],
+    [clearDirty, dirtyFileName, discardConfirm, markDirNavigated, navigateGuarded, path, previewPath],
   )
 
   const openRaw = useCallback(
