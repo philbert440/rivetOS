@@ -9,14 +9,13 @@ filestore, and the loopback mTLS pipe (#491) for device-identity gateway
 auth (`src/main/mtls-pipe.ts`).
 
 Chromium is here for the terminal (xterm.js) and for TLS done in the Node
-main process, which holds the device identity as the same PEM files
-rivet-ca.sh issues — enrollment is unchanged.
+main process, which holds the device identity as PEM files (a step-ca
+device leaf, see Device identity).
 
-No application menu is installed on Windows (menu accelerators add
+No application menu is installed on Windows or Linux (menu accelerators add
 per-keystroke main-process work — terminal typing lag); window-management
 chords are handled in the renderer (`rivethub-web/src/lib/shell-keys.ts`)
-and forwarded over `window.rivetShell`. Linux/macOS keep an
-accelerator-bearing menu with the bar hidden off macOS.
+and forwarded over `window.rivetShell`. Only macOS installs a menu.
 
 Main-process faults, renderer crashes, and startup errors are appended to
 `<userData>/logs/main.log`. If the tray cannot be created (unreadable icon,
@@ -49,9 +48,15 @@ Looked up per call, preferred first:
 2. `~/.config/dev.rivetos.rivethub/mtls/` — the legacy (Tauri-era) dir, so an
    already-enrolled device migrates with zero touches.
 
-Files: `device.crt`, `device.key` (rivet-ca.sh issue-client leaf), `ca.pem`.
-Missing material is a soft per-call error — http nodes keep working, and
-identity dropped in mid-run engages without a relaunch.
+Files: `device.crt`, `device.key` (a 30-day step-ca device leaf with a
+`spiffe://…/device/<user>/<device>` URI SAN), `ca.pem` (the mesh root).
+The app does not enroll or renew by itself: run `rh cert renew --principal
+<device SPIFFE id> --ca-url <step-ca> --trust-root <root> --state <dir>` as a
+user service and point `device.crt`/`device.key` at its
+`<dir>/tls/holder.{cert,key}.pem` (symlinks are fine). The first run needs a
+one-time token minted by the operator. Missing material is a soft per-call
+error — http nodes keep working — and identity dropped in or renewed mid-run
+engages on the next connection without a relaunch.
 
 ## Renderer contract
 

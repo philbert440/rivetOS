@@ -1,10 +1,11 @@
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, renameSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { Socket } from 'node:net'
 import {
   hostAllowed,
+  identityStamp,
   INTERACTIVE_SERVER_OPTIONS,
   ListenerSet,
   MAX_LISTENERS,
@@ -125,6 +126,27 @@ describe('PipeState identity validation', () => {
     writeFileSync(join(dir, 'ca.pem'), '') // enroll wrote leaf+key first; CA not landed yet
     const state = new PipeState(() => dir)
     await expect(state.proxyPort('https://localhost:5174')).rejects.toThrow(/ca\.pem.*no PEM/)
+  })
+})
+
+describe('identityStamp', () => {
+  it('changes when a renewal replaces the file behind a symlink', () => {
+    const root = mkdtempSync(join(tmpdir(), 'mtls-test-'))
+    const holder = join(root, 'holder')
+    const dir = join(root, 'mtls')
+    mkdirSync(holder)
+    mkdirSync(dir)
+    writeFileSync(join(holder, 'holder.cert.pem'), 'leaf-1')
+    writeFileSync(join(holder, 'holder.key.pem'), 'key-1')
+    symlinkSync(join(holder, 'holder.cert.pem'), join(dir, 'device.crt'))
+    symlinkSync(join(holder, 'holder.key.pem'), join(dir, 'device.key'))
+    writeFileSync(join(dir, 'ca.pem'), 'ca')
+    const before = identityStamp(dir)
+    expect(identityStamp(dir)).toBe(before)
+    // rh cert renew writes a temp file and renames it over the target.
+    writeFileSync(join(holder, 'next.pem'), 'leaf-2')
+    renameSync(join(holder, 'next.pem'), join(holder, 'holder.cert.pem'))
+    expect(identityStamp(dir)).not.toBe(before)
   })
 })
 

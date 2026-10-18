@@ -242,8 +242,10 @@ export class PipeState {
    *  through to a fresh disk read next call, so enrollment recovers live.
    *  Keyed by the dir it came from: identityDir() can legitimately move
    *  (legacy Tauri dir → own dir once an enroll lands) and the old cache
-   *  must not shadow the new material. */
-  private identity: { dir: string; material: Identity } | undefined
+   *  must not shadow the new material. Also keyed by the files' stamp:
+   *  `rh cert renew` rewrites the leaf in place (often behind a symlink)
+   *  well before expiry, and a tray app outlives a 30-day device cert. */
+  private identity: { dir: string; stamp: string; material: Identity } | undefined
   /** In-flight resolves per key: concurrent windows racing the same target
    *  must share one bind, or the loser leaks an orphaned identity-serving
    *  listener on an unrecorded port. */
@@ -253,7 +255,10 @@ export class PipeState {
 
   private loadIdentity(): Identity {
     const dir = this.identityDir()
-    if (this.identity && this.identity.dir === dir) return this.identity.material
+    const stamp = identityStamp(dir)
+    if (this.identity && this.identity.dir === dir && this.identity.stamp === stamp) {
+      return this.identity.material
+    }
     const read = (name: string, mustContain: string): Buffer => {
       const p = path.join(dir, name)
       let data: Buffer
@@ -288,7 +293,7 @@ export class PipeState {
       )
     }
     warnKeyPermissions(path.join(dir, 'device.key'))
-    this.identity = { dir, material: identity }
+    this.identity = { dir, stamp, material: identity }
     return identity
   }
 
@@ -303,12 +308,21 @@ export class PipeState {
     if (inFlight) return inFlight
 
     const resolve = (async (): Promise<number> => {
-      const identity = this.loadIdentity()
+      let identity = this.loadIdentity()
       const server = net.createServer({ ...INTERACTIVE_SERVER_OPTIONS }, (client) => {
         // LRU-touch on every connection: the pipe the UI is bound to is
         // always most-recent and unreachable by eviction; one-shot name
         // probes go stale and become the victims.
         this.listeners.touch(key)
+        // Re-check per connection so a renewed cert is used without a
+        // relaunch; a renewal caught mid-write keeps the last good identity.
+        try {
+          identity = this.loadIdentity()
+        } catch (e) {
+          console.error(
+            `RivetHub mtls-pipe: identity reload: ${e instanceof Error ? e.message : String(e)}`,
+          )
+        }
         pipe(client, identity, host, port)
       })
       server.on('error', (e) => {
@@ -361,6 +375,22 @@ export class PipeState {
     for (const entry of this.listeners.values()) entry.server.close()
     this.listeners.clear()
   }
+}
+
+/** Change stamp for the identity files. `statSync` follows symlinks, so a
+ *  renewal that replaces the link target still changes the stamp; a missing
+ *  file stamps as absent and the read that follows reports it. */
+export function identityStamp(dir: string): string {
+  return ['device.crt', 'device.key', 'ca.pem']
+    .map((name) => {
+      try {
+        const st = fs.statSync(path.join(dir, name))
+        return `${st.ino}:${st.size}:${st.mtimeMs}`
+      } catch {
+        return '-'
+      }
+    })
+    .join('|')
 }
 
 /** The key IS the device identity: warn (never fail) when a sloppy enroll
