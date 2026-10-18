@@ -34,9 +34,9 @@ import { useConfirmDialog } from '../components/confirm-dialog.js'
 import { saveViaGateway } from './files/save-via-gateway.js'
 import { PreviewPane } from './files/preview-pane.js'
 import { FileTable } from './files/file-table.js'
+import { useFileOps } from './files/use-file-ops.js'
 import { FilesToolbar } from './files/files-toolbar.js'
 import { Breadcrumbs } from './files/breadcrumbs.js'
-import type { Notice } from './files/notice.js'
 import { FileEditor } from '../components/file-editor.js'
 
 type SortKey = 'name' | 'mtime' | 'size'
@@ -67,8 +67,6 @@ export function FilesPage(): JSX.Element {
   const { setFilesDirty, promptFilesDirty, answerFilesDirty, clearFilesDirty } =
     useUiInteraction.getState()
   const [dragging, setDragging] = useState(false)
-  const [notice, setNotice] = useState<Notice | undefined>()
-  const [busy, setBusy] = useState(false)
   const dialog = useConfirmDialog()
   const dragDepth = useRef(0)
   /** Ignore openRaw briefly after a dir navigate so a folder double-click
@@ -179,10 +177,10 @@ export function FilesPage(): JSX.Element {
         else
           void saveViaGateway(url, entry.name, entry.size)
             .then(() => {
-              showNotice({ kind: 'ok', text: `download started: ${entry.name}` })
+              ops.showNotice({ kind: 'ok', text: `download started: ${entry.name}` })
             })
             .catch((err: unknown) => {
-              showNotice({ kind: 'err', text: (err as Error).message })
+              ops.showNotice({ kind: 'err', text: (err as Error).message })
             })
       } else {
         window.open(url, '_blank', 'noopener,noreferrer')
@@ -194,8 +192,6 @@ export function FilesPage(): JSX.Element {
   const refresh = useCallback(async (): Promise<void> => {
     await queryClient.invalidateQueries({ queryKey: ['files', baseUrl, path] })
   }, [queryClient, baseUrl, path])
-
-  const showNotice = (n: Notice): void => setNotice(n)
 
   const entries = useMemo(() => {
     const raw = listing.data?.entries ?? []
@@ -210,185 +206,39 @@ export function FilesPage(): JSX.Element {
     return list
   }, [listing.data?.entries, filter, sort])
 
-  if (!connected) return <NotConnected />
-
-  const upload = async (files: FileList | File[]): Promise<void> => {
-    await uploadInto(path, files)
-  }
-
-  const uploadInto = async (dirPath: string, files: FileList | File[]): Promise<void> => {
-    setBusy(true)
-    let ok = 0
-    const errors: string[] = []
-    for (const file of Array.from(files)) {
-      try {
-        await gateway.filesUpload(dirPath, file.name, file)
-        ok += 1
-      } catch (err) {
-        if (err instanceof GatewayError && err.status === 409) {
-          if (await dialog.confirm(`${file.name} already exists — overwrite?`)) {
-            try {
-              await gateway.filesUpload(dirPath, file.name, file, { overwrite: true })
-              ok += 1
-              continue
-            } catch (err2) {
-              errors.push(`${file.name}: ${(err2 as Error).message}`)
-              continue
-            }
-          }
-          continue
-        }
-        errors.push(`${file.name}: ${(err as Error).message}`)
-      }
-    }
-    await refresh()
-    setBusy(false)
-    showNotice(
-      errors.length > 0
-        ? { kind: 'err', text: errors.join(' · ') }
-        : {
-            kind: 'ok',
-            text:
-              dirPath === path
-                ? `uploaded ${String(ok)} file${ok === 1 ? '' : 's'}`
-                : `uploaded ${String(ok)} into ${dirPath.split('/').pop() ?? dirPath}/`,
-          },
-    )
-  }
-
-  const mkdir = async (): Promise<void> => {
-    const name = await dialog.prompt('New folder name')
-    if (!name?.trim()) return
-    setBusy(true)
-    try {
-      await gateway.filesMkdir(path, name.trim())
-      await refresh()
-      showNotice({ kind: 'ok', text: `created ${name.trim()}/` })
-    } catch (err) {
-      showNotice({ kind: 'err', text: (err as Error).message })
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const renameOne = async (entry: FileEntry): Promise<void> => {
-    const next = await dialog.prompt('Rename to', { defaultValue: entry.name })
-    if (!next?.trim() || next.trim() === entry.name) return
-    const from = joinRel(path, entry.name)
-    const to = joinRel(path, next.trim())
-    setBusy(true)
-    try {
-      await gateway.filesRename(from, to)
-      setSelected((s) => {
-        const n = new Set(s)
-        n.delete(entry.name)
-        return n
-      })
+  const ops = useFileOps({
+    path,
+    refresh: () => refresh(),
+    confirm: dialog.confirm,
+    prompt: dialog.prompt,
+    onPreviewRenamed: (from, to) => {
       if (previewPath === from) setPreviewPath(to)
-      await refresh()
-      showNotice({ kind: 'ok', text: `renamed → ${next.trim()}` })
-    } catch (err) {
-      showNotice({ kind: 'err', text: (err as Error).message })
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const deleteSelected = async (): Promise<void> => {
-    const names = [...selected]
-    if (names.length === 0) return
-    if (!(await dialog.confirm(`Delete ${String(names.length)} item(s)?`, { danger: true }))) return
-    setBusy(true)
-    const errors: string[] = []
-    for (const name of names) {
-      const rel = joinRel(path, name)
-      const entry = (listing.data?.entries ?? []).find((e) => e.name === name)
-      try {
-        await gateway.filesDelete(rel)
-      } catch (err) {
-        if (
-          err instanceof GatewayError &&
-          err.status === 409 &&
-          entry?.type === 'dir' &&
-          (await dialog.confirm(`${name}/ is not empty — delete recursively?`, { danger: true }))
-        ) {
-          try {
-            await gateway.filesDelete(rel, { recursive: true })
-            continue
-          } catch (err2) {
-            errors.push(`${name}: ${(err2 as Error).message}`)
-            continue
-          }
-        }
-        errors.push(`${name}: ${(err as Error).message}`)
-      }
-    }
-    setSelected(new Set())
-    if (
-      previewPath &&
-      names.some(
-        (n) => previewPath === joinRel(path, n) || previewPath.startsWith(joinRel(path, n) + '/'),
-      )
-    ) {
-      setPreviewPath(undefined)
-    }
-    await refresh()
-    setBusy(false)
-    showNotice(
-      errors.length > 0
-        ? { kind: 'err', text: errors.join(' · ') }
-        : { kind: 'ok', text: `deleted ${String(names.length - errors.length)}` },
-    )
-  }
-
-  const moveOntoDir = async (srcName: string, destDirName: string): Promise<void> => {
-    if (srcName === destDirName) return
-    const from = joinRel(path, srcName)
-    const to = joinRel(joinRel(path, destDirName), srcName)
-    setBusy(true)
-    try {
-      await gateway.filesRename(from, to)
+    },
+    onPreviewDeleted: (deletedPaths) => {
       setSelected(new Set())
-      await refresh()
-      showNotice({ kind: 'ok', text: `moved ${srcName} → ${destDirName}/` })
-    } catch (err) {
-      showNotice({ kind: 'err', text: (err as Error).message })
-    } finally {
-      setBusy(false)
-    }
-  }
+      if (
+        previewPath &&
+        deletedPaths.some((d) => previewPath === d || previewPath.startsWith(d + '/'))
+      ) {
+        setPreviewPath(undefined)
+      }
+    },
+  })
 
-  const copyPaths = async (): Promise<void> => {
-    const lines = [...selected].map((n) => joinRel(path, n))
-    if (lines.length === 0) return
-    try {
-      await copyTextToClipboard(lines.join('\n'))
-      showNotice({ kind: 'ok', text: 'path(s) copied' })
-    } catch {
-      showNotice({ kind: 'err', text: 'copy failed' })
-    }
-  }
+  const {
+    busy,
+    notice,
+    setNotice,
+    upload,
+    mkdir,
+    renameOne,
+    deleteSelected,
+    moveOntoDir,
+    copyPaths,
+    copyUrls,
+  } = ops
 
-  const copyUrls = async (): Promise<void> => {
-    const gw = gateway
-    const lines = [...selected]
-      .map((n) => {
-        const e = (listing.data?.entries ?? []).find((x) => x.name === n)
-        if (!e || e.type !== 'file') return null
-        return gw.fileDownloadUrl(joinRel(path, n))
-      })
-      .filter((x): x is string => !!x)
-    if (lines.length === 0) {
-      showNotice({ kind: 'err', text: 'select file(s) to copy download URLs' })
-      return
-    }
-    try {
-      await copyTextToClipboard(lines.join('\n'))
-      showNotice({ kind: 'ok', text: 'URL(s) copied' })
-    } catch {
-      showNotice({ kind: 'err', text: 'copy failed' })
-    }
-  }
+  if (!connected) return <NotConnected />
 
   const rootLabel = listing.data?.root ?? '/rivet-shared'
 
@@ -435,9 +285,9 @@ export function FilesPage(): JSX.Element {
         onDismissNotice={() => setNotice(undefined)}
         onMkdir={() => void mkdir()}
         onRename={(entry) => void renameOne(entry)}
-        onDelete={() => void deleteSelected()}
-        onCopyPaths={() => void copyPaths()}
-        onCopyUrls={() => void copyUrls()}
+        onDelete={() => void deleteSelected(selected, listing.data?.entries ?? [])}
+        onCopyPaths={() => void copyPaths(selected)}
+        onCopyUrls={() => void copyUrls(selected, listing.data?.entries ?? [])}
         onUpload={(files) => void upload(files)}
       />
 
@@ -461,7 +311,7 @@ export function FilesPage(): JSX.Element {
           onOpenEntry={(child, isDir) => void openEntry(child, isDir)}
           onOpenRaw={openRaw}
           onMoveOntoDir={(src, dest) => void moveOntoDir(src, dest)}
-          onDropFilesInto={(dir, files) => void uploadInto(dir, files)}
+          onDropFilesInto={(dir, files) => void ops.uploadInto(dir, files)}
           onNavigateUp={() => navigateGuarded(parentRel(path))}
           suppressRawUntil={suppressRawUntilRef}
         />
@@ -482,7 +332,7 @@ export function FilesPage(): JSX.Element {
                 setPreviewPath(undefined)
               })()
             }}
-            onNotice={showNotice}
+            onNotice={(n) => ops.showNotice(n)}
             onDirtyChange={setEditorDirtyTracked}
             downloadUrl={gateway.fileDownloadUrl(previewPath)}
             size={
