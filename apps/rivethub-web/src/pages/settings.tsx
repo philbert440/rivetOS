@@ -162,7 +162,7 @@ function AgentsSettingsBlock(): JSX.Element {
     <>
       <h2 className={H2}>Agents</h2>
       <p className="mb-3 text-xs text-ink-dim">
-        The shared directory comes from <span className="font-mono">RIVETOS_SHARED_DIR</span> /{' '}
+        The shared directory comes from <span className="font-mono">RIVETHUB_SHARED_DIR</span> /{' '}
         <span className="font-mono">mesh.storage_dir</span> on the node.
       </p>
       {agents.isLoading && <p className="text-xs text-ink-dim">loading…</p>}

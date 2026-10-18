@@ -230,6 +230,9 @@ export async function downloadAndInstall(pipes: PipeState, gatewayBase: string):
     // process keeps its inode.
     const installTo = resolveInstallPath(process.env.APPIMAGE, app.getPath('home'), tmpdir())
     await installAppImage(dest, installTo)
+    // The download is copied out; where /tmp is RAM-backed, don't
+    // leave ~120 MB behind until reboot.
+    await rm(dir, { recursive: true, force: true })
 
     // Run the INSTALLED AppImage, not the temp download. Strip the RUNNING
     // AppImage's runtime vars, or the new image's runtime resolves against

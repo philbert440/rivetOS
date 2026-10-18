@@ -1043,7 +1043,7 @@ export function AgentsSection(props: {
           const echoed = updated.agent.sortOrder
           if (echoed !== sortOrderEcho(sortOrder)) {
             knownSortOrder.current.set(agent.id, Number.NaN)
-            throw new Error(`${nodeLabel} does not support agent ordering (update that den)`)
+            throw new Error(`${nodeLabel} does not support agent ordering (update that node)`)
           }
           knownSortOrder.current.set(agent.id, echoed)
         }),
