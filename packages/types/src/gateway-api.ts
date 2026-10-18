@@ -1139,6 +1139,12 @@ export interface HarnessTranscriptResponse {
  *  capability sheet at `GET /api/harnesses/:harnessId`. */
 export interface HarnessDescriptor {
   harnessId: HarnessId
+  /**
+   * The node can start a chat session for this harness over ACP
+   * (`POST /api/harness-sessions`). A new conversation starts that way
+   * rather than by spawning the TUI, which would own the session's turns.
+   */
+  chat?: boolean
   capabilities: HarnessCapabilities
   /**
    * The node can launch this harness: its roster argv[0] resolves on the den's

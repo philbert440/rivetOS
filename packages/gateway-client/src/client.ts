@@ -105,8 +105,6 @@ import type {
   HarnessSessionResponse,
   HarnessSessionSummary,
   HarnessSessionTranscriptResponse,
-  HarnessTurnAccepted,
-  StartSessionOpts,
   UserTurn,
 } from '@rivetos/types'
 import { encodeSessionIdSegment, isSessionId } from '@rivetos/types'
@@ -204,14 +202,18 @@ export class RivetGateway {
     })
   }
 
-  /** Live message/stream frames; omit sessionId to watch every session. */
+  /**
+   * The node's live session event stream; omit sessionId to watch every
+   * session. RivetHub sends its own snapshot and event frames here, keyed by
+   * `type`; only a `kind` frame is a chat frame.
+   */
   watchSessions(
-    onFrame: (frame: SessionWsFrame) => void,
+    onFrame: (frame: SessionWsFrame | { type: string }) => void,
     sessionId?: string,
     opts: WatchOptions = {},
   ): Subscription {
-    return subscribe<SessionWsFrame>(this.config, {
-      path: '/api/sessions/ws',
+    return subscribe<SessionWsFrame | { type: string }>(this.config, {
+      path: '/api/events/ws',
       query: { session: sessionId },
       onFrame,
       onStatus: opts.onStatus,
@@ -750,21 +752,17 @@ export class RivetGateway {
   }
 
   /**
-   * Start a NEW session (201). Never attaches: a pinned `nativeSessionId` that
-   * already exists — including anywhere in an alias chain — is rejected with
-   * `session_id_collision` (409). Attaching is `resumeHarnessSession`.
+   * Start a new chat session over ACP. The node mints the id; `cwd` must sit
+   * under its terminal root, and the node's roster directory applies without it.
    */
   startHarnessSession(
     harnessId: HarnessId,
-    /** `agentId` starts the session from an agent preset: its directory,
-     *  model and effort, resolved on the node. `directory` (a project's,
-     *  absolute and existing on the node) wins over the preset's. */
-    body: StartSessionOpts & { agentId?: string; directory?: string } = {},
+    body: { model?: string; cwd?: string } = {},
     signal?: AbortSignal,
   ): Promise<HarnessSessionSummary> {
-    return request(this.config, `/api/harnesses/${encodeURIComponent(harnessId)}/sessions`, {
+    return request(this.config, '/api/harness-sessions', {
       method: 'POST',
-      body,
+      body: { harness: harnessId, ...body },
       signal,
     })
   }
@@ -782,26 +780,24 @@ export class RivetGateway {
   }
 
   /**
-   * Send a user turn (202). Rejects with `turn_in_flight` (409) while a turn
-   * is running — v1 drivers never silently queue, so the caller owns the
-   * queue and retries.
+   * Send a user turn to a chat session this node started. The id goes in raw
+   * (percent-encoded), not as an `enc(SessionId)` segment.
    */
   sendHarnessTurn(
     sessionId: string,
     turn: UserTurn,
     signal?: AbortSignal,
-  ): Promise<HarnessTurnAccepted> {
-    return request(this.config, `/api/harness-sessions/${sessionSegment(sessionId)}/turns`, {
+  ): Promise<SessionPostAccepted> {
+    return request(this.config, `/api/harness-sessions/${encodeURIComponent(sessionId)}/turn`, {
       method: 'POST',
       body: turn,
       signal,
     })
   }
 
-  /** Cancel the in-flight turn (202). Idempotent — a session with nothing
-   *  running answers ok. 501 when the driver has no interrupt. */
-  interruptHarnessSession(sessionId: string, signal?: AbortSignal): Promise<HarnessTurnAccepted> {
-    return request(this.config, `/api/harness-sessions/${sessionSegment(sessionId)}/interrupt`, {
+  /** Stop the chat session's in-flight turn. Same raw id as `sendHarnessTurn`. */
+  interruptHarnessSession(sessionId: string, signal?: AbortSignal): Promise<{ ok: true }> {
+    return request(this.config, `/api/harness-sessions/${encodeURIComponent(sessionId)}/stop`, {
       method: 'POST',
       signal,
     })
