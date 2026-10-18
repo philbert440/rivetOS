@@ -3,18 +3,17 @@ import { baseName, previewKind } from '../../lib/files-ui.js'
 import { saveViaGateway } from './save-via-gateway.js'
 import { rivetShell } from '../../lib/shell-bridge.js'
 import { FileEditor } from '../../components/file-editor.js'
-import type { Notice } from './notice.js'
+import { useFilesView } from './files-view-store.js'
 
 /**
  * The right-hand preview/edit pane of the Files page. Stateless w.r.t.
  * guard state: dirty reporting is an injected callback; the discard
- * decision belongs to the page.
+ * decision belongs to the page. The notice bar lives in the view store.
  */
 export function PreviewPane(props: {
   path: string
   downloadUrl: string
   onClose: () => void
-  onNotice: (n: Notice) => void
   /** Optional size from the listing — drives previewKind / edit eligibility. */
   size?: number
 }): JSX.Element {
@@ -41,10 +40,14 @@ export function PreviewPane(props: {
                   ev.preventDefault()
                   void saveViaGateway(props.downloadUrl, name, props.size)
                     .then(() => {
-                      props.onNotice({ kind: 'ok', text: `download started: ${name}` })
+                      useFilesView
+                        .getState()
+                        .setNotice({ kind: 'ok', text: `download started: ${name}` })
                     })
                     .catch((err: unknown) => {
-                      props.onNotice({ kind: 'err', text: (err as Error).message })
+                      useFilesView
+                        .getState()
+                        .setNotice({ kind: 'err', text: (err as Error).message })
                     })
                 }
               : undefined

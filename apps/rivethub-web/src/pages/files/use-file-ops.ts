@@ -5,12 +5,13 @@ import { joinRel } from '../../lib/files-ui.js'
 import { copyTextToClipboard } from '../../lib/clipboard.js'
 import { useGateway } from '../../lib/use-gateway.js'
 import type { Notice } from './notice.js'
+import { useFilesView } from './files-view-store.js'
 
 /**
  * The Files page mutation operations: upload (with 409-overwrite confirm),
  * mkdir, rename, delete (with recursive confirm), move-onto-dir, copy
- * paths/URLs. Owns the busy flag and the transient notice bar; refresh and
- * the confirm/prompt functions are injected by the page.
+ * paths/URLs. Owns the busy flag; the notice bar lives in the view store.
+ * Refresh and the confirm/prompt functions are injected by the page.
  *
  * Ops that can invalidate the open preview buffer receive callbacks
  * (`onPreviewRenamed`, `onPreviewDeleted`) so the page keeps owning its
@@ -25,9 +26,7 @@ export function useFileOps(args: {
   onPreviewDeleted: (deletedPaths: string[]) => void
 }): {
   busy: boolean
-  notice: Notice | undefined
   showNotice: (n: Notice) => void
-  setNotice: (n: Notice | undefined) => void
   upload: (files: FileList | File[]) => Promise<void>
   uploadInto: (dirPath: string, files: FileList | File[]) => Promise<void>
   mkdir: () => Promise<void>
@@ -40,9 +39,8 @@ export function useFileOps(args: {
   const { path, refresh, confirm, prompt, onPreviewRenamed, onPreviewDeleted } = args
   const gateway = useGateway()
   const [busy, setBusy] = useState(false)
-  const [notice, setNoticeState] = useState<Notice | undefined>()
 
-  const showNotice = (n: Notice): void => setNoticeState(n)
+  const showNotice = (n: Notice): void => useFilesView.getState().setNotice(n)
 
   const uploadInto = async (dirPath: string, files: FileList | File[]): Promise<void> => {
     setBusy(true)
@@ -210,9 +208,7 @@ export function useFileOps(args: {
 
   return {
     busy,
-    notice,
     showNotice,
-    setNotice: setNoticeState,
     upload,
     uploadInto,
     mkdir,

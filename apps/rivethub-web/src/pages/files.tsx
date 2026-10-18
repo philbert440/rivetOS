@@ -100,6 +100,10 @@ export function FilesPage(): JSX.Element {
     useFilesView.setState({ selected: new Set<string>(), previewPath: undefined })
   }, [path])
 
+  // The notice bar lives in a module store, so it survives unmount; clear it
+  // on leave to match the old page-local state (fresh visit = no stale notice).
+  useEffect(() => () => useFilesView.setState({ notice: undefined }), [])
+
   const markDirNavigated = useCallback((): void => {
     suppressRawUntilRef.current = performance.now() + 500
   }, [])
@@ -126,8 +130,13 @@ export function FilesPage(): JSX.Element {
         navigateGuarded(child)
         return
       }
+      const storeDirty = useUiInteraction.getState().filesDirty.dirty
       const decision = await guardOpenFile({
-        dirty: filesDirty.dirty,
+        // Read the store at call time, not from the render closure: this
+        // callback is memoized on deps that never include `dirty`, so a
+        // captured value goes stale the moment you type and stays stale until
+        // path/previewPath next changes.
+        dirty: storeDirty,
         previewPath,
         child,
         fileName: dirtyFileName,
@@ -198,18 +207,7 @@ export function FilesPage(): JSX.Element {
     },
   })
 
-  const {
-    busy,
-    notice,
-    setNotice,
-    upload,
-    mkdir,
-    renameOne,
-    deleteSelected,
-    moveOntoDir,
-    copyPaths,
-    copyUrls,
-  } = ops
+  const { busy, upload, mkdir, renameOne, deleteSelected, moveOntoDir, copyPaths, copyUrls } = ops
 
   if (!connected) return <NotConnected />
 
@@ -254,8 +252,6 @@ export function FilesPage(): JSX.Element {
         busy={busy}
         selected={selected}
         entries={listing.data?.entries ?? []}
-        notice={notice}
-        onDismissNotice={() => setNotice(undefined)}
         onMkdir={() => void mkdir()}
         onRename={(entry) => void renameOne(entry)}
         onDelete={() => void deleteSelected(selected, listing.data?.entries ?? [])}
@@ -298,7 +294,6 @@ export function FilesPage(): JSX.Element {
                 setPreviewPath(undefined)
               })()
             }}
-            onNotice={(n) => ops.showNotice(n)}
             downloadUrl={gateway.fileDownloadUrl(previewPath)}
             size={
               (listing.data?.entries ?? []).find((e) => joinRel(path, e.name) === previewPath)?.size

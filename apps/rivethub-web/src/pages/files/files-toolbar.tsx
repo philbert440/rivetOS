@@ -1,11 +1,12 @@
 import type { JSX } from 'react'
 import { Select } from '../../components/select.js'
 import type { FileEntry } from '@rivetos/types'
-import type { Notice } from './notice.js'
+import { useFilesView } from './files-view-store.js'
 
 /**
  * The Files toolbar: filter, sort, and the selection-driven actions row.
- * Stateless: all mutations and state come in via props.
+ * Stateless: listing data and actions arrive via props; the notice slice it
+ * renders is read straight from the files view store.
  */
 export function FilesToolbar(props: {
   filter: string
@@ -15,8 +16,6 @@ export function FilesToolbar(props: {
   busy: boolean
   selected: Set<string>
   entries: FileEntry[]
-  notice: Notice | undefined
-  onDismissNotice: () => void
   onMkdir: () => void
   onRename: (entry: FileEntry) => void
   onDelete: () => void
@@ -24,6 +23,7 @@ export function FilesToolbar(props: {
   onCopyUrls: () => void
   onUpload: (files: FileList) => void
 }): JSX.Element {
+  const notice = useFilesView((s) => s.notice)
   const findSelected = (): FileEntry | undefined => {
     const name = [...props.selected][0]
     return props.entries.find((e) => e.name === name)
@@ -104,14 +104,16 @@ export function FilesToolbar(props: {
         </label>
       </div>
 
-      {props.notice && (
+      {notice && (
         <div
-          className={`border-b border-line px-4 py-1.5 text-xs ${props.notice.kind === 'ok' ? 'text-em' : 'text-red'}`}
+          className={`border-b border-line px-4 py-1.5 text-xs ${notice.kind === 'ok' ? 'text-em' : 'text-red'}`}
         >
-          {props.notice.text}
+          {notice.text}
           <button
             type="button"
-            onClick={props.onDismissNotice}
+            onClick={() => {
+              useFilesView.getState().setNotice(undefined)
+            }}
             className="ml-3 text-ink-dim hover:text-ink"
           >
             ✕
