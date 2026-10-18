@@ -191,10 +191,12 @@ export function FilesPage(): JSX.Element {
   }, [listing.data?.entries, filter, sort])
 
   // The toolbar's Rename target: the single selected entry, resolved here so
-  // the toolbar needs neither `selected` nor `entries`.
+  // the toolbar needs neither `selected` nor `entries`. Multi-select has no
+  // rename target — picking one of several would rename an arbitrary row.
   const renameTarget = useMemo(() => {
+    if (selected.size !== 1) return undefined
     const [name] = [...selected]
-    return name ? (listing.data?.entries ?? []).find((e) => e.name === name) : undefined
+    return (listing.data?.entries ?? []).find((e) => e.name === name)
   }, [selected, listing.data?.entries])
 
   const ops = useFileOps({
