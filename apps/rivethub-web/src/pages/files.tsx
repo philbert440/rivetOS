@@ -26,8 +26,8 @@ import { FileTable } from './files/file-table.js'
 import { useFileOps } from './files/use-file-ops.js'
 import { FilesToolbar } from './files/files-toolbar.js'
 import { Breadcrumbs } from './files/breadcrumbs.js'
-
-type SortKey = 'name' | 'mtime' | 'size'
+import { useFilesView } from './files/files-view-store.js'
+import type { SortKey } from './files/files-view-store.js'
 
 export function FilesPage(): JSX.Element {
   const baseUrl = useConnection((s) => s.baseUrl)
@@ -45,10 +45,12 @@ export function FilesPage(): JSX.Element {
     },
     [navigate],
   )
-  const [filter, setFilter] = useState('')
-  const [sort, setSort] = useState<SortKey>('name')
-  const [selected, setSelected] = useState<Set<string>>(() => new Set())
-  const [previewPath, setPreviewPath] = useState<string | undefined>()
+  const filter = useFilesView((s) => s.filter)
+  const sort = useFilesView((s) => s.sort)
+  const selected = useFilesView((s) => s.selected)
+  const previewPath = useFilesView((s) => s.previewPath)
+  const { setFilter, setSort, setSelected, toggleSelected, setPreviewPath } =
+    useFilesView.getState()
   const discardDialog = useConfirmDialog()
   const discardConfirm = discardDialog.confirm
   const filesDirty = useUiInteraction((s) => s.filesDirty)
@@ -272,14 +274,7 @@ export function FilesPage(): JSX.Element {
           filterActive={filter.trim() !== ''}
           selected={selected}
           onToggleSelectAll={(names) => setSelected(names)}
-          onToggleSelect={(name) => {
-            setSelected((prev) => {
-              const n = new Set(prev)
-              if (n.has(name)) n.delete(name)
-              else n.add(name)
-              return n
-            })
-          }}
+          onToggleSelect={toggleSelected}
           onOpenEntry={(child, isDir) => void openEntry(child, isDir)}
           onOpenRaw={openRaw}
           onMoveOntoDir={(src, dest) => void moveOntoDir(src, dest)}
