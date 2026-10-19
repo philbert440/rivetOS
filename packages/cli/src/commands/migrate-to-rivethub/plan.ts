@@ -8,7 +8,7 @@
  * shell command, what it does), with credentials redacted.
  */
 
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { shellArg as q } from '../../lib/ssh.js'
 import type { Host } from './host.js'
 import type { MigrateOptions } from './options.js'
@@ -401,6 +401,43 @@ function pgEnv(url: string): Record<string, string> {
   return { RIVETHUB_PG_URL: url }
 }
 
+/**
+ * Copy rivetos.service's drop-ins (tunnels, PATH, limits) next to
+ * rivethub.service before its first daemon-reload; an existing file of the
+ * same name wins. Undefined when there is nothing to carry.
+ */
+function carryDropInsCmd(
+  facts: NodeFacts,
+  hubScope: 'system' | 'user',
+  dir: string,
+): string | undefined {
+  if (facts.tsDropIns.length === 0) return undefined
+  const copies = facts.tsDropIns.map((src) => {
+    const dst = join(dir, basename(src))
+    return `{ [ -e ${q(dst)} ] || cp -p ${q(src)} ${q(dst)}; }`
+  })
+  const chain = [`mkdir -p ${q(dir)}`, ...copies].join(' && ')
+  return hubScope === 'system' ? asRoot(`sh -c ${q(chain)}`, facts.scope) : chain
+}
+
+/**
+ * Undo carryDropInsCmd: remove a carried drop-in only while it still matches
+ * its rivetos.service source, then the directory if that left it empty.
+ */
+function uncarryDropInsCmd(
+  facts: NodeFacts,
+  hubScope: 'system' | 'user',
+  dir: string,
+): string | undefined {
+  if (facts.tsDropIns.length === 0) return undefined
+  const removals = facts.tsDropIns.map((src) => {
+    const dst = join(dir, basename(src))
+    return `{ ! cmp -s ${q(src)} ${q(dst)} || rm -f ${q(dst)}; }`
+  })
+  const chain = [...removals, `{ rmdir ${q(dir)} 2>/dev/null || true; }`].join(' && ')
+  return hubScope === 'system' ? asRoot(`sh -c ${q(chain)}`, facts.scope) : chain
+}
+
 function unitSteps(facts: NodeFacts, hubScope: 'system' | 'user'): Step[] {
   const unit = renderHubUnit({
     scope: hubScope,
@@ -415,17 +452,20 @@ function unitSteps(facts: NodeFacts, hubScope: 'system' | 'user'): Step[] {
     hubScope === 'system'
       ? `${asRoot(`install -m 0644 ${q(staged)} ${q(dest)}`, facts.scope)} && ${s('daemon-reload')} && ${s(`enable ${HUB_UNIT}`)}`
       : `mkdir -p ${q(join(facts.home, '.config', 'systemd', 'user'))} && install -m 0644 ${q(staged)} ${q(dest)} && ${s('daemon-reload')} && ${s(`enable ${HUB_UNIT}`)}`
+  const carry = carryDropInsCmd(facts, hubScope, `${dest}.d`)
+  const fullInstallCmd = carry ? `${carry} && ${installCmd}` : installCmd
+  const carried = facts.tsDropIns.length
   const startCmd = s(`start ${HUB_UNIT}`)
   return [
     {
       id: 'install-unit',
-      title: `Install ${HUB_UNIT} (${hubScope} unit, ExecStart=${facts.installedRh} start)`,
+      title: `Install ${HUB_UNIT} (${hubScope} unit, ExecStart=${facts.installedRh} start${carried ? `, ${String(carried)} drop-in${carried === 1 ? '' : 's'} from ${TS_UNIT}` : ''})`,
       phase: 'switch',
-      commands: [`write ${staged}`, installCmd],
+      commands: [`write ${staged}`, fullInstallCmd],
       run: (host) => {
         host.mkdirp(join(facts.home, '.rivethub', 'migrate'))
         host.writeFile(staged, unit, 0o644)
-        sh(host, installCmd, `install ${HUB_UNIT}`)
+        sh(host, fullInstallCmd, `install ${HUB_UNIT}`)
         return Promise.resolve(dest)
       },
     },
@@ -631,7 +671,8 @@ function rollbackSteps(
     const dest = unitPath(hubScope, home)
     const rm = hubScope === 'system' ? asRoot(`rm -f ${q(dest)}`, facts.scope) : `rm -f ${q(dest)}`
     const stopCmd = `${s(`disable --now ${HUB_UNIT}`)} 2>/dev/null || true`
-    const removeCmd = `${rm} && ${s('daemon-reload')}`
+    const uncarry = uncarryDropInsCmd(facts, hubScope, `${dest}.d`)
+    const removeCmd = `${rm} && ${uncarry ? `${uncarry} && ` : ''}${s('daemon-reload')}`
     steps.push({
       id: 'stop-rivethub',
       title: `Stop, disable and remove ${HUB_UNIT} (${hubScope} unit)`,

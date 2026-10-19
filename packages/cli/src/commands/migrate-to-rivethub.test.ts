@@ -38,6 +38,8 @@ interface Scenario {
   disk?: { state?: number; free?: number; pglite?: number }
   /** Pids that `kill -0` reports alive. */
   alivePids?: number[]
+  /** DropInPaths that `systemctl show rivetos.service` reports. */
+  dropIns?: string[]
 }
 
 interface FakeHost extends Host {
@@ -132,6 +134,8 @@ function fakeHost(s: Scenario = {}): FakeHost {
       if (cmd.includes('systemctl --user cat rivethub.service')) {
         return hubUnit === 'user' ? ok() : no
       }
+      if (cmd.includes('show rivetos.service -p DropInPaths'))
+        return ok((s.dropIns ?? []).join(' '))
       if (cmd.startsWith('systemctl show rivetos.service')) return ok(s.tsUnitUser ?? user)
       if (cmd.startsWith('sudo -n true')) return s.sudo === false ? no : ok()
       if (cmd.includes('config validate')) {
@@ -793,6 +797,72 @@ describe('interrupts', () => {
     expect(await migrateToRivethub(['--rollback'], host)).toBe(1)
     expect(host.calls.some((c) => c.includes('enable --now rivetos.service'))).toBe(false)
     expect(host.errors.join('\n')).toMatch(/Rollback interrupted \(SIGTERM\).*--rollback/)
+  })
+})
+
+describe('unit drop-ins', () => {
+  const userDir = '/home/rivet/.config/systemd/user'
+  const dropIns = [
+    `${userDir}/rivetos.service.d/tunnel.conf`,
+    `${userDir}/rivetos.service.d/path-order.conf`,
+    '/usr/lib/systemd/user/service.d/10-defaults.conf',
+    '/run/systemd/user/rivetos.service.d/50-transient.conf',
+  ]
+
+  it("finds only the unit's own persistent drop-ins", () => {
+    const { facts: f } = facts({ tsUnit: 'user', dropIns })
+    expect(f.tsDropIns).toEqual(dropIns.slice(0, 2))
+  })
+
+  it('copies them next to rivethub.service before its daemon-reload, keeping existing files', async () => {
+    const host = fakeHost({
+      tsUnit: 'user',
+      dropIns,
+      paths: { '/opt/rh/rh': 'file', '/opt/rh/rivethub-migrate': 'file' },
+    })
+    expect(await migrateToRivethub(['--binary', '/opt/rh/rh'], host)).toBe(0)
+    const install = host.calls.find((c) => c.includes('enable rivethub.service')) ?? ''
+    const hubDir = `${userDir}/rivethub.service.d`
+    expect(install).toContain(`mkdir -p ${hubDir}`)
+    expect(install).toContain(
+      `[ -e ${hubDir}/tunnel.conf ] || cp -p ${userDir}/rivetos.service.d/tunnel.conf ${hubDir}/tunnel.conf`,
+    )
+    expect(install).toContain(`${hubDir}/path-order.conf`)
+    expect(install).not.toContain('10-defaults.conf')
+    expect(install).not.toContain('50-transient.conf')
+    expect(install.indexOf('cp -p')).toBeLessThan(install.indexOf('daemon-reload'))
+    expect(host.output()).toContain('2 drop-ins from rivetos.service')
+  })
+
+  it('runs the copy as root for a system unit', () => {
+    const sysDir = '/etc/systemd/system'
+    const { facts: f, opts } = facts({ dropIns: [`${sysDir}/rivetos.service.d/limits.conf`] })
+    const step = planMigration(f, opts, 'S').steps.find((s) => s.id === 'install-unit')
+    expect(step?.commands[1]).toMatch(/^sudo -n sh -c '/)
+    expect(step?.commands[1]).toContain(`${sysDir}/rivethub.service.d/limits.conf`)
+  })
+
+  it('leaves the unit install unchanged without drop-ins', () => {
+    const { facts: f, opts } = facts({})
+    const step = planMigration(f, opts, 'S').steps.find((s) => s.id === 'install-unit')
+    expect(step?.commands[1]).not.toContain('service.d')
+  })
+
+  it('removes the copies that still match on rollback', async () => {
+    const host = fakeHost({
+      tsUnit: 'user',
+      hubUnit: 'user',
+      dropIns,
+      paths: { '/home/rivet/.rivetos': 'symlink', '/home/rivet/.rivethub': 'dir' },
+    })
+    expect(await migrateToRivethub(['--rollback'], host)).toBe(0)
+    const remove = host.calls.find((c) => c.includes('rm -f') && c.includes('daemon-reload')) ?? ''
+    const hubDir = `${userDir}/rivethub.service.d`
+    expect(remove).toContain(
+      `! cmp -s ${userDir}/rivetos.service.d/tunnel.conf ${hubDir}/tunnel.conf || rm -f ${hubDir}/tunnel.conf`,
+    )
+    expect(remove).toContain(`rmdir ${hubDir}`)
+    expect(remove.indexOf('rmdir')).toBeLessThan(remove.indexOf('daemon-reload'))
   })
 })
 
