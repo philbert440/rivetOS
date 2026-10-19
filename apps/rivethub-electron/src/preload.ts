@@ -51,6 +51,9 @@ const api = {
     ipcRenderer.invoke('window:zoom', delta) as Promise<void>,
   /** Quit the app for real (close-to-tray does not apply). */
   quitApp: (): Promise<void> => ipcRenderer.invoke('app:quit') as Promise<void>,
+  /** PNG bytes of the clipboard image, or undefined when there is none. */
+  clipboardReadImage: (): Promise<Uint8Array | undefined> =>
+    ipcRenderer.invoke('clipboard:readImage') as Promise<Uint8Array | undefined>,
   /** Native folder chooser. Resolves to the picked absolute path, or
    *  undefined when cancelled. `startIn` only suggests where it opens. */
   pickDirectory: (startIn?: string): Promise<string | undefined> =>

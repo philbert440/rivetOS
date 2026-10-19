@@ -234,16 +234,16 @@ data class HarnessSessionTranscriptResponse(
 )
 
 /**
- * POST /api/uploads 201 body. [expiresAt] is an ISO-8601 string when the den
- * set a TTL, and absent when ttlMs is 0 — never a Long (the desktop type at
- * gateway-api.ts:889 is wrong; the server writes `new Date(...).toISOString()`).
+ * POST /api/uploads 201 body. [uri] is the file's absolute path on the node;
+ * [expiresAt] is an ISO-8601 string.
  */
 @Serializable
 data class StagedUploadResponse(
+    val id: String = "",
     val uri: String,
     val name: String = "",
-    val mime: String = "",
-    val size: Long = 0,
+    val mediaType: String = "",
+    val bytes: Long = 0,
     val expiresAt: String? = null,
 )
 

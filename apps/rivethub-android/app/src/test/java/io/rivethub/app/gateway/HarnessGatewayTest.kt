@@ -152,7 +152,7 @@ class HarnessGatewayTest {
             val gw = HarnessGateway(
                 client { req ->
                     seen += "${req.method} ${req.url.encodedPath}?${req.url.query}"
-                    json(req, 201, """{"uri":"/tmp/uploads/x.png","name":"x.png","mime":"image/png","size":4,"expiresAt":"2026-09-02T18:00:00.000Z"}""")
+                    json(req, 201, """{"id":"5f0c","uri":"/tmp/uploads/x.png","name":"x.png","mediaType":"image/png","bytes":4,"expiresAt":"2026-09-02T18:00:00.000Z"}""")
                 },
                 base,
             )
@@ -162,7 +162,7 @@ class HarnessGatewayTest {
             assertTrue(seen.single().startsWith("POST "))
             assertTrue(seen.single().contains("/api/uploads"))
             assertTrue(seen.single().contains("name=x.png"))
-            assertTrue(seen.single().contains("mime=image/png"))
+            assertTrue(seen.single().contains("mediaType=image/png"))
         }
     }
 
