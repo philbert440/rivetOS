@@ -7,6 +7,7 @@ import { formatSpinnerMeta, parseSpinnerMeta } from '../lib/spinner-meta.js'
 import { copyTextToClipboard } from '../lib/clipboard.js'
 import { Markdown } from './markdown.js'
 import { SpeakMessage } from './speak-message.js'
+import { TranscriptAttachments } from './transcript-attachments.js'
 import { arrivalJump, scrollToEnd, type TranscriptEdge } from '../lib/transcript-follow.js'
 import { usePreferences } from '../stores/preferences.js'
 
@@ -298,9 +299,12 @@ const Bubble = memo(function Bubble(props: {
       {mine ? (
         // User text is plain — right-aligned bubble, no markdown.
         <div className="relative max-w-[85%]">
-          <div className="whitespace-pre-wrap rounded-2xl rounded-br-md bg-em-container px-4 py-2.5 text-sm text-on-em-container classic:text-ink classic:bg-em-dim/10 classic:border classic:border-em-dim/40">
-            {props.msg.text}
-          </div>
+          {props.msg.attachments && <TranscriptAttachments attachments={props.msg.attachments} />}
+          {(props.msg.text || !props.msg.attachments) && (
+            <div className="whitespace-pre-wrap rounded-2xl rounded-br-md bg-em-container px-4 py-2.5 text-sm text-on-em-container classic:text-ink classic:bg-em-dim/10 classic:border classic:border-em-dim/40">
+              {props.msg.text}
+            </div>
+          )}
           {props.msg.text && <CopyMessage text={props.msg.text} />}
           {props.outboundStatus && (
             <div className="mt-1 flex items-center justify-end gap-2 px-1 text-[11px] text-ink-dim classic:text-[10px]">

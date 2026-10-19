@@ -298,6 +298,22 @@ function appendMessage(list: SessionMessage[] | undefined, msg: SessionMessage):
 }
 
 /**
+ * The text a sent turn's bubble shows: its own text, or one `[Image]` line per
+ * image when it carried only images. A committed transcript turn is matched to
+ * its optimistic bubble by this text, so an image-only send retires once the
+ * turn carrying its image lands.
+ */
+function sentText(text: string, mediaTypes: string[]): string {
+  return (
+    text ||
+    mediaTypes
+      .filter((m) => m.startsWith('image/'))
+      .map(() => '[Image]')
+      .join('\n')
+  )
+}
+
+/**
  * Where an optimistic bubble sits in the commit-match order for a committed
  * user turn that carries no id: an ACCEPTED send first (its outbound entry was
  * dequeued on HTTP acceptance, so this commit is its echo), then a `sending`
@@ -392,7 +408,14 @@ function transcriptPatch(
   const mapped = messagesFromHarnessTurns(sid, turns, existing)
   const optimBubbles = existing.filter((m) => m.id.startsWith('optim:'))
   const outbound = s.outbound[sid] ?? []
-  const newUserTexts = changed.filter((t) => t.role === 'user').map((t) => t.text)
+  const newUserTexts = changed
+    .filter((t) => t.role === 'user')
+    .map((t) =>
+      sentText(
+        t.text,
+        (t.attachments ?? []).map((a) => a.mediaType),
+      ),
+    )
   const retired = new Set<string>()
   // Highest rank first so the bubble that owns the committed turn claims it
   // before a lower-ranked twin can spend the match. Within a rank, keep the
@@ -897,12 +920,10 @@ export const useChat = create<ChatState>()(
         sessionId = keyOf(sessionId)
         const item = get().outbound[sessionId]?.find((o) => o.id === id)
         if (!item) return
-        const text =
-          item.text ||
-          (item.attachments ?? [])
-            .filter((a) => a.mime.startsWith('image/'))
-            .map(() => '[Image]')
-            .join('\n')
+        const text = sentText(
+          item.text,
+          (item.attachments ?? []).map((a) => a.mime),
+        )
         get().addOptimisticUser(sessionId, text, id)
         set((s) => ({
           outbound: {

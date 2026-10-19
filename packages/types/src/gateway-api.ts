@@ -116,6 +116,8 @@ export interface SessionMessage {
   thinking?: string
   /** Tools the turn invoked, in call order (harness-transcript sourced). */
   tools?: HarnessTranscriptTool[]
+  /** Files a user turn carried (harness-transcript sourced). */
+  attachments?: TranscriptAttachment[]
 }
 
 export interface SessionsListResponse {
@@ -1085,10 +1087,24 @@ export interface HarnessTranscriptTool {
   resultText?: string
 }
 
+/** A file a user turn carried. The node names it from its own record of the
+ *  send; a turn the node did not send (a TUI paste) carries only `mediaType`.
+ *  `uploadId` reads the bytes at GET /api/uploads/{id} until the upload
+ *  expires; `name` outlives it. */
+export interface TranscriptAttachment {
+  mediaType: string
+  name?: string
+  /** Absolute path of the staged upload on the node. */
+  uri?: string
+  uploadId?: string
+}
+
 /** One turn from GET /api/terminal/harness-sessions/:id/transcript (TUI store). */
 export interface HarnessTranscriptTurn {
   role: 'user' | 'assistant'
   text: string
+  /** User turns only: the files sent with the turn. */
+  attachments?: TranscriptAttachment[]
   /** Accumulated thinking text for the turn (tail-capped server-side). */
   thinking?: string
   /** Tools the turn invoked, in call order (Claude Code stores only). */

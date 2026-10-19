@@ -1036,6 +1036,16 @@ export class RivetGateway {
     )) as StagedUploadResponse
   }
 
+  /** Browser URL for a staged upload's bytes (GET /api/uploads/{id}); an
+   *  <img src> rides the same transport auth as fileDownloadUrl. 404 once
+   *  the upload has expired. */
+  uploadUrl(id: string): string {
+    return new URL(
+      `/api/uploads/${encodeURIComponent(id)}`,
+      this.config.baseUrl.endsWith('/') ? this.config.baseUrl : `${this.config.baseUrl}/`,
+    ).toString()
+  }
+
   /** Transcribe a mic clip via the node's voice proxy (POST
    *  /api/voice/transcribe). 501 = voice not configured on this node. */
   async voiceTranscribe(
