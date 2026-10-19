@@ -1,7 +1,7 @@
 // Settings → Pair a phone: mint a one-time pairing code on this node and show
-// it as a QR for RivetHub Android's "Scan pairing QR". Den runs `rivetos pair`
-// for it (same certificate path as the terminal) and allows the new phone at
-// once, so there is no restart. The code carries a one-time token for the
+// it as a QR for RivetHub Android's "Scan pairing QR". The node mints a
+// one-time enrollment token from its certificate authority for a fresh device
+// id, and the phone redeems it with its own key. The code carries that token for the
 // phone's certificate, so it renders only on explicit click and goes away
 // once used, expired or dismissed. Owner only: other users' devices and nodes
 // without the device CA see nothing, or the reason pairing is unavailable.
@@ -17,8 +17,13 @@ import { useGatewayReady } from './not-connected.js'
 /** Same charset the node's CA accepts for a device name. */
 const NAME = /^[A-Za-z0-9._-]{1,64}$/
 
-function PairingCard(props: { code: PhonePairingCode; onDone: () => void }): JSX.Element {
-  const { code, onDone } = props
+/** `name` is what the owner typed; the node's device id is not a name on the RivetHub runtime. */
+export function PairingCard(props: {
+  code: PhonePairingCode
+  name: string
+  onDone: () => void
+}): JSX.Element {
+  const { code, name, onDone } = props
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const [remaining, setRemaining] = useState(Math.max(0, code.expiresAt - Date.now()))
 
@@ -59,7 +64,7 @@ function PairingCard(props: { code: PhonePairingCode; onDone: () => void }): JSX
     <div className="mt-4 border border-line bg-panel p-4 text-center">
       {state === 'paired' ? (
         <p className="py-8 text-sm text-em">
-          Paired ✓ {code.deviceId}. RivetHub on the phone is connecting.
+          Paired ✓ {name}. RivetHub on the phone is connecting.
         </p>
       ) : state === 'expired' ? (
         <p className="py-8 text-sm text-ink-dim">This code expired or was used. Show a new one.</p>
@@ -84,8 +89,8 @@ function PairingCard(props: { code: PhonePairingCode; onDone: () => void }): JSX
             <span className="text-em">Scan pairing QR</span>.
           </p>
           <p className="mt-1 text-xs text-ink-dim">
-            {code.deviceId} · reaches this computer at <span className="font-mono">{host}</span> ·
-            works once · expires in {Math.ceil(remaining / 60_000)}m
+            {name} · reaches this computer at <span className="font-mono">{host}</span> · works once
+            · expires in {Math.ceil(remaining / 60_000)}m
           </p>
           <p className="mt-1 text-xs text-ink-dim">
             The phone must be on the same network. If it cannot reach this computer, allow
@@ -107,7 +112,7 @@ export function PhonePairingSection(): JSX.Element | null {
   const connected = useGatewayReady()
   const [name, setName] = useState('')
   const [host, setHost] = useState('')
-  const [code, setCode] = useState<PhonePairingCode | null>(null)
+  const [code, setCode] = useState<{ code: PhonePairingCode; name: string } | null>(null)
 
   const info = useQuery({
     queryKey: ['phone-pairing-info'],
@@ -121,8 +126,8 @@ export function PhonePairingSection(): JSX.Element | null {
       useConnection.getState().gateway.phonePairingCreate(args.name, {
         host: args.host,
       }),
-    onSuccess: (res) => {
-      setCode(res)
+    onSuccess: (res, args) => {
+      setCode({ code: res, name: args.name })
       setName('')
     },
   })
@@ -194,7 +199,7 @@ export function PhonePairingSection(): JSX.Element | null {
             <p className="mt-2 text-xs text-warn">Use letters, digits, “.”, “_” and “-” only.</p>
           )}
           {create.isError && <p className="mt-2 text-sm text-red">{create.error.message}</p>}
-          {code && <PairingCard code={code} onDone={() => setCode(null)} />}
+          {code && <PairingCard code={code.code} name={code.name} onDone={() => setCode(null)} />}
         </>
       ) : (
         <p className="text-xs text-ink-dim">Pairing is unavailable here: {info.data.reason}.</p>
