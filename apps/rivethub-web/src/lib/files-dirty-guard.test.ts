@@ -5,7 +5,6 @@ import {
   DISCARD_CONFIRM_OPTS,
   guardClosePreview,
   guardOpenFile,
-  guardPathNav,
   shouldBlockFilesLeave,
   selectionTextWithin,
   shouldIgnoreRowActivate,
@@ -49,18 +48,6 @@ describe('confirmDiscard', () => {
     const confirm = fakeConfirm(true)
     await confirmDiscard({ dirty: true, confirm, clearDirty: () => undefined, fileName: 'x.md' })
     expect(confirm.mock.calls[0]?.[0]).toBe('Discard unsaved changes to x.md?')
-  })
-})
-
-describe('guardPathNav', () => {
-  it('same-path is a no-op before any confirm (disarm bug)', () => {
-    expect(guardPathNav('/a/b', '/a/b')).toBe('noop')
-    expect(guardPathNav('', '')).toBe('noop')
-  })
-
-  it('different path proceeds so the caller can navigate', () => {
-    expect(guardPathNav('/a', '/a/b')).toBe('proceed')
-    expect(guardPathNav('a/b', '')).toBe('proceed')
   })
 })
 

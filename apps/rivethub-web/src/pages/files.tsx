@@ -4,78 +4,29 @@
  * upload into the current dir, and drag rows onto folders to move.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type JSX } from 'react'
+import { type DragEvent, type JSX, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useBlocker, useNavigate, useSearch } from '@tanstack/react-router'
 import type { FileEntry } from '@rivetos/types'
-import { GatewayError } from '@rivetos/gateway-client'
 import { useConnection } from '../stores/connection.js'
 import { NotConnected, useGatewayReady } from '../components/not-connected.js'
-import { Select } from '../components/select.js'
-import { copyTextToClipboard } from '../lib/clipboard.js'
 import { rivetShell } from '../lib/shell-bridge.js'
 import {
   guardClosePreview,
   guardOpenFile,
-  guardPathNav,
   shouldBlockFilesLeave,
-  selectionTextWithin,
-  shouldIgnoreRowActivate,
 } from '../lib/files-dirty-guard.js'
-import {
-  baseName,
-  downloadTooLargeError,
-  joinRel,
-  parentRel,
-  previewKind,
-  readBlobBounded,
-} from '../lib/files-ui.js'
+import { baseName, joinRel, parentRel, previewKind } from '../lib/files-ui.js'
 import { useGateway } from '../lib/use-gateway.js'
+import { useUiInteraction } from '../stores/ui-interaction.js'
 import { useConfirmDialog } from '../components/confirm-dialog.js'
-import { FileEditor } from '../components/file-editor.js'
-
-function fmtSize(bytes: number): string {
-  if (bytes < 1024) return `${String(bytes)} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`
-  return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`
-}
-
-function fmtMtime(ms: number): string {
-  const d = new Date(ms)
-  return `${d.toLocaleDateString()} ${d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
-}
-
-/** The previous save's object URL. Kept alive until the NEXT save rather
- *  than revoked on a timer — a timed revoke can race a still-writing
- *  download, and one retained blob per session is bounded (≤64 MB). */
-let lastObjectUrl: string | undefined
-
-/** In-shell file save: the OS browser sits outside the shell's mTLS pipe and
- *  cannot authenticate to the gateway, so pull the bytes over the app's own
- *  transport and hand them to Chromium as a blob-anchor download. What the
- *  shell does with that download (dialog vs default dir) is its policy, not
- *  ours — callers surface their own "download started" notice. */
-async function saveViaGateway(url: string, name: string, sizeBytes?: number): Promise<void> {
-  const preErr = downloadTooLargeError(sizeBytes)
-  if (preErr) throw new Error(preErr)
-  const res = await fetch(url, { cache: 'no-store' })
-  if (!res.ok) throw new Error(`download failed (HTTP ${String(res.status)})`)
-  // Bounded on the actual bytes read (header alone can lie or be absent).
-  const blob = await readBlobBounded(res)
-  if (lastObjectUrl) URL.revokeObjectURL(lastObjectUrl)
-  const objectUrl = URL.createObjectURL(blob)
-  lastObjectUrl = objectUrl
-  const a = document.createElement('a')
-  a.href = objectUrl
-  a.download = name
-  document.body.appendChild(a)
-  a.click()
-  a.remove()
-}
-
-type SortKey = 'name' | 'mtime' | 'size'
-type Notice = { kind: 'ok' | 'err'; text: string }
+import { saveViaGateway } from './files/save-via-gateway.js'
+import { PreviewPane } from './files/preview-pane.js'
+import { FileTable } from './files/file-table.js'
+import { useFileOps } from './files/use-file-ops.js'
+import { FilesToolbar } from './files/files-toolbar.js'
+import { Breadcrumbs } from './files/breadcrumbs.js'
+import { useFilesView } from './files/files-view-store.js'
 
 export function FilesPage(): JSX.Element {
   const baseUrl = useConnection((s) => s.baseUrl)
@@ -93,17 +44,21 @@ export function FilesPage(): JSX.Element {
     },
     [navigate],
   )
-  const [filter, setFilter] = useState('')
-  const [sort, setSort] = useState<SortKey>('name')
-  const [selected, setSelected] = useState<Set<string>>(() => new Set())
-  const [previewPath, setPreviewPath] = useState<string | undefined>()
-  const editorDirtyRef = useRef(false)
-  const discardDialog = useConfirmDialog()
-  const discardConfirm = discardDialog.confirm
-  const [dragging, setDragging] = useState(false)
-  const [notice, setNotice] = useState<Notice | undefined>()
-  const [busy, setBusy] = useState(false)
+  const filter = useFilesView((s) => s.filter)
+  const sort = useFilesView((s) => s.sort)
+  const selected = useFilesView((s) => s.selected)
+  const previewPath = useFilesView((s) => s.previewPath)
+  const { setFilter, setSort, setSelected, toggleSelected, setPreviewPath } =
+    useFilesView.getState()
+  // One dialog instance for the whole page. Ops confirms/prompts and the
+  // dirty-guard discards share a single queue, so two modals can never be
+  // open at once (these used to be two independent queues, each rendering
+  // its own dialog).
   const dialog = useConfirmDialog()
+  const confirm = dialog.confirm
+  const filesDirty = useUiInteraction((s) => s.filesDirty)
+  const { setFilesDirty } = useUiInteraction.getState()
+  const [dragging, setDragging] = useState(false)
   const dragDepth = useRef(0)
   /** Ignore openRaw briefly after a dir navigate so a folder double-click
    *  does not act on whatever row lands under the pointer in the child listing. */
@@ -115,27 +70,24 @@ export function FilesPage(): JSX.Element {
     enabled: connected,
   })
 
-  const setEditorDirtyTracked = useCallback((dirty: boolean) => {
-    editorDirtyRef.current = dirty
-  }, [])
-
-  const clearDirty = useCallback(() => {
-    setEditorDirtyTracked(false)
-  }, [setEditorDirtyTracked])
-
   const dirtyFileName = previewPath ? baseName(previewPath) : undefined
 
-  const shouldBlockFn = useCallback(
-    async () =>
-      shouldBlockFilesLeave({
-        dirty: editorDirtyRef.current,
-        fileName: dirtyFileName,
-        confirm: discardConfirm,
-        clearDirty,
-      }),
-    [clearDirty, discardConfirm, dirtyFileName],
-  )
-  const enableBeforeUnload = useCallback(() => editorDirtyRef.current, [])
+  // Blocker callbacks must have stable identity: the router tears down and
+  // re-registers the blocker when these change, and a re-register that lands
+  // mid-navigation silently swallows it. Read the store imperatively at call
+  // time instead of subscribing (the store is still the single source).
+  const shouldBlockFn = useCallback(async () => {
+    const { filesDirty } = useUiInteraction.getState()
+    // useBlocker contract: return true to BLOCK. Clean → false (proceed).
+    return shouldBlockFilesLeave({
+      dirty: filesDirty.dirty,
+      fileName: filesDirty.fileName || undefined,
+      confirm,
+      clearDirty: () => useUiInteraction.getState().clearFilesDirty(),
+    })
+  }, [confirm])
+
+  const enableBeforeUnload = useCallback(() => useUiInteraction.getState().filesDirty.dirty, [])
 
   // Route changes (sidebar leave, ?path= crumbs, browser Back/Forward) go
   // through the router blocker so Cancel never leaves a foreign listing under
@@ -147,9 +99,12 @@ export function FilesPage(): JSX.Element {
   // Path landed (blocker already resolved any dirty prompt). Drop selection
   // and close the preview — no after-the-fact confirm.
   useEffect(() => {
-    setSelected(new Set())
-    setPreviewPath(undefined)
+    useFilesView.setState({ selected: new Set<string>(), previewPath: undefined })
   }, [path])
+
+  // The notice bar lives in a module store, so it survives unmount; clear it
+  // on leave to match the old page-local state (fresh visit = no stale notice).
+  useEffect(() => () => useFilesView.setState({ notice: undefined }), [])
 
   const markDirNavigated = useCallback((): void => {
     suppressRawUntilRef.current = performance.now() + 500
@@ -160,7 +115,7 @@ export function FilesPage(): JSX.Element {
       // Same-path must no-op BEFORE any confirm: an accepted discard that
       // then setPaths to the current value would clear dirty while the pane
       // stays open and leave later closes unguarded.
-      if (guardPathNav(path, next) === 'noop') return
+      if (next === path) return
       markDirNavigated()
       setPath(next)
     },
@@ -168,29 +123,32 @@ export function FilesPage(): JSX.Element {
   )
 
   useEffect(() => {
-    setEditorDirtyTracked(false)
-  }, [previewPath, setEditorDirtyTracked])
+    setFilesDirty(false)
+  }, [previewPath, setFilesDirty])
 
   const openEntry = useCallback(
     async (child: string, isDir: boolean): Promise<void> => {
       if (isDir) {
-        if (guardPathNav(path, child) === 'noop') return
-        markDirNavigated()
-        setPath(child)
+        navigateGuarded(child)
         return
       }
+      const storeDirty = useUiInteraction.getState().filesDirty.dirty
       const decision = await guardOpenFile({
-        dirty: editorDirtyRef.current,
+        // Read the store at call time, not from the render closure: this
+        // callback is memoized on deps that never include `dirty`, so a
+        // captured value goes stale the moment you type and stays stale until
+        // path/previewPath next changes.
+        dirty: storeDirty,
         previewPath,
         child,
         fileName: dirtyFileName,
-        confirm: discardConfirm,
-        clearDirty,
+        confirm,
+        clearDirty: () => useUiInteraction.getState().clearFilesDirty(),
       })
       if (decision !== 'proceed') return
       setPreviewPath(child)
     },
-    [clearDirty, dirtyFileName, discardConfirm, markDirNavigated, path, previewPath, setPath],
+    [confirm, dirtyFileName, navigateGuarded, path, previewPath],
   )
 
   const openRaw = useCallback(
@@ -203,10 +161,10 @@ export function FilesPage(): JSX.Element {
         else
           void saveViaGateway(url, entry.name, entry.size)
             .then(() => {
-              showNotice({ kind: 'ok', text: `download started: ${entry.name}` })
+              ops.showNotice({ kind: 'ok', text: `download started: ${entry.name}` })
             })
             .catch((err: unknown) => {
-              showNotice({ kind: 'err', text: (err as Error).message })
+              ops.showNotice({ kind: 'err', text: (err as Error).message })
             })
       } else {
         window.open(url, '_blank', 'noopener,noreferrer')
@@ -218,8 +176,6 @@ export function FilesPage(): JSX.Element {
   const refresh = useCallback(async (): Promise<void> => {
     await queryClient.invalidateQueries({ queryKey: ['files', baseUrl, path] })
   }, [queryClient, baseUrl, path])
-
-  const showNotice = (n: Notice): void => setNotice(n)
 
   const entries = useMemo(() => {
     const raw = listing.data?.entries ?? []
@@ -234,180 +190,39 @@ export function FilesPage(): JSX.Element {
     return list
   }, [listing.data?.entries, filter, sort])
 
+  // The toolbar's Rename target: the single selected entry, resolved here so
+  // the toolbar needs neither `selected` nor `entries`. Multi-select has no
+  // rename target — picking one of several would rename an arbitrary row.
+  const renameTarget = useMemo(() => {
+    if (selected.size !== 1) return undefined
+    const [name] = [...selected]
+    return (listing.data?.entries ?? []).find((e) => e.name === name)
+  }, [selected, listing.data?.entries])
+
+  const ops = useFileOps({
+    path,
+    refresh: () => refresh(),
+    confirm,
+    prompt: dialog.prompt,
+    onPreviewRenamed: (from, to) => {
+      if (previewPath === from) setPreviewPath(to)
+    },
+    onPreviewDeleted: (deletedPaths) => {
+      setSelected(new Set())
+      if (
+        previewPath &&
+        deletedPaths.some((d) => previewPath === d || previewPath.startsWith(d + '/'))
+      ) {
+        setPreviewPath(undefined)
+      }
+    },
+  })
+
+  const { busy, upload, mkdir, renameOne, deleteSelected, moveOntoDir, copyPaths, copyUrls } = ops
+
   if (!connected) return <NotConnected />
 
-  const upload = async (files: FileList | File[]): Promise<void> => {
-    setBusy(true)
-    let ok = 0
-    const errors: string[] = []
-    for (const file of Array.from(files)) {
-      try {
-        await gateway.filesUpload(path, file.name, file)
-        ok += 1
-      } catch (err) {
-        if (err instanceof GatewayError && err.status === 409) {
-          if (await dialog.confirm(`${file.name} already exists — overwrite?`)) {
-            try {
-              await gateway.filesUpload(path, file.name, file, { overwrite: true })
-              ok += 1
-              continue
-            } catch (err2) {
-              errors.push(`${file.name}: ${(err2 as Error).message}`)
-              continue
-            }
-          }
-          continue
-        }
-        errors.push(`${file.name}: ${(err as Error).message}`)
-      }
-    }
-    await refresh()
-    setBusy(false)
-    showNotice(
-      errors.length > 0
-        ? { kind: 'err', text: errors.join(' · ') }
-        : { kind: 'ok', text: `uploaded ${String(ok)} file${ok === 1 ? '' : 's'}` },
-    )
-  }
-
-  const mkdir = async (): Promise<void> => {
-    const name = await dialog.prompt('New folder name')
-    if (!name?.trim()) return
-    setBusy(true)
-    try {
-      await gateway.filesMkdir(path, name.trim())
-      await refresh()
-      showNotice({ kind: 'ok', text: `created ${name.trim()}/` })
-    } catch (err) {
-      showNotice({ kind: 'err', text: (err as Error).message })
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const renameOne = async (entry: FileEntry): Promise<void> => {
-    const next = await dialog.prompt('Rename to', { defaultValue: entry.name })
-    if (!next?.trim() || next.trim() === entry.name) return
-    const from = joinRel(path, entry.name)
-    const to = joinRel(path, next.trim())
-    setBusy(true)
-    try {
-      await gateway.filesRename(from, to)
-      setSelected((s) => {
-        const n = new Set(s)
-        n.delete(entry.name)
-        return n
-      })
-      if (previewPath === from) setPreviewPath(to)
-      await refresh()
-      showNotice({ kind: 'ok', text: `renamed → ${next.trim()}` })
-    } catch (err) {
-      showNotice({ kind: 'err', text: (err as Error).message })
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const deleteSelected = async (): Promise<void> => {
-    const names = [...selected]
-    if (names.length === 0) return
-    if (!(await dialog.confirm(`Delete ${String(names.length)} item(s)?`, { danger: true }))) return
-    setBusy(true)
-    const errors: string[] = []
-    for (const name of names) {
-      const rel = joinRel(path, name)
-      const entry = (listing.data?.entries ?? []).find((e) => e.name === name)
-      try {
-        await gateway.filesDelete(rel)
-      } catch (err) {
-        if (
-          err instanceof GatewayError &&
-          err.status === 409 &&
-          entry?.type === 'dir' &&
-          (await dialog.confirm(`${name}/ is not empty — delete recursively?`, { danger: true }))
-        ) {
-          try {
-            await gateway.filesDelete(rel, { recursive: true })
-            continue
-          } catch (err2) {
-            errors.push(`${name}: ${(err2 as Error).message}`)
-            continue
-          }
-        }
-        errors.push(`${name}: ${(err as Error).message}`)
-      }
-    }
-    setSelected(new Set())
-    if (
-      previewPath &&
-      names.some(
-        (n) => previewPath === joinRel(path, n) || previewPath.startsWith(joinRel(path, n) + '/'),
-      )
-    ) {
-      setPreviewPath(undefined)
-    }
-    await refresh()
-    setBusy(false)
-    showNotice(
-      errors.length > 0
-        ? { kind: 'err', text: errors.join(' · ') }
-        : { kind: 'ok', text: `deleted ${String(names.length - errors.length)}` },
-    )
-  }
-
-  const moveOntoDir = async (srcName: string, destDirName: string): Promise<void> => {
-    if (srcName === destDirName) return
-    const from = joinRel(path, srcName)
-    const to = joinRel(joinRel(path, destDirName), srcName)
-    setBusy(true)
-    try {
-      await gateway.filesRename(from, to)
-      setSelected(new Set())
-      await refresh()
-      showNotice({ kind: 'ok', text: `moved ${srcName} → ${destDirName}/` })
-    } catch (err) {
-      showNotice({ kind: 'err', text: (err as Error).message })
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const copyPaths = async (): Promise<void> => {
-    const lines = [...selected].map((n) => joinRel(path, n))
-    if (lines.length === 0) return
-    try {
-      await copyTextToClipboard(lines.join('\n'))
-      showNotice({ kind: 'ok', text: 'path(s) copied' })
-    } catch {
-      showNotice({ kind: 'err', text: 'copy failed' })
-    }
-  }
-
-  const copyUrls = async (): Promise<void> => {
-    const gw = gateway
-    const lines = [...selected]
-      .map((n) => {
-        const e = (listing.data?.entries ?? []).find((x) => x.name === n)
-        if (!e || e.type !== 'file') return null
-        return gw.fileDownloadUrl(joinRel(path, n))
-      })
-      .filter((x): x is string => !!x)
-    if (lines.length === 0) {
-      showNotice({ kind: 'err', text: 'select file(s) to copy download URLs' })
-      return
-    }
-    try {
-      await copyTextToClipboard(lines.join('\n'))
-      showNotice({ kind: 'ok', text: 'URL(s) copied' })
-    } catch {
-      showNotice({ kind: 'err', text: 'copy failed' })
-    }
-  }
-
-  const crumbs = path === '' ? [] : path.split('/')
   const rootLabel = listing.data?.root ?? '/rivet-shared'
-  const allNames = entries.map((e) => e.name)
-  const allSelected = allNames.length > 0 && allNames.every((n) => selected.has(n))
 
   const onDropFiles = (e: DragEvent): void => {
     e.preventDefault()
@@ -437,305 +252,40 @@ export function FilesPage(): JSX.Element {
       onDrop={onDropFiles}
     >
       {dialog.element}
-      {discardDialog.element}
-      {/* Breadcrumbs */}
-      <div className="flex flex-wrap items-center gap-1 border-b border-line bg-panel/40 px-4 py-2 text-xs">
-        <button
-          type="button"
-          onClick={() => navigateGuarded('')}
-          className={crumbs.length === 0 ? 'text-em' : 'text-ink-dim hover:text-ink'}
-        >
-          {rootLabel}
-        </button>
-        {crumbs.map((seg, i) => (
-          <span key={crumbs.slice(0, i + 1).join('/')} className="flex items-center gap-1">
-            <span className="text-ink-dim">/</span>
-            <button
-              type="button"
-              onClick={() => navigateGuarded(crumbs.slice(0, i + 1).join('/'))}
-              className={i === crumbs.length - 1 ? 'text-em' : 'text-ink-dim hover:text-ink'}
-            >
-              {seg}
-            </button>
-          </span>
-        ))}
-        <span className="ml-auto text-ink-dim">
-          drop files to upload · drag onto a folder to move
-        </span>
-      </div>
+      <Breadcrumbs path={path} rootLabel={rootLabel} onNavigate={navigateGuarded} />
 
-      {/* Toolbar */}
-      <div className="flex flex-wrap items-center gap-2 border-b border-line px-4 py-2">
-        <input
-          value={filter}
-          onChange={(e) => setFilter(e.target.value)}
-          placeholder="Filter…"
-          className="w-40 rounded-lg border border-line bg-panel px-2 py-1 text-xs outline-none focus:border-em"
-        />
-        <Select
-          value={sort}
-          title="sort"
-          label="Sort"
-          onChange={(v) => setSort(v as SortKey)}
-          options={[
-            { value: 'name', label: 'sort: name' },
-            { value: 'mtime', label: 'sort: mtime' },
-            { value: 'size', label: 'sort: size' },
-          ]}
-        />
-        <button
-          type="button"
-          disabled={busy}
-          onClick={() => void mkdir()}
-          className="rounded-pill border border-line px-2 py-1 text-xs hover:bg-ink/6 disabled:opacity-40 classic:hover:bg-transparent classic:hover:border-em"
-        >
-          New folder
-        </button>
-        <button
-          type="button"
-          disabled={busy || selected.size !== 1}
-          onClick={() => {
-            const name = [...selected][0]
-            const entry = (listing.data?.entries ?? []).find((e) => e.name === name)
-            if (entry) void renameOne(entry)
-          }}
-          className="rounded-pill border border-line px-2 py-1 text-xs hover:bg-ink/6 disabled:opacity-40 classic:hover:bg-transparent classic:hover:border-em"
-        >
-          Rename
-        </button>
-        <button
-          type="button"
-          disabled={busy || selected.size === 0}
-          onClick={() => void deleteSelected()}
-          className="rounded-pill border border-red/40 px-2 py-1 text-xs text-red hover:bg-red/10 disabled:opacity-40 classic:hover:bg-transparent classic:hover:border-red"
-        >
-          Delete
-        </button>
-        <button
-          type="button"
-          disabled={selected.size === 0}
-          onClick={() => void copyPaths()}
-          className="rounded-pill border border-line px-2 py-1 text-xs hover:bg-ink/6 disabled:opacity-40 classic:hover:bg-transparent classic:hover:border-em"
-        >
-          Copy path
-        </button>
-        <button
-          type="button"
-          disabled={selected.size === 0}
-          onClick={() => void copyUrls()}
-          className="rounded-pill border border-line px-2 py-1 text-xs hover:bg-ink/6 disabled:opacity-40 classic:hover:bg-transparent classic:hover:border-em"
-        >
-          Copy URL
-        </button>
-        <label className="cursor-pointer rounded-pill border border-line px-2 py-1 text-xs hover:bg-ink/6 classic:hover:bg-transparent classic:hover:border-em">
-          Upload…
-          <input
-            type="file"
-            multiple
-            className="hidden"
-            onChange={(e) => {
-              if (e.target.files?.length) void upload(e.target.files)
-              e.target.value = ''
-            }}
-          />
-        </label>
-      </div>
-
-      {notice && (
-        <div
-          className={`border-b border-line px-4 py-1.5 text-xs ${notice.kind === 'ok' ? 'text-em' : 'text-red'}`}
-        >
-          {notice.text}
-          <button
-            type="button"
-            onClick={() => setNotice(undefined)}
-            className="ml-3 text-ink-dim hover:text-ink"
-          >
-            ✕
-          </button>
-        </div>
-      )}
+      <FilesToolbar
+        filter={filter}
+        onFilter={setFilter}
+        sort={sort}
+        onSort={setSort}
+        busy={busy}
+        renameTarget={renameTarget}
+        onMkdir={() => void mkdir()}
+        onRename={(entry) => void renameOne(entry)}
+        onDelete={() => void deleteSelected(selected, listing.data?.entries ?? [])}
+        onCopyPaths={() => void copyPaths(selected)}
+        onCopyUrls={() => void copyUrls(selected, listing.data?.entries ?? [])}
+        onUpload={(files) => void upload(files)}
+      />
 
       <div className="flex min-h-0 flex-1">
-        {/* Listing */}
-        <div className="min-w-0 flex-1 overflow-y-auto px-4 py-2">
-          {listing.isError ? (
-            <div className="py-6 text-sm text-red">{listing.error.message}</div>
-          ) : entries.length === 0 && !listing.isLoading ? (
-            <div className="py-6 text-sm text-ink-dim">
-              {filter ? 'No matches.' : 'Empty directory — drop files here or use Upload.'}
-            </div>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full border-collapse text-sm">
-                <thead>
-                  <tr className="border-b border-line text-left text-[11px] text-ink-dim classic:text-[10px]">
-                    <th className="w-8 py-1 pr-2">
-                      <input
-                        type="checkbox"
-                        checked={allSelected}
-                        onChange={() => {
-                          setSelected(allSelected ? new Set() : new Set(allNames))
-                        }}
-                        aria-label="select all"
-                      />
-                    </th>
-                    <th className="py-1">name</th>
-                    <th className="w-24 py-1 text-right">size</th>
-                    <th className="w-36 py-1 text-right">modified</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {path !== '' && (
-                    <tr className="border-b border-line/40">
-                      <td />
-                      <td colSpan={3} className="py-1">
-                        <button
-                          type="button"
-                          onClick={() => navigateGuarded(parentRel(path))}
-                          className="text-ink-dim hover:text-ink"
-                        >
-                          ../
-                        </button>
-                      </td>
-                    </tr>
-                  )}
-                  {entries.map((e) => {
-                    const child = joinRel(path, e.name)
-                    const isSel = selected.has(e.name)
-                    const activateRow = (ev: {
-                      detail: number
-                      target: EventTarget | null
-                      currentTarget: EventTarget | null
-                    }): void => {
-                      // Only a selection inside this row is a drag-select of
-                      // its name; one elsewhere (the editor) must not eat the click.
-                      const row = (ev.currentTarget as HTMLElement | null)?.closest('tr') ?? null
-                      if (
-                        shouldIgnoreRowActivate({
-                          detail: ev.detail,
-                          target: ev.target,
-                          selectionText: selectionTextWithin(window.getSelection(), row),
-                        })
-                      ) {
-                        return
-                      }
-                      void openEntry(child, e.type === 'dir')
-                    }
-                    return (
-                      <tr
-                        key={e.name}
-                        className={`cursor-pointer border-b border-line/40 hover:bg-panel-2/50 ${
-                          isSel ? 'bg-panel-2/40' : ''
-                        }`}
-                        onClick={(ev) => {
-                          activateRow(ev)
-                        }}
-                        onDoubleClick={(ev) => {
-                          if (performance.now() < suppressRawUntilRef.current) return
-                          if (
-                            // A double-click selects the word under it; that
-                            // is not a drag-select, so no selection check here.
-                            shouldIgnoreRowActivate({ detail: 1, target: ev.target })
-                          ) {
-                            return
-                          }
-                          openRaw(e, child)
-                        }}
-                        draggable
-                        onDragStart={(ev) => {
-                          ev.dataTransfer.setData('application/x-rivet-file', e.name)
-                          ev.dataTransfer.effectAllowed = 'move'
-                        }}
-                        onDragOver={
-                          e.type === 'dir'
-                            ? (ev) => {
-                                ev.preventDefault()
-                                ev.dataTransfer.dropEffect = 'move'
-                              }
-                            : undefined
-                        }
-                        onDrop={
-                          e.type === 'dir'
-                            ? (ev) => {
-                                ev.preventDefault()
-                                ev.stopPropagation()
-                                const src = ev.dataTransfer.getData('application/x-rivet-file')
-                                if (src) void moveOntoDir(src, e.name)
-                                else if (ev.dataTransfer.files.length > 0) {
-                                  // Drop OS files into this subdirectory via upload-to-path
-                                  const dir = child
-                                  void (async () => {
-                                    setBusy(true)
-                                    let ok = 0
-                                    for (const file of Array.from(ev.dataTransfer.files)) {
-                                      try {
-                                        await gateway.filesUpload(dir, file.name, file)
-                                        ok += 1
-                                      } catch (err) {
-                                        showNotice({ kind: 'err', text: (err as Error).message })
-                                      }
-                                    }
-                                    await refresh()
-                                    setBusy(false)
-                                    if (ok)
-                                      showNotice({
-                                        kind: 'ok',
-                                        text: `uploaded ${String(ok)} into ${e.name}/`,
-                                      })
-                                  })()
-                                }
-                              }
-                            : undefined
-                        }
-                      >
-                        <td className="py-1.5 pr-2" data-no-open>
-                          <input
-                            type="checkbox"
-                            checked={isSel}
-                            onChange={() => {
-                              setSelected((prev) => {
-                                const n = new Set(prev)
-                                if (n.has(e.name)) n.delete(e.name)
-                                else n.add(e.name)
-                                return n
-                              })
-                            }}
-                            aria-label={`select ${e.name}`}
-                          />
-                        </td>
-                        <td className="py-1.5 pr-4">
-                          <button
-                            type="button"
-                            className="flex items-center gap-2 text-left"
-                            onClick={(ev) => {
-                              ev.stopPropagation()
-                              activateRow(ev)
-                            }}
-                          >
-                            <span className="w-4 text-center text-ink-dim">
-                              {e.type === 'dir' ? '▸' : '·'}
-                            </span>
-                            <span className={e.type === 'dir' ? 'text-em' : 'text-ink'}>
-                              {e.name}
-                              {e.type === 'dir' ? '/' : ''}
-                            </span>
-                          </button>
-                        </td>
-                        <td className="w-24 py-1.5 pr-4 text-right font-mono text-xs text-ink-dim">
-                          {e.type === 'file' ? fmtSize(e.size) : ''}
-                        </td>
-                        <td className="w-36 py-1.5 text-right font-mono text-xs text-ink-dim">
-                          {fmtMtime(e.mtime)}
-                        </td>
-                      </tr>
-                    )
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
+        <FileTable
+          path={path}
+          entries={entries}
+          loading={listing.isLoading}
+          error={listing.isError ? listing.error : undefined}
+          filterActive={filter.trim() !== ''}
+          selected={selected}
+          onToggleSelectAll={(names) => setSelected(names)}
+          onToggleSelect={toggleSelected}
+          onOpenEntry={(child, isDir) => void openEntry(child, isDir)}
+          onOpenRaw={openRaw}
+          onMoveOntoDir={(src, dest) => void moveOntoDir(src, dest)}
+          onDropFilesInto={(dir, files) => void ops.uploadInto(dir, files)}
+          onNavigateUp={() => navigateGuarded(parentRel(path))}
+          suppressRawUntil={suppressRawUntilRef}
+        />
 
         {/* Preview / edit pane — text files use the shared CodeMirror editor */}
         {previewPath && (
@@ -744,17 +294,15 @@ export function FilesPage(): JSX.Element {
             onClose={() => {
               void (async () => {
                 const decision = await guardClosePreview({
-                  dirty: editorDirtyRef.current,
+                  dirty: filesDirty.dirty,
                   fileName: dirtyFileName,
-                  confirm: discardConfirm,
-                  clearDirty,
+                  confirm,
+                  clearDirty: () => useUiInteraction.getState().clearFilesDirty(),
                 })
                 if (decision !== 'proceed') return
                 setPreviewPath(undefined)
               })()
             }}
-            onNotice={showNotice}
-            onDirtyChange={setEditorDirtyTracked}
             downloadUrl={gateway.fileDownloadUrl(previewPath)}
             size={
               (listing.data?.entries ?? []).find((e) => joinRel(path, e.name) === previewPath)?.size
@@ -771,80 +319,5 @@ export function FilesPage(): JSX.Element {
         </div>
       )}
     </div>
-  )
-}
-
-function PreviewPane(props: {
-  path: string
-  downloadUrl: string
-  onClose: () => void
-  onNotice: (n: Notice) => void
-  /** Optional size from the listing — drives previewKind / edit eligibility. */
-  size?: number
-  /** Dirty report from the embedded editor. */
-  onDirtyChange: (dirty: boolean) => void
-}): JSX.Element {
-  const name = baseName(props.path)
-  // Prefer known size; when unknown assume under text cap for extension classification.
-  const kind = previewKind(name, props.size ?? 100_000)
-  const inShell = rivetShell() != null
-
-  return (
-    <aside className="flex w-[min(36rem,50%)] shrink-0 flex-col border-l border-line bg-panel/60">
-      <div className="flex items-center gap-2 border-b border-line px-3 py-2">
-        <span className="min-w-0 flex-1 truncate text-xs text-em">{props.path}</span>
-        <a
-          href={props.downloadUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          // In-shell only: target=_blank is denied and an OS browser cannot
-          // authenticate to the gateway anyway — download over the app's
-          // transport instead. Plain browsers keep real anchor semantics
-          // (modifier-click, popup blocker).
-          onClick={
-            inShell
-              ? (ev) => {
-                  ev.preventDefault()
-                  void saveViaGateway(props.downloadUrl, name, props.size)
-                    .then(() => {
-                      props.onNotice({ kind: 'ok', text: `download started: ${name}` })
-                    })
-                    .catch((err: unknown) => {
-                      props.onNotice({ kind: 'err', text: (err as Error).message })
-                    })
-                }
-              : undefined
-          }
-          className="text-xs text-ink-dim hover:text-em classic:text-[11px]"
-        >
-          {inShell ? 'download' : 'open'}
-        </a>
-        <button type="button" onClick={props.onClose} className="text-ink-dim hover:text-ink">
-          ✕
-        </button>
-      </div>
-      {kind === 'image' ? (
-        <div className="min-h-0 flex-1 overflow-auto p-3">
-          <img
-            src={props.downloadUrl}
-            alt={name}
-            className="max-w-full rounded border border-line"
-          />
-        </div>
-      ) : kind === 'text' ? (
-        <FileEditor
-          key={props.path}
-          path={props.path}
-          size={props.size}
-          className="min-h-0 flex-1"
-          minHeight="12rem"
-          onDirtyChange={props.onDirtyChange}
-        />
-      ) : (
-        <div className="p-3 text-xs text-ink-dim">
-          No in-app preview for this type — use download / open.
-        </div>
-      )}
-    </aside>
   )
 }
