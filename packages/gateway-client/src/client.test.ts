@@ -202,7 +202,7 @@ describe('RivetGateway HTTP', () => {
       mime: 'image/png',
     })
     expect(staged.uri).toBe('/home/rivet/.rivetos/den/uploads/u1.png')
-    expect(captured.url).toBe('/api/uploads?name=shot.png&mime=image%2Fpng')
+    expect(captured.url).toBe('/api/uploads?name=shot.png&mediaType=image%2Fpng')
     expect(captured.body).toBe('PNGBYTES')
   })
 

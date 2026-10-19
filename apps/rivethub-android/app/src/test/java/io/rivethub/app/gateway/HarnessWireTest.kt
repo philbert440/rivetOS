@@ -289,11 +289,11 @@ class HarnessWireTest {
     }
 
     @Test fun `StagedUploadResponse round-trips ISO expiresAt`() {
-        val json = """{"uri":"/tmp/uploads/x.png","name":"x.png","mime":"image/png","size":4,"expiresAt":"2026-09-02T18:00:00.000Z"}"""
+        val json = """{"id":"5f0c","uri":"/tmp/uploads/x.png","name":"x.png","mediaType":"image/png","bytes":4,"expiresAt":"2026-09-02T18:00:00.000Z"}"""
         val staged = wireJson.decodeFromString(StagedUploadResponse.serializer(), json)
         assertEquals("/tmp/uploads/x.png", staged.uri)
-        assertEquals("image/png", staged.mime)
-        assertEquals(4L, staged.size)
+        assertEquals("image/png", staged.mediaType)
+        assertEquals(4L, staged.bytes)
         assertEquals("2026-09-02T18:00:00.000Z", staged.expiresAt)
         val absent = wireJson.decodeFromString(StagedUploadResponse.serializer(), """{"uri":"/tmp/uploads/x.png"}""")
         assertNull(absent.expiresAt)

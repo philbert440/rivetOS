@@ -1401,13 +1401,16 @@ export interface FilesUploadResponse {
 }
 
 /** POST /api/uploads — attachment staging for remote clients. The returned
- *  `uri` is node-resolvable and belongs in `UserTurn.attachments[].pathOrUri`. */
+ *  `uri` is the file's absolute path on the node and belongs in
+ *  `UserTurn.attachments[].pathOrUri`. `expiresAt` is ISO-8601. */
 export interface StagedUploadResponse {
+  id: string
   uri: string
   name: string
-  mime: string
-  size: number
-  expiresAt: number
+  mediaType: string
+  bytes: number
+  expiresAt: string
+  session?: string
 }
 
 /** POST /api/voice/speak request body (den voice proxy). */

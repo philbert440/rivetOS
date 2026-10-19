@@ -283,7 +283,7 @@ class HarnessGateway(
                 }
             }
             val req = Request.Builder()
-                .url(url(listOf("api", "uploads"), mapOf("name" to name, "mime" to mime)))
+                .url(url(listOf("api", "uploads"), mapOf("name" to name, "mediaType" to media.toString())))
                 .post(body)
                 .build()
             withClients { c ->

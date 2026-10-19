@@ -21,6 +21,8 @@ export interface RivetShell {
   // check and turns the whole bridge off for that user.
   platform?: string
   appVersion?(): Promise<string>
+  /** PNG bytes of the clipboard image; undefined when there is none. */
+  clipboardReadImage?(): Promise<Uint8Array | undefined>
   /** Native folder chooser on this machine. Undefined when cancelled. */
   pickDirectory?(startIn?: string): Promise<string | undefined>
   /** Main-process update check for the given gateway base. The renderer

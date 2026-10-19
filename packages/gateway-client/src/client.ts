@@ -1025,7 +1025,7 @@ export class RivetGateway {
       this.config.baseUrl.endsWith('/') ? this.config.baseUrl : `${this.config.baseUrl}/`,
     )
     u.searchParams.set('name', name)
-    if (opts.mime) u.searchParams.set('mime', opts.mime)
+    u.searchParams.set('mediaType', opts.mime || 'application/octet-stream')
     return (await rawBodyPost(
       this.config,
       u,

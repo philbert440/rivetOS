@@ -1664,7 +1664,9 @@ function ActiveSession(props: {
         uri: a.pathOrUri,
       })),
     )
-    const sendProtocol = async (sid: string): Promise<void> => {
+    // `owned`: a session this send just started is protocol-owned before the
+    // rendered summary catches up.
+    const sendProtocol = async (sid: string, owned = protocolOwned): Promise<void> => {
       const harnessId = sid.split(':')[0] as import('@rivetos/types').HarnessId
       const capabilities = remoteRegistry.data?.harnesses.find(
         (h) => h.harnessId === harnessId,
@@ -1672,7 +1674,7 @@ function ActiveSession(props: {
       // Use the rendered ownership and options. Pending/error queries must
       // neither delay a send nor apply a pick that the composer cannot offer.
       const nativeAttachments =
-        protocolOwned &&
+        owned &&
         capabilities?.imageAttachments &&
         attachments?.every((a) => a.mime.startsWith('image/'))
       const correlated = await pumpEntry.observe(gw, sid, deliveryId)
@@ -1738,7 +1740,7 @@ function ActiveSession(props: {
           ...(launch.spawn.model ? { model: launch.spawn.model } : {}),
         })
         writeLaunchState({ launched: true })
-        await sendProtocol(started.sessionId)
+        await sendProtocol(started.sessionId, true)
         if (prompt) markSystemPromptSent(props.sessionId)
         if (useChat.getState().rekey(props.sessionId, started.sessionId)) {
           migrateSessionKey(baseUrl, rosterUrls, props.sessionId, started.sessionId)
