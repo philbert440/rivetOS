@@ -403,6 +403,30 @@ fun parseHarnessEvent(text: String): HarnessEvent? {
     return parseHarnessEvent(el)
 }
 
+/**
+ * RivetHub's session event stream (`WS /api/events/ws`) as registry events.
+ * The rh runtime serves no `/api/harnesses/ws`; its `snapshot` (every live
+ * session, on open) and `session.start` frames stand in for the den's
+ * `session-created`, so a draft is adopted once its session exists. Only
+ * harness sessions count; `rivetos` agent sessions and other frames give none.
+ */
+fun parseRhSessionEvents(text: String): List<HarnessEvent.SessionCreated> {
+    val el = runCatching { wireJson.parseToJsonElement(text).jsonObject }.getOrNull() ?: return emptyList()
+    return when (el.str("type")) {
+        "snapshot" -> (el["sessions"] as? JsonArray).orEmpty().mapNotNull { row ->
+            (row as? JsonObject)?.let { rhSessionCreated(it.str("id"), it.str("harness")) }
+        }
+        "session.start" -> listOfNotNull(rhSessionCreated(el.str("session"), el.str("harness")))
+        else -> emptyList()
+    }
+}
+
+private fun rhSessionCreated(native: String?, harness: String?): HarnessEvent.SessionCreated? {
+    if (native.isNullOrBlank() || harness == null || harness !in HARNESS_IDS) return null
+    val canonical = "$harness:$native"
+    return HarnessEvent.SessionCreated(canonical, HarnessSessionSummary(sessionId = canonical, harnessId = harness))
+}
+
 fun parseHarnessEvent(el: JsonObject): HarnessEvent {
     val rawType = el.str("type") ?: return HarnessEvent.Unknown("", el)
     val type = normalizeEventType(rawType)

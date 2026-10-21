@@ -189,6 +189,12 @@ class HarnessGateway(
         parseHarnessEvent(text)?.let(onEvent)
     }
 
+    /** RivetHub's session event stream (`WS /api/events/ws`), as [parseRhSessionEvents] reads it. */
+    fun watchSessionEvents(onEvent: (HarnessEvent) -> Unit, onStatus: (WsStatus) -> Unit = {}): Closeable =
+        WsSubscription(clients(), url(listOf("api", "events", "ws")).toString(), onStatus) { text ->
+            parseRhSessionEvents(text).forEach(onEvent)
+        }
+
     /** GET /api/harness-sessions/{enc}/transcript — hard-resync source of truth. */
     suspend fun transcript(enc: String): HarnessSessionTranscriptResponse =
         get(listOf("api", "harness-sessions", enc, "transcript"), HarnessSessionTranscriptResponse.serializer())

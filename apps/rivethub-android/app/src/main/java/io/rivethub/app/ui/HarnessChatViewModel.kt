@@ -1273,9 +1273,15 @@ class HarnessChatViewModel(
     private fun startRegistry() {
         registryWatch?.close()
         val hg = c.harness(nodeDenUrl)
-        registryWatch = hg.watchRegistry(
-            onEvent = { event -> viewModelScope.launch { onRegistry(event) } },
-        )
+        val onEvent: (HarnessEvent) -> Unit = { event -> viewModelScope.launch { onRegistry(event) } }
+        // A den node serves the registry stream, an rh node only its session
+        // event stream; whichever the node lacks just retries quietly.
+        val den = hg.watchRegistry(onEvent = onEvent)
+        val rh = hg.watchSessionEvents(onEvent)
+        registryWatch = Closeable {
+            den.close()
+            rh.close()
+        }
     }
 
     private fun onRegistry(event: HarnessEvent) {
