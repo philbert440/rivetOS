@@ -46,6 +46,10 @@ val ROSTER_COMMAND: Map<String, String> = mapOf(
 
 fun rosterCommandFor(harnessId: String?): String? = harnessId?.let { ROSTER_COMMAND[it] }
 
+/** The harness a roster command runs, or null for a command with none (`shell`). */
+fun harnessForRosterCommand(command: String?): String? =
+    command?.let { c -> ROSTER_COMMAND.entries.firstOrNull { it.value == c }?.key }
+
 data class HarnessGate(
     val bound: Boolean,
     val stream: Boolean,

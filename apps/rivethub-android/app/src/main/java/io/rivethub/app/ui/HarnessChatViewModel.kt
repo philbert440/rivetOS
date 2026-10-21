@@ -131,6 +131,7 @@ import io.rivethub.app.plane.harnessLabel
 import io.rivethub.app.plane.nextInjectTry
 import io.rivethub.app.plane.persistSessionMode
 import io.rivethub.app.plane.ptySpawnIsFresh
+import io.rivethub.app.plane.harnessForRosterCommand
 import io.rivethub.app.plane.rosterCommandFor
 import io.rivethub.app.plane.sessionMatchesNative
 import io.rivethub.app.plane.SpawnAttempt
@@ -1561,7 +1562,7 @@ class HarnessChatViewModel(
             return
         }
         AndroidLogger.debug("RivetHub", "send: draft=${_state.value.draft} session=${_state.value.sessionId} node=$nodeDenUrl", null)
-        if (_state.value.draft && protocolChatHarness() != null) startProtocolChat()
+        if (_state.value.draft && ptyCache.cached() == null && protocolChatHarness() != null) startProtocolChat()
         val st = _state.value
         when (val action = chatSendAction(st.draft, st.sessionId, text)) {
             is ChatSendAction.Inject -> injectDraft(action)
@@ -1569,10 +1570,24 @@ class HarnessChatViewModel(
         }
     }
 
-    /** The harness a new chat starts over the protocol on, when its row says `chat` (RivetHub). */
-    private fun protocolChatHarness(): String? {
-        val id = resolvedHarnessId() ?: return null
-        return id.takeIf { descriptors.any { d -> d.harnessId == id && d.chat == true } }
+    /**
+     * The harness a new chat starts over the protocol on, when its row says
+     * `chat` (RivetHub). The conversation's own harness, else (no preset) the
+     * node's default roster command, as desktop's protocolStartPlan does. A
+     * preset with no harness keeps the spawn path.
+     */
+    private suspend fun protocolChatHarness(): String? {
+        val id = resolvedHarnessId() ?: if (agentId.isBlank()) defaultHarnessId() else null
+        return id?.takeIf { descriptors.any { d -> d.harnessId == id && d.chat == true } }
+    }
+
+    private var defaultHarness: String? = null
+
+    /** The harness behind the node's default roster command (`GET /api/terminal/config`). */
+    private suspend fun defaultHarnessId(): String? {
+        defaultHarness?.let { return it }
+        val command = withContext(Dispatchers.IO) { runCatching { gateway().termConfig().default }.getOrNull() }
+        return harnessForRosterCommand(command).also { defaultHarness = it }
     }
 
     /**
