@@ -1216,7 +1216,10 @@ class HarnessChatViewModel(
             _state.update { it.copy(errors = stackError(it.errors, e)) }
         }
         startRegistry()
+        // A draft has no live stream until it is adopted (rh refuses a bare
+        // id); its composer is ready, not "reconnecting", so the first send can start it.
         if (!_state.value.draft) startAttach(_state.value.sessionId)
+        else _state.update { it.copy(ws = WsStatus.OPEN) }
     }
 
     private fun recomputeGate() {
