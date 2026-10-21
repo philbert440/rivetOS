@@ -22,6 +22,11 @@ class RhSessionEventsTest {
         assertEquals(listOf("claude-code:$native"), parseRhSessionEvents(text).map { it.sessionId })
     }
 
+    @Test fun `a protocol chat's canonical id is kept as is`() {
+        val text = """{"v":1,"session":"claude-code:$native","type":"session.start","harness":"claude-code"}"""
+        assertEquals(listOf("claude-code:$native"), parseRhSessionEvents(text).map { it.sessionId })
+    }
+
     @Test fun `agent sessions, unknown harnesses and other frames give nothing`() {
         assertTrue(parseRhSessionEvents("""{"v":1,"session":"s","type":"session.start","harness":"rivetos"}""").isEmpty())
         assertTrue(parseRhSessionEvents("""{"v":1,"session":"s","type":"session.start"}""").isEmpty())

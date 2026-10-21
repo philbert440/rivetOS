@@ -138,13 +138,36 @@ class HarnessGateway(
     suspend fun legacySessions(): List<LegacyHarnessSession> =
         get(listOf("api", "terminal", "harness-sessions"), LegacyHarnessSessionsResponse.serializer()).sessions
 
-    /** POST /api/harness-sessions/{enc}/turns. 409 turn_in_flight → [TurnInFlight]. */
-    suspend fun sendTurn(enc: String, turn: UserTurn): HarnessTurnAccepted =
+    /**
+     * POST /api/harness-sessions: start a new chat session over the protocol.
+     * The node mints the id; without [cwd] the roster command's directory applies.
+     */
+    suspend fun startChat(harnessId: String, model: String? = null, cwd: String? = null): HarnessSessionSummary =
+        withContext(Dispatchers.IO) {
+            val body = wireJson.encodeToString(
+                StartChatBody.serializer(),
+                StartChatBody(harnessId, model?.takeIf { it.isNotBlank() }, cwd?.takeIf { it.isNotBlank() }),
+            ).toRequestBody("application/json".toMediaType())
+            val req = Request.Builder().url(url(listOf("api", "harness-sessions"))).post(body).build()
+            withClients { c ->
+                c.newCall(req).execute().use { res ->
+                    val text = res.body.string()
+                    if (!res.isSuccessful) throw GatewayException(res.code, errorText(res, text), bodyCode(text))
+                    wireJson.decodeFromString(HarnessSessionSummary.serializer(), text)
+                }
+            }
+        }
+
+    /**
+     * POST /api/harness-sessions/{id}/turn with the raw canonical [sessionId]
+     * (percent-encoded, not an enc segment). 409 turn_in_flight → [TurnInFlight].
+     */
+    suspend fun sendTurn(sessionId: String, turn: UserTurn): HarnessTurnAccepted =
         withContext(Dispatchers.IO) {
             val body = wireJson.encodeToString(UserTurn.serializer(), turn)
                 .toRequestBody("application/json".toMediaType())
             val req = Request.Builder()
-                .url(url(listOf("api", "harness-sessions", enc, "turns")))
+                .url(url(listOf("api", "harness-sessions", sessionId, "turn")))
                 .post(body)
                 .build()
             withClients { c ->
@@ -199,11 +222,11 @@ class HarnessGateway(
     suspend fun transcript(enc: String): HarnessSessionTranscriptResponse =
         get(listOf("api", "harness-sessions", enc, "transcript"), HarnessSessionTranscriptResponse.serializer())
 
-    /** POST /api/harness-sessions/{enc}/interrupt — stop the in-flight turn. */
-    suspend fun interrupt(enc: String): HarnessTurnAccepted =
+    /** POST /api/harness-sessions/{id}/stop — stop the in-flight turn. Same raw id as [sendTurn]. */
+    suspend fun interrupt(sessionId: String): HarnessTurnAccepted =
         withContext(Dispatchers.IO) {
             val req = Request.Builder()
-                .url(url(listOf("api", "harness-sessions", enc, "interrupt")))
+                .url(url(listOf("api", "harness-sessions", sessionId, "stop")))
                 .post("{}".toRequestBody("application/json".toMediaType()))
                 .build()
             withClients { c ->

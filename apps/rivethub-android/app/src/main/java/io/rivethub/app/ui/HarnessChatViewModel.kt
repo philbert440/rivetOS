@@ -845,7 +845,7 @@ class HarnessChatViewModel(
         val st = _state.value
         if (!st.gate.canInterrupt || st.draft) return
         viewModelScope.launch(Dispatchers.IO) {
-            runCatching { c.harness(nodeDenUrl).interrupt(sessionKeyEnc(st.sessionId)) }
+            runCatching { c.harness(nodeDenUrl).interrupt(st.sessionId) }
         }
     }
 
@@ -925,7 +925,7 @@ class HarnessChatViewModel(
         viewModelScope.launch {
             if (st.inFlight && st.gate.canInterrupt && !st.draft) {
                 runCatching {
-                    withContext(Dispatchers.IO) { c.harness(nodeDenUrl).interrupt(sessionKeyEnc(st.sessionId)) }
+                    withContext(Dispatchers.IO) { c.harness(nodeDenUrl).interrupt(st.sessionId) }
                 }
             }
             try {
@@ -1561,11 +1561,31 @@ class HarnessChatViewModel(
             return
         }
         AndroidLogger.debug("RivetHub", "send: draft=${_state.value.draft} session=${_state.value.sessionId} node=$nodeDenUrl", null)
+        if (_state.value.draft && protocolChatHarness() != null) startProtocolChat()
         val st = _state.value
         when (val action = chatSendAction(st.draft, st.sessionId, text)) {
             is ChatSendAction.Inject -> injectDraft(action)
             is ChatSendAction.SendTurn -> sendAdopted(action, attachments)
         }
+    }
+
+    /** The harness a new chat starts over the protocol on, when its row says `chat` (RivetHub). */
+    private fun protocolChatHarness(): String? {
+        val id = resolvedHarnessId() ?: return null
+        return id.takeIf { descriptors.any { d -> d.harnessId == id && d.chat == true } }
+    }
+
+    /**
+     * Start the draft as a protocol chat session: the node mints the id, which
+     * the draft adopts, so the first message goes out as an ordinary turn
+     * instead of being typed into a fresh PTY.
+     */
+    private suspend fun startProtocolChat() {
+        val harness = protocolChatHarness() ?: return
+        val summary = c.harness(nodeDenUrl).startChat(harness, turnOptions().effectiveModel)
+        AndroidLogger.debug("RivetHub", "protocol chat: ${summary.sessionId} draft=${_state.value.sessionId}", null)
+        applySummaryControls(summary.transport, summary.model, summary.effort)
+        adoptCanonical(summary.sessionId)
     }
 
     private suspend fun sendAdopted(action: ChatSendAction.SendTurn, attachments: List<StagedTurnAttachment>) {
@@ -1577,7 +1597,7 @@ class HarnessChatViewModel(
         val turn = buildUserTurn(action.text, attachments, st.sheet, st.transport, opts.effectiveModel, opts.effectiveEffort)
         val accepted = try {
             withContext(Dispatchers.IO) {
-                hg.sendTurn(sessionKeyEnc(action.sessionId), turn)
+                hg.sendTurn(action.sessionId, turn)
             }
         } catch (e: Exception) {
             // The den holds a turn "in flight" for up to 5 min when its hook events are

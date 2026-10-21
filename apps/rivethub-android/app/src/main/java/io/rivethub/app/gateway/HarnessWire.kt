@@ -77,6 +77,8 @@ data class HarnessDescriptor(
      * allowed. Pickers for NEW sessions filter on this with [installed].
      */
     val allowed: Boolean? = null,
+    /** RivetHub: a new session can start over the protocol (`POST /api/harness-sessions`). */
+    val chat: Boolean? = null,
 )
 
 @Serializable
@@ -214,6 +216,10 @@ data class HarnessPromptAnswersBody(val answers: List<HarnessPromptAnswer>)
 
 @Serializable
 data class HarnessApprovalDecisionBody(val decision: String)
+
+/** Body of `POST /api/harness-sessions`. */
+@Serializable
+data class StartChatBody(val harness: String, val model: String? = null, val cwd: String? = null)
 
 @Serializable
 data class HarnessSessionTranscriptResponse(
@@ -423,7 +429,8 @@ fun parseRhSessionEvents(text: String): List<HarnessEvent.SessionCreated> {
 
 private fun rhSessionCreated(native: String?, harness: String?): HarnessEvent.SessionCreated? {
     if (native.isNullOrBlank() || harness == null || harness !in HARNESS_IDS) return null
-    val canonical = "$harness:$native"
+    // A protocol chat's row is already canonical; a PTY session's is the native id.
+    val canonical = if (nativeIdOf(native) != null) native else "$harness:$native"
     return HarnessEvent.SessionCreated(canonical, HarnessSessionSummary(sessionId = canonical, harnessId = harness))
 }
 

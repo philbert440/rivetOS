@@ -445,8 +445,11 @@ switch the conversations pane to it.
 
 Pure Kotlin under `gateway/HarnessWire.kt`, `gateway/HarnessGateway.kt`, and `plane/`. Desktop
 semantics copied from `apps/rivethub-web` `harness-*.ts` + `ask-user.ts` + `attachments.ts` +
-`outbound-pump.ts` + `agent-session.ts`. `+ new` is a bare UUID draft; never call startSession.
-First send on a draft: `ensurePty` (`termSpawn` joined to the draft id) then `termInject`
+`outbound-pump.ts` + `agent-session.ts`. `+ new` is a bare UUID draft. On a RivetHub (rh) node whose
+`/api/harnesses` row says `chat: true`, the first chat send starts the session over the protocol
+(`startChat`, `POST /api/harness-sessions`), adopts the id the node mints and sends a turn, as desktop
+does since #1199; `sendTurn`/`interrupt` use rh's `/turn` and `/stop` with the raw canonical id.
+Otherwise, first send on a draft: `ensurePty` (`termSpawn` joined to the draft id) then `termInject`
 (`POST /api/terminal/inject`; server appends `\r` via `submit` default true). A **fresh** spawn
 attaches `watchTerm` and waits until output has started and been quiet ≥ 1.5s (bounded 8s) before
 inject; a reused/reattached PTY injects immediately. Do **not** wait for registry `session-created`
