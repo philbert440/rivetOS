@@ -12,9 +12,12 @@ Commands:
   ingest-pages --input DIR [--commit] [--overlap-hours N]
                [--revision REV | --live]
                             ReadTranscript dump ingest (dry-run default).
-                            -v4 hash suppression is off unless --overlap-hours
-                            is positive; that opt-in can drop a coincident
-                            missed run. --revision REV writes
+                            Session dedupe is by content hash (role +
+                            normalized content, plus timestamp when present),
+                            not transcript position. -v4 hash suppression is
+                            off unless --overlap-hours is positive; that
+                            opt-in can drop a coincident missed run.
+                            --revision REV writes
                             grokbot-<slug>-v4-backfill-REV instead of the
                             default -v4-backfill tag. --live writes
                             grokbot-<slug>-v4-live (not with --revision).

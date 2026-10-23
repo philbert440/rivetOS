@@ -148,23 +148,26 @@ const HELP = `Usage: grokbot-rivet-memory-capture <command> [opts]
       instead; omitted, the plain -v4-backfill tag is unchanged. --live
       writes grokbot-<slug>-v4-live instead and cannot be combined with
       --revision. Re-ingesting overlapping pages into the live session
-      skips rows already stored by source_id
-      (readtranscript:<slug>:<position>:<sub>), including the same
-      positions from two fetch copies. A bot whose pages conflict writes
-      nothing; other bots still proceed.
+      skips rows already stored by content hash (role + normalized
+      content, plus timestamp when present), including the same text
+      assigned a different page position. source_id
+      (readtranscript:<slug>:<position>:<sub>) is ordering metadata.
+      A bot whose pages conflict writes nothing; other bots still proceed.
       Page conflicts exit 3 on a dry-run and on --commit.
       A stored source_id whose content digest differs is not rewritten
-      (skipped_changed) and also exits 3. Several stored digests for one
-      source_id: a row matching any of them is a quiet skip; only a row
-      matching none is skipped_changed.
+      (skipped_changed) and also exits 3, unless that incoming hash
+      already exists in the session (skipped_duplicate_hash, not CHANGED).
+      Several stored digests for one source_id: a row matching any of
+      them is a quiet skip; only a row matching none is skipped_changed.
       Unknown slugs and malformed pages are counted and exit 2. When a
       run has both that failure and page conflicts or skipped_changed,
       exit 2 wins and both reasons are printed.
-      Before ingest, a page whose header range does not match its JSON
-      body, whose JSON does not parse, or (with --live) whose header
+      Before ingest, a page whose header range has more JSON lines than
+      claimed, whose JSON does not parse, or (with --live) whose header
       total or agent id does not match the other pages for that slug,
-      is skipped with a reason. Those positions stay as gaps. Files
-      are not modified.
+      is skipped with a reason. A header that claims more positions than
+      JSON lines is kept (upstream may skip spots inside the page).
+      Rejected positions stay as gaps. Files are not modified.
       PostgresMemory.append still upserts that session's ros_conversations
       row (updated_at, active) and may queue tool-synthesis jobs. Never
       folds into plain -v4. Timestamps are approximate (ts_approx=true);
