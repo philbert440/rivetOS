@@ -147,10 +147,26 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocol
 ## Known constraints
 
 - The `desktop` profile is managed by the Electron app and cannot be booted
-  from the CLI; its config is validated by composition instead.
+  from the CLI. Clone the profile directory under a different name to boot it;
+  a clone exposes the full memory tool set.
 - `dsh-memory-mcp.sh` prefers a **built** install root. Root discovery accepts
   any checkout with `nx.json` + `services/mcp-sidecar`, including an unbuilt
   source tree, so the launcher falls back to a built root before failing.
 - The MCP sidecar refuses to start when `RIVETOS_EMBED_URL` is set without
   `RIVETOS_EMBED_MODEL`; the launcher supplies the house default when the env
   file does not.
+- Rows captured by another machine land in the shared database with a
+  `sessionJsonlPath` pointing at that machine's home. Those memory pointers are
+  unresolvable here, so their split tool pairs cannot be folded. Measure
+  fidelity per host (`metadata->>'sessionJsonlPath' LIKE '/home/<user>/%'`)
+  rather than across the whole channel.
+
+## Fidelity notes
+
+dsh emits a tool invocation as **two** events (`tool/call`, `tool/result`).
+claude-code and grok-build emit a single event carrying both, which is why
+their rows show `sourceEvent = NULL` and pair trivially. Both paths converge on
+the same stored shape here: one row per invocation with `tool_args` and
+`tool_result`. Compare like with like — a whole-channel pairing percentage
+mixes dsh's two-event model with a large body of rows whose source transcripts
+live on another host.
