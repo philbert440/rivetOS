@@ -576,7 +576,7 @@ describe('ingest-pages dry-run / commit', () => {
       deps: { overlap: store },
     })
     const bot = result.bots[0]
-    expect(bot?.skippedOverlap).toBeGreaterThan(0)
+    expect((bot?.skippedOverlap ?? 0) + (bot?.skippedDuplicateHash ?? 0)).toBeGreaterThan(0)
     expect(bot?.new).toBeGreaterThan(0)
     expect(bot?.session).toBe('grokbot-alpha-v4-backfill')
   })

@@ -349,7 +349,7 @@ export function contentHashForRow(row: {
 /** ISO-8601 UTC milliseconds, or undefined when missing / unparseable. */
 export function normalizeHashTimestamp(raw: string | Date | null | undefined): string | undefined {
   if (raw == null || raw === '') return undefined
-  const ms = raw instanceof Date ? raw.getTime() : Date.parse(String(raw))
+  const ms = raw instanceof Date ? raw.getTime() : Date.parse(raw)
   if (!Number.isFinite(ms)) return undefined
   return new Date(ms).toISOString()
 }
@@ -676,11 +676,13 @@ function sourceIdDisposition(
 function storedContentHashes(index: OverlapIndex): Set<string> {
   const out = new Set<string>(index.contentHashes ?? [])
   for (const stored of index.sourceIds.values()) {
-    if (typeof stored === 'string' && stored) out.add(stored)
-    else if (Array.isArray(stored)) {
-      for (const digest of stored) {
-        if (digest) out.add(digest)
-      }
+    if (typeof stored === 'string') {
+      if (stored) out.add(stored)
+      continue
+    }
+    if (!stored) continue
+    for (const digest of stored) {
+      if (digest) out.add(digest)
     }
   }
   return out
