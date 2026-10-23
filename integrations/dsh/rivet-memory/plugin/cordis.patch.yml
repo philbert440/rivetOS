@@ -1,0 +1,4 @@
+# Applied when this package is added to a dsh profile (dsh plugin --profile <name> add <dir>).
+- insert:
+    - id: rivet-memory
+      name: '@rivetos/dsh-rivet-memory'
