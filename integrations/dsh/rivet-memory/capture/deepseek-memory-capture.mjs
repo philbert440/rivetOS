@@ -768,6 +768,11 @@ export async function ingestMessages(sessionId, messages, opts = {}) {
       if (result === 'inserted') inserted++
       else skipped++
     }
+    // Live events arrive one at a time, so a tool/result is ingested long after
+    // its tool/call. Fold it into the stored call row instead of leaving two
+    // half-rows: the transcript pass folds in memory, but the live path never
+    // sees both halves at once.
+    const folded = await foldStoredToolResults(client, conv.id)
     if (opts.finalize) {
       await client.query(
         `UPDATE ros_conversations SET active = false, updated_at = now() WHERE id = $1 AND active = true`,
@@ -789,6 +794,64 @@ export async function ingestMessages(sessionId, messages, opts = {}) {
     client.release()
     await pool.end()
   }
+}
+
+/**
+ * Fold stored tool/result rows into their tool/call rows for one conversation.
+ *
+ * The transcript pass folds in memory because it sees both events together.
+ * The live path does not: a tool/call is ingested in one worker and its
+ * tool/result in a later one, so the pair lands as two rows. Reconcile at the
+ * end of each ingest joins them in place — the call row keeps its identity and
+ * gains the output, and the now-redundant result row is deleted.
+ *
+ * Matching is by `callId` within the same conversation. Results whose call
+ * never arrived are left alone. Returns the number of rows folded.
+ */
+async function foldStoredToolResults(client, conversationId) {
+  const pairs = await client.query(
+    `SELECT r.id AS result_id, r.tool_result AS result_body, r.content AS result_content,
+            r.metadata AS result_meta, c.id AS call_id
+       FROM ros_messages r
+       JOIN ros_messages c
+         ON c.conversation_id = r.conversation_id
+        AND c.role = 'tool'
+        AND c.id <> r.id
+        AND c.metadata->>'callId' = r.metadata->>'callId'
+      WHERE r.conversation_id = $1
+        AND r.role = 'tool'
+        AND r.metadata->>'sourceEvent' = 'tool/result'
+        AND c.metadata->>'sourceEvent' = 'tool/call'
+        AND r.metadata->>'callId' IS NOT NULL
+        AND c.tool_result IS NULL`,
+    [conversationId],
+  )
+  if (pairs.rowCount === 0) return 0
+  let folded = 0
+  for (const row of pairs.rows) {
+    // Prefer the result's own tool_result payload; fall back to its content
+    // only when the result row never carried a separate body.
+    const body =
+      typeof row.result_body === 'string' && row.result_body.length > 0
+        ? row.result_body
+        : typeof row.result_content === 'string' && row.result_content.length > 0
+          ? row.result_content
+          : null
+    if (!body) continue
+    const meta = isRecord(row.result_meta) ? { ...row.result_meta } : {}
+    delete meta.full_content_length
+    delete meta.truncated
+    await client.query(
+      `UPDATE ros_messages
+          SET tool_result = $2,
+              metadata = metadata || $3::jsonb
+        WHERE id = $1 AND tool_result IS NULL`,
+      [row.call_id, body, JSON.stringify(meta)],
+    )
+    await client.query(`DELETE FROM ros_messages WHERE id = $1`, [row.result_id])
+    folded++
+  }
+  return folded
 }
 
 // ---------------------------------------------------------------------------
