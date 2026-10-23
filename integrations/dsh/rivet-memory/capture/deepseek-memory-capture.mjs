@@ -471,7 +471,15 @@ export function foldToolResultsInto(messages) {
       out.push(m)
       continue
     }
-    const body = typeof m.content === 'string' ? m.content : ''
+    // Prefer the result's own payload. `content` holds a short
+    // "[tool-result] <name>" label once a name is known, so using it here
+    // stores a stub in place of the real output.
+    const body =
+      typeof m.toolResult === 'string' && m.toolResult.length > 0
+        ? m.toolResult
+        : typeof m.content === 'string'
+          ? m.content
+          : ''
     if (body.length > 0 && call.toolResult == null) {
       call.toolResult = body
       if (call.toolName == null || call.toolName === 'unknown') call.toolName = m.toolName ?? call.toolName
@@ -822,8 +830,7 @@ async function foldStoredToolResults(client, conversationId) {
         AND r.role = 'tool'
         AND r.metadata->>'sourceEvent' = 'tool/result'
         AND c.metadata->>'sourceEvent' = 'tool/call'
-        AND r.metadata->>'callId' IS NOT NULL
-        AND c.tool_result IS NULL`,
+        AND r.metadata->>'callId' IS NOT NULL`,
     [conversationId],
   )
   if (pairs.rowCount === 0) return 0
@@ -841,11 +848,17 @@ async function foldStoredToolResults(client, conversationId) {
     const meta = isRecord(row.result_meta) ? { ...row.result_meta } : {}
     delete meta.full_content_length
     delete meta.truncated
+    // Copy the body when the call row has none OR its stored body is a stub.
+    // A live result event can land before its call row carries the real
+    // payload, leaving a short label behind; a fuller body always wins.
     await client.query(
       `UPDATE ros_messages
-          SET tool_result = $2,
+          SET tool_result = CASE
+                WHEN tool_result IS NULL OR length(tool_result) < length($2) THEN $2
+                ELSE tool_result
+              END,
               metadata = metadata || $3::jsonb
-        WHERE id = $1 AND tool_result IS NULL`,
+        WHERE id = $1`,
       [row.call_id, body, JSON.stringify(meta)],
     )
     await client.query(`DELETE FROM ros_messages WHERE id = $1`, [row.result_id])
