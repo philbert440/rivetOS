@@ -121,6 +121,23 @@ function sameTools(a: SessionMessage['tools'], b: HarnessTranscriptTool[] | unde
   return true
 }
 
+function sameAttachments(
+  a: SessionMessage['attachments'],
+  b: HarnessTranscriptTurn['attachments'],
+): boolean {
+  if (!a || !b) return !a && !b
+  if (a.length !== b.length) return false
+  return a.every((x, i) => {
+    const y = b[i]
+    return (
+      x.mediaType === y.mediaType &&
+      x.name === y.name &&
+      x.uri === y.uri &&
+      x.uploadId === y.uploadId
+    )
+  })
+}
+
 export function messagesFromHarnessTurns(
   sessionId: string,
   turns: HarnessTranscriptTurn[],
@@ -134,6 +151,7 @@ export function messagesFromHarnessTurns(
   return list.map((t, i) => {
     const id = `harness:${sessionId}:${String(i)}`
     const tools = t.tools && t.tools.length > 0 ? t.tools : undefined
+    const attachments = t.attachments && t.attachments.length > 0 ? t.attachments : undefined
     const folded = foldHermesAssistant(t.role, t.text, t.thinking)
     const prevMsg = prev?.[i]
     if (
@@ -144,7 +162,8 @@ export function messagesFromHarnessTurns(
       prevMsg.thinking === (folded.thinking ? folded.thinking : undefined) &&
       prevMsg.model === (t.model ? t.model : undefined) &&
       sameUsage(prevMsg.usage, t.usage) &&
-      sameTools(prevMsg.tools, tools)
+      sameTools(prevMsg.tools, tools) &&
+      sameAttachments(prevMsg.attachments, attachments)
     ) {
       return prevMsg
     }
@@ -158,6 +177,7 @@ export function messagesFromHarnessTurns(
       ...(tools ? { tools: tools.map((x) => ({ ...x })) } : {}),
       ...(t.usage ? { usage: { ...t.usage } } : {}),
       ...(t.model ? { model: t.model } : {}),
+      ...(attachments ? { attachments: attachments.map((x) => ({ ...x })) } : {}),
     }
   })
 }
