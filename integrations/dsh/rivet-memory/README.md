@@ -34,6 +34,19 @@ Claude Code's `UserPromptSubmit`/`PostToolUse` plus `Stop`/`SessionEnd`:
 Ingest is serialized per session with `pg_advisory_xact_lock`, so concurrent
 workers (live + reconcile + backfill) cannot double-write.
 
+3. **Sweep** — a harness that exits immediately after its final turn can outrun
+   a detached worker, leaving the last events and that turn's reconcile on
+   disk. Every plugin activation drains leftovers first (`--sweep`), so the
+   tail of the previous session self-heals on the next boot instead of
+   staying lost.
+
+### Profiles
+
+Wired into `desktop`, `web`, `headless`, `acp` and `sdk`. `setup-dsh-rivet-memory.sh`
+adds the bundle, the dependency link and the MCP entry to any profile, and is
+idempotent.
+
+
 ### Dedup
 
 Primary key is the dsh event identity: message `uuid`, or `callId` for tool

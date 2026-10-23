@@ -88,7 +88,33 @@ function spool(session, op) {
   child.unref()
 }
 
+/**
+ * Drain spools an interrupted process left behind.
+ *
+ * A harness that exits right after the final turn can outrun the detached
+ * worker, leaving the last events and that turn's reconcile on disk. Sweeping
+ * at boot makes the tail of the previous session self-healing instead of lost.
+ * Detached and unref'd: it must never delay plugin activation.
+ */
+function sweepStaleSpools() {
+  if (!fs.existsSync(CAPTURE)) return
+  try {
+    if (!fs.existsSync(SPOOL_DIR)) return
+    const pending = fs.readdirSync(SPOOL_DIR).filter(name => name.endsWith('.json'))
+    if (pending.length === 0) return
+    const child = spawn(process.execPath, [CAPTURE, '--sweep'], {
+      detached: true,
+      stdio: 'ignore',
+      env: process.env,
+    })
+    child.unref()
+  } catch {
+    // a sweep failure must not block activation
+  }
+}
+
 export function apply(ctx) {
+  sweepStaleSpools()
   ctx.on('session/event', (session, event) => {
     try {
       if (!event || !INTERESTING.has(event.type)) return

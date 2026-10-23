@@ -935,6 +935,15 @@ async function main() {
     return
   }
 
+  if (args[0] === '--sweep') {
+    // Drain every spool a previous process left behind. A harness that exits
+    // immediately after the final turn can outrun a detached worker, leaving
+    // the last events (and its reconcile) on disk unprocessed. The next boot
+    // sweeps them so the tail of a session is never lost.
+    await runWorker()
+    return
+  }
+
   if (args[0] === '--event') {
     let payload = {}
     try {
@@ -994,7 +1003,7 @@ async function main() {
     return
   }
 
-  console.log('Usage: deepseek-memory-capture --event | --worker [file] | --backfill <path> [--dump]')
+  console.log('Usage: deepseek-memory-capture --event | --worker [file] | --sweep | --backfill <path> [--dump]')
 }
 
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === SELF
