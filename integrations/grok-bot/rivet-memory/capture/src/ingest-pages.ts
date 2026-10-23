@@ -12,15 +12,21 @@
  * v4 normalizer, then system rows are dropped from this tag. Nothing is
  * folded into plain -v4.
  *
+ * Session dedupe is content-hash based. Position (and the
+ * `readtranscript:<slug>:<position>:<sub>` source id built from it) is
+ * ordering metadata only: an entry whose hash is already in the session
+ * is skipped even when the page assigned a different position. A
+ * position mismatch is not CHANGED when that hash exists.
+ *
  * Hash suppression against live `-v4` is off unless overlap hours are a
  * positive number. The default, 0, does not read `-v4`: every parsed row
- * that is not already in `-vN-backfill` by exact source_id is written, so
- * a row live capture also has is stored in both sessions. A positive
+ * that is not already in `-vN-backfill` by content hash (or exact
+ * source_id when a legacy row has no computable hash) is written, so a
+ * row live capture also has is stored in both sessions. A positive
  * window drops a hash+time match only when an adjacent candidate is also
  * a tentative match (a run). A lone match is still inserted. A run can
  * drop a missed row when two or more consecutive missed rows coincide
- * with live rows within 60 minutes. source_id idempotence stays on for
- * the exact `:<position>:<sub>` id.
+ * with live rows within 60 minutes.
  */
 import { createHash } from 'node:crypto'
 import { readdirSync, statSync } from 'node:fs'
@@ -111,9 +117,17 @@ export interface OverlapIndex {
    * stored content digest, every stored digest when an id has several
    * (a candidate matching any of them is the same content), or `undefined`
    * when every stored row lacked a digest (treat as the same content).
-   * Legacy ids without `:<sub>` are not keys that match.
+   * Legacy ids without `:<sub>` are not keys that match. Position is not
+   * the session identity: `contentHashes` wins when it has the digest.
    */
   sourceIds: Map<string, string | readonly string[] | undefined>
+  /**
+   * Session-wide content digests. An incoming row whose hash is in this
+   * set is skipped regardless of the position / source id assigned.
+   * Legacy stored rows with no `metadata.content_hash` contribute a
+   * digest computed from their stored fields at load time.
+   */
+  contentHashes?: Set<string>
   /** -v4 rows inside the candidate-relative overlap window. */
   v4Hits: V4OverlapHit[]
 }
@@ -130,6 +144,12 @@ export interface IngestPagesCounts {
   skippedOverlap: number
   /** Existing source id whose stored digest differs. Not written. */
   skippedChanged: number
+  /**
+   * Incoming row whose content hash is already in the session at any
+   * position. Not written. Distinct from `skippedOverlap` (same source id)
+   * and `skippedChanged` (same source id, different digest, hash unknown).
+   */
+  skippedDuplicateHash: number
   new: number
   conflicts: number[]
   pagesFailed: number
@@ -290,9 +310,25 @@ function toolArgsField(toolArgs: unknown): string {
 }
 
 /**
- * Hash used to compare a backfill row with a stored `-v4` row.
- * Assistant tool rows ignore `content`: the tool-synthesis worker rewrites
- * that field, and JSONB may reorder `tool_args` keys.
+ * SHA-256 hex of the fields that identify one message's content.
+ *
+ * Normalization (exact):
+ * - Fields are NUL-joined, UTF-8, then SHA-256 hex.
+ * - `role` is the stored capture role (`user` / `assistant` / `tool` / …).
+ * - Message content is the already-normalized stored text (v4 wrapper
+ *   strip / `<user_query>` extract already applied). Empty `content`
+ *   falls back to `tool_result`, then `tool_name`, then `''`.
+ * - `tool_name` missing/null is an empty field.
+ * - `tool_args` missing/`undefined` is an empty field (not JSON `null`).
+ *   Otherwise canonical JSON: object keys sorted, `undefined` keys
+ *   omitted, array holes as `null`.
+ * - Assistant tool-use rows (`role === 'assistant'` and `tool_name` set)
+ *   hash `role`, `tool_name`, canonical `tool_args` only. `content` is
+ *   ignored because the tool-synthesis worker may rewrite it and JSONB
+ *   may reorder `tool_args` keys.
+ *
+ * Position, source_id, and ordinal are not hashed — they are ordering
+ * metadata only. See `sessionEntryHash` for the timestamp extra field.
  */
 export function contentHashForRow(row: {
   role: string
@@ -308,6 +344,35 @@ export function contentHashForRow(row: {
   }
   const content = row.content || row.toolResult || toolName || ''
   return sha256([row.role, content, toolName, args].join('\0'))
+}
+
+/** ISO-8601 UTC milliseconds, or undefined when missing / unparseable. */
+export function normalizeHashTimestamp(raw: string | Date | null | undefined): string | undefined {
+  if (raw == null || raw === '') return undefined
+  const ms = raw instanceof Date ? raw.getTime() : Date.parse(raw)
+  if (!Number.isFinite(ms)) return undefined
+  return new Date(ms).toISOString()
+}
+
+/**
+ * Session-dedupe digest: `contentHashForRow` plus, when present, a final
+ * NUL field of `normalizeHashTimestamp(createdAt)`. Omitting the timestamp
+ * keeps the same digest as `contentHashForRow` so legacy rows without a
+ * time still match. Existing stored `metadata.content_hash` values were
+ * written without this field; compare treats those as the no-timestamp
+ * form and never rewrites the row.
+ */
+export function sessionEntryHash(row: {
+  role: string
+  content: string
+  toolName?: string | null
+  toolArgs?: unknown
+  toolResult?: string | null
+  createdAt?: string | Date | null
+}): string {
+  const base = contentHashForRow(row)
+  const ts = normalizeHashTimestamp(row.createdAt)
+  return ts ? sha256([base, ts].join('\0')) : base
 }
 
 export function tagTimesByPosition(records: unknown[], positions: number[]): Map<number, string> {
@@ -490,6 +555,7 @@ export async function loadOverlapIndex(
     revision: opts?.revision,
   })
   const sourceIds = new Map<string, string | readonly string[] | undefined>()
+  const contentHashes = new Set<string>()
   const v4Hits: V4OverlapHit[] = []
   // overlap-hours 0 (the default) does not read -v4. A positive window is
   // bounded by the candidate span: nothing before the earliest tag minus
@@ -521,15 +587,45 @@ export async function loadOverlapIndex(
     }
   }
   if (store.sourceIds) {
+    let missingHash = false
     for (const ref of await store.sourceIds(idSession, ident.agent)) {
       rememberSourceId(sourceIds, ref.sourceId, ref.contentHash)
+      if (ref.contentHash) contentHashes.add(ref.contentHash)
+      else missingHash = true
+    }
+    // Legacy rows store no digest. Compute it from the stored body at
+    // compare time; never UPDATE those rows.
+    if (missingHash) {
+      for (const row of await store.rowsSince(idSession, ident.agent)) {
+        rememberRowHashes(contentHashes, row)
+      }
     }
   } else {
     for (const row of await store.rowsSince(idSession, ident.agent)) {
       rememberSourceId(sourceIds, row.metadata?.source_id, row.metadata?.content_hash)
+      rememberRowHashes(contentHashes, row)
     }
   }
-  return { sourceIds, v4Hits }
+  return { sourceIds, contentHashes, v4Hits }
+}
+
+function rememberRowHashes(hashes: Set<string>, row: OverlapRow): void {
+  const stored =
+    typeof row.metadata?.content_hash === 'string' && row.metadata.content_hash
+      ? row.metadata.content_hash
+      : undefined
+  if (stored) hashes.add(stored)
+  hashes.add(
+    sessionEntryHash({
+      role: row.role,
+      content: row.content,
+      toolName: row.tool_name,
+      toolArgs: row.tool_args,
+      toolResult: row.tool_result,
+      createdAt: row.created_at,
+    }),
+  )
+  hashes.add(overlapKey(row))
 }
 
 function rememberSourceId(
@@ -559,9 +655,10 @@ function rememberSourceId(
 }
 
 /**
- * Exact source id only. No stored digest matches any content. A candidate
- * that equals any stored digest is a quiet skip. A candidate that equals
- * none of them is a visible change, not a hash suppression.
+ * Exact source id only. Used when the candidate hash is not already in
+ * the session. No stored digest matches any content. A candidate that
+ * equals any stored digest is a quiet skip. A candidate that equals none
+ * of them is a visible change, not a hash suppression.
  */
 function sourceIdDisposition(
   message: CaptureMessage,
@@ -574,6 +671,33 @@ function sourceIdDisposition(
   const hash = messageHash(message)
   if (typeof stored === 'string') return stored === hash ? 'same' : 'changed'
   return stored.includes(hash) ? 'same' : 'changed'
+}
+
+function storedContentHashes(index: OverlapIndex): Set<string> {
+  const out = new Set<string>(index.contentHashes ?? [])
+  for (const stored of index.sourceIds.values()) {
+    if (typeof stored === 'string') {
+      if (stored) out.add(stored)
+      continue
+    }
+    if (!stored) continue
+    for (const digest of stored) {
+      if (digest) out.add(digest)
+    }
+  }
+  return out
+}
+
+function hashAlreadyStored(message: CaptureMessage, hashes: Set<string>): boolean {
+  const row = {
+    role: message.role,
+    content: message.content,
+    toolName: message.tool_name,
+    toolArgs: message.tool_args,
+    toolResult: message.tool_result,
+  }
+  if (hashes.has(contentHashForRow(row))) return true
+  return hashes.has(sessionEntryHash({ ...row, createdAt: message.created_at }))
 }
 
 function messagePosition(message: CaptureMessage): number | undefined {
@@ -603,15 +727,24 @@ export function filterOverlap(
   kept: CaptureMessage[]
   skippedOverlap: number
   skippedChanged: number
+  skippedDuplicateHash: number
   changedPositions: number[]
 } {
+  const hashes = storedContentHashes(index)
   const suppressed = new Array<boolean>(messages.length).fill(false)
   const changedPositions: number[] = []
   let skippedOverlap = 0
   let skippedChanged = 0
+  let skippedDuplicateHash = 0
   for (let i = 0; i < messages.length; i++) {
     const message = messages[i]
     const disposition = sourceIdDisposition(message, index.sourceIds)
+    if (hashAlreadyStored(message, hashes)) {
+      suppressed[i] = true
+      if (disposition === 'same') skippedOverlap += 1
+      else skippedDuplicateHash += 1
+      continue
+    }
     if (disposition === 'none') continue
     suppressed[i] = true
     if (disposition === 'same') {
@@ -665,7 +798,7 @@ export function filterOverlap(
     if (!suppressed[n]) kept.push(message)
   }
   changedPositions.sort((a, b) => a - b)
-  return { kept, skippedOverlap, skippedChanged, changedPositions }
+  return { kept, skippedOverlap, skippedChanged, skippedDuplicateHash, changedPositions }
 }
 
 function blankCounts(
@@ -686,6 +819,7 @@ function blankCounts(
     skippedNoPosition: 0,
     skippedOverlap: 0,
     skippedChanged: 0,
+    skippedDuplicateHash: 0,
     new: 0,
     conflicts: [],
     pagesFailed: extra?.pagesFailed ?? 0,
@@ -806,7 +940,7 @@ export async function ingestPages(
     const withoutSystem = dropSystemMessages(result.messages)
     const stamped = applyBackfillTimestamps(withoutSystem.kept, tagByPosition)
     const tagged = attachBackfillMeta(stamped.kept, slug, revision)
-    let index: OverlapIndex = { sourceIds: new Map(), v4Hits: [] }
+    let index: OverlapIndex = { sourceIds: new Map(), contentHashes: new Set(), v4Hits: [] }
     if (opts?.deps?.overlap) {
       index = await loadOverlapIndex(opts.deps.overlap, ident, {
         overlapHours: opts.overlapHours,
@@ -831,6 +965,7 @@ export async function ingestPages(
       skippedNoPosition: tagged.skippedNoPosition,
       skippedOverlap: overlap.skippedOverlap,
       skippedChanged: overlap.skippedChanged,
+      skippedDuplicateHash: overlap.skippedDuplicateHash,
       new: overlap.kept.length,
       conflicts,
       pagesFailed,
@@ -967,7 +1102,8 @@ export function formatIngestPagesCounts(result: IngestPagesResult): string {
       `skipped_no_timestamp=${String(b.skippedNoTimestamp)} ` +
       `skipped_no_position=${String(b.skippedNoPosition)} ` +
       `skipped_overlap=${String(b.skippedOverlap)} ` +
-      `skipped_changed=${String(b.skippedChanged)} new=${String(b.new)} ` +
+      `skipped_changed=${String(b.skippedChanged)} ` +
+      `skipped_duplicate_hash=${String(b.skippedDuplicateHash)} new=${String(b.new)} ` +
       `pages_failed=${String(b.pagesFailed)} unknown_slugs=${String(b.unknownSlugs)} ` +
       `skipped_gaps=${String(b.skippedGaps)}`
     )

@@ -167,7 +167,11 @@ export function inspectPageText(text: string): {
     }
   }
   const expected = header.b - header.a + 1
-  if (expected !== records.length) {
+  // Upstream ReadTranscript can omit positions inside the claimed range
+  // (header says lo–hi, fewer JSON lines). Those pages are kept: ingest
+  // maps rows by content hash, not by start+i, so a short page does not
+  // reject. Extra lines past the header are still a mismatch.
+  if (records.length > expected) {
     return {
       header,
       records,
