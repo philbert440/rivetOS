@@ -111,6 +111,22 @@ npx. Two things matter for correctness:
 - `rivetos_collect_plugin_options` must run before `rivetos_load_env`; it
   supplies the den URL that the env file alone does not set.
 
+### Patch entry form
+
+A new plugin must be added under `insert:` in `cordis.patch.yml`:
+
+```yaml
+- insert:
+    - id: mcp-rivetos
+      name: "@deepseek-ai/dsh-mcp-client"
+      config: { ... }
+```
+
+A bare `- id: … / name: … / config: …` entry is an **override** of an existing
+entry. When that id is not already present the loader warns and skips it, so
+the MCP server never loads and the model sees no memory tools at all. A bare
+`[]` in the patch file has the same effect on everything appended after it.
+
 
 ## Verify
 

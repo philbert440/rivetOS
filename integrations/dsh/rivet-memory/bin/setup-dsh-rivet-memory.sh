@@ -82,20 +82,29 @@ NODE
 # 3. Add the MCP entry to the patch layer when absent.
 PATCH="$PROFILE_DIR/cordis.patch.yml"
 if [ ! -f "$PATCH" ]; then
-  printf '# Your patch layer for this dsh profile.\n[]\n' > "$PATCH"
+  printf '# Your patch layer for this dsh profile.\n' > "$PATCH"
+fi
+# A bare `[]` is an empty top-level array; appending entries below it would
+# produce two YAML documents and the loader would ignore the second.
+if grep -qx '\[\]' "$PATCH" 2>/dev/null; then
+  grep -vx '\[\]' "$PATCH" > "$PATCH.tmp" && mv "$PATCH.tmp" "$PATCH"
 fi
 if ! grep -q 'id: mcp-rivetos' "$PATCH" 2>/dev/null; then
+  # New plugins must arrive under `insert:`. A bare `{id, name, config}` entry
+  # is treated as an override of an existing entry and is skipped, so the MCP
+  # server would silently never load.
   cat >> "$PATCH" <<YAML
 # RivetOS shared memory tools (recall/browse/stats) over the house DataHub.
-- id: mcp-rivetos
-  name: "@deepseek-ai/dsh-mcp-client"
-  config:
-    transport: stdio
-    serverName: rivetos
-    command: $MCP_LAUNCHER
-    args: []
-    failOnStartupError: false
-    toolCallTimeoutMs: 60000
+- insert:
+    - id: mcp-rivetos
+      name: "@deepseek-ai/dsh-mcp-client"
+      config:
+        transport: stdio
+        serverName: rivetos
+        command: $MCP_LAUNCHER
+        args: []
+        failOnStartupError: false
+        toolCallTimeoutMs: 60000
 YAML
   echo "added mcp-rivetos to $PATCH"
 else
