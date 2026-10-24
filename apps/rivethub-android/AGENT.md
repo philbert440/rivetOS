@@ -754,6 +754,21 @@ tapped notification opens the inbox sheet over the current screen — leaving th
 first, the one post-enroll screen HubDrawer does not host. Also set
 `hubVm.onTaskDone = { tasksVm.refresh() }` (null here) — invoked on each new task.done frame.
 
+## Hub state (shared with desktop)
+
+Plan: `~/.rivetos/shared/plans/rivethub-shared-hub-state-2026-10-16.md`. Custom names
+(`titleOverrides`), `archived`, `pinned`, `hidden` and `sessionModes` sync with the entry den's
+per-user document (`GET`/`PUT /api/hub/state`, wire twins in `gateway/HubStateWire.kt`). DataStore stays
+what the UI reads. `data/HubStateRepository.kt` moves it to and from the server: on launch, every
+foreground, after a session-listing refresh, and shortly after any of those prefs change. Each pass
+fetches, three-way merges against the last synced document (`plane/HubStateMerge.kt`, the twin of
+`mergeHubState` in @rivetos/types), PUTs if the result differs (merging again on 409), then writes
+back with `Settings.applyHubPrefs`, which skips the write if the user edited mid-pass. Document keys are
+`<healthz node>::<sessionKey>`. Reading ignores the node; writing takes it from the listing
+(`HubViewModel.sessionNodesOf`) or the document, and a key with neither stays phone-only. A den
+without the route (404) leaves the prefs local, as before. Projects and the last session are carried
+through untouched until slices 4 and 5.
+
 ## Build / test / install
 
 - Build host: the fleet's Android build box (JDK 21 + SDK 37 + warm Gradle cache) — host names and
