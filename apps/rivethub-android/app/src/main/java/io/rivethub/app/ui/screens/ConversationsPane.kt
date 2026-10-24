@@ -80,6 +80,10 @@ import io.rivethub.app.plane.isDraftRow
 import io.rivethub.app.plane.isPinnedItem
 import io.rivethub.app.plane.newConversationAction
 import io.rivethub.app.plane.paneRows
+import io.rivethub.app.plane.projectOf
+import io.rivethub.app.plane.projectSections
+import io.rivethub.app.plane.rowsOutsideProjects
+import io.rivethub.app.gateway.HubProject
 import io.rivethub.app.plane.rowPillText
 import io.rivethub.app.plane.sectionRows
 import io.rivethub.app.plane.sectionsKey
@@ -141,6 +145,13 @@ fun ConversationsPane(
         titleOverrides = st.titleOverrides,
         hidden = st.hidden,
     )
+    // Projects (hub state): rows filed under a project show in its block, not
+    // in the dated sections below it.
+    val projects = st.prefs.projects
+    val membership = st.prefs.projectMembership
+    val projectSecs = remember(projects, membership, lists.live) { projectSections(projects, membership, lists.live) }
+    val datedLive = remember(projects, membership, lists.live) { rowsOutsideProjects(lists.live, projects, membership) }
+    var folded by remember { mutableStateOf(setOf<String>()) }
     val labels = rememberSectionLabels()
     // Clock and zone are sampled in composition. Two things recompose the
     // pane without a timer: a drawer open (openTick, a new parameter value)
@@ -162,8 +173,8 @@ fun ConversationsPane(
     val nowMs = System.currentTimeMillis()
     val today = dayKeyOf(nowMs, zone).date
     val sectionsCacheKey = sectionsKey(openTick, resumeTick.intValue, zone.id, today)
-    val sections = remember(lists.live, st.pinned, labels, sectionsCacheKey) {
-        sectionRows(lists.live, st.pinned, nowMs, zone, labels)
+    val sections = remember(datedLive, st.pinned, labels, sectionsCacheKey) {
+        sectionRows(datedLive, st.pinned, nowMs, zone, labels)
     }
     val active = activeRowIn(lists.live, lists.archived, currentSessionKey)
     val activeKey = active?.key
@@ -176,6 +187,13 @@ fun ConversationsPane(
     var moveTarget by remember { mutableStateOf<LocatedChatItem?>(null) }
     var renameText by remember { mutableStateOf("") }
     var pickerOpen by remember { mutableStateOf(false) }
+    /** Set while the agent picker is choosing for "+" inside this project. */
+    var pickerProject by remember { mutableStateOf<HubProject?>(null) }
+    /** Name sheet: null = closed; a project with a blank id = new project. */
+    var projectNameTarget by remember { mutableStateOf<HubProject?>(null) }
+    var projectMenuTarget by remember { mutableStateOf<HubProject?>(null) }
+    var projectDeleteTarget by remember { mutableStateOf<HubProject?>(null) }
+    var projectMoveTarget by remember { mutableStateOf<LocatedChatItem?>(null) }
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val noAgentsHint = stringResource(R.string.no_agents_hint)
@@ -186,7 +204,20 @@ fun ConversationsPane(
         lists.archived.size,
         st.query,
     )
-    val leadingItems = if (empty == ConversationEmptyKind.None) 0 else 1
+    // Items above the dated sections: the empty line, then the Projects block
+    // (label row + one header per project + its rows or empty line when open).
+    val projectItems = 1 + projectSecs.sumOf { sec ->
+        1 + if (sec.project.id in folded) 0 else maxOf(sec.rows.size, 1)
+    }
+    val leadingItems = (if (empty == ConversationEmptyKind.None) 0 else 1) + projectItems
+    val startInProject: (HubProject) -> Unit = { project ->
+        val open = vm.startInProject(project)
+        when {
+            open != null -> onOpenChat(open)
+            st.agents.isEmpty() -> scope.launch { snackbar.showSnackbar(noAgentsHint) }
+            else -> pickerProject = project
+        }
+    }
     // An archived open conversation is only reachable with the block open.
     LaunchedEffect(openTick, activeKey) {
         if (active?.archived == true) archivedOpen = true
@@ -326,6 +357,45 @@ fun ConversationsPane(
                             }
                             ConversationEmptyKind.None -> Unit
                         }
+                        item(key = "projects-label") {
+                            ProjectsLabelRow(onAdd = { projectNameTarget = HubProject(id = "", name = "") })
+                        }
+                        projectSecs.forEach { sec ->
+                            val id = sec.project.id
+                            val open = id !in folded
+                            item(key = "proj-$id") {
+                                ProjectHeaderRow(
+                                    section = sec,
+                                    expanded = open,
+                                    onToggle = { folded = if (open) folded + id else folded - id },
+                                    onMenu = { projectMenuTarget = sec.project },
+                                    onNew = { startInProject(sec.project) },
+                                )
+                            }
+                            if (open && sec.rows.isEmpty()) {
+                                item(key = "proj-empty-$id") { ProjectEmptyLine() }
+                            } else if (open) {
+                                items(paneRows(sec.rows), key = { "proj-$id-${it.item.key}" }) { row ->
+                                    val title = displayTitle(row.item, st.titleOverrides)
+                                    val agentId = vm.agentForSession(row.item.key)
+                                    val preset = st.agents.find { it.agentId == agentId }?.color
+                                    val hex = accentForConversation(preset, row.item.harnessId, row.item.command)
+                                    ConversationRowChrome(
+                                        title = title,
+                                        accent = rivetHexColor(hex),
+                                        onOpen = { onOpenRow(row) },
+                                        onArchive = { vm.archive(row.item.key) },
+                                        onLong = { menuTarget = row },
+                                        rowKey = "proj-$id-${row.item.key}",
+                                        active = row.item.key == activeKey,
+                                        status = rowStatus(row),
+                                        harness = rowPillText(row.item.model, null, row.item.harnessId),
+                                        pill = true,
+                                        pinned = isPinnedItem(row.item, st.pinned),
+                                    )
+                                }
+                            }
+                        }
                         sections.forEach { section ->
                             item(key = "sec-${section.kind}-${section.label}") {
                                 SectionHeader(
@@ -411,10 +481,11 @@ fun ConversationsPane(
         }
     }
 
-    if (pickerOpen) {
-        RivetModalSheet(onDismiss = { pickerOpen = false }) {
+    if (pickerOpen || pickerProject != null) {
+        val forProject = pickerProject
+        RivetModalSheet(onDismiss = { pickerOpen = false; pickerProject = null }) {
             Text(
-                stringResource(R.string.pick_agent),
+                stringResource(if (forProject != null) R.string.project_pick_agent else R.string.pick_agent),
                 color = colors.inkDim,
                 style = RivetType.mono10,
                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
@@ -428,7 +499,13 @@ fun ConversationsPane(
                         .alpha(if (agent.online) 1f else 0.5f)
                         .clickable(enabled = agent.online) {
                             pickerOpen = false
-                            vm.openAgentAction(agent, AgentAction.Plus)?.let(onOpenChat)
+                            pickerProject = null
+                            val open = if (forProject != null) {
+                                vm.startInProject(forProject, agent)
+                            } else {
+                                vm.openAgentAction(agent, AgentAction.Plus)
+                            }
+                            open?.let(onOpenChat)
                         }
                         .padding(horizontal = 8.dp, vertical = 6.dp),
                 ) {
@@ -448,6 +525,7 @@ fun ConversationsPane(
             archived = isArchived(target.item, st.archived),
             draft = isDraftRow(target.item, st.agents.mapNotNull { it.pointerSessionId }),
             agentCount = st.agents.size,
+            projectCount = projects.size,
         )
         ConversationMenuSheet(
             title = displayTitle(target.item, st.titleOverrides),
@@ -465,6 +543,7 @@ fun ConversationsPane(
                         renameText = displayTitle(target.item, st.titleOverrides)
                         renameTarget = target
                     }
+                    ConversationAction.MoveToProject -> projectMoveTarget = target
                     ConversationAction.MoveToAgent -> moveTarget = target
                     ConversationAction.Archive -> vm.archive(key)
                     ConversationAction.Unarchive -> {
@@ -575,6 +654,60 @@ fun ConversationsPane(
         }
     }
 
+    projectMoveTarget?.let { target ->
+        MoveToProjectSheet(
+            projects = projects,
+            currentId = projectOf(target.item, membership, projects.map { it.id }.toSet()),
+            onPick = { projectId ->
+                projectMoveTarget = null
+                vm.placeInProject(target.item.key, projectId)
+            },
+            onDismiss = { projectMoveTarget = null },
+        )
+    }
+
+    projectNameTarget?.let { target ->
+        val creating = target.id.isBlank()
+        ProjectNameSheet(
+            title = stringResource(if (creating) R.string.project_new_title else R.string.project_rename_title),
+            initial = target.name,
+            onSave = { name ->
+                if (creating) vm.addProject(name) else vm.renameProject(target.id, name)
+                projectNameTarget = null
+            },
+            onDismiss = { projectNameTarget = null },
+        )
+    }
+
+    projectMenuTarget?.let { target ->
+        ProjectMenuSheet(
+            name = target.name,
+            onRename = {
+                projectMenuTarget = null
+                projectNameTarget = target
+            },
+            onDelete = {
+                projectMenuTarget = null
+                projectDeleteTarget = target
+            },
+            onDismiss = { projectMenuTarget = null },
+        )
+    }
+
+    projectDeleteTarget?.let { target ->
+        RivetConfirmDialog(
+            message = stringResource(R.string.project_delete_confirm, target.name),
+            confirmLabel = stringResource(R.string.project_delete),
+            cancelLabel = stringResource(R.string.action_cancel),
+            danger = true,
+            onConfirm = {
+                vm.deleteProject(target.id)
+                projectDeleteTarget = null
+            },
+            onDismiss = { projectDeleteTarget = null },
+        )
+    }
+
     discardTarget?.let { target ->
         RivetConfirmDialog(
             title = stringResource(R.string.discard_title),
@@ -613,6 +746,7 @@ private fun ConversationMenuSheet(
                 ConversationAction.Pin -> R.string.pin
                 ConversationAction.Unpin -> R.string.unpin
                 ConversationAction.Rename -> R.string.action_rename
+                ConversationAction.MoveToProject -> R.string.move_to_project
                 ConversationAction.MoveToAgent -> R.string.move_to_agent
                 ConversationAction.Archive -> R.string.action_archive
                 ConversationAction.Unarchive -> R.string.action_unarchive

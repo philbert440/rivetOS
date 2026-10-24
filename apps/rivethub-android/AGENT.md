@@ -754,6 +754,41 @@ tapped notification opens the inbox sheet over the current screen — leaving th
 first, the one post-enroll screen HubDrawer does not host. Also set
 `hubVm.onTaskDone = { tasksVm.refresh() }` (null here) — invoked on each new task.done frame.
 
+## Hub state (shared with desktop)
+
+Plan: `~/.rivetos/shared/plans/rivethub-shared-hub-state-2026-10-16.md`. Custom names
+(`titleOverrides`), `archived`, `pinned`, `hidden` and `sessionModes` sync with the entry den's
+per-user document (`GET`/`PUT /api/hub/state`, wire twins in `gateway/HubStateWire.kt`). DataStore stays
+what the UI reads. `data/HubStateRepository.kt` moves it to and from the server: on launch, every
+foreground, after a session-listing refresh, and shortly after any of those prefs change. Each pass
+fetches, three-way merges against the last synced document (`plane/HubStateMerge.kt`, the twin of
+`mergeHubState` in @rivetos/types), PUTs if the result differs (merging again on 409), then writes
+back with `Settings.applyHubPrefs`, which skips the write if the user edited mid-pass. Document keys are
+`<healthz node>::<sessionKey>`. Reading ignores the node; writing takes it from the listing
+(`HubViewModel.sessionNodesOf`) or the document, and a key with neither stays phone-only. A den
+without the route (404) leaves the prefs local, as before.
+
+**Continue on phone (slice 5).** `Settings.setLastSession` now stamps `lastSessionAt`, and the phone
+uploads its own last open as the document's `lastSession` (latest `at` wins on merge, on both apps).
+`HubStateRepository.lastSession` publishes the document's value after each completed sync (never a
+cached copy). On launch, `MainActivity` still instant-resumes the phone's own pointer. When the first
+sync reports a newer, different, adopted session (`plane/LaunchSession.kt handoffTarget`) and the user
+is still on the launch screen, it switches to that session once discovery knows the node's URL
+(`HubViewModel.denUrlForNode`). It waits up to 20 s for each step, then keeps the phone's resume.
+
+**Projects (slice 4).** `Prefs.projects` / `projectMembership` / `defaultProjectId` are the same
+projects desktop shows as canvas spaces, synced the same way (project defaults keep node ids, not
+URLs). Logic in `plane/Projects.kt`; edits go through `Settings.editProjects` (one transaction).
+The drawer's conversation list (`ConversationsPane`) opens with a Projects block
+(`ui/screens/ProjectsBlock.kt`): `+ project`, then one foldable header per project (name, running
+dot, count, `+`). Long-press on a header offers rename and delete. A row filed under a project shows
+there instead of in the dated sections. `+` starts a draft for the project's default agent (preferring
+its default node), or asks which agent, then files the draft under the project.
+`AgentOpen.directory` → `Screen.Chat.directory` → `HarnessChatViewModel` sends the project directory
+on `POST /api/terminal` (`TermSpawnRequest.directory`; dens without it ignore the field). The row
+long-press gains Move to project. Archiving takes a row out of its project and filing unarchives it,
+as on desktop. `Settings.migrateKeys` carries membership across draft adoption.
+
 ## Build / test / install
 
 - Build host: the fleet's Android build box (JDK 21 + SDK 37 + warm Gradle cache) — host names and
