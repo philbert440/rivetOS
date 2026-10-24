@@ -34,6 +34,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.core.content.IntentCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelStore
 import androidx.lifecycle.ViewModelStoreOwner
@@ -119,6 +121,12 @@ class MainActivity : ComponentActivity() {
         // Single singleTask activity: its start/stop is the app's
         // foreground/background (notify/AppVisibility).
         lifecycle.addObserver(container.visibility)
+        // Hub state (names, archive, pins, modes shared with desktop): sync on
+        // launch and every time the app comes back to the foreground.
+        container.hubState.start()
+        lifecycle.addObserver(object : DefaultLifecycleObserver {
+            override fun onStart(owner: LifecycleOwner) = container.hubState.kick()
+        })
         container.taskNotifier.ensureChannel()
         setContent {
             val prefs by container.settings.prefs.collectAsState(initial = null)
@@ -431,6 +439,7 @@ fun App(
                 model = open.model,
                 effort = open.effort,
                 agentId = open.agentId,
+                directory = open.directory,
             ),
             replaceAll,
         )
@@ -663,6 +672,7 @@ fun App(
                         presetModel = s.model, presetEffort = s.effort, initialTransport = s.transport,
                         openStream = openStream,
                         agentId = s.agentId,
+                        directory = s.directory,
                         onAdoptPointer = { from, canonical ->
                             hubVm.adoptChatPointer(s.agentId, from, canonical, s.nodeDenUrl)
                         },

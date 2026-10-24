@@ -132,6 +132,33 @@ class Gateway(
         post(taskPath(id) + "kill", "{}", TaskKillResponse.serializer())
 
     suspend fun healthz(): Healthz = get(listOf("healthz"), Healthz.serializer())
+
+    /** The caller's hub state document. A den without the route answers 404. */
+    suspend fun hubState(): HubStateResponse =
+        get(listOf("api", "hub", "state"), HubStateResponse.serializer())
+
+    /**
+     * Compare-and-set write. A stale [baseVersion] is not an error: den
+     * answers 409 with the newer document, returned as [HubStatePutResult.Conflict].
+     */
+    suspend fun putHubState(baseVersion: Long, state: HubState): HubStatePutResult =
+        withContext(Dispatchers.IO) {
+            val body = wireJson.encodeToString(HubStatePutRequest.serializer(), HubStatePutRequest(baseVersion, state))
+            val request = Request.Builder().url(url(listOf("api", "hub", "state")))
+                .put(body.toRequestBody("application/json".toMediaType())).build()
+            withClients { client ->
+                client.newCall(request).execute().use { response ->
+                    val text = response.body.string()
+                    when {
+                        response.isSuccessful ->
+                            HubStatePutResult.Saved(wireJson.decodeFromString(HubStateResponse.serializer(), text))
+                        response.code == 409 ->
+                            HubStatePutResult.Conflict(wireJson.decodeFromString(HubStateResponse.serializer(), text))
+                        else -> throw GatewayException(response.code, errorText(response, text))
+                    }
+                }
+            }
+        }
     suspend fun mesh(): MeshOverview = get(listOf("api", "mesh"), MeshOverview.serializer())
 
     // -- /api/wiki — the datahub memory wiki (Kotlin twin of RivetGateway.wiki*) --
@@ -236,6 +263,7 @@ class Gateway(
         effort: String? = null,
         agentId: String? = null,
         force: Boolean? = null,
+        directory: String? = null,
     ): TermSpawnResponse =
         withContext(Dispatchers.IO) {
             val body = wireJson.encodeToString(
@@ -250,6 +278,7 @@ class Gateway(
                     effort = effort,
                     agentId = agentId,
                     force = force,
+                    directory = directory,
                 ),
             ).toRequestBody("application/json".toMediaType())
             val req = Request.Builder().url(url(listOf("api", "terminal"))).post(body).build()
