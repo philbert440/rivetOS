@@ -45,6 +45,9 @@ import {
   RUN_STATUS_LABELS,
   childRunIdByIdForCanvas,
   statusByIdForCanvas,
+  pollUnlessMissing,
+  retryUnlessNotFound,
+  workflowsAvailability,
   type FieldFormValues,
   type FieldIssues,
 } from '../lib/workflow-runs/index.js'
@@ -72,18 +75,22 @@ export function WorkflowsHubPage(): JSX.Element {
     queryKey: ['workflows', baseUrl],
     enabled: connected,
     queryFn: ({ signal }) => useConnection.getState().gateway.listWorkflows(signal),
-    refetchInterval: LIST_POLL_MS,
+    retry: retryUnlessNotFound,
+    refetchInterval: pollUnlessMissing(LIST_POLL_MS),
   })
+  const availability = workflowsAvailability(defs)
 
   const runs = useQuery({
     queryKey: ['workflow-runs', baseUrl],
-    enabled: connected,
+    enabled: connected && availability === 'available',
     queryFn: ({ signal }) =>
       useConnection.getState().gateway.listWorkflowRuns({ limit: 50 }, signal),
-    refetchInterval: LIST_POLL_MS,
+    retry: retryUnlessNotFound,
+    refetchInterval: pollUnlessMissing(LIST_POLL_MS),
   })
 
   if (!connected) return <NotConnected />
+  if (availability === 'unavailable') return <WorkflowsUnavailable />
 
   return (
     <div className="mx-auto max-w-4xl px-4 py-8 md:px-6">
@@ -193,6 +200,27 @@ function StatusChip(props: { status: string }): JSX.Element {
   return <span className={`shrink-0 text-xs ${color}`}>{label}</span>
 }
 
+/** The node answered 404 on the workflows API: it does not serve workflows. */
+function WorkflowsUnavailable(): JSX.Element {
+  return (
+    <div className="mx-auto max-w-4xl px-4 py-8 md:px-6">
+      <h1 className="mb-4 text-[22px] font-semibold text-ink classic:text-em classic:text-lg">
+        Workflows
+      </h1>
+      <div
+        role="status"
+        className="rounded-2xl border border-line bg-panel-2 px-4 py-6 text-sm classic:bg-panel"
+      >
+        <p className="font-medium text-ink">Workflows are not available on this node.</p>
+        <p className="mt-1 text-ink-dim">
+          This node does not serve the workflows API, so there are no definitions or runs to show
+          here.
+        </p>
+      </div>
+    </div>
+  )
+}
+
 // ---------------------------------------------------------------------------
 // Trigger form
 // ---------------------------------------------------------------------------
@@ -204,10 +232,19 @@ export function WorkflowTriggerPage(): JSX.Element {
   const connected = useGatewayReady()
   const narrow = useIsNarrow()
 
+  const defs = useQuery({
+    queryKey: ['workflows', baseUrl],
+    enabled: connected,
+    queryFn: ({ signal }) => useConnection.getState().gateway.listWorkflows(signal),
+    retry: retryUnlessNotFound,
+  })
+  const availability = workflowsAvailability(defs)
+
   const def = useQuery({
     queryKey: ['workflow', baseUrl, workflowId],
-    enabled: connected && Boolean(workflowId),
+    enabled: connected && Boolean(workflowId) && availability === 'available',
     queryFn: ({ signal }) => useConnection.getState().gateway.getWorkflow(workflowId, signal),
+    retry: retryUnlessNotFound,
   })
 
   const [values, setValues] = useState<FieldFormValues>({})
@@ -238,11 +275,6 @@ export function WorkflowTriggerPage(): JSX.Element {
   const defVersion = def.data?.workflow.version
   const editPath = def.data?.workflow.editPath
 
-  const defs = useQuery({
-    queryKey: ['workflows', baseUrl],
-    enabled: connected,
-    queryFn: ({ signal }) => useConnection.getState().gateway.listWorkflows(signal),
-  })
   const workflowOptions = (defs.data?.workflows ?? []).map((w) => ({
     value: w.id,
     label: w.name,
@@ -297,6 +329,7 @@ export function WorkflowTriggerPage(): JSX.Element {
   }
 
   if (!connected) return <NotConnected />
+  if (availability === 'unavailable') return <WorkflowsUnavailable />
 
   const runWithCanvas =
     pageMode === 'run' && (Boolean(editPath) || (def.data?.workflow.outline?.length ?? 0) > 0)
@@ -341,8 +374,11 @@ export function WorkflowTriggerPage(): JSX.Element {
         </div>
       )}
 
+      {defs.isError && <div className="text-sm text-red">{defs.error.message}</div>}
       {def.isError && <div className="text-sm text-red">{def.error.message}</div>}
-      {def.isLoading && <p className="text-sm text-ink-dim">loading definition…</p>}
+      {(availability === 'checking' || def.isLoading) && (
+        <p className="text-sm text-ink-dim">loading definition…</p>
+      )}
 
       {def.data && pageMode === 'edit' && editPath && (
         <>
@@ -525,9 +561,17 @@ export function WorkflowRunDetailPage(): JSX.Element {
   const navigate = useNavigate()
   const connected = useGatewayReady()
 
+  const defs = useQuery({
+    queryKey: ['workflows', baseUrl],
+    enabled: connected,
+    queryFn: ({ signal }) => useConnection.getState().gateway.listWorkflows(signal),
+    retry: retryUnlessNotFound,
+  })
+  const availability = workflowsAvailability(defs)
+
   const detail = useQuery({
     queryKey: ['workflow-run', baseUrl, runId],
-    enabled: connected && Boolean(runId),
+    enabled: connected && Boolean(runId) && availability === 'available',
     queryFn: ({ signal }) => useConnection.getState().gateway.getWorkflowRun(runId, signal),
     refetchInterval: (q) => {
       const status = q.state.data?.run.run.status
@@ -638,6 +682,7 @@ export function WorkflowRunDetailPage(): JSX.Element {
   }
 
   if (!connected) return <NotConnected />
+  if (availability === 'unavailable') return <WorkflowsUnavailable />
 
   return (
     <div className="mx-auto max-w-3xl px-4 py-8 md:px-6">
@@ -661,8 +706,11 @@ export function WorkflowRunDetailPage(): JSX.Element {
         )}
       </div>
 
+      {defs.isError && <div className="text-sm text-red">{defs.error.message}</div>}
       {detail.isError && <div className="text-sm text-red">{detail.error.message}</div>}
-      {detail.isLoading && <p className="text-sm text-ink-dim">loading run…</p>}
+      {(availability === 'checking' || detail.isLoading) && (
+        <p className="text-sm text-ink-dim">loading run…</p>
+      )}
       {actionError && <p className="mb-3 text-sm text-red">{actionError}</p>}
 
       {run && (
