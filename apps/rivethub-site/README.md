@@ -35,3 +35,5 @@ session recording, no form fields, no PII.
 Publish the contents of `dist/` to the rivethub.io web root. Release binaries and `releases/latest.json` are maintained by release publishing, not this site build. Preserve that directory when deploying. Without a release feed, the download pages retain their explicitly labelled bundled snapshot.
 
 The Omarchy gallery contains actual desktop captures. Its manifest records themes and capture provenance. The homepage terminal image shows a replay of a saved exchange; its caption identifies it as such.
+
+The homepage explainer is `public/media/rivethub-explainer.mp4` (1920×1080, captions in `rivethub-explainer.vtt`, poster `rivethub-explainer.jpg`). The master cut lives outside this repo, at `/rivet-shared/media/rivethub-explainer-2026-10-21/`. The site file is a web encode of that cut: same picture and narration, no embedded subtitle track, `+faststart` so playback can begin before the file finishes downloading.
