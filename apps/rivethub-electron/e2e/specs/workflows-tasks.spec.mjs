@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { test, expect, enable, navigate, api } from '../fixtures.mjs'
+import { test, expect, enable, navigate, api, skipUnlessWorkflowsApi } from '../fixtures.mjs'
 
 test('tasks: list, status filter and empty-goal validation', async ({ hub }) => {
   await enable(hub, 'Tasks')
@@ -14,6 +14,7 @@ test('tasks: list, status filter and empty-goal validation', async ({ hub }) => 
 })
 
 test('workflows: definitions open an input form', async ({ hub }) => {
+  await skipUnlessWorkflowsApi(hub)
   await enable(hub, 'Workflows')
   await navigate(hub, 'Workflows')
   await expect(hub.getByRole('heading', { name: 'Workflows', exact: true })).toBeVisible()
@@ -74,6 +75,7 @@ test('tasks: create a bounded task, open details, and reach completion', async (
 })
 
 test('workflow: validate input, start a run and render its journal', async ({ hub }) => {
+  await skipUnlessWorkflowsApi(hub)
   await enable(hub, 'Workflows')
   await hub.goto('app://bundle/workflows/hello-world')
   const start = hub.getByRole('button', { name: 'Start run', exact: true })
