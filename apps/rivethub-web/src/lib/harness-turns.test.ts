@@ -32,6 +32,24 @@ describe('messagesFromHarnessTurns', () => {
     expect(msgs[1]).toMatchObject({ role: 'assistant', text: 'hello', ts: 2 })
   })
 
+  it('carries the files a user turn was sent with', () => {
+    const shot = {
+      mediaType: 'image/png',
+      name: 'shot.png',
+      uri: '/state/uploads/u/0a.png',
+      uploadId: '0a',
+    }
+    const sent: HarnessTranscriptTurn = { role: 'user', text: '', attachments: [shot] }
+    const first = messagesFromHarnessTurns('s1', [sent])
+    expect(first[0]).toMatchObject({ role: 'user', text: '', attachments: [shot] })
+    expect(
+      messagesFromHarnessTurns('s1', [{ ...sent, attachments: [{ ...shot }] }], first)[0],
+    ).toBe(first[0])
+    const bare = messagesFromHarnessTurns('s1', [turn('user', '')], first)
+    expect(bare[0]).not.toBe(first[0])
+    expect(bare[0].attachments).toBeUndefined()
+  })
+
   it('reuses the previous message when the turn is unchanged (spliced delta)', () => {
     const t0 = turn('user', 'hi')
     const t1 = turn('assistant', 'hel')

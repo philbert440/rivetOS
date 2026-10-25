@@ -308,6 +308,7 @@ export type {
   HarnessSession,
   HarnessSessionsResponse,
   HarnessTranscriptTool,
+  TranscriptAttachment,
   HarnessTranscriptTurn,
   HarnessTranscriptResponse,
   HarnessDescriptor,
