@@ -17,13 +17,21 @@ function rec(text: string) {
 }
 
 describe('page inspect', () => {
-  it('rejects a two-position header with one JSON line and leaves the range as gaps', () => {
+  it('keeps a two-position header with one JSON line (upstream skipped a spot)', () => {
     const got = inspectPageText(
       `Transcript of alpha, positions 12–13 of 40:\n${rec('only one')}\n`,
     )
-    expect(got.error?.code).toBe('range_mismatch')
-    expect(got.error?.detail).toMatch(/does not match 1 JSON line/)
+    expect(got.error).toBeUndefined()
+    expect(got.records).toHaveLength(1)
     expect(got.header).toMatchObject({ a: 12, b: 13, total: 40 })
+  })
+
+  it('rejects extra JSON lines past the header range', () => {
+    const got = inspectPageText(
+      `Transcript of alpha, positions 12–12 of 40:\n${rec('one')}\n${rec('two')}\n`,
+    )
+    expect(got.error?.code).toBe('range_mismatch')
+    expect(got.error?.detail).toMatch(/does not match 2 JSON lines/)
   })
 
   it('rejects a body line that is not JSON', () => {
@@ -153,10 +161,10 @@ describe('needs ranges', () => {
 })
 
 describe('ingest-pages does not rewrite a rejected file', () => {
-  it('leaves a range-mismatched page on disk', async () => {
+  it('leaves a JSON-broken page on disk', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'gb-page-val-'))
     const path = join(dir, 'alpha-13.txt')
-    const body = `Transcript of alpha, positions 12–13 of 40:\n${rec('only one')}\n`
+    const body = `Transcript of alpha, positions 12–12 of 40:\n{not-json\n`
     writeFileSync(path, body)
     const errs: string[] = []
     const err = console.error
@@ -167,13 +175,13 @@ describe('ingest-pages does not rewrite a rejected file', () => {
       const result = await ingestPages(dir, { live: true })
       const bot = result.bots[0]
       expect(bot?.pagesFailed).toBe(1)
-      expect(bot?.skippedGaps).toBe(2)
+      expect(bot?.skippedGaps).toBe(1)
       expect(bot?.new).toBe(0)
     } finally {
       console.error = err
     }
     expect(readFileSync(path, 'utf8')).toBe(body)
     expect(errs.join('\n')).toMatch(/SKIP malformed page alpha-13.txt/)
-    expect(errs.join('\n')).toMatch(/positions 12-13 left as gaps/)
+    expect(errs.join('\n')).toMatch(/positions 12-12 left as gaps/)
   })
 })

@@ -106,6 +106,8 @@ export {
   filterOverlap,
   loadOverlapIndex,
   contentHashForRow,
+  sessionEntryHash,
+  normalizeHashTimestamp,
   backfillSourceId,
   backfillSession,
   parseBackfillRevision,

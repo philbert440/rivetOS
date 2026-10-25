@@ -199,6 +199,24 @@ describe('syncHarnessTranscript', () => {
     expect(useChat.getState().messages[KEY]?.some((m) => m.id === optimId)).toBe(false)
   })
 
+  it('supersedes an image-only send with the turn that carries the image', () => {
+    const chat = useChat.getState()
+    chat.bindHarness(KEY, 'claude-code')
+    const id = chat.enqueueOutbound(KEY, '', [
+      { mime: 'image/png', pathOrUri: '/uploads/0a.png', name: 'shot.png' },
+    ])
+    chat.markOutboundSending(KEY, id)
+    chat.dequeueOutbound(KEY, id)
+
+    chat.syncHarnessTranscript(KEY, [
+      { role: 'user', text: '', attachments: [{ mediaType: 'image/png', name: 'shot.png' }] },
+    ])
+
+    const s = useChat.getState()
+    expect(s.messages[KEY]?.some((m) => m.id === id)).toBe(false)
+    expect(s.messages[KEY]).toHaveLength(1)
+  })
+
   it('is idempotent — a repeated resync does not duplicate turns', () => {
     const chat = useChat.getState()
     chat.bindHarness(KEY, 'claude-code')
@@ -337,7 +355,9 @@ describe('approvals slice', () => {
 describe('outbound queue', () => {
   it('shows an image placeholder while an image-only turn is sending', () => {
     const chat = useChat.getState()
-    const id = chat.enqueueOutbound(KEY, '', [{ mime: 'image/png', pathOrUri: '/uploads/image.png' }])
+    const id = chat.enqueueOutbound(KEY, '', [
+      { mime: 'image/png', pathOrUri: '/uploads/image.png' },
+    ])
     chat.markOutboundSending(KEY, id)
     expect(useChat.getState().messages[KEY]?.find((m) => m.id === id)?.text).toBe('[Image]')
     expect(useChat.getState().outbound[KEY]?.[0].attachments).toEqual([
@@ -889,10 +909,7 @@ describe('applyHarnessTranscriptEvent', () => {
         rev: 1,
         from: 0,
         total: 2,
-        turns: [
-          turn('user', 'hi'),
-          { role: 'assistant', text: 'partial', thinking: 'plan' },
-        ],
+        turns: [turn('user', 'hi'), { role: 'assistant', text: 'partial', thinking: 'plan' }],
       }),
     )
     const s = useChat.getState()
@@ -1008,11 +1025,21 @@ describe('transcript live overlay — settled turns stay solid; bubbles survive 
   ): HarnessTranscriptEvent => ({ type: 'transcript', sessionId: SID, command: 'claude', ...extra })
   const status = (s: 'working' | 'idle', extra: Record<string, unknown> = {}): HarnessStatusFrame =>
     ({ type: 'status', sessionId: SID, since: 1, status: s, ...extra }) as HarnessStatusFrame
-  const interrupted = { role: 'assistant' as const, text: 'half an ans', lastBlock: 'text' as const, stopReason: 'tool_use' }
+  const interrupted = {
+    role: 'assistant' as const,
+    text: 'half an ans',
+    lastBlock: 'text' as const,
+    stopReason: 'tool_use',
+  }
 
-  it('an interrupted (never complete) turn is NOT re-lived by the next turn\'s working frame', () => {
+  it("an interrupted (never complete) turn is NOT re-lived by the next turn's working frame", () => {
     useChat.getState().bindHarness(KEY, 'claude-code')
-    useChat.getState().applyHarnessTranscriptEvent(KEY, ev({ rev: 1, from: 0, total: 2, turns: [{ role: 'user', text: 'go' }, interrupted] }))
+    useChat
+      .getState()
+      .applyHarnessTranscriptEvent(
+        KEY,
+        ev({ rev: 1, from: 0, total: 2, turns: [{ role: 'user', text: 'go' }, interrupted] }),
+      )
     useChat.getState().applyAgentStatus(KEY, status('working'))
     expect(useChat.getState().live[KEY]?.text).toBe('half an ans') // genuinely in flight
     useChat.getState().applyAgentStatus(KEY, status('idle')) // interrupted → settled solid
@@ -1023,20 +1050,47 @@ describe('transcript live overlay — settled turns stay solid; bubbles survive 
     // the new turn's assistant reply IS live
     useChat.getState().applyHarnessTranscriptEvent(
       KEY,
-      ev({ rev: 2, from: 2, total: 4, turns: [{ role: 'user', text: 'again' }, { role: 'assistant', text: 'new', lastBlock: 'text', stopReason: 'tool_use' }] }),
+      ev({
+        rev: 2,
+        from: 2,
+        total: 4,
+        turns: [
+          { role: 'user', text: 'again' },
+          { role: 'assistant', text: 'new', lastBlock: 'text', stopReason: 'tool_use' },
+        ],
+      }),
     )
     expect(useChat.getState().live[KEY]?.text).toBe('new')
   })
 
   it('a transcript frame that lands while the cached status is still idle does not settle the floor', () => {
     useChat.getState().bindHarness(KEY, 'claude-code')
-    useChat.getState().applyHarnessTranscriptEvent(KEY, ev({ rev: 1, from: 0, total: 2, turns: [{ role: 'user', text: 'go' }, { role: 'assistant', text: 'done', complete: true }] }))
+    useChat.getState().applyHarnessTranscriptEvent(
+      KEY,
+      ev({
+        rev: 1,
+        from: 0,
+        total: 2,
+        turns: [
+          { role: 'user', text: 'go' },
+          { role: 'assistant', text: 'done', complete: true },
+        ],
+      }),
+    )
     useChat.getState().applyAgentStatus(KEY, status('idle')) // floor = 2
     // den emits the transcript BEFORE the status it derives from it: user line +
     // first assistant block coalesced into one frame, cache still says idle.
     useChat.getState().applyHarnessTranscriptEvent(
       KEY,
-      ev({ rev: 2, from: 2, total: 4, turns: [{ role: 'user', text: 'again' }, { role: 'assistant', text: 'new', lastBlock: 'text', stopReason: 'tool_use' }] }),
+      ev({
+        rev: 2,
+        from: 2,
+        total: 4,
+        turns: [
+          { role: 'user', text: 'again' },
+          { role: 'assistant', text: 'new', lastBlock: 'text', stopReason: 'tool_use' },
+        ],
+      }),
     )
     useChat.getState().applyAgentStatus(KEY, status('working'))
     expect(useChat.getState().live[KEY]?.text).toBe('new')
@@ -1044,7 +1098,18 @@ describe('transcript live overlay — settled turns stay solid; bubbles survive 
 
   it('a status frame does not retire a sent bubble whose text repeats an earlier turn', () => {
     useChat.getState().bindHarness(KEY, 'claude-code')
-    useChat.getState().applyHarnessTranscriptEvent(KEY, ev({ rev: 1, from: 0, total: 2, turns: [{ role: 'user', text: 'yes' }, { role: 'assistant', text: 'ok', complete: true }] }))
+    useChat.getState().applyHarnessTranscriptEvent(
+      KEY,
+      ev({
+        rev: 1,
+        from: 0,
+        total: 2,
+        turns: [
+          { role: 'user', text: 'yes' },
+          { role: 'assistant', text: 'ok', complete: true },
+        ],
+      }),
+    )
     const id = useChat.getState().enqueueOutbound(KEY, 'yes')
     useChat.getState().markOutboundSending(KEY, id)
     useChat.getState().dequeueOutbound(KEY, id)
