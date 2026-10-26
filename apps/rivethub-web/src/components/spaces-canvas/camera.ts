@@ -26,6 +26,8 @@ export const CGAP = 300
 export const ADD_H = 96
 /** Two tile columns plus the region's own padding. */
 export const REG_W = PAD * 2 + TW * 2 + GAP
+/** Screen height of a project's name row, which sits above its box. */
+export const SPACE_LABEL_PX = 48
 export const LIVE_LO = 0.26
 export const LIVE_HI = 0.34
 
@@ -167,7 +169,10 @@ export function insets(mode: Altitude, vp: Viewport): Insets {
   if (mode === 'thread') {
     return narrow ? { t: 150, b: 96, l: 16, r: 16 } : { t: 64, b: 16, l: 16, r: 16 }
   }
-  return narrow ? { t: 150, b: 110, l: 24, r: 24 } : { t: 72, b: 24, l: 24, r: 24 }
+  // Space frames the box alone, and its name sits above the box: leave that
+  // band below the HUD so the breadcrumb never covers the name.
+  const label = mode === 'space' ? SPACE_LABEL_PX : 0
+  return narrow ? { t: 150 + label, b: 110, l: 24, r: 24 } : { t: 72 + label, b: 24, l: 24, r: 24 }
 }
 
 /**

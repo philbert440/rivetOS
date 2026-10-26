@@ -8,6 +8,7 @@ import {
   PAD,
   PAD_TOP,
   REG_W,
+  SPACE_LABEL_PX,
   TH,
   TW,
   type Altitude,
@@ -52,6 +53,17 @@ describe('regH', () => {
     })
     expect(addSlot('r', origin, 2)).toMatchObject({ x: PAD, y: PAD_TOP + TH + GAP, h: ADD_H })
     expect(stretchTileH(2, regH(2))).toBe(TH)
+  })
+})
+
+describe('insets', () => {
+  it('leaves room under the HUD for a framed project name', () => {
+    for (const vp of [
+      { w: 1600, h: 1000 },
+      { w: 400, h: 800 },
+    ]) {
+      expect(insets('space', vp).t).toBe(insets('everything', vp).t + SPACE_LABEL_PX)
+    }
   })
 })
 
