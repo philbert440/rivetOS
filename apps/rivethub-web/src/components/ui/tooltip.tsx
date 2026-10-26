@@ -2,7 +2,9 @@ import type { JSX, ReactNode } from 'react'
 import { cn } from '../../lib/utils.js'
 
 /**
- * Hover/focus label. Portaled-free so it styles like the rest of the shell
+ * Hover/keyboard-focus label. A mouse click leaves focus on the control, so
+ * plain focus-within would keep the label up after the pointer leaves.
+ * Portaled-free so it styles like the rest of the shell
  * (no native `title` tooltip — those paint GTK chrome in the desktop app).
  * `disabled` is for expanded rail rows that already show the name.
  * Accessible names live on the controls; the overlay is visual-only.
@@ -35,7 +37,7 @@ export function Tooltip(props: {
       <span
         aria-hidden
         className={cn(
-          'pointer-events-none absolute z-50 whitespace-nowrap rounded-lg bg-ink px-2.5 py-1 text-xs font-medium text-surface opacity-0 shadow-pop transition-opacity group-hover/tip:opacity-100 group-focus-within/tip:opacity-100 classic:bg-panel-2 classic:border classic:border-line classic:font-normal classic:px-2 classic:text-[11px] classic:text-ink',
+          'pointer-events-none absolute z-50 whitespace-nowrap rounded-lg bg-ink px-2.5 py-1 text-xs font-medium text-surface opacity-0 shadow-pop transition-opacity group-hover/tip:opacity-100 group-has-[:focus-visible]/tip:opacity-100 classic:bg-panel-2 classic:border classic:border-line classic:font-normal classic:px-2 classic:text-[11px] classic:text-ink',
           pos,
         )}
       >
