@@ -37,18 +37,19 @@ class HubStateMergeTest {
     }
 
     @Test
-    fun `fields the phone does not edit come from the base document`() {
-        val base = HubState(
-            projects = listOf(general.copy(defaults = HubProjectDefaults(node = "arctic", directory = "/home/user/x"))),
-            defaultProjectId = "p1",
-            membership = mapOf("arctic::$k1" to "p1"),
-            lastSession = HubLastSession("arctic::$k1", 9),
-        )
-        val hub = toHubState(LocalHubPrefs(), base) { null }
-        assertEquals(base.projects, hub.projects)
-        assertEquals(base.membership, hub.membership)
+    fun `the phone writes projects and membership but carries the last session`() {
+        val project = general.copy(defaults = HubProjectDefaults(node = "arctic", directory = "/home/user/x"))
+        val base = HubState(lastSession = HubLastSession("arctic::$k1", 9))
+        val local = LocalHubPrefs(projects = listOf(project), membership = mapOf(k1 to "p1"), defaultProjectId = "p1")
+        val hub = toHubState(local, base) { "arctic" }
+        assertEquals(listOf(project), hub.projects)
+        assertEquals(mapOf("arctic::$k1" to "p1"), hub.membership)
         assertEquals("p1", hub.defaultProjectId)
         assertEquals(base.lastSession, hub.lastSession)
+        // and back: membership comes home under the bare key
+        val back = fromHubState(hub, LocalHubPrefs(), hub)
+        assertEquals(mapOf(k1 to "p1"), back.membership)
+        assertEquals(listOf(project), back.projects)
     }
 
     @Test

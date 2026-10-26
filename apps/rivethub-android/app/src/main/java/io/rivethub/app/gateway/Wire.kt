@@ -274,6 +274,8 @@ data class TermSpawnRequest(
     val agentId: String? = null,
     /** Resume a session recorded in another cwd into the preset directory. */
     val force: Boolean? = null,
+    /** Absolute session directory (a project's). Wins over the preset's; dens without support ignore it. */
+    val directory: String? = null,
 )
 
 @Serializable

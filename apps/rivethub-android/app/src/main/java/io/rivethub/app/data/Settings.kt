@@ -12,7 +12,9 @@ import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import io.rivethub.app.gateway.wireJson
 import io.rivethub.app.plane.DEFAULT_OMARCHY_PRESET
+import io.rivethub.app.gateway.HubProject
 import io.rivethub.app.plane.LocalHubPrefs
+import io.rivethub.app.plane.ProjectsState
 import io.rivethub.app.plane.MODE_CHAT
 import io.rivethub.app.plane.migrateLocalPrefs
 import io.rivethub.app.plane.nearestFontScale
@@ -20,6 +22,7 @@ import io.rivethub.app.plane.toggleFavourite
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.MapSerializer
 import kotlinx.serialization.builtins.serializer
 
@@ -78,6 +81,11 @@ data class Prefs(
     /** Chat message display (UX-SPEC §7): token stats under assistant turns, action row always shown. */
     val showStats: Boolean = false,
     val actionRowAlways: Boolean = false,
+    /** Projects shared with desktop through hub state (plane/Projects.kt). */
+    val projects: List<HubProject> = emptyList(),
+    /** Session key → project id. */
+    val projectMembership: Map<String, String> = emptyMap(),
+    val defaultProjectId: String = "",
 )
 
 class Settings(context: Context) {
@@ -123,6 +131,9 @@ class Settings(context: Context) {
             defaultAgentId = p[DEFAULT_AGENT] ?: "",
             showStats = p[SHOW_STATS] ?: false,
             actionRowAlways = p[ACTION_ROW_ALWAYS] ?: false,
+            projects = decodeProjects(p[PROJECTS]),
+            projectMembership = decodeMap(p[MEMBERSHIP]),
+            defaultProjectId = p[DEFAULT_PROJECT] ?: "",
         )
     }
 
@@ -220,6 +231,22 @@ class Settings(context: Context) {
         val (nextPinned, nextHidden) = migrateLocalPrefs(pinned, hidden, from, to)
         if (nextPinned != pinned) it[PINNED] = nextPinned
         if (nextHidden != hidden) it[HIDDEN] = nextHidden
+        // A draft started inside a project stays in it once the den adopts it.
+        val membership = decodeMap(it[MEMBERSHIP])
+        val project = membership[from]
+        if (project != null && from != to && to.isNotBlank()) {
+            it[MEMBERSHIP] = encodeMap(if (membership[to] != null) membership - from else membership - from + (to to project))
+        }
+    }
+
+    /** Change projects and membership in ONE edit (plane/Projects.kt does the logic). */
+    suspend fun editProjects(block: (ProjectsState) -> ProjectsState) = ds.edit {
+        val cur = ProjectsState(decodeProjects(it[PROJECTS]), decodeMap(it[MEMBERSHIP]), it[DEFAULT_PROJECT] ?: "")
+        val next = block(cur)
+        if (next == cur) return@edit
+        it[PROJECTS] = encodeProjects(next.projects)
+        it[MEMBERSHIP] = encodeMap(next.membership)
+        it[DEFAULT_PROJECT] = next.defaultProjectId
     }
 
     suspend fun setTitleOverride(key: String, title: String) = ds.edit {
@@ -249,6 +276,9 @@ class Settings(context: Context) {
                 pinned = it[PINNED] ?: emptySet(),
                 hidden = it[HIDDEN] ?: emptySet(),
                 modes = decodeMap(it[SESSION_MODES]),
+                projects = decodeProjects(it[PROJECTS]),
+                membership = decodeMap(it[MEMBERSHIP]),
+                defaultProjectId = it[DEFAULT_PROJECT] ?: "",
             )
             if (current != expected) return@edit
             it[TITLES] = encodeMap(next.names)
@@ -256,6 +286,9 @@ class Settings(context: Context) {
             it[PINNED] = next.pinned
             it[HIDDEN] = next.hidden
             it[SESSION_MODES] = encodeMap(next.modes)
+            it[PROJECTS] = encodeProjects(next.projects)
+            it[MEMBERSHIP] = encodeMap(next.membership)
+            it[DEFAULT_PROJECT] = next.defaultProjectId
             applied = true
         }
         return applied
@@ -311,12 +344,19 @@ class Settings(context: Context) {
         private val SHOW_STATS = booleanPreferencesKey("showStats")
         private val ACTION_ROW_ALWAYS = booleanPreferencesKey("actionRowAlways")
         private val HUB_SYNCED = stringPreferencesKey("hubStateSynced")
+        private val PROJECTS = stringPreferencesKey("projects")
+        private val MEMBERSHIP = stringPreferencesKey("projectMembership")
+        private val DEFAULT_PROJECT = stringPreferencesKey("defaultProjectId")
 
         private val mapSer = MapSerializer(String.serializer(), String.serializer())
         private val longMapSer = MapSerializer(String.serializer(), Long.serializer())
         private fun decodeMap(s: String?): Map<String, String> =
             s?.let { runCatching { wireJson.decodeFromString(mapSer, it) }.getOrNull() } ?: emptyMap()
         private fun encodeMap(m: Map<String, String>): String = wireJson.encodeToString(mapSer, m)
+        private val projectsSer = ListSerializer(HubProject.serializer())
+        private fun decodeProjects(s: String?): List<HubProject> =
+            s?.let { runCatching { wireJson.decodeFromString(projectsSer, it) }.getOrNull() } ?: emptyList()
+        private fun encodeProjects(p: List<HubProject>): String = wireJson.encodeToString(projectsSer, p)
         private fun decodeLongMap(s: String?): Map<String, Long> =
             s?.let { runCatching { wireJson.decodeFromString(longMapSer, it) }.getOrNull() } ?: emptyMap()
     }
@@ -328,4 +368,7 @@ fun Prefs.hubPrefs(): LocalHubPrefs = LocalHubPrefs(
     pinned = pinned,
     hidden = hidden,
     modes = sessionModes,
+    projects = projects,
+    membership = projectMembership,
+    defaultProjectId = defaultProjectId,
 )
