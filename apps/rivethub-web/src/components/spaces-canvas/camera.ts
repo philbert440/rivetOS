@@ -21,6 +21,9 @@ export const PAD = 70
  */
 export const PAD_TOP = 130
 export const CGAP = 300
+/** The "+ New session" bar under a project's cards: one column wide, well
+ *  short of a card, so adding a session never costs a whole card slot. */
+export const ADD_H = 96
 /** Two tile columns plus the region's own padding. */
 export const REG_W = PAD * 2 + TW * 2 + GAP
 export const LIVE_LO = 0.26
@@ -58,7 +61,7 @@ export interface LayoutRegion {
   id: string
   /** Label text. Width feeds the gap the solver leaves for a fixed-size label. */
   name: string
-  /** Threads in the region. regH reserves one extra slot the way the mock does. */
+  /** Threads in the region. regH leaves room for the "+ New session" bar. */
   count: number
   /** Starting directory, when a later slice has one. Adds a label line. */
   dir?: string
@@ -78,10 +81,23 @@ export interface TileSlot {
   h: number
 }
 
+/** A region's inner padding around its cards. */
+export interface RegionPad {
+  x: number
+  top: number
+  bottom: number
+}
+
+/** The box's own padding: room for the counts and title pills far out. */
+export const BOX_PAD: RegionPad = { x: PAD, top: PAD_TOP, bottom: PAD }
+
 export interface LaidRegion {
   id: string
   rect: Rect
   slots: TileSlot[]
+  /** Card height in this region: TH, or taller while it is stretched. */
+  tileH: number
+  pad: RegionPad
 }
 
 export interface LayoutResult {
@@ -97,22 +113,59 @@ export interface NeighborTile {
   y: number
 }
 
-/** One tile inside a region. Index `count` is the phantom new-thread slot. */
-export function tileSlot(regionId: string, origin: Pick<Rect, 'x' | 'y'>, index: number): TileSlot {
+/** One tile inside a region. */
+export function tileSlot(
+  regionId: string,
+  origin: Pick<Rect, 'x' | 'y'>,
+  index: number,
+  tileH: number = TH,
+  pad: RegionPad = BOX_PAD,
+): TileSlot {
+  const tw = (REG_W - 2 * pad.x - GAP) / 2
   return {
     regionId,
     index,
-    x: origin.x + PAD + (index % 2) * (TW + GAP),
-    y: origin.y + PAD_TOP + Math.floor(index / 2) * (TH + GAP),
-    w: TW,
-    h: TH,
+    x: origin.x + pad.x + (index % 2) * (tw + GAP),
+    y: origin.y + pad.top + Math.floor(index / 2) * (tileH + GAP),
+    w: tw,
+    h: tileH,
   }
 }
 
-/** Region height for `n` threads. The +1 is the mock's phantom new-thread slot. */
-export function regH(n: number): number {
-  const rows = Math.max(1, Math.ceil((Math.max(0, n) + 1) / 2))
-  return PAD_TOP + PAD + rows * TH + (rows - 1) * GAP
+/** Card rows for `n` threads. An empty region keeps one row for its button. */
+function tileRows(n: number): number {
+  return Math.max(1, Math.ceil(n / 2))
+}
+
+/** Height the "+ New session" bar adds below the cards. With an odd count it
+ *  sits beside the last card and adds nothing. */
+function addRowH(n: number): number {
+  return n > 0 && n % 2 === 0 ? GAP + ADD_H : 0
+}
+
+/** The "+ New session" bar for a region holding `n` threads: the next free
+ *  column, ADD_H tall. */
+export function addSlot(
+  regionId: string,
+  origin: Pick<Rect, 'x' | 'y'>,
+  n: number,
+  tileH: number = TH,
+  pad: RegionPad = BOX_PAD,
+): TileSlot {
+  return { ...tileSlot(regionId, origin, n, tileH, pad), index: n, h: ADD_H }
+}
+
+/** Card height that makes `n` threads' rows fill a region `h` tall. Never
+ *  below TH. */
+export function stretchTileH(n: number, h: number, pad: RegionPad = BOX_PAD): number {
+  const rows = tileRows(n)
+  return Math.max(TH, (h - pad.top - pad.bottom - addRowH(n) - (rows - 1) * GAP) / rows)
+}
+
+/** Region height for `n` threads, with room for the "+ New session" bar. */
+export function regH(n: number, pad: RegionPad = BOX_PAD): number {
+  const rows = tileRows(n)
+  return pad.top + pad.bottom + rows * TH + (rows - 1) * GAP + addRowH(n)
 }
 
 /**
@@ -128,6 +181,11 @@ export function insets(mode: Altitude, vp: Viewport): Insets {
   if (mode === 'thread') {
     return narrow ? { t: 150, b: 96, l: 16, r: 16 } : { t: 64, b: 16, l: 16, r: 16 }
   }
+  // Space fills the window with one project: its box runs close to the edges
+  // and its name lives in the breadcrumb, so the top only clears the HUD.
+  if (mode === 'space') {
+    return narrow ? { t: 150, b: 110, l: 12, r: 12 } : { t: 64, b: 12, l: 12, r: 12 }
+  }
   return narrow ? { t: 150, b: 110, l: 24, r: 24 } : { t: 72, b: 24, l: 24, r: 24 }
 }
 
@@ -136,7 +194,14 @@ export function insets(mode: Altitude, vp: Viewport): Insets {
  * highest, refusing a column count that would shrink a region below a
  * readable label. `allRect` includes the label band above the first row.
  */
-export function layout(items: readonly LayoutRegion[], vp: Viewport): LayoutResult {
+export function layout(
+  items: readonly LayoutRegion[],
+  vp: Viewport,
+  /** Region to stretch to at least `h` tall, its cards growing to match and
+   *  set inside `pad`. The column count ignores it, so stretching never
+   *  reshuffles the grid. */
+  stretch?: { id: string; h: number; pad: RegionPad },
+): LayoutResult {
   const pad = insets('everything', vp)
   const bw = Math.max(40, vp.w - pad.l - pad.r)
   const bh = Math.max(40, vp.h - pad.t - pad.b)
@@ -184,6 +249,13 @@ export function layout(items: readonly LayoutRegion[], vp: Viewport): LayoutResu
   const zd = Math.min(bestZ, liveBand(vp).lo - 0.01)
   const lp = labelPx(zd) / zd
   const gapY = Math.max(lp + 40, 160)
+  const padOf = (it: (typeof sized)[number]): RegionPad =>
+    stretch && it.n.id === stretch.id && it.n.h === undefined ? stretch.pad : BOX_PAD
+  for (const it of sized) {
+    if (padOf(it) !== BOX_PAD && stretch) {
+      it.h = Math.max(regH(it.n.count, stretch.pad), stretch.h)
+    }
+  }
   const hs = rowHs(bestCols)
   let maxX = 0
   let y = 0
@@ -195,13 +267,15 @@ export function layout(items: readonly LayoutRegion[], vp: Viewport): LayoutResu
     if (col === 0 && row > 0) y += (hs[row - 1] ?? 0) + gapY
     const rect: Rect = { x: col * (REG_W + CGAP), y, w: REG_W, h: it.h }
     maxX = Math.max(maxX, rect.x + rect.w)
+    const pad = padOf(it)
+    const tileH = it.n.h === undefined ? stretchTileH(it.n.count, it.h, pad) : TH
     const regionSlots: TileSlot[] = []
     for (let j = 0; j < it.n.count; j++) {
-      const slot = tileSlot(it.n.id, rect, j)
+      const slot = tileSlot(it.n.id, rect, j, tileH, pad)
       regionSlots.push(slot)
       slots.push(slot)
     }
-    regions.push({ id: it.n.id, rect, slots: regionSlots })
+    regions.push({ id: it.n.id, rect, slots: regionSlots, tileH, pad })
   })
   const lastH = hs[hs.length - 1] ?? 0
   const allRect: Rect = { x: 0, y: -lp, w: maxX, h: y + lastH + lp }
@@ -222,14 +296,15 @@ export function fit(rect: Rect, mode: Altitude, vp: Viewport): Cam {
   const bcx = i.l + bw / 2
   const bcy = i.t + bh / 2
   const cx = rect.x + rect.w / 2 - (bcx - vp.w / 2) / safeZ
-  // A space too tall to fit above the live band would never show its
-  // minis. Hold the band's top instead and frame from the space's top edge;
-  // the rest is a pan away.
-  if (mode === 'space' && safeZ < band.hi) {
+  // A space too tall to fit at its full width, or above the live band (where
+  // it would never show its minis), keeps that zoom and frames from its top
+  // edge; the rest is a pan away.
+  const topZ = Math.max(band.hi, Math.min(1, bw / rw))
+  if (mode === 'space' && safeZ < topZ) {
     return {
-      cx: rect.x + rect.w / 2 - (bcx - vp.w / 2) / band.hi,
-      cy: rect.y - (i.t - vp.h / 2) / band.hi,
-      z: band.hi,
+      cx: rect.x + rect.w / 2 - (bcx - vp.w / 2) / topZ,
+      cy: rect.y - (i.t - vp.h / 2) / topZ,
+      z: topZ,
     }
   }
   return {
@@ -239,18 +314,88 @@ export function fit(rect: Rect, mode: Altitude, vp: Viewport): Cam {
   }
 }
 
+/**
+ * Keep a hand-moved camera inside `rect`, measured against the altitude's
+ * inset box. An axis where the box is larger than the rect centres the rect
+ * on that axis instead, so a project that fits cannot be dragged at all.
+ */
+export function clampToRect(cam: Cam, rect: Rect, mode: Altitude, vp: Viewport): Cam {
+  const i = insets(mode, vp)
+  const z = cam.z > 0 ? cam.z : 0.01
+  const axis = (
+    c: number,
+    start: number,
+    size: number,
+    near: number,
+    far: number,
+    span: number,
+  ): number => {
+    const lo = start + (span / 2 - near) / z
+    const hi = start + size - (span / 2 - far) / z
+    return lo > hi ? (lo + hi) / 2 : Math.min(hi, Math.max(lo, c))
+  }
+  return {
+    cx: axis(cam.cx, rect.x, rect.w, i.l, i.r, vp.w),
+    cy: axis(cam.cy, rect.y, rect.h, i.t, i.b, vp.h),
+    z: cam.z,
+  }
+}
+
 /** Thread tile: grow to the viewport minus insets, centred on its slot. */
-export function focusRect(tile: { x: number; y: number }, vp: Viewport): Rect {
+export function focusRect(
+  tile: { x: number; y: number; w?: number; h?: number },
+  vp: Viewport,
+): Rect {
   const i = insets('thread', vp)
   const w = Math.max(300, vp.w - i.l - i.r)
   const h = Math.max(320, vp.h - i.t - i.b)
-  return { x: tile.x + TW / 2 - w / 2, y: tile.y + TH / 2 - h / 2, w, h }
+  return {
+    x: tile.x + (tile.w ?? TW) / 2 - w / 2,
+    y: tile.y + (tile.h ?? TH) / 2 - h / 2,
+    w,
+    h,
+  }
 }
 
 /** Zoom at which one space's width fills the Space inset box. */
 export function spaceWidthZoom(vp: Viewport): number {
   const i = insets('space', vp)
   return Math.max(40, vp.w - i.l - i.r) / REG_W
+}
+
+/** Zoom `fit` frames a full-width space with in Space. */
+export function spaceZoom(vp: Viewport): number {
+  return Math.max(Math.min(1, spaceWidthZoom(vp)), liveBand(vp).hi)
+}
+
+/**
+ * World height a region needs to fill the Space inset box top to bottom at
+ * the zoom `fit` frames a full-width space with.
+ */
+export function spaceFillHeight(vp: Viewport): number {
+  const i = insets('space', vp)
+  const bh = Math.max(40, vp.h - i.t - i.b)
+  return bh / spaceZoom(vp)
+}
+
+/** Screen px of the Space band above the cards: the title pills, and the
+ *  counts over them when there are any. */
+const SPACE_TOP_PX = 42
+const SPACE_COUNTS_PX = 26
+const SPACE_SIDE_PX = 16
+
+/**
+ * Padding of the project you are in. BOX_PAD is sized for the zoomed-out
+ * view; here the camera's zoom is known, so the padding is set in screen px
+ * and the cards take the rest.
+ */
+export function spacePad(vp: Viewport, counts: boolean): RegionPad {
+  const z = spaceZoom(vp)
+  return {
+    x: SPACE_SIDE_PX / z,
+    top: (SPACE_TOP_PX + (counts ? SPACE_COUNTS_PX : 0)) / z,
+    bottom: SPACE_SIDE_PX / z,
+  }
 }
 
 /**

@@ -14,6 +14,7 @@ import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 import {
   altitudeFromZoom,
   apply,
+  clampToRect,
   fit,
   flyStep,
   zoomAround,
@@ -255,7 +256,16 @@ export function useCamera(opts: {
       const r = stage.getBoundingClientRect()
       return { x: e.clientX - r.left, y: e.clientY - r.top }
     }
-    const hand = (next: Cam): void => {
+    // Inside a project the camera stays on it: a pan or a zoom that keeps you
+    // in Space cannot carry the view past the project's box.
+    const held = (next: Cam): Cam => {
+      const framed = targetRef.current
+      if (modeRef.current !== 'space' || framed?.mode !== 'space') return next
+      if (altitudeFromZoom(next.z, vpRef.current) !== 'space') return next
+      return clampToRect(next, framed.rect, 'space', vpRef.current)
+    }
+    const hand = (want: Cam): void => {
+      const next = held(want)
       flyToken.current += 1
       cancelFrame()
       pendingLand.current = undefined
@@ -326,11 +336,13 @@ export function useCamera(opts: {
         pendingLand.current = undefined
         detachedRef.current = true
         const z = camRef.current.z || 0.04
-        commit({
-          cx: camRef.current.cx - (p.x - prev.x) / z,
-          cy: camRef.current.cy - (p.y - prev.y) / z,
-          z: camRef.current.z,
-        })
+        commit(
+          held({
+            cx: camRef.current.cx - (p.x - prev.x) / z,
+            cy: camRef.current.cy - (p.y - prev.y) / z,
+            z: camRef.current.z,
+          }),
+        )
       }
     }
     const endPtr = (e: PointerEvent, cancel: boolean): void => {
@@ -392,11 +404,13 @@ export function useCamera(opts: {
       pendingLand.current = undefined
       detachedRef.current = true
       const z = camRef.current.z || 0.04
-      commit({
-        cx: camRef.current.cx + e.deltaX / z,
-        cy: camRef.current.cy + e.deltaY / z,
-        z: camRef.current.z,
-      })
+      commit(
+        held({
+          cx: camRef.current.cx + e.deltaX / z,
+          cy: camRef.current.cy + e.deltaY / z,
+          z: camRef.current.z,
+        }),
+      )
     }
 
     stage.addEventListener('pointerdown', onDown)
