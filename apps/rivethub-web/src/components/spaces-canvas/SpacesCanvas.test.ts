@@ -47,7 +47,8 @@ import { useConnection } from '../../stores/connection.js'
 import { useSpaces, withDefaultSpace } from '../../stores/spaces.js'
 import { useSessionNames } from '../../stores/session-names.js'
 import { canvasKeyClaims, performCanvasEffect, reduceCanvasCommand } from './canvas-input.js'
-import { SpacesCanvas } from './SpacesCanvas.js'
+import { TH } from './camera.js'
+import { countLabel, SpacesCanvas } from './SpacesCanvas.js'
 import { setMiniCommitProbe, ThreadMini } from './ThreadMini.js'
 import { setTileCommitProbe, tileHitTabIndex } from './Tile.js'
 import { offRosterStartNotice } from './new-thread.js'
@@ -345,7 +346,7 @@ describe('SpacesCanvas mount', () => {
     expect(host?.querySelector('#conversations-pane')).toBeNull()
     expect(host?.textContent).toContain('Home')
     expect(host?.textContent).not.toContain('Unplaced')
-    expect(host?.textContent).toContain('1 active · 0 waiting on you')
+    expect(host?.querySelector('[data-region-count]')?.textContent).toBe('1 active · 1 idle')
     expect(host?.textContent).toContain('idle')
     expect(host?.textContent).toContain('working')
     const face = host?.querySelector('[data-face="card"]')
@@ -915,6 +916,55 @@ describe('SpacesCanvas mount', () => {
     press({ key: 'h' })
     expect(host?.querySelector('[data-history-row="a"]')).not.toBeNull()
     expect(host?.querySelector('[data-history-row="b"]')).not.toBeNull()
+  })
+
+  it('stretches the project you are in to the window, and only while you are in it', () => {
+    placeOnHome(['a'])
+    mount([row('a', 'Alpha', 'idle')], () => undefined)
+    const tile = (): HTMLElement | null =>
+      host?.querySelector<HTMLElement>('[data-tile="a"]') ?? null
+    expect(tile()?.style.height).toBe(`${String(TH)}px`)
+    const space = host?.querySelector('[data-crumb="space"]')
+    if (!(space instanceof HTMLElement)) throw new Error('missing project')
+    act(() => space.click())
+    expect(parseFloat(tile()?.style.height ?? '0')).toBeGreaterThan(TH)
+    const everything = host?.querySelector('[data-crumb="everything"]')
+    if (!(everything instanceof HTMLElement)) throw new Error('missing everything')
+    act(() => everything.click())
+    expect(tile()?.style.height).toBe(`${String(TH)}px`)
+  })
+
+  it('leaves zero counts out of a project and says nothing when all are zero', () => {
+    placeOnHome(['a', 'b'])
+    mount([row('a', 'Alpha', 'idle'), row('b', 'Beta', 'idle')], () => undefined)
+    const count = host?.querySelector('[data-region-count]')
+    expect(count?.textContent).toBe('2 idle')
+    expect(countLabel(0, 0, 0)).toBeNull()
+    expect(markup(countLabel(2, 1, 0))).toContain('waiting on you')
+    expect(markup(countLabel(2, 1, 0))).not.toContain('idle')
+  })
+
+  it('closes History on a click outside it, but not on a drag or a click inside', () => {
+    placeOnHome(['a'])
+    mount([row('a', 'Alpha'), row('b', 'Beta')], () => undefined)
+    press({ key: 'h' })
+    const panel = document.querySelector('[data-history-panel]')
+    if (!panel) throw new Error('missing history')
+    act(() => pointerClick(panel))
+    expect(document.querySelector('[data-history-panel]')).not.toBeNull()
+    const region = host?.querySelector('[data-region]')
+    if (!region) throw new Error('missing region')
+    act(() => {
+      region.dispatchEvent(
+        new PointerEvent('pointerdown', { bubbles: true, clientX: 8, clientY: 8, pointerId: 1 }),
+      )
+      region.dispatchEvent(
+        new PointerEvent('pointerup', { bubbles: true, clientX: 80, clientY: 8, pointerId: 1 }),
+      )
+    })
+    expect(document.querySelector('[data-history-panel]')).not.toBeNull()
+    act(() => pointerClick(region))
+    expect(document.querySelector('[data-history-panel]')).toBeNull()
   })
 
   it('keeps the Agents/History buttons pinned while History opens under them', () => {

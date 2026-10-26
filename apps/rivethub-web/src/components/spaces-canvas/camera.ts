@@ -82,6 +82,8 @@ export interface LaidRegion {
   id: string
   rect: Rect
   slots: TileSlot[]
+  /** Card height in this region: TH, or taller while it is stretched. */
+  tileH: number
 }
 
 export interface LayoutResult {
@@ -98,20 +100,37 @@ export interface NeighborTile {
 }
 
 /** One tile inside a region. Index `count` is the phantom new-thread slot. */
-export function tileSlot(regionId: string, origin: Pick<Rect, 'x' | 'y'>, index: number): TileSlot {
+export function tileSlot(
+  regionId: string,
+  origin: Pick<Rect, 'x' | 'y'>,
+  index: number,
+  tileH: number = TH,
+): TileSlot {
   return {
     regionId,
     index,
     x: origin.x + PAD + (index % 2) * (TW + GAP),
-    y: origin.y + PAD_TOP + Math.floor(index / 2) * (TH + GAP),
+    y: origin.y + PAD_TOP + Math.floor(index / 2) * (tileH + GAP),
     w: TW,
-    h: TH,
+    h: tileH,
   }
+}
+
+/** Card rows for `n` threads, counting the phantom new-thread slot. */
+function tileRows(n: number): number {
+  return Math.max(1, Math.ceil((Math.max(0, n) + 1) / 2))
+}
+
+/** Card height that makes `n` threads' rows fill a region `h` tall. Never
+ *  below TH. */
+export function stretchTileH(n: number, h: number): number {
+  const rows = tileRows(n)
+  return Math.max(TH, (h - PAD_TOP - PAD - (rows - 1) * GAP) / rows)
 }
 
 /** Region height for `n` threads. The +1 is the mock's phantom new-thread slot. */
 export function regH(n: number): number {
-  const rows = Math.max(1, Math.ceil((Math.max(0, n) + 1) / 2))
+  const rows = tileRows(n)
   return PAD_TOP + PAD + rows * TH + (rows - 1) * GAP
 }
 
@@ -136,7 +155,13 @@ export function insets(mode: Altitude, vp: Viewport): Insets {
  * highest, refusing a column count that would shrink a region below a
  * readable label. `allRect` includes the label band above the first row.
  */
-export function layout(items: readonly LayoutRegion[], vp: Viewport): LayoutResult {
+export function layout(
+  items: readonly LayoutRegion[],
+  vp: Viewport,
+  /** Region to stretch to at least `h` tall, its cards growing to match. The
+   *  column count ignores it, so stretching never reshuffles the grid. */
+  stretch?: { id: string; h: number },
+): LayoutResult {
   const pad = insets('everything', vp)
   const bw = Math.max(40, vp.w - pad.l - pad.r)
   const bh = Math.max(40, vp.h - pad.t - pad.b)
@@ -184,6 +209,9 @@ export function layout(items: readonly LayoutRegion[], vp: Viewport): LayoutResu
   const zd = Math.min(bestZ, liveBand(vp).lo - 0.01)
   const lp = labelPx(zd) / zd
   const gapY = Math.max(lp + 40, 160)
+  for (const it of sized) {
+    if (stretch && it.n.id === stretch.id && it.n.h === undefined) it.h = Math.max(it.h, stretch.h)
+  }
   const hs = rowHs(bestCols)
   let maxX = 0
   let y = 0
@@ -195,13 +223,14 @@ export function layout(items: readonly LayoutRegion[], vp: Viewport): LayoutResu
     if (col === 0 && row > 0) y += (hs[row - 1] ?? 0) + gapY
     const rect: Rect = { x: col * (REG_W + CGAP), y, w: REG_W, h: it.h }
     maxX = Math.max(maxX, rect.x + rect.w)
+    const tileH = it.n.h === undefined ? stretchTileH(it.n.count, it.h) : TH
     const regionSlots: TileSlot[] = []
     for (let j = 0; j < it.n.count; j++) {
-      const slot = tileSlot(it.n.id, rect, j)
+      const slot = tileSlot(it.n.id, rect, j, tileH)
       regionSlots.push(slot)
       slots.push(slot)
     }
-    regions.push({ id: it.n.id, rect, slots: regionSlots })
+    regions.push({ id: it.n.id, rect, slots: regionSlots, tileH })
   })
   const lastH = hs[hs.length - 1] ?? 0
   const allRect: Rect = { x: 0, y: -lp, w: maxX, h: y + lastH + lp }
@@ -240,17 +269,28 @@ export function fit(rect: Rect, mode: Altitude, vp: Viewport): Cam {
 }
 
 /** Thread tile: grow to the viewport minus insets, centred on its slot. */
-export function focusRect(tile: { x: number; y: number }, vp: Viewport): Rect {
+export function focusRect(tile: { x: number; y: number; h?: number }, vp: Viewport): Rect {
   const i = insets('thread', vp)
   const w = Math.max(300, vp.w - i.l - i.r)
   const h = Math.max(320, vp.h - i.t - i.b)
-  return { x: tile.x + TW / 2 - w / 2, y: tile.y + TH / 2 - h / 2, w, h }
+  return { x: tile.x + TW / 2 - w / 2, y: tile.y + (tile.h ?? TH) / 2 - h / 2, w, h }
 }
 
 /** Zoom at which one space's width fills the Space inset box. */
 export function spaceWidthZoom(vp: Viewport): number {
   const i = insets('space', vp)
   return Math.max(40, vp.w - i.l - i.r) / REG_W
+}
+
+/**
+ * World height a region needs to fill the Space inset box top to bottom at
+ * the zoom `fit` frames a full-width space with.
+ */
+export function spaceFillHeight(vp: Viewport): number {
+  const i = insets('space', vp)
+  const bh = Math.max(40, vp.h - i.t - i.b)
+  const z = Math.max(Math.min(1, spaceWidthZoom(vp)), liveBand(vp).hi)
+  return bh / z
 }
 
 /**

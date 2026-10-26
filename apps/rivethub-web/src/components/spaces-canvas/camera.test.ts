@@ -19,6 +19,8 @@ import {
   focusRect,
   insets,
   layout,
+  spaceFillHeight,
+  stretchTileH,
   liveBand,
   neighbor,
   regH,
@@ -150,6 +152,49 @@ describe('layout', () => {
     expect(laid.slots[1]?.x).toBe(PAD + TW + GAP)
     expect(laid.regions[0]?.rect.w).toBe(REG_W)
     expect(CGAP).toBe(300)
+  })
+
+  it('stretches one region to fill a height without reshuffling the grid', () => {
+    const vp = { w: 1700, h: 1000 }
+    const plain = layout(regions, vp)
+    const fill = spaceFillHeight(vp)
+    const stretched = layout(regions, vp, { id: 'r0', h: fill })
+    expect(stretched.cols).toBe(plain.cols)
+    const r0 = stretched.regions[0]
+    expect(r0?.rect.h).toBe(fill)
+    expect(r0?.tileH).toBe(stretchTileH(1, fill))
+    expect(r0?.tileH).toBeGreaterThan(TH)
+    expect(r0?.slots[0]?.h).toBe(r0?.tileH)
+    // Same column, next row: pushed down past the taller region.
+    const below = stretched.regions[plain.cols]
+    if (below && r0) expect(below.rect.y).toBeGreaterThanOrEqual(r0.rect.y + fill)
+    // Everyone else keeps plain cards.
+    expect(stretched.regions[1]?.tileH).toBe(TH)
+  })
+
+  it('never shrinks a region already taller than the fill height', () => {
+    const laid = layout(
+      [{ id: 'a', name: 'A', count: 12 }],
+      { w: 1700, h: 1000 },
+      { id: 'a', h: 10 },
+    )
+    expect(laid.regions[0]?.tileH).toBe(TH)
+    expect(stretchTileH(12, 10)).toBe(TH)
+  })
+
+  it('a stretched project fills the Space box top to bottom', () => {
+    for (const vp of [
+      { w: 1700, h: 1000 },
+      { w: 1216, h: 760 },
+      { w: 2340, h: 1380 },
+    ]) {
+      const h = spaceFillHeight(vp)
+      const cam = fit({ x: 0, y: 0, w: REG_W, h }, 'space', vp)
+      const i = insets('space', vp)
+      expect(h * cam.z).toBeCloseTo(vp.h - i.t - i.b, 3)
+      // Top edge sits at the inset, not above it.
+      expect(vp.h / 2 - cam.cy * cam.z).toBeCloseTo(i.t, 3)
+    }
   })
 })
 

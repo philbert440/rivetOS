@@ -709,6 +709,15 @@ html[data-style='material'] .health.compact .tag {
     border-color 0.28s;
 }
 
+/* A project stretches to the window while you are in it; its box and its
+   "+ New session" slot grow in step with the cards. */
+.spaces-canvas .sc-region,
+.spaces-canvas [data-add-thread] {
+  transition:
+    top 0.32s,
+    height 0.32s;
+}
+
 /* Harness identity on the canvas. Hex lives here, never on an inline style.
    A custom preset swatch is not representable as a token, so the canvas
    uses the harness key (or --color-em via fallback). */
