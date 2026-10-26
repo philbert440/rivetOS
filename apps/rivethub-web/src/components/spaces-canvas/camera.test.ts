@@ -8,7 +8,6 @@ import {
   PAD,
   PAD_TOP,
   REG_W,
-  SPACE_LABEL_PX,
   TH,
   TW,
   type Altitude,
@@ -23,7 +22,8 @@ import {
   insets,
   layout,
   spaceFillHeight,
-  spaceFrame,
+  spacePad,
+  BOX_PAD,
   stretchTileH,
   liveBand,
   neighbor,
@@ -58,13 +58,13 @@ describe('regH', () => {
 })
 
 describe('insets', () => {
-  it('leaves room under the HUD for a framed project name', () => {
-    for (const vp of [
-      { w: 1600, h: 1000 },
-      { w: 400, h: 800 },
-    ]) {
-      expect(insets('space', vp).t).toBe(insets('everything', vp).t + SPACE_LABEL_PX)
-    }
+  it('lets a framed project run close to the window edges', () => {
+    const vp = { w: 1600, h: 1000 }
+    const space = insets('space', vp)
+    const everything = insets('everything', vp)
+    expect(space.t).toBeLessThan(everything.t)
+    expect(space.l).toBeLessThan(everything.l)
+    expect(space.b).toBeLessThan(everything.b)
   })
 })
 
@@ -115,7 +115,7 @@ describe('fit', () => {
 
 describe('liveBand', () => {
   it('keeps the fixed band as a floor on a small screen', () => {
-    expect(liveBand({ w: 600, h: 500 })).toEqual({ lo: LIVE_LO, hi: LIVE_HI })
+    expect(liveBand({ w: 560, h: 500 })).toEqual({ lo: LIVE_LO, hi: LIVE_HI })
   })
 
   it('rises with a wide screen so Everything can frame a small canvas larger', () => {
@@ -220,20 +220,33 @@ describe('layout', () => {
       { w: 2340, h: 1380 },
     ]) {
       const h = spaceFillHeight(vp)
-      const frame = spaceFrame({ x: 0, y: 0, w: REG_W, h })
-      const cam = fit(frame, 'space', vp)
+      const cam = fit({ x: 0, y: 0, w: REG_W, h }, 'space', vp)
       const i = insets('space', vp)
-      // The cards (the box less its bottom padding) fill the inset box.
-      expect((h - PAD) * cam.z).toBeCloseTo(vp.h - i.t - i.b, 3)
-      // Top edge sits at the inset, not above it.
+      expect(h * cam.z).toBeCloseTo(vp.h - i.t - i.b, 3)
+      // Top edge sits at the inset, not above it; the whole box is in view.
       expect(vp.h / 2 - cam.cy * cam.z).toBeCloseTo(i.t, 3)
-      // The cards reach the side insets; the box padding is off screen.
-      const { tx } = apply(cam, vp)
-      if (cam.z < 1) {
-        expect(tx + PAD * cam.z).toBeCloseTo(i.l, 3)
-        expect(tx + (REG_W - PAD) * cam.z).toBeCloseTo(vp.w - i.r, 3)
-      }
+      expect(REG_W * cam.z).toBeLessThanOrEqual(vp.w - i.l - i.r + 1e-6)
     }
+  })
+
+  it('sets the framed project inside a thin screen-sized padding', () => {
+    const vp = { w: 1600, h: 1300 }
+    const items = [{ id: 'a', name: 'A', count: 2 }]
+    const z = fit({ x: 0, y: 0, w: REG_W, h: spaceFillHeight(vp) }, 'space', vp).z
+    for (const counts of [false, true]) {
+      const pad = spacePad(vp, counts)
+      const laid = layout(items, vp, { id: 'a', h: spaceFillHeight(vp), pad })
+      const region = laid.regions[0]
+      const first = laid.slots[0]
+      if (!region || !first) throw new Error('missing region')
+      expect(region.pad).toBe(pad)
+      expect((first.x - region.rect.x) * z).toBeCloseTo(16, 3)
+      expect((first.y - region.rect.y) * z).toBeCloseTo(counts ? 68 : 42, 3)
+      // Two columns still span the box between the side pads.
+      expect(first.w * 2 + GAP + 2 * pad.x).toBeCloseTo(REG_W, 6)
+      expect(pad.top).toBeLessThan(BOX_PAD.top)
+    }
+    expect(layout(items, vp).regions[0]?.pad).toBe(BOX_PAD)
   })
 })
 

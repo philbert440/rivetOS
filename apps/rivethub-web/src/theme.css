@@ -714,7 +714,9 @@ html[data-style='material'] .health.compact .tag {
 .spaces-canvas .sc-region,
 .spaces-canvas [data-add-thread] {
   transition:
+    left 0.32s,
     top 0.32s,
+    width 0.32s,
     height 0.32s;
 }
 

@@ -58,9 +58,8 @@ import {
   layout,
   liveBand,
   NEW_SPACE_H,
-  PAD,
   spaceFillHeight,
-  spaceFrame,
+  spacePad,
   tileSlot,
   type Altitude,
   type NeighborTile,
@@ -554,11 +553,16 @@ export function SpacesCanvas(props: {
   ]
   // Inside a project (and a session opened from it) the project grows to
   // the window's height and its cards with it, rather than a short strip.
+  // Its padding drops to a thin margin and a band for the title pills, plus
+  // the counts line when there is something to count.
+  const framedCounts = (regions.find((region) => region.id === framedRegionId)?.rows ?? []).some(
+    (row) => isLive(row, blockedIds) || isNeeds(row, blockedIds) || isIdle(row, blockedIds),
+  )
   const laid = layout(
     layoutItems,
     view,
     altitude !== 'everything' && framedRegionId !== undefined
-      ? { id: framedRegionId, h: spaceFillHeight(view) }
+      ? { id: framedRegionId, h: spaceFillHeight(view), pad: spacePad(view, framedCounts) }
       : undefined,
   )
   const placed: { row: ChatItem; spaceId: string; slot: (typeof laid.slots)[number] }[] = []
@@ -580,7 +584,7 @@ export function SpacesCanvas(props: {
   if (altitude === 'thread' && focusSlot) rect = focusRect(focusSlot, view)
   else if (altitude === 'space') {
     const framed = laid.regions.find((region) => region.id === framedRegionId)
-    if (framed) rect = spaceFrame(framed.rect)
+    if (framed) rect = framed.rect
   }
   const frameKey = [
     navNonce,
@@ -1457,8 +1461,8 @@ export function SpacesCanvas(props: {
             const chip = regionSpace
               ? defaultAgentChip(regionSpace.defaults, rosterAgents)
               : undefined
-            // Space frames the cards, so the box's left edge sits off screen:
-            // the name and counts line up with the cards instead.
+            // In Space the breadcrumb names the project, so the name row above
+            // the box goes, and the counts line up with the cards.
             const framedHere = altitude === 'space' && region.id === framedRegionId
             return (
               <div
@@ -1507,7 +1511,7 @@ export function SpacesCanvas(props: {
                     className="absolute bottom-full left-0 flex items-baseline gap-3 pb-3 text-sm text-ink-dim"
                     style={{
                       fontSize: 'calc(14px * var(--inv, 1))',
-                      left: framedHere ? PAD : undefined,
+                      display: framedHere ? 'none' : undefined,
                     }}
                   >
                     <b className="text-ink" style={{ fontSize: '1.35em' }}>
@@ -1554,7 +1558,7 @@ export function SpacesCanvas(props: {
                     data-region-count=""
                     className="pointer-events-none absolute text-ink-dim"
                     style={{
-                      left: framedHere ? PAD : 'min(calc(16px * var(--inv, 1)), 24px)',
+                      left: framedHere ? region.pad.x : 'min(calc(16px * var(--inv, 1)), 24px)',
                       top: 'min(calc(12px * var(--inv, 1)), 22px)',
                       fontSize: 'min(calc(13px * var(--inv, 1)), 30px)',
                       lineHeight: 1.2,
@@ -1599,7 +1603,13 @@ export function SpacesCanvas(props: {
             const laidRegion = laid.regions.find((item) => item.id === region.id)
             if (!laidRegion) return null
             const empty = region.rows.length === 0
-            const slot = addSlot(region.id, laidRegion.rect, region.rows.length, laidRegion.tileH)
+            const slot = addSlot(
+              region.id,
+              laidRegion.rect,
+              region.rows.length,
+              laidRegion.tileH,
+              laidRegion.pad,
+            )
             const hidden = altitude === 'thread'
             const regionDefaults = spaces.find((space) => space.id === region.id)?.defaults
             const slotStartsIn = startsInDirectory(
