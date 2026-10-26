@@ -251,7 +251,7 @@ timestamps except the `<timestamp>` tags inside user turns.
 
 Dry-run is the default. It prints per-bot counts (`pages`, `entries_parsed`,
 `dropped_system`, `skipped_no_timestamp`, `skipped_no_position`,
-`skipped_overlap`, `skipped_changed`, `new`, `pages_failed`, `unknown_slugs`)
+`skipped_overlap`, `skipped_changed`, `skipped_duplicate_hash`, `new`, `pages_failed`, `unknown_slugs`)
 and writes nothing. An explicit `--dry-run` overrides `--commit`. Without
 `RIVETOS_PG_URL` the summary includes
 `overlap=unavailable (no RIVETOS_PG_URL)` — those counts are not a commit
@@ -317,9 +317,9 @@ One capturer owns everything except fetching pages:
    `spool-state record`. Do not advance on a failed ingest.
 5. Re-read a few positions behind the watermark each run. Overlap is
    expected; the live session skips a row whose
-   `readtranscript:<slug>:<position>:<sub>` source id is already stored
-   with a matching content digest, so two fetch copies of the same
-   positions do not insert duplicates.
+   content hash is already stored, so two fetch copies of the same
+   turns (even at a different assigned position) do not insert
+   duplicates.
 
 Secrets (`RIVETOS_PG_URL` and any other credentials) come from the
 environment or `~/.rivetos/.env`. This CLI never prints them.
@@ -345,8 +345,8 @@ exits 3 and does not rewrite the file.
 Before ingest, `ingest-pages` rejects a page (stderr reason, file left
 unchanged) when:
 
-- the header range does not match the number of JSON body lines
-  (example: `positions 12–13` with one JSON line)
+- the header range has more JSON body lines than it claims
+  (example: `positions 12–12` with two JSON lines)
 - a body line is not valid JSON
 - `--live` and the header `of T` or agent id does not match the other
   accepted pages for that slug (current total is the max `T` in the
@@ -365,11 +365,11 @@ A page file is UTF-8 text, saved verbatim from the tool:
    slug. `A`/`B`/`T` are decimal integers. Positions are 0-based
    conversation indices, not `store.db` seq. En dash, em dash, or ASCII
    hyphen are accepted between `A` and `B`.
-2. **Body**: one JSON object per position from `A` through `B` inclusive,
-   one object per line, in order. No extra JSON lines. A line that does
-   not parse, or a line count other than `B − A + 1`, rejects the whole
-   page. The rejected header range is left as a gap; the file is not
-   rewritten.
+2. **Body**: JSON objects in order, one object per line. Extra JSON lines
+   past `B − A + 1` reject the whole page. Fewer lines than the header
+   claims are kept: the upstream reader may skip positions inside the
+   range. A line that does not parse rejects the page. Rejected header
+   ranges stay as gaps; the file is not rewritten.
 3. **Trailer** (optional):
    `Older messages remain: call ReadTranscript again with the same target and before=N.`
    Present when older turns exist (`A > 0`). Absent when the page starts
@@ -390,29 +390,34 @@ text) still carries forward onto later kept rows; rows are never stamped
 with the backfill run's wall clock. Source id is
 `readtranscript:<bot-slug>:<position>:<sub>` (`<sub>` is the per-position
 sub-index, `0` for the first message at that position). Position `0` is
-valid. A missing position is skipped and is not stored as `:0`. Idempotence
-is that exact id only — an older id without `:<sub>` does not match, because
-no row was ever written in that form. Each written row stores
-`metadata.content_hash` (the same hash used for overlap). A re-run that
-finds the same id with the same digest, with any of several stored
-digests, or with no stored digest, skips quietly. A digest that matches
-none of the stored ones is not written (`skipped_changed`); one stderr
-line names the bot and the positions, and the process exits 3 (dry-run or
-`--commit`) unless the run also has a malformed page or an unknown slug,
-in which case exit 2 wins and both reasons are printed. Other rows for
-that bot are still eligible to be written.
+valid. A missing position is skipped and is not stored as `:0`. Session
+identity is the content hash, not the source id. Each written row stores
+`metadata.content_hash`: SHA-256 of NUL-joined `role` + normalized
+content (`content`, or `tool_result` / `tool_name` fallback; assistant
+tool-use rows hash `role` + `tool_name` + canonical `tool_args` only) +
+ISO `created_at` when that field parses. Position is not hashed. A re-run
+that finds the same digest anywhere in the session skips
+(`skipped_duplicate_hash`) even when the page assigned a different
+position. A stored row with no digest is hashed from its stored fields at
+compare time and is never rewritten. Same source id with a digest that
+matches none of the stored ones, and that is not already in the session,
+is not written (`skipped_changed`); one stderr line names the bot and the
+positions, and the process exits 3 (dry-run or `--commit`) unless the run
+also has a malformed page or an unknown slug, in which case exit 2 wins
+and both reasons are printed. Other rows for that bot are still eligible
+to be written.
 The session tag is `grokbot-<bot-slug>-v4-backfill` — a
 sibling of `-v4`, never merged into it. `--revision r2` writes
 `grokbot-<bot-slug>-v4-backfill-r2` and stamps `metadata.backfill_revision`.
-Idempotence and source-id dedupe are scoped to that revision tag, so rows
+Idempotence and content-hash dedupe are scoped to that revision tag, so rows
 already in plain `-v4-backfill` do not suppress an `-r2` insert. Hidden system / agent wakes and
 system reminders follow the existing v4 normalizer (wrapper strip + hidden
 classification); system rows are not ingested on this tag. Content is
 bounded by the existing 256 KiB cap. A truncated row's
 `session_jsonl_path` / `session_jsonl_line` point at the spool page that
-won that position. Re-runs are idempotent per exact source id under
+won that position. Re-runs are idempotent per content hash under
 `-v4-backfill`. The default writes every page row that is not already in
-`-vN-backfill` by that exact id, and does not read `-v4`, so rows that
+`-vN-backfill` by that hash, and does not read `-v4`, so rows that
 live capture also has appear in both `-vN` and `-vN-backfill`.
 `--overlap-hours N` (or `GROKBOT_BACKFILL_OVERLAP_HOURS`, when N is
 positive) trades that for a risk of dropping a missed row when two or
@@ -443,8 +448,8 @@ Env / config knobs:
 | --- | --- | --- |
 | `GROKBOT_PAGES_DIR` | (required unless `--input`) | page dump directory |
 | `GROKBOT_BACKFILL_OVERLAP_HOURS` / `--overlap-hours` | `0` | positive N reads `-v4` from the earliest candidate minus N hours and can drop a coincident missed run; `0` or empty does not read `-v4` |
-| `--revision` | (unset) | short lowercase alnum token; writes `-v4-backfill-<rev>` and scopes source-id dedupe to that tag |
-| `--live` | (unset) | mutually exclusive with `--revision`; writes `grokbot-<slug>-v4-live` and scopes source-id dedupe to that tag |
+| `--revision` | (unset) | short lowercase alnum token; writes `-v4-backfill-<rev>` and scopes content-hash dedupe to that tag |
+| `--live` | (unset) | mutually exclusive with `--revision`; writes `grokbot-<slug>-v4-live` and scopes content-hash dedupe to that tag |
 | `GROKBOT_SPOOL_STATE` | `$GROKBOT_CAPTURE_DIR/spool-state.json` | gitignored live-capture watermark file |
 | `GROKBOT_CAPTURE_DIR` | this package directory | default parent for `spool-state.json` / `pull-state.json` |
 | `GROKBOT_AGENTS` / `--agents-dir` | `~/agent-data/agents` | roster (`profile.json` slugs) |

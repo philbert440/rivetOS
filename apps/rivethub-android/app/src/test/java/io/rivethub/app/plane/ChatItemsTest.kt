@@ -313,4 +313,12 @@ class ChatItemsTest {
         val draft = chatItems(emptyMap(), emptyList(), listOf(uuidC), mapOf(uuidC to 42L)).single()
         assertEquals(42L, draft.createdAt)
     }
+
+    @Test fun `harnessForRosterCommand inverts the roster map`() {
+        assertEquals("claude-code", harnessForRosterCommand("claude"))
+        assertEquals("grok-build", harnessForRosterCommand("grok"))
+        assertEquals(null, harnessForRosterCommand("shell"))
+        assertEquals(null, harnessForRosterCommand(""))
+        assertEquals(null, harnessForRosterCommand(null))
+    }
 }

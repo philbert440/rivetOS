@@ -138,8 +138,10 @@ export const Tile = memo(function Tile(props: TileProps): JSX.Element {
             ? 'var(--color-warn)'
             : undefined,
         borderWidth: emphasize ? 'calc(2px * min(var(--inv, 1), 4))' : undefined,
-        outline: outlined ? 'calc(2.5px * var(--inv, 1)) solid var(--color-em)' : undefined,
-        outlineOffset: outlined ? 'calc(7px * var(--inv, 1))' : undefined,
+        // Tight to the border: an offset ring ran through the title pill and
+        // the rename / History buttons sitting just above the tile.
+        outline: outlined ? 'calc(2.5px * min(var(--inv, 1), 4)) solid var(--color-em)' : undefined,
+        outlineOffset: outlined ? 0 : undefined,
       }}
     >
       <button
