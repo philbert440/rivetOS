@@ -52,6 +52,7 @@ import { RenameInput, useSessionTitle } from '../session-rename.js'
 import { isRowArchived, rowMembershipKey } from '../drawer-item.js'
 import { Popover, PopoverContent, PopoverTrigger } from '../ui/popover.js'
 import {
+  addSlot,
   apply,
   focusRect,
   layout,
@@ -1581,7 +1582,7 @@ export function SpacesCanvas(props: {
             const laidRegion = laid.regions.find((item) => item.id === region.id)
             if (!laidRegion) return null
             const empty = region.rows.length === 0
-            const slot = tileSlot(region.id, laidRegion.rect, region.rows.length, laidRegion.tileH)
+            const slot = addSlot(region.id, laidRegion.rect, region.rows.length, laidRegion.tileH)
             const hidden = altitude === 'thread'
             const regionDefaults = spaces.find((space) => space.id === region.id)?.defaults
             const slotStartsIn = startsInDirectory(
@@ -1638,12 +1639,11 @@ export function SpacesCanvas(props: {
                   }
                 }}
               >
-                {/* Sized off the slot (cqmin), so it reads at every altitude. */}
-                <Plus
-                  aria-hidden="true"
-                  strokeWidth={1.5}
-                  className="size-[40cqmin] max-h-40 max-w-40"
-                />
+                {/* Sized off the slot (cqh), so it reads at every altitude. */}
+                <span className="flex items-center gap-[0.4em] text-[min(36cqh,40px)]">
+                  <Plus aria-hidden="true" strokeWidth={1.5} className="size-[1.2em]" />
+                  New session
+                </span>
               </button>
             )
           })}

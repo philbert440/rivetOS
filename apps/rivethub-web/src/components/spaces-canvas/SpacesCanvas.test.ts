@@ -47,7 +47,7 @@ import { useConnection } from '../../stores/connection.js'
 import { useSpaces, withDefaultSpace } from '../../stores/spaces.js'
 import { useSessionNames } from '../../stores/session-names.js'
 import { canvasKeyClaims, performCanvasEffect, reduceCanvasCommand } from './canvas-input.js'
-import { TH } from './camera.js'
+import { ADD_H, TH } from './camera.js'
 import { countLabel, SpacesCanvas } from './SpacesCanvas.js'
 import { setMiniCommitProbe, ThreadMini } from './ThreadMini.js'
 import { setTileCommitProbe, tileHitTabIndex } from './Tile.js'
@@ -1627,6 +1627,8 @@ describe('SpacesCanvas mount', () => {
     expect(buttonStyle?.top).toBe(regionStyle?.top)
     expect(buttonStyle?.width).toBe(regionStyle?.width)
     expect(buttonStyle?.height).toBe(regionStyle?.height)
+    const filled = host?.querySelector(`[data-add-thread="${code}"]`)
+    expect((filled as HTMLElement | null)?.style.height).toBe(`${String(ADD_H)}px`)
   })
 
   it('shows the shared empty copy when nothing is listed', () => {

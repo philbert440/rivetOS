@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  ADD_H,
   CGAP,
   GAP,
   LIVE_HI,
@@ -13,6 +14,7 @@ import {
   type Cam,
   type Rect,
   type Viewport,
+  addSlot,
   apply,
   fit,
   flyStep,
@@ -33,9 +35,23 @@ function project(cam: Cam, vp: Viewport, rect: Rect): Rect {
 }
 
 describe('regH', () => {
-  it('reserves a phantom slot so two threads are two rows', () => {
+  it('leaves a short bar, not a card slot, for a new session', () => {
     expect(regH(0)).toBe(PAD_TOP + PAD + TH)
-    expect(regH(2)).toBe(PAD_TOP + PAD + 2 * TH + GAP)
+    expect(regH(1)).toBe(PAD_TOP + PAD + TH)
+    expect(regH(2)).toBe(PAD_TOP + PAD + TH + GAP + ADD_H)
+    expect(regH(3)).toBe(PAD_TOP + PAD + 2 * TH + GAP)
+  })
+
+  it('puts the bar in the next free column', () => {
+    const origin = { x: 0, y: 0 }
+    expect(addSlot('r', origin, 1)).toMatchObject({
+      x: PAD + TW + GAP,
+      y: PAD_TOP,
+      w: TW,
+      h: ADD_H,
+    })
+    expect(addSlot('r', origin, 2)).toMatchObject({ x: PAD, y: PAD_TOP + TH + GAP, h: ADD_H })
+    expect(stretchTileH(2, regH(2))).toBe(TH)
   })
 })
 

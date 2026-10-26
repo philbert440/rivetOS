@@ -21,6 +21,9 @@ export const PAD = 70
  */
 export const PAD_TOP = 130
 export const CGAP = 300
+/** The "+ New session" bar under a project's cards: one column wide, well
+ *  short of a card, so adding a session never costs a whole card slot. */
+export const ADD_H = 96
 /** Two tile columns plus the region's own padding. */
 export const REG_W = PAD * 2 + TW * 2 + GAP
 export const LIVE_LO = 0.26
@@ -58,7 +61,7 @@ export interface LayoutRegion {
   id: string
   /** Label text. Width feeds the gap the solver leaves for a fixed-size label. */
   name: string
-  /** Threads in the region. regH reserves one extra slot the way the mock does. */
+  /** Threads in the region. regH leaves room for the "+ New session" bar. */
   count: number
   /** Starting directory, when a later slice has one. Adds a label line. */
   dir?: string
@@ -99,7 +102,7 @@ export interface NeighborTile {
   y: number
 }
 
-/** One tile inside a region. Index `count` is the phantom new-thread slot. */
+/** One tile inside a region. */
 export function tileSlot(
   regionId: string,
   origin: Pick<Rect, 'x' | 'y'>,
@@ -116,22 +119,39 @@ export function tileSlot(
   }
 }
 
-/** Card rows for `n` threads, counting the phantom new-thread slot. */
+/** Card rows for `n` threads. An empty region keeps one row for its button. */
 function tileRows(n: number): number {
-  return Math.max(1, Math.ceil((Math.max(0, n) + 1) / 2))
+  return Math.max(1, Math.ceil(n / 2))
+}
+
+/** Height the "+ New session" bar adds below the cards. With an odd count it
+ *  sits beside the last card and adds nothing. */
+function addRowH(n: number): number {
+  return n > 0 && n % 2 === 0 ? GAP + ADD_H : 0
+}
+
+/** The "+ New session" bar for a region holding `n` threads: the next free
+ *  column, ADD_H tall. */
+export function addSlot(
+  regionId: string,
+  origin: Pick<Rect, 'x' | 'y'>,
+  n: number,
+  tileH: number = TH,
+): TileSlot {
+  return { ...tileSlot(regionId, origin, n, tileH), index: n, h: ADD_H }
 }
 
 /** Card height that makes `n` threads' rows fill a region `h` tall. Never
  *  below TH. */
 export function stretchTileH(n: number, h: number): number {
   const rows = tileRows(n)
-  return Math.max(TH, (h - PAD_TOP - PAD - (rows - 1) * GAP) / rows)
+  return Math.max(TH, (h - PAD_TOP - PAD - addRowH(n) - (rows - 1) * GAP) / rows)
 }
 
-/** Region height for `n` threads. The +1 is the mock's phantom new-thread slot. */
+/** Region height for `n` threads, with room for the "+ New session" bar. */
 export function regH(n: number): number {
   const rows = tileRows(n)
-  return PAD_TOP + PAD + rows * TH + (rows - 1) * GAP
+  return PAD_TOP + PAD + rows * TH + (rows - 1) * GAP + addRowH(n)
 }
 
 /**
