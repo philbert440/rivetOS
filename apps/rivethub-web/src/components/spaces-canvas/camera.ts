@@ -276,14 +276,15 @@ export function fit(rect: Rect, mode: Altitude, vp: Viewport): Cam {
   const bcx = i.l + bw / 2
   const bcy = i.t + bh / 2
   const cx = rect.x + rect.w / 2 - (bcx - vp.w / 2) / safeZ
-  // A space too tall to fit above the live band would never show its
-  // minis. Hold the band's top instead and frame from the space's top edge;
-  // the rest is a pan away.
-  if (mode === 'space' && safeZ < band.hi) {
+  // A space too tall to fit at its full width, or above the live band (where
+  // it would never show its minis), keeps that zoom and frames from its top
+  // edge; the rest is a pan away.
+  const topZ = Math.max(band.hi, Math.min(1, bw / rw))
+  if (mode === 'space' && safeZ < topZ) {
     return {
-      cx: rect.x + rect.w / 2 - (bcx - vp.w / 2) / band.hi,
-      cy: rect.y - (i.t - vp.h / 2) / band.hi,
-      z: band.hi,
+      cx: rect.x + rect.w / 2 - (bcx - vp.w / 2) / topZ,
+      cy: rect.y - (i.t - vp.h / 2) / topZ,
+      z: topZ,
     }
   }
   return {
@@ -308,14 +309,29 @@ export function spaceWidthZoom(vp: Viewport): number {
 }
 
 /**
+ * What Space frames of a project: its cards, not its box. The box's side and
+ * bottom padding fall outside the inset box, so the cards reach the screen
+ * margins; the top band (counts, title pills) stays in view.
+ */
+export function spaceFrame(rect: Rect): Rect {
+  return {
+    x: rect.x + PAD,
+    y: rect.y,
+    w: Math.max(1, rect.w - 2 * PAD),
+    h: Math.max(1, rect.h - PAD),
+  }
+}
+
+/**
  * World height a region needs to fill the Space inset box top to bottom at
- * the zoom `fit` frames a full-width space with.
+ * the zoom `fit` frames its `spaceFrame` with.
  */
 export function spaceFillHeight(vp: Viewport): number {
   const i = insets('space', vp)
+  const bw = Math.max(40, vp.w - i.l - i.r)
   const bh = Math.max(40, vp.h - i.t - i.b)
-  const z = Math.max(Math.min(1, spaceWidthZoom(vp)), liveBand(vp).hi)
-  return bh / z
+  const z = Math.max(Math.min(1, bw / (REG_W - 2 * PAD)), liveBand(vp).hi)
+  return bh / z + PAD
 }
 
 /**

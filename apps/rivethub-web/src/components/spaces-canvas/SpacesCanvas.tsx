@@ -58,7 +58,9 @@ import {
   layout,
   liveBand,
   NEW_SPACE_H,
+  PAD,
   spaceFillHeight,
+  spaceFrame,
   tileSlot,
   type Altitude,
   type NeighborTile,
@@ -578,7 +580,7 @@ export function SpacesCanvas(props: {
   if (altitude === 'thread' && focusSlot) rect = focusRect(focusSlot, view)
   else if (altitude === 'space') {
     const framed = laid.regions.find((region) => region.id === framedRegionId)
-    if (framed) rect = framed.rect
+    if (framed) rect = spaceFrame(framed.rect)
   }
   const frameKey = [
     navNonce,
@@ -1455,6 +1457,9 @@ export function SpacesCanvas(props: {
             const chip = regionSpace
               ? defaultAgentChip(regionSpace.defaults, rosterAgents)
               : undefined
+            // Space frames the cards, so the box's left edge sits off screen:
+            // the name and counts line up with the cards instead.
+            const framedHere = altitude === 'space' && region.id === framedRegionId
             return (
               <div
                 key={region.id}
@@ -1476,6 +1481,15 @@ export function SpacesCanvas(props: {
                       ? '2px solid var(--color-em)'
                       : undefined,
                 }}
+                // Double-click on the box's empty space, from Everything,
+                // opens that project. Cards and buttons sit above the box,
+                // so this only sees blank space.
+                onDoubleClick={(event) => {
+                  if (altitudeRef.current !== 'everything' || !real) return
+                  if (event.target !== event.currentTarget) return
+                  setSpaceFocus(region.id)
+                  leaveTo('space')
+                }}
               >
                 {isNew ? (
                   <button
@@ -1491,7 +1505,10 @@ export function SpacesCanvas(props: {
                   <div
                     data-region-label=""
                     className="absolute bottom-full left-0 flex items-baseline gap-3 pb-3 text-sm text-ink-dim"
-                    style={{ fontSize: 'calc(14px * var(--inv, 1))' }}
+                    style={{
+                      fontSize: 'calc(14px * var(--inv, 1))',
+                      left: framedHere ? PAD : undefined,
+                    }}
                   >
                     <b className="text-ink" style={{ fontSize: '1.35em' }}>
                       {model?.name ?? region.id}
@@ -1537,7 +1554,7 @@ export function SpacesCanvas(props: {
                     data-region-count=""
                     className="pointer-events-none absolute text-ink-dim"
                     style={{
-                      left: 'min(calc(16px * var(--inv, 1)), 24px)',
+                      left: framedHere ? PAD : 'min(calc(16px * var(--inv, 1)), 24px)',
                       top: 'min(calc(12px * var(--inv, 1)), 22px)',
                       fontSize: 'min(calc(13px * var(--inv, 1)), 30px)',
                       lineHeight: 1.2,

@@ -23,6 +23,7 @@ import {
   insets,
   layout,
   spaceFillHeight,
+  spaceFrame,
   stretchTileH,
   liveBand,
   neighbor,
@@ -99,12 +100,14 @@ describe('fit', () => {
     expect(cam.z).toBeGreaterThan(liveBand(vp).hi)
   })
 
-  it('holds a too-tall space at the band top, framed from its top edge', () => {
+  it('holds a too-tall space at full width, framed from its top edge', () => {
     const vp = { w: 1100, h: 700 }
     const rect = { x: 0, y: 0, w: REG_W, h: regH(12) }
     const cam = fit(rect, 'space', vp)
     const band = liveBand(vp)
-    expect(cam.z).toBeCloseTo(band.hi)
+    const i = insets('space', vp)
+    expect(cam.z).toBeCloseTo(Math.max(band.hi, Math.min(1, (vp.w - i.l - i.r) / REG_W)))
+    expect(cam.z).toBeGreaterThanOrEqual(band.hi)
     const { ty, z } = apply(cam, vp)
     expect(ty + rect.y * z).toBeCloseTo(insets('space', vp).t)
   })
@@ -217,11 +220,19 @@ describe('layout', () => {
       { w: 2340, h: 1380 },
     ]) {
       const h = spaceFillHeight(vp)
-      const cam = fit({ x: 0, y: 0, w: REG_W, h }, 'space', vp)
+      const frame = spaceFrame({ x: 0, y: 0, w: REG_W, h })
+      const cam = fit(frame, 'space', vp)
       const i = insets('space', vp)
-      expect(h * cam.z).toBeCloseTo(vp.h - i.t - i.b, 3)
+      // The cards (the box less its bottom padding) fill the inset box.
+      expect((h - PAD) * cam.z).toBeCloseTo(vp.h - i.t - i.b, 3)
       // Top edge sits at the inset, not above it.
       expect(vp.h / 2 - cam.cy * cam.z).toBeCloseTo(i.t, 3)
+      // The cards reach the side insets; the box padding is off screen.
+      const { tx } = apply(cam, vp)
+      if (cam.z < 1) {
+        expect(tx + PAD * cam.z).toBeCloseTo(i.l, 3)
+        expect(tx + (REG_W - PAD) * cam.z).toBeCloseTo(vp.w - i.r, 3)
+      }
     }
   })
 })

@@ -548,6 +548,28 @@ describe('SpacesCanvas mount', () => {
     expect(onOpen).toHaveBeenCalledTimes(1)
   })
 
+  it('opens a project on a double-click of its blank space from Everything', () => {
+    const code = useSpaces.getState().addSpace('Code')
+    const base = useConnection.getState().baseUrl
+    useSpaces.getState().place(storageKey(base, 'a'), code)
+    mount([row('a', 'Alpha')], () => undefined)
+    const altitude = (): string | null | undefined =>
+      host?.querySelector('[data-altitude]')?.getAttribute('data-altitude')
+    expect(altitude()).toBe('everything')
+    const region = host?.querySelector(`[data-region="${code}"]`)
+    const label = region?.querySelector('[data-region-label]')
+    if (!region || !label) throw new Error('missing project')
+    act(() => {
+      label.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))
+    })
+    expect(altitude()).toBe('everything')
+    act(() => {
+      region.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))
+    })
+    expect(altitude()).toBe('space')
+    expect(host?.querySelector('[data-crumb="space"]')?.textContent).toBe('Code')
+  })
+
   it('lands once under StrictMode when a session is already active', async () => {
     vi.useFakeTimers(FLY_CLOCK)
     const onOpen = vi.fn()
