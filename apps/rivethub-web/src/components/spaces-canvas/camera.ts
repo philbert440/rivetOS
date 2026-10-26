@@ -314,6 +314,33 @@ export function fit(rect: Rect, mode: Altitude, vp: Viewport): Cam {
   }
 }
 
+/**
+ * Keep a hand-moved camera inside `rect`, measured against the altitude's
+ * inset box. An axis where the box is larger than the rect centres the rect
+ * on that axis instead, so a project that fits cannot be dragged at all.
+ */
+export function clampToRect(cam: Cam, rect: Rect, mode: Altitude, vp: Viewport): Cam {
+  const i = insets(mode, vp)
+  const z = cam.z > 0 ? cam.z : 0.01
+  const axis = (
+    c: number,
+    start: number,
+    size: number,
+    near: number,
+    far: number,
+    span: number,
+  ): number => {
+    const lo = start + (span / 2 - near) / z
+    const hi = start + size - (span / 2 - far) / z
+    return lo > hi ? (lo + hi) / 2 : Math.min(hi, Math.max(lo, c))
+  }
+  return {
+    cx: axis(cam.cx, rect.x, rect.w, i.l, i.r, vp.w),
+    cy: axis(cam.cy, rect.y, rect.h, i.t, i.b, vp.h),
+    z: cam.z,
+  }
+}
+
 /** Thread tile: grow to the viewport minus insets, centred on its slot. */
 export function focusRect(
   tile: { x: number; y: number; w?: number; h?: number },

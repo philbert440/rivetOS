@@ -16,6 +16,7 @@ import {
   type Viewport,
   addSlot,
   apply,
+  clampToRect,
   fit,
   flyStep,
   focusRect,
@@ -65,6 +66,37 @@ describe('insets', () => {
     expect(space.t).toBeLessThan(everything.t)
     expect(space.l).toBeLessThan(everything.l)
     expect(space.b).toBeLessThan(everything.b)
+  })
+})
+
+describe('clampToRect', () => {
+  const vp = { w: 1600, h: 1000 }
+
+  it('pins a project that fits to where fit framed it', () => {
+    const rect = { x: 0, y: 0, w: REG_W, h: spaceFillHeight(vp) }
+    const framed = fit(rect, 'space', vp)
+    for (const [dx, dy] of [
+      [500, 0],
+      [0, -800],
+      [-3000, 3000],
+    ]) {
+      const moved = { cx: framed.cx + dx, cy: framed.cy + dy, z: framed.z }
+      const held = clampToRect(moved, rect, 'space', vp)
+      expect(held.cx).toBeCloseTo(framed.cx, 6)
+      expect(held.cy).toBeCloseTo(framed.cy, 6)
+    }
+  })
+
+  it('scrolls a tall project between its top and bottom edges only', () => {
+    const rect = { x: 0, y: 0, w: REG_W, h: regH(20) }
+    const framed = fit(rect, 'space', vp)
+    const i = insets('space', vp)
+    const up = clampToRect({ ...framed, cy: -1e6 }, rect, 'space', vp)
+    const down = clampToRect({ ...framed, cy: 1e6 }, rect, 'space', vp)
+    expect(up.cy).toBeCloseTo(framed.cy, 6)
+    expect(vp.h / 2 + (rect.y + rect.h - down.cy) * framed.z).toBeCloseTo(vp.h - i.b, 6)
+    const mid = { ...framed, cy: (up.cy + down.cy) / 2 }
+    expect(clampToRect(mid, rect, 'space', vp)).toEqual(mid)
   })
 })
 
