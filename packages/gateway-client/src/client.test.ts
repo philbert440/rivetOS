@@ -12,6 +12,7 @@ import type {
 } from '@rivetos/types'
 import { GatewayError } from './http.js'
 import { RivetGateway } from './client.js'
+import { decodeSessionIdSegment, encodeSessionIdSegment } from '@rivetos/types'
 
 /**
  * Fixture stub of the gateway. Responses are declared `satisfies` the wire
@@ -128,7 +129,7 @@ function handle(req: IncomingMessage, res: ServerResponse): void {
       } satisfies SessionsDeleteResponse)
     }
     if (path.startsWith('/api/sessions/') && req.method === 'DELETE') {
-      const session = decodeURIComponent(path.slice('/api/sessions/'.length))
+      const session = decodeSessionIdSegment(path.slice('/api/sessions/'.length))
       if (session === LIVE_SID) return respond(409, { error: 'session is live' })
       if (session === GONE_SID) return respond(404, { error: 'not found' })
       return respond(200, {
@@ -202,12 +203,13 @@ afterAll(async () => {
 })
 
 describe('RivetGateway HTTP', () => {
-  it('deletes one session by its URL-encoded canonical id', async () => {
+  it('deletes one session by its base64url session segment', async () => {
     const gw = new RivetGateway({ baseUrl })
     const res = await gw.deleteSession(DEL_SID)
     expect(captured.method).toBe('DELETE')
-    // One path segment: the ':' is percent-encoded, not a path split.
-    expect(captured.url).toBe(`/api/sessions/${encodeURIComponent(DEL_SID)}`)
+    // Same segment encoding as /api/sessions/{session}/placement, so native
+    // ids containing '/' or ':' stay one path segment.
+    expect(captured.url).toBe(`/api/sessions/${encodeSessionIdSegment(DEL_SID)}`)
     expect(res).toEqual({ ok: true, session: DEL_SID, conversations: 1, messages: 4, summaries: 1 })
   })
 

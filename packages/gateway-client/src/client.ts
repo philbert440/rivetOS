@@ -196,7 +196,7 @@ export class RivetGateway {
    * answers 409 and is never killed; 404 means not visible to this caller.
    */
   deleteSession(sessionId: string): Promise<SessionDeleteResponse> {
-    return request(this.config, `/api/sessions/${encodeURIComponent(sessionId)}`, {
+    return request(this.config, `/api/sessions/${sessionSegment(sessionId)}`, {
       method: 'DELETE',
     })
   }
