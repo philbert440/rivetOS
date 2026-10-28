@@ -1,8 +1,10 @@
 import { describe, it, expect } from 'vitest'
+import { applyPatch } from '@rivetos/wiki-core'
 import {
   REVIEWED_TAGS_HEADER,
   RULE_TAGS_HEADER,
   WIKI_EXTRACT_SYSTEM_PROMPT,
+  WIKI_RECOMPILE_SYSTEM_PROMPT,
   formatExtractionPrompt,
   parseWikiPatches,
 } from './wiki-prompts.js'
@@ -161,5 +163,68 @@ describe('v7 summary_delta + article_patches', () => {
       mode: 'merge',
     })
     expect(patches[1].currentState).toBe('A new durable host.')
+  })
+})
+
+describe('supersession (2026-10-26 regression)', () => {
+  // Context: a host topic led with "7-GPU, swap planned and gated on explicit
+  // user approval" long after the swap had completed, because the prompts told
+  // the model to prefer denser OLDER states and to "keep both facts if
+  // compatible". The lead must now resolve to the newest material.
+
+  it('extract prompt requires superseding stale statements', () => {
+    expect(WIKI_EXTRACT_SYSTEM_PROMPT).toContain("Supersede, don't accumulate")
+    expect(WIKI_EXTRACT_SYSTEM_PROMPT).toMatch(/newer wins/i)
+    expect(WIKI_EXTRACT_SYSTEM_PROMPT).toMatch(/supersedes: true/)
+  })
+
+  it('recompile prompt no longer prefers older states unconditionally', () => {
+    // The old wording was: "Prefer denser older superseded states ... (keep
+    // both facts if compatible)." That is what baked the contradiction in.
+    expect(WIKI_RECOMPILE_SYSTEM_PROMPT).not.toContain('keep both facts if compatible')
+    expect(WIKI_RECOMPILE_SYSTEM_PROMPT).toMatch(/only for facts that are not time-varying/)
+  })
+
+  it('recompile prompt states the supersession rule', () => {
+    expect(WIKI_RECOMPILE_SYSTEM_PROMPT).toContain('Supersession rule')
+    expect(WIKI_RECOMPILE_SYSTEM_PROMPT).toMatch(/planned.*completed outcome/is)
+    expect(WIKI_RECOMPILE_SYSTEM_PROMPT).toMatch(/fixed defects go to History/i)
+    expect(WIKI_RECOMPILE_SYSTEM_PROMPT).toMatch(/internally consistent/i)
+  })
+
+  const stale =
+    'box-a is a 7-GPU inference host. A module swap is planned and gated on explicit approval. ' +
+    'It serves the house models over the LAN and hosts the shared embedding service for every node.'
+  const corrected = 'box-a is an 8-GPU inference host serving the house models.'
+  const page = applyPatch(undefined, {
+    action: 'create',
+    slug: 'box-a',
+    currentState: stale,
+    verifiedAt: '2026-10-01T00:00:00Z',
+  })
+  const leaf = (extra: Record<string, unknown>): string =>
+    JSON.stringify([{ action: 'update', slug: 'box-a', summary: corrected, ...extra }])
+
+  it('maps supersedes on a full summary to allowShrink', () => {
+    expect(parseWikiPatches(leaf({ supersedes: true }), AT).patches[0].allowShrink).toBe(true)
+    expect(parseWikiPatches(leaf({}), AT).patches[0].allowShrink).toBeUndefined()
+    const deltaOnly = JSON.stringify([
+      { action: 'update', slug: 'box-a', summary_delta: 'x', supersedes: true },
+    ])
+    expect(parseWikiPatches(deltaOnly, AT).patches[0].allowShrink).toBeUndefined()
+  })
+
+  it('a superseding rewrite replaces a longer stale lead and archives it', () => {
+    const [patch] = parseWikiPatches(leaf({ supersedes: true }), AT).patches
+    const next = applyPatch(page, patch)
+    expect(next.currentState).toBe(corrected)
+    expect(next.history.some((h) => h.body.includes('gated on explicit approval'))).toBe(true)
+  })
+
+  it('without supersedes the shrink guard keeps the stale clause in the lead', () => {
+    // The failure mode the flag exists for: the short correction is folded in
+    // beside the stale text instead of replacing it.
+    const [patch] = parseWikiPatches(leaf({}), AT).patches
+    expect(applyPatch(page, patch).currentState).toContain('gated on explicit approval')
   })
 })
