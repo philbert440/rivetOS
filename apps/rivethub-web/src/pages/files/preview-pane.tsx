@@ -3,6 +3,7 @@ import { baseName, previewKind } from '../../lib/files-ui.js'
 import { saveViaGateway } from './save-via-gateway.js'
 import { rivetShell } from '../../lib/shell-bridge.js'
 import { FileEditor } from '../../components/file-editor.js'
+import { useUiInteraction } from '../../stores/ui-interaction.js'
 import { useFilesView } from './files-view-store.js'
 
 /**
@@ -18,6 +19,7 @@ export function PreviewPane(props: {
   size?: number
 }): JSX.Element {
   const name = baseName(props.path)
+  const { setFilesDirty } = useUiInteraction.getState()
   // Prefer known size; when unknown assume under text cap for extension classification.
   const kind = previewKind(name, props.size ?? 100_000)
   const inShell = rivetShell() != null
@@ -73,6 +75,7 @@ export function PreviewPane(props: {
           key={props.path}
           path={props.path}
           size={props.size}
+          onDirtyChange={setFilesDirty}
           className="min-h-0 flex-1"
           minHeight="12rem"
         />

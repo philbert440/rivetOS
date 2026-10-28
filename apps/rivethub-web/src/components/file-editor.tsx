@@ -13,7 +13,6 @@ import { javascript } from '@codemirror/lang-javascript'
 import { markdown } from '@codemirror/lang-markdown'
 import { GatewayError } from '@rivetos/gateway-client'
 import { useConnection } from '../stores/connection.js'
-import { useUiInteraction } from '../stores/ui-interaction.js'
 import { useResolvedTheme } from '../stores/theme.js'
 import { editorThemeFor } from '../lib/editor-theme.js'
 import { languageForPath, type EditorLanguage } from '../lib/editor-lang.js'
@@ -45,6 +44,7 @@ export interface FileEditorProps {
   size?: number
   /** Called after a successful save with the written text. */
   onSaved?: (text: string) => void
+  onDirtyChange?: (dirty: boolean) => void
   /**
    * Controlled text override — when set, the editor content is driven by the
    * parent (overlay → raw round-trip). Parent must call onTextChange.
@@ -64,6 +64,7 @@ export function FileEditor(props: FileEditorProps): JSX.Element {
     path,
     size,
     onSaved,
+    onDirtyChange,
     text: controlledText,
     onTextChange,
     toolbarExtra,
@@ -95,11 +96,11 @@ export function FileEditor(props: FileEditorProps): JSX.Element {
   const looksText = size === undefined ? previewKind(name, 1) === 'text' : kind === 'text'
   const readOnly = Boolean(forceReadOnly || readOnlyReason || !looksText)
 
-  // Dirty is protocol state — it lives in the ui-interaction store keyed by
-  // the tracked file; the editor only reports divergence and reads it back
-  // for the modified badge.
-  const dirty = useUiInteraction((s) => s.filesDirty.dirty)
-  const { setFilesDirty: setDirtyState } = useUiInteraction.getState()
+  const [dirty, setDirty] = useState(false)
+
+  useEffect(() => {
+    onDirtyChange?.(dirty)
+  }, [dirty, onDirtyChange])
 
   // Create editor once
   useEffect(() => {
@@ -113,7 +114,7 @@ export function FileEditor(props: FileEditorProps): JSX.Element {
         return
       }
       const next = update.state.doc.toString()
-      setDirtyState(next !== savedTextRef.current)
+      setDirty(next !== savedTextRef.current)
       onTextChange?.(next)
     })
 
@@ -194,9 +195,9 @@ export function FileEditor(props: FileEditorProps): JSX.Element {
       if (!seededControlled.current) {
         seededControlled.current = true
         savedTextRef.current = controlledText
-        setDirtyState(false)
+        setDirty(false)
       } else {
-        setDirtyState(controlledText !== savedTextRef.current)
+        setDirty(controlledText !== savedTextRef.current)
       }
       return
     }
@@ -206,7 +207,7 @@ export function FileEditor(props: FileEditorProps): JSX.Element {
     setLoadError(undefined)
     setSaveError(undefined)
     setReadOnlyReason(undefined)
-    setDirtyState(false)
+    setDirty(false)
 
     if (!looksText) {
       setLoading(false)
@@ -247,7 +248,7 @@ export function FileEditor(props: FileEditorProps): JSX.Element {
     return () => {
       cancelled = true
     }
-  }, [path, controlledText, looksText, kind, forceReadOnly, setDirtyState])
+  }, [path, controlledText, looksText, kind, forceReadOnly, setDirty])
 
   const doSave = useCallback(async (): Promise<void> => {
     // Mirror the Save button's disabled conditions — Mod-S must never write
@@ -261,7 +262,7 @@ export function FileEditor(props: FileEditorProps): JSX.Element {
     try {
       await useConnection.getState().gateway.filesSave(path, content)
       savedTextRef.current = content
-      setDirtyState(false)
+      setDirty(false)
       onSaved?.(content)
     } catch (err) {
       if (err instanceof GatewayError) {
@@ -278,7 +279,7 @@ export function FileEditor(props: FileEditorProps): JSX.Element {
     } finally {
       setSaving(false)
     }
-  }, [path, readOnly, loading, loadError, controlledText, onSaved, setDirtyState])
+  }, [path, readOnly, loading, loadError, controlledText, onSaved, setDirty])
 
   // Ctrl/Cmd+S from the keymap custom event
   useEffect(() => {
