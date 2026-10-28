@@ -16,6 +16,9 @@ import type {
   SessionPostAccepted,
   SessionPostRequest,
   SessionsListResponse,
+  SessionDeleteResponse,
+  SessionsDeleteResponse,
+  SessionTrashResponse,
   SessionWsFrame,
   TaskApprovalAccepted,
   TaskApprovalWaitResponse,
@@ -105,8 +108,6 @@ import type {
   HarnessSessionResponse,
   HarnessSessionSummary,
   HarnessSessionTranscriptResponse,
-  HarnessTurnAccepted,
-  StartSessionOpts,
   UserTurn,
 } from '@rivetos/types'
 import { encodeSessionIdSegment, isSessionId } from '@rivetos/types'
@@ -187,6 +188,34 @@ export class RivetGateway {
     })
   }
 
+  /**
+   * Delete one session: its conversation leaves memory (every agent's rows)
+   * and a tombstone drops it from the session lists. The harness's on-disk
+   * transcript is untouched. `sessionId` is the canonical
+   * `<harness-id>:<native>` id, URL-encoded as one segment. A live session
+   * answers 409 and is never killed; 404 means not visible to this caller.
+   */
+  deleteSession(sessionId: string): Promise<SessionDeleteResponse> {
+    return request(this.config, `/api/sessions/${sessionSegment(sessionId)}`, {
+      method: 'DELETE',
+    })
+  }
+
+  /** Bulk delete (1..=200 canonical ids). Per-item failures ride `results`
+   *  with `ok: false`; only a transport/whole-request failure throws. */
+  deleteSessions(sessionIds: string[]): Promise<SessionsDeleteResponse> {
+    return request(this.config, '/api/sessions/delete', {
+      method: 'POST',
+      body: { sessions: sessionIds },
+    })
+  }
+
+  /** Sessions the node thinks are junk, for the user to review. Read-only —
+   *  nothing is deleted until `deleteSessions` is called with a selection. */
+  trashSessions(signal?: AbortSignal): Promise<SessionTrashResponse> {
+    return request(this.config, '/api/sessions/trash', { signal })
+  }
+
   /** Durable backfill for a harness conversation (seamless modes): the
    *  committed transcript from memory, for a cold/reconnecting client. Live
    *  frames then arrive on the sessions WS. */
@@ -204,14 +233,18 @@ export class RivetGateway {
     })
   }
 
-  /** Live message/stream frames; omit sessionId to watch every session. */
+  /**
+   * The node's live session event stream; omit sessionId to watch every
+   * session. RivetHub sends its own snapshot and event frames here, keyed by
+   * `type`; only a `kind` frame is a chat frame.
+   */
   watchSessions(
-    onFrame: (frame: SessionWsFrame) => void,
+    onFrame: (frame: SessionWsFrame | { type: string }) => void,
     sessionId?: string,
     opts: WatchOptions = {},
   ): Subscription {
-    return subscribe<SessionWsFrame>(this.config, {
-      path: '/api/sessions/ws',
+    return subscribe<SessionWsFrame | { type: string }>(this.config, {
+      path: '/api/events/ws',
       query: { session: sessionId },
       onFrame,
       onStatus: opts.onStatus,
@@ -750,21 +783,17 @@ export class RivetGateway {
   }
 
   /**
-   * Start a NEW session (201). Never attaches: a pinned `nativeSessionId` that
-   * already exists — including anywhere in an alias chain — is rejected with
-   * `session_id_collision` (409). Attaching is `resumeHarnessSession`.
+   * Start a new chat session over ACP. The node mints the id; `cwd` must sit
+   * under its terminal root, and the node's roster directory applies without it.
    */
   startHarnessSession(
     harnessId: HarnessId,
-    /** `agentId` starts the session from an agent preset: its directory,
-     *  model and effort, resolved on the node. `directory` (a project's,
-     *  absolute and existing on the node) wins over the preset's. */
-    body: StartSessionOpts & { agentId?: string; directory?: string } = {},
+    body: { model?: string; cwd?: string } = {},
     signal?: AbortSignal,
   ): Promise<HarnessSessionSummary> {
-    return request(this.config, `/api/harnesses/${encodeURIComponent(harnessId)}/sessions`, {
+    return request(this.config, '/api/harness-sessions', {
       method: 'POST',
-      body,
+      body: { harness: harnessId, ...body },
       signal,
     })
   }
@@ -782,26 +811,24 @@ export class RivetGateway {
   }
 
   /**
-   * Send a user turn (202). Rejects with `turn_in_flight` (409) while a turn
-   * is running — v1 drivers never silently queue, so the caller owns the
-   * queue and retries.
+   * Send a user turn to a chat session this node started. The id goes in raw
+   * (percent-encoded), not as an `enc(SessionId)` segment.
    */
   sendHarnessTurn(
     sessionId: string,
     turn: UserTurn,
     signal?: AbortSignal,
-  ): Promise<HarnessTurnAccepted> {
-    return request(this.config, `/api/harness-sessions/${sessionSegment(sessionId)}/turns`, {
+  ): Promise<SessionPostAccepted> {
+    return request(this.config, `/api/harness-sessions/${encodeURIComponent(sessionId)}/turn`, {
       method: 'POST',
       body: turn,
       signal,
     })
   }
 
-  /** Cancel the in-flight turn (202). Idempotent — a session with nothing
-   *  running answers ok. 501 when the driver has no interrupt. */
-  interruptHarnessSession(sessionId: string, signal?: AbortSignal): Promise<HarnessTurnAccepted> {
-    return request(this.config, `/api/harness-sessions/${sessionSegment(sessionId)}/interrupt`, {
+  /** Stop the chat session's in-flight turn. Same raw id as `sendHarnessTurn`. */
+  interruptHarnessSession(sessionId: string, signal?: AbortSignal): Promise<{ ok: true }> {
+    return request(this.config, `/api/harness-sessions/${encodeURIComponent(sessionId)}/stop`, {
       method: 'POST',
       signal,
     })
@@ -1029,7 +1056,7 @@ export class RivetGateway {
       this.config.baseUrl.endsWith('/') ? this.config.baseUrl : `${this.config.baseUrl}/`,
     )
     u.searchParams.set('name', name)
-    if (opts.mime) u.searchParams.set('mime', opts.mime)
+    u.searchParams.set('mediaType', opts.mime || 'application/octet-stream')
     return (await rawBodyPost(
       this.config,
       u,
@@ -1038,6 +1065,16 @@ export class RivetGateway {
       opts.signal,
       (res) => res.json(),
     )) as StagedUploadResponse
+  }
+
+  /** Browser URL for a staged upload's bytes (GET /api/uploads/{id}); an
+   *  <img src> rides the same transport auth as fileDownloadUrl. 404 once
+   *  the upload has expired. */
+  uploadUrl(id: string): string {
+    return new URL(
+      `/api/uploads/${encodeURIComponent(id)}`,
+      this.config.baseUrl.endsWith('/') ? this.config.baseUrl : `${this.config.baseUrl}/`,
+    ).toString()
   }
 
   /** Transcribe a mic clip via the node's voice proxy (POST

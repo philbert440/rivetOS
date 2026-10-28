@@ -147,6 +147,9 @@ import { useUiStyle } from '../stores/theme.js'
 import { startNewConversation } from '../lib/new-conversation.js'
 import { useKeyLabel } from '../lib/use-key-label.js'
 import { discardDraft } from '../lib/discard-session.js'
+import { deleteTargetFor } from '../lib/session-delete.js'
+import { DeleteNotice, useSessionDelete, type DeleteTarget } from '../components/session-delete.js'
+import { cleanupSupported, SessionCleanupSheet } from '../components/session-cleanup-sheet.js'
 import { shouldCloseHistoryOnSelect } from '../lib/drawer-selection.js'
 import { narrowLaunchTarget } from '../lib/launch-session.js'
 import { useSessionView } from '../lib/use-session-view.js'
@@ -781,6 +784,17 @@ function SessionDrawer(props: {
   // added when it changes so a nested active row is visible; collapsing is
   // still allowed afterwards.
   const [openGroups, setOpenGroups] = useState<ReadonlySet<string>>(() => new Set())
+  // Multi-select delete. Keys are drawer row keys; only rows with a delete
+  // target can be picked. Cleared when the node changes.
+  const [selecting, setSelecting] = useState(false)
+  const [selected, setSelected] = useState<ReadonlySet<string>>(() => new Set())
+  const [cleanupOpen, setCleanupOpen] = useState(false)
+  const [, bumpCleanupSupport] = useState(0)
+  const del = useSessionDelete()
+  useEffect(() => {
+    setSelecting(false)
+    setSelected(new Set())
+  }, [baseUrl])
   const narrow = useIsNarrow()
   // Picking an agent in the rail narrows the list to its sessions; `+ new`
   // then starts one with that agent (see stores/agent-filter).
@@ -849,6 +863,39 @@ function SessionDrawer(props: {
     ? `new session with ${agentFilter.name}${newKey ? ` (${newKey})` : ''}`
     : `new session${newKey ? ` (${newKey})` : ''}`
 
+  const labelFor = (it: ChatItem): string => persisted(names, itemBase(it), it.key) ?? it.title
+  const deleteTarget = (it: ChatItem): DeleteTarget | undefined => {
+    const session = deleteTargetFor(it)
+    return session ? { session, label: labelFor(it) } : undefined
+  }
+  const toggleSelected = (key: string): void =>
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  const exitSelecting = (): void => {
+    setSelecting(false)
+    setSelected(new Set())
+  }
+  const selectedRows = props.items.filter((it) => selected.has(it.key) && deleteTargetFor(it))
+  const deleteSelected = async (): Promise<void> => {
+    const targets = selectedRows.flatMap((it) => deleteTarget(it) ?? [])
+    const outcome = await del.requestDelete(targets)
+    if (!outcome) return
+    const gone = new Set(outcome.deleted)
+    const goneKeys = selectedRows.filter((it) => gone.has(deleteTargetFor(it) ?? ''))
+    // Failed rows stay picked so the user sees what is left.
+    if (outcome.failed.length === 0) exitSelecting()
+    else
+      setSelected((prev) => {
+        const next = new Set(prev)
+        for (const it of goneKeys) next.delete(it.key)
+        return next
+      })
+  }
+
   const toggleNest = (key: string): void => {
     // A query force-opens every group. Recording that click would apply
     // after the query is cleared and leave the chevron's state inverted.
@@ -877,6 +924,19 @@ function SessionDrawer(props: {
             onUnarchive={() => unarchive(storageKey(itemBase(it), it.key))}
             onDiscard={
               it.kind === 'draft' && !it.pin ? () => discardDraft(baseUrl, it.key) : undefined
+            }
+            onDelete={(() => {
+              const target = deleteTarget(it)
+              return target ? () => void del.requestDelete([target]) : undefined
+            })()}
+            select={
+              selecting
+                ? {
+                    checked: selected.has(it.key),
+                    disabled: deleteTargetFor(it) === undefined,
+                    onToggle: () => toggleSelected(it.key),
+                  }
+                : undefined
             }
             childCount={kids}
             expanded={expanded}
@@ -983,6 +1043,49 @@ function SessionDrawer(props: {
           )}
         </div>
       )}
+      {(agentItems.length > 0 || cleanupSupported(baseUrl)) && (
+        <div className="flex items-center gap-3 px-4 pb-2 text-xs text-ink-dim classic:px-3 classic:text-[11px]">
+          {selecting ? (
+            <>
+              <span className="tabular-nums">{selectedRows.length} selected</span>
+              <button
+                type="button"
+                disabled={selectedRows.length === 0}
+                onClick={() => void deleteSelected()}
+                className="text-red hover:underline disabled:opacity-40 disabled:hover:no-underline"
+              >
+                {selectedRows.length > 0 ? `Delete ${selectedRows.length}…` : 'Delete…'}
+              </button>
+              <button type="button" onClick={exitSelecting} className="ml-auto hover:text-ink">
+                Cancel
+              </button>
+            </>
+          ) : (
+            <>
+              {agentItems.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setSelecting(true)}
+                  title="pick several sessions to delete"
+                  className="hover:text-ink"
+                >
+                  Select
+                </button>
+              )}
+              {cleanupSupported(baseUrl) && (
+                <button
+                  type="button"
+                  onClick={() => setCleanupOpen(true)}
+                  title="review sessions that look like junk — nothing is deleted without a confirm"
+                  className="hover:text-ink"
+                >
+                  Clean up…
+                </button>
+              )}
+            </>
+          )}
+        </div>
+      )}
       {props.error && <div className="px-3 py-2 text-xs text-red">{props.error}</div>}
       <div className="flex min-h-0 flex-1 flex-col">
         <div className="flex-1 overflow-y-auto px-2 pb-2">
@@ -1009,7 +1112,15 @@ function SessionDrawer(props: {
             {showArchived ? '▾' : '▸'} archived ({archivedCount})
           </button>
         )}
+        <DeleteNotice notice={del.notice} onDismiss={del.dismissNotice} />
       </div>
+      {del.element}
+      <SessionCleanupSheet
+        open={cleanupOpen}
+        onClose={() => setCleanupOpen(false)}
+        active={props.active}
+        onUnsupported={() => bumpCleanupSupport((n) => n + 1)}
+      />
     </div>
   )
 }
@@ -1664,7 +1775,9 @@ function ActiveSession(props: {
         uri: a.pathOrUri,
       })),
     )
-    const sendProtocol = async (sid: string): Promise<void> => {
+    // `owned`: a session this send just started is protocol-owned before the
+    // rendered summary catches up.
+    const sendProtocol = async (sid: string, owned = protocolOwned): Promise<void> => {
       const harnessId = sid.split(':')[0] as import('@rivetos/types').HarnessId
       const capabilities = remoteRegistry.data?.harnesses.find(
         (h) => h.harnessId === harnessId,
@@ -1672,11 +1785,11 @@ function ActiveSession(props: {
       // Use the rendered ownership and options. Pending/error queries must
       // neither delay a send nor apply a pick that the composer cannot offer.
       const nativeAttachments =
-        protocolOwned &&
+        owned &&
         capabilities?.imageAttachments &&
         attachments?.every((a) => a.mime.startsWith('image/'))
       const correlated = await pumpEntry.observe(gw, sid, deliveryId)
-      const accepted = await gw.sendHarnessTurn(sid, {
+      await gw.sendHarnessTurn(sid, {
         deliveryId: correlated ? deliveryId : undefined,
         text: nativeAttachments ? text : referenceText,
         ...(nativeAttachments && attachments?.length ? { attachments } : {}),
@@ -1684,7 +1797,6 @@ function ActiveSession(props: {
         ...(prompt ? { systemPrompt: prompt } : {}),
         ...(bypassDialogGate ? { bypassDialogGate: true } : {}),
       })
-      if (dismissedDialogFrom(accepted)) setDialogDismissedAt(Date.now())
     }
     // A loaded harness summary can route a plain turn before descriptors arrive.
     const sendSessionId = canonicalId ?? (item?.kind === 'harness' ? item.sessionId : undefined)
@@ -1735,13 +1847,11 @@ function ActiveSession(props: {
       try {
         const directory = settings?.directory?.trim()
         const started = await gw.startHarnessSession(plan.harnessId, {
-          ...(plan.agentId ? { agentId: plan.agentId } : {}),
-          ...(directory ? { directory } : {}),
+          ...(directory ? { cwd: directory } : {}),
           ...(launch.spawn.model ? { model: launch.spawn.model } : {}),
-          ...(launch.spawn.effort ? { effort: launch.spawn.effort } : {}),
         })
         writeLaunchState({ launched: true })
-        await sendProtocol(started.sessionId)
+        await sendProtocol(started.sessionId, true)
         if (prompt) markSystemPromptSent(props.sessionId)
         if (useChat.getState().rekey(props.sessionId, started.sessionId)) {
           migrateSessionKey(baseUrl, rosterUrls, props.sessionId, started.sessionId)

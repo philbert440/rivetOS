@@ -77,6 +77,8 @@ data class HarnessDescriptor(
      * allowed. Pickers for NEW sessions filter on this with [installed].
      */
     val allowed: Boolean? = null,
+    /** RivetHub: a new session can start over the protocol (`POST /api/harness-sessions`). */
+    val chat: Boolean? = null,
 )
 
 @Serializable
@@ -215,6 +217,10 @@ data class HarnessPromptAnswersBody(val answers: List<HarnessPromptAnswer>)
 @Serializable
 data class HarnessApprovalDecisionBody(val decision: String)
 
+/** Body of `POST /api/harness-sessions`. */
+@Serializable
+data class StartChatBody(val harness: String, val model: String? = null, val cwd: String? = null)
+
 @Serializable
 data class HarnessSessionTranscriptResponse(
     val sessionId: String = "",
@@ -234,16 +240,16 @@ data class HarnessSessionTranscriptResponse(
 )
 
 /**
- * POST /api/uploads 201 body. [expiresAt] is an ISO-8601 string when the den
- * set a TTL, and absent when ttlMs is 0 — never a Long (the desktop type at
- * gateway-api.ts:889 is wrong; the server writes `new Date(...).toISOString()`).
+ * POST /api/uploads 201 body. [uri] is the file's absolute path on the node;
+ * [expiresAt] is an ISO-8601 string.
  */
 @Serializable
 data class StagedUploadResponse(
+    val id: String = "",
     val uri: String,
     val name: String = "",
-    val mime: String = "",
-    val size: Long = 0,
+    val mediaType: String = "",
+    val bytes: Long = 0,
     val expiresAt: String? = null,
 )
 
@@ -401,6 +407,31 @@ fun denRoomKey(chatKey: String): String = nativeIdOf(chatKey) ?: chatKey
 fun parseHarnessEvent(text: String): HarnessEvent? {
     val el = runCatching { wireJson.parseToJsonElement(text).jsonObject }.getOrNull() ?: return null
     return parseHarnessEvent(el)
+}
+
+/**
+ * RivetHub's session event stream (`WS /api/events/ws`) as registry events.
+ * The rh runtime serves no `/api/harnesses/ws`; its `snapshot` (every live
+ * session, on open) and `session.start` frames stand in for the den's
+ * `session-created`, so a draft is adopted once its session exists. Only
+ * harness sessions count; `rivetos` agent sessions and other frames give none.
+ */
+fun parseRhSessionEvents(text: String): List<HarnessEvent.SessionCreated> {
+    val el = runCatching { wireJson.parseToJsonElement(text).jsonObject }.getOrNull() ?: return emptyList()
+    return when (el.str("type")) {
+        "snapshot" -> (el["sessions"] as? JsonArray).orEmpty().mapNotNull { row ->
+            (row as? JsonObject)?.let { rhSessionCreated(it.str("id"), it.str("harness")) }
+        }
+        "session.start" -> listOfNotNull(rhSessionCreated(el.str("session"), el.str("harness")))
+        else -> emptyList()
+    }
+}
+
+private fun rhSessionCreated(native: String?, harness: String?): HarnessEvent.SessionCreated? {
+    if (native.isNullOrBlank() || harness == null || harness !in HARNESS_IDS) return null
+    // A protocol chat's row is already canonical; a PTY session's is the native id.
+    val canonical = if (nativeIdOf(native) != null) native else "$harness:$native"
+    return HarnessEvent.SessionCreated(canonical, HarnessSessionSummary(sessionId = canonical, harnessId = harness))
 }
 
 fun parseHarnessEvent(el: JsonObject): HarnessEvent {

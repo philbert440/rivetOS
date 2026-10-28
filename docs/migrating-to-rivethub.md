@@ -100,6 +100,15 @@ The unit carries the old unit's semantics: `User=` the install owner (system
 units), `HOME`, a `PATH` that starts with `~/.local/bin`, `TERM`,
 `EnvironmentFile=-~/.rivetos/.env` (valid through the link), and `ExecStart=~/.local/bin/rh start`.
 
+Drop-ins of `rivetos.service` (the `*.conf` files in
+`/etc/systemd/system/rivetos.service.d/` or
+`~/.config/systemd/user/rivetos.service.d/`, as `systemctl show -p DropInPaths`
+lists them) are copied into `rivethub.service.d/` before the first
+`daemon-reload`, so a tunnel dependency, a `PATH` override or resource limits
+keep applying; a file of the same name already there wins. The dry run names
+them in the install step. A rollback removes each copy that still matches its
+source.
+
 ## Harness adapters
 
 RivetHub drives CLI agents over ACP, so each `*-cli` provider needs its ACP

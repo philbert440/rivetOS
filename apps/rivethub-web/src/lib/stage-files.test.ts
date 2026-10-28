@@ -124,8 +124,8 @@ describe('stageFiles', () => {
         return {
           uri: `/up/${name}`,
           name,
-          mime: opts?.mime,
-          size: 3,
+          mediaType: opts?.mime,
+          bytes: 3,
         }
       }),
     }
@@ -171,15 +171,6 @@ describe('stageFiles', () => {
     }
     const { staged } = await stageFiles(gw, [file('a.png')])
     expect(staged[0]?.expiresAt).toBe(Date.parse(iso))
-  })
-
-  it('passes a numeric expiresAt through as-is', async () => {
-    const ms = 1_700_000_000_000
-    const gw: StageGateway = {
-      stageUpload: async () => ({ uri: '/up/a.png', expiresAt: ms }),
-    }
-    const { staged } = await stageFiles(gw, [file('a.png')])
-    expect(staged[0]?.expiresAt).toBe(ms)
   })
 
   it('drops a bogus expiresAt', async () => {

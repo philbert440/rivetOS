@@ -7,11 +7,15 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import io.rivethub.app.gateway.wireJson
 import io.rivethub.app.plane.DEFAULT_OMARCHY_PRESET
+import io.rivethub.app.gateway.HubProject
+import io.rivethub.app.plane.LocalHubPrefs
+import io.rivethub.app.plane.ProjectsState
 import io.rivethub.app.plane.MODE_CHAT
 import io.rivethub.app.plane.migrateLocalPrefs
 import io.rivethub.app.plane.nearestFontScale
@@ -19,6 +23,7 @@ import io.rivethub.app.plane.toggleFavourite
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.MapSerializer
 import kotlinx.serialization.builtins.serializer
 
@@ -56,6 +61,8 @@ data class Prefs(
      *  never written (they are in-memory only). */
     val lastSessionKey: String = "",
     val lastSessionNode: String = "",
+    /** When [lastSessionKey] was opened (epoch ms); 0 on pointers written before hub state. */
+    val lastSessionAt: Long = 0,
     /** Unfinished drawer sections — off by default. Memory is not experimental. */
     val expFiles: Boolean = false,
     val expTasks: Boolean = false,
@@ -77,6 +84,11 @@ data class Prefs(
     /** Chat message display (UX-SPEC §7): token stats under assistant turns, action row always shown. */
     val showStats: Boolean = false,
     val actionRowAlways: Boolean = false,
+    /** Projects shared with desktop through hub state (plane/Projects.kt). */
+    val projects: List<HubProject> = emptyList(),
+    /** Session key → project id. */
+    val projectMembership: Map<String, String> = emptyMap(),
+    val defaultProjectId: String = "",
 )
 
 class Settings(context: Context) {
@@ -109,6 +121,7 @@ class Settings(context: Context) {
             agentsCollapsed = p[AGENTS_COLLAPSED] ?: false,
             lastSessionKey = p[LAST_SESSION_KEY] ?: "",
             lastSessionNode = p[LAST_SESSION_NODE] ?: "",
+            lastSessionAt = p[LAST_SESSION_AT] ?: 0L,
             expFiles = p[EXP_FILES] ?: false,
             expTasks = p[EXP_TASKS] ?: false,
             expWorkflows = p[EXP_WORKFLOWS] ?: false,
@@ -122,6 +135,9 @@ class Settings(context: Context) {
             defaultAgentId = p[DEFAULT_AGENT] ?: "",
             showStats = p[SHOW_STATS] ?: false,
             actionRowAlways = p[ACTION_ROW_ALWAYS] ?: false,
+            projects = decodeProjects(p[PROJECTS]),
+            projectMembership = decodeMap(p[MEMBERSHIP]),
+            defaultProjectId = p[DEFAULT_PROJECT] ?: "",
         )
     }
 
@@ -164,13 +180,15 @@ class Settings(context: Context) {
 
     /** The instant-resume pointer — written on every chat open (see
      *  MainActivity openChat); read once at nav init. */
-    suspend fun setLastSession(key: String, nodeDenUrl: String) = ds.edit {
+    suspend fun setLastSession(key: String, nodeDenUrl: String, atMs: Long = System.currentTimeMillis()) = ds.edit {
         it[LAST_SESSION_KEY] = key
         it[LAST_SESSION_NODE] = nodeDenUrl.trim().trimEnd('/')
+        it[LAST_SESSION_AT] = atMs
     }
     suspend fun clearLastSession() = ds.edit {
         it.remove(LAST_SESSION_KEY)
         it.remove(LAST_SESSION_NODE)
+        it.remove(LAST_SESSION_AT)
     }
 
     suspend fun setDefaultView(mode: String) = ds.edit { it[DEFAULT_VIEW] = mode }
@@ -202,8 +220,9 @@ class Settings(context: Context) {
     suspend fun archive(key: String) = ds.edit { it[ARCHIVED] = (it[ARCHIVED] ?: emptySet()) + key }
     suspend fun unarchive(key: String) = ds.edit { it[ARCHIVED] = (it[ARCHIVED] ?: emptySet()) - key }
 
-    /** Local-only list chrome (UX-SPEC §2): pin floats a row into the Pinned
-     *  section; hide drops it from the list. Neither touches the den. */
+    /** List chrome (UX-SPEC §2): pin floats a row into the Pinned section;
+     *  hide drops it from the list. Shared with desktop through hub state
+     *  (data/HubStateRepository.kt); no session record changes. */
     suspend fun pin(key: String) = ds.edit { it[PINNED] = (it[PINNED] ?: emptySet()) + key }
     suspend fun unpin(key: String) = ds.edit { it[PINNED] = (it[PINNED] ?: emptySet()) - key }
     suspend fun hide(key: String) = ds.edit { it[HIDDEN] = (it[HIDDEN] ?: emptySet()) + key }
@@ -218,6 +237,22 @@ class Settings(context: Context) {
         val (nextPinned, nextHidden) = migrateLocalPrefs(pinned, hidden, from, to)
         if (nextPinned != pinned) it[PINNED] = nextPinned
         if (nextHidden != hidden) it[HIDDEN] = nextHidden
+        // A draft started inside a project stays in it once the den adopts it.
+        val membership = decodeMap(it[MEMBERSHIP])
+        val project = membership[from]
+        if (project != null && from != to && to.isNotBlank()) {
+            it[MEMBERSHIP] = encodeMap(if (membership[to] != null) membership - from else membership - from + (to to project))
+        }
+    }
+
+    /** Change projects and membership in ONE edit (plane/Projects.kt does the logic). */
+    suspend fun editProjects(block: (ProjectsState) -> ProjectsState) = ds.edit {
+        val cur = ProjectsState(decodeProjects(it[PROJECTS]), decodeMap(it[MEMBERSHIP]), it[DEFAULT_PROJECT] ?: "")
+        val next = block(cur)
+        if (next == cur) return@edit
+        it[PROJECTS] = encodeProjects(next.projects)
+        it[MEMBERSHIP] = encodeMap(next.membership)
+        it[DEFAULT_PROJECT] = next.defaultProjectId
     }
 
     suspend fun setTitleOverride(key: String, title: String) = ds.edit {
@@ -228,6 +263,51 @@ class Settings(context: Context) {
 
     suspend fun setAgentPointers(encoded: Map<String, String>) = ds.edit {
         it[POINTERS] = encodeMap(encoded)
+    }
+
+    /** The prefs hub state syncs (names, archive, pins, hidden, modes). */
+    val hubPrefs: Flow<LocalHubPrefs> = prefs.map { it.hubPrefs() }
+
+    /**
+     * Write the agreed hub state in ONE edit, only if those prefs still equal
+     * [expected]. False when the user changed one mid-sync: their edit stays
+     * and the next pass merges it.
+     */
+    suspend fun applyHubPrefs(expected: LocalHubPrefs, next: LocalHubPrefs): Boolean {
+        var applied = false
+        ds.edit {
+            val current = LocalHubPrefs(
+                names = decodeMap(it[TITLES]),
+                archived = it[ARCHIVED] ?: emptySet(),
+                pinned = it[PINNED] ?: emptySet(),
+                hidden = it[HIDDEN] ?: emptySet(),
+                modes = decodeMap(it[SESSION_MODES]),
+                projects = decodeProjects(it[PROJECTS]),
+                membership = decodeMap(it[MEMBERSHIP]),
+                defaultProjectId = it[DEFAULT_PROJECT] ?: "",
+                lastSessionKey = it[LAST_SESSION_KEY] ?: "",
+                lastSessionAt = it[LAST_SESSION_AT] ?: 0L,
+            )
+            if (current != expected) return@edit
+            it[TITLES] = encodeMap(next.names)
+            it[ARCHIVED] = next.archived
+            it[PINNED] = next.pinned
+            it[HIDDEN] = next.hidden
+            it[SESSION_MODES] = encodeMap(next.modes)
+            it[PROJECTS] = encodeProjects(next.projects)
+            it[MEMBERSHIP] = encodeMap(next.membership)
+            it[DEFAULT_PROJECT] = next.defaultProjectId
+            applied = true
+        }
+        return applied
+    }
+
+    /** Last document agreed with the entry den, or null (never synced / unreadable). */
+    suspend fun hubSynced(): HubSynced? =
+        ds.data.first()[HUB_SYNCED]?.let { runCatching { wireJson.decodeFromString(HubSynced.serializer(), it) }.getOrNull() }
+
+    suspend fun setHubSynced(synced: HubSynced) = ds.edit {
+        it[HUB_SYNCED] = wireJson.encodeToString(HubSynced.serializer(), synced)
     }
 
     suspend fun clearAll() = ds.edit { it.clear() }
@@ -258,6 +338,7 @@ class Settings(context: Context) {
         private val AGENTS_COLLAPSED = booleanPreferencesKey("agentsCollapsed")
         private val LAST_SESSION_KEY = stringPreferencesKey("lastSessionKey")
         private val LAST_SESSION_NODE = stringPreferencesKey("lastSessionNode")
+        private val LAST_SESSION_AT = longPreferencesKey("lastSessionAt")
         private val CODE_LINE_NUMBERS = booleanPreferencesKey("codeLineNumbers")
         private val CODE_WRAP = booleanPreferencesKey("codeWrap")
         private val EXP_FILES = booleanPreferencesKey("expFiles")
@@ -271,13 +352,34 @@ class Settings(context: Context) {
         private val DEFAULT_AGENT = stringPreferencesKey("defaultAgentId")
         private val SHOW_STATS = booleanPreferencesKey("showStats")
         private val ACTION_ROW_ALWAYS = booleanPreferencesKey("actionRowAlways")
+        private val HUB_SYNCED = stringPreferencesKey("hubStateSynced")
+        private val PROJECTS = stringPreferencesKey("projects")
+        private val MEMBERSHIP = stringPreferencesKey("projectMembership")
+        private val DEFAULT_PROJECT = stringPreferencesKey("defaultProjectId")
 
         private val mapSer = MapSerializer(String.serializer(), String.serializer())
         private val longMapSer = MapSerializer(String.serializer(), Long.serializer())
         private fun decodeMap(s: String?): Map<String, String> =
             s?.let { runCatching { wireJson.decodeFromString(mapSer, it) }.getOrNull() } ?: emptyMap()
         private fun encodeMap(m: Map<String, String>): String = wireJson.encodeToString(mapSer, m)
+        private val projectsSer = ListSerializer(HubProject.serializer())
+        private fun decodeProjects(s: String?): List<HubProject> =
+            s?.let { runCatching { wireJson.decodeFromString(projectsSer, it) }.getOrNull() } ?: emptyList()
+        private fun encodeProjects(p: List<HubProject>): String = wireJson.encodeToString(projectsSer, p)
         private fun decodeLongMap(s: String?): Map<String, Long> =
             s?.let { runCatching { wireJson.decodeFromString(longMapSer, it) }.getOrNull() } ?: emptyMap()
     }
 }
+
+fun Prefs.hubPrefs(): LocalHubPrefs = LocalHubPrefs(
+    names = titleOverrides,
+    archived = archived,
+    pinned = pinned,
+    hidden = hidden,
+    modes = sessionModes,
+    projects = projects,
+    membership = projectMembership,
+    defaultProjectId = defaultProjectId,
+    lastSessionKey = lastSessionKey,
+    lastSessionAt = lastSessionAt,
+)

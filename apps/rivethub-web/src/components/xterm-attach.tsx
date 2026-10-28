@@ -14,7 +14,12 @@ import { resolveXtermTheme, useTerminalSettings } from '../stores/terminal-setti
 import { gatewayFor } from '../lib/agent-gateway.js'
 import { buildTerminalOptions } from '../lib/terminal-options.js'
 import { isOscColorReport, stripOscColorQueries } from '../lib/osc-filter.js'
-import { copyTextToClipboard, hasTauriClipboard, readTextFromClipboard } from '../lib/clipboard.js'
+import {
+  copyTextToClipboard,
+  hasTauriClipboard,
+  readImageFromClipboard,
+  readTextFromClipboard,
+} from '../lib/clipboard.js'
 import { openExternal } from '../lib/open-external.js'
 import { expiresInLabel, filesFrom, pathsToPasteText, stageFiles } from '../lib/stage-files.js'
 import {
@@ -259,9 +264,7 @@ export function XtermAttach(props: {
       // paste only replaces the menu when there is nothing to copy.
       if (term.getSelection()) return
       e.preventDefault()
-      void readTextFromClipboard().then((text) => {
-        if (text && alive) term?.paste(text)
-      })
+      pasteFromClipboard()
     }
     let hintTimer: ReturnType<typeof setTimeout> | undefined
     const showHint = (
@@ -321,6 +324,20 @@ export function XtermAttach(props: {
         } else {
           showHint({ kind: 'err', text: `upload failed: ${failed[0] ?? 'file'}` }, 4000)
         }
+      })()
+    }
+    // Explicit paste (Ctrl+Shift+V, right-click): text when the clipboard has
+    // any, else a clipboard image staged like a pasted file.
+    const pasteFromClipboard = (): void => {
+      void (async () => {
+        const text = await readTextFromClipboard()
+        if (!alive) return
+        if (text) {
+          term?.paste(text)
+          return
+        }
+        const image = await readImageFromClipboard()
+        if (image) stageAndPaste([image])
       })()
     }
     // Capture-phase paste: file/image clipboard items must not reach xterm's
@@ -482,9 +499,7 @@ export function XtermAttach(props: {
           return false
         }
         if (e.code === 'KeyV') {
-          void readTextFromClipboard().then((text) => {
-            if (text) instance.paste(text)
-          })
+          pasteFromClipboard()
           e.preventDefault()
           return false
         }

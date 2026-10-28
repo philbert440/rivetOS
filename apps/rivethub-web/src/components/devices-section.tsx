@@ -119,12 +119,7 @@ export function DevicesSection(): JSX.Element | null {
         <h2 className="mb-1 text-lg font-semibold text-ink classic:text-base classic:text-em">
           Devices
         </h2>
-        <p className="text-sm text-ink-dim">
-          Device enrollment is off on this node. Set{' '}
-          <span className="font-mono">RIVETOS_DEN_DEVICES=1</span> (plus the{' '}
-          <span className="font-mono">RIVETOS_DEN_DEVICES_*</span> mesh settings) in the node's
-          environment and restart it.
-        </p>
+        <p className="text-sm text-ink-dim">Device enrollment is not available on this node.</p>
       </section>
     )
 

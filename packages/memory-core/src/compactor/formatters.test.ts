@@ -11,7 +11,7 @@ import {
   formatRootPrompt,
   capLeafMessageContent,
 } from './compactor.js'
-import { fmtIsoMinute, LEAF_MESSAGE_CHAR_CAP } from './types.js'
+import { BRANCH_SYSTEM_PROMPT, fmtIsoMinute, LEAF_MESSAGE_CHAR_CAP } from './types.js'
 import type { ConversationMeta, CompactMessageRow, SummaryRow } from './types.js'
 
 // ---------------------------------------------------------------------
@@ -263,5 +263,28 @@ describe('formatRootPrompt', () => {
       }),
     ])
     expect(output).toMatch(/\[Branch #01 2026-04-18T12:00Z → 2026-04-18T12:10Z \| 50 msgs\]/)
+  })
+})
+
+describe('branch supersession (2026-10-26 regression)', () => {
+  // Leaves are chronological. Before the fix a branch could carry an earlier
+  // leaf's plan ("swap gated on approval") as if it were still open, even when
+  // a later leaf recorded the swap as done.
+  it('documents the leaf supersession rule', () => {
+    expect(BRANCH_SYSTEM_PROMPT).toContain('SUPERSESSION ACROSS LEAVES')
+  })
+
+  it('requires later leaves to win on mutable facts', () => {
+    expect(BRANCH_SYSTEM_PROMPT).toMatch(/LATER leaf wins/i)
+  })
+
+  it('only carries genuinely-unclosed items into open items', () => {
+    expect(BRANCH_SYSTEM_PROMPT).toMatch(
+      /only carry an item into OPEN ITEMS if no later leaf closes it/i,
+    )
+  })
+
+  it('forbids finished plans being restated as pending', () => {
+    expect(BRANCH_SYSTEM_PROMPT).toMatch(/do NOT restate the plan as if it were still pending/i)
   })
 })

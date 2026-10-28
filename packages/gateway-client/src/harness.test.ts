@@ -13,7 +13,7 @@ import {
   type HarnessSessionListResponse,
   type HarnessSessionSummary,
   type HarnessSessionTranscriptResponse,
-  type HarnessTurnAccepted,
+  type SessionPostAccepted,
   type SessionId,
 } from '@rivetos/types'
 import { GatewayError } from './http.js'
@@ -87,8 +87,8 @@ function handle(req: IncomingMessage, res: ServerResponse): void {
     if (path === '/api/harnesses/claude-code/sessions' && req.method === 'GET') {
       return respond(200, { sessions: [SUMMARY] } satisfies HarnessSessionListResponse)
     }
-    if (path === '/api/harnesses/claude-code/sessions' && req.method === 'POST') {
-      return respond(201, SUMMARY)
+    if (path === '/api/harness-sessions' && req.method === 'POST') {
+      return respond(200, SUMMARY)
     }
     const rest = path.startsWith('/api/harness-sessions/')
       ? path.slice('/api/harness-sessions/'.length).split('/')
@@ -106,15 +106,15 @@ function handle(req: IncomingMessage, res: ServerResponse): void {
       if (action === undefined) return respond(200, { ...SUMMARY, sessionId: decoded })
       if (action === 'transcript') return respond(200, { ...TRANSCRIPT, sessionId: decoded })
       if (action === 'resume') return respond(200, { ...SUMMARY, sessionId: decoded })
-      if (action === 'turns') {
+      if (action === 'turn') {
         // The one typed error a chat client must handle by hand: v1 drivers
         // never queue, so a mid-turn send is the caller's problem.
         if (raw.includes('boom')) {
           return respond(409, { error: 'claude-code is mid-turn', code: 'turn_in_flight' })
         }
-        return respond(202, { ok: true, sessionId: decoded } satisfies HarnessTurnAccepted)
+        return respond(200, { accepted: true, session: decoded } satisfies SessionPostAccepted)
       }
-      if (action === 'interrupt') return respond(202, { ok: true, sessionId: decoded })
+      if (action === 'stop') return respond(200, { ok: true })
       if (action === 'approvals') {
         return respond(501, {
           error: 'claude-code does not surface approvals',
@@ -163,9 +163,10 @@ describe('harness control plane — registry', () => {
     expect(captured.method).toBe('GET')
     expect(list.sessions[0].sessionId).toBe(SID)
 
-    const started = await gw().startHarnessSession('claude-code', { nativeSessionId: UUID })
+    const started = await gw().startHarnessSession('claude-code', { model: 'haiku' })
     expect(captured.method).toBe('POST')
-    expect(JSON.parse(captured.body ?? '{}')).toEqual({ nativeSessionId: UUID })
+    expect(captured.path).toBe('/api/harness-sessions')
+    expect(JSON.parse(captured.body ?? '{}')).toEqual({ harness: 'claude-code', model: 'haiku' })
     expect(started.harnessId).toBe('claude-code')
   })
 })
@@ -203,13 +204,14 @@ describe('harness control plane — session operations', () => {
     expect(captured.method).toBe('POST')
     expect(captured.path).toBe(`/api/harness-sessions/${seg}/resume`)
 
+    const raw = encodeURIComponent(SID)
     const accepted = await gw().sendHarnessTurn(SID, { text: 'go' })
-    expect(captured.path).toBe(`/api/harness-sessions/${seg}/turns`)
+    expect(captured.path).toBe(`/api/harness-sessions/${raw}/turn`)
     expect(JSON.parse(captured.body ?? '{}')).toEqual({ text: 'go' })
-    expect(accepted.ok).toBe(true)
+    expect(accepted).toEqual({ accepted: true, session: SID })
 
     await gw().interruptHarnessSession(SID)
-    expect(captured.path).toBe(`/api/harness-sessions/${seg}/interrupt`)
+    expect(captured.path).toBe(`/api/harness-sessions/${raw}/stop`)
   })
 
   it('reads the hard-resync transcript', async () => {

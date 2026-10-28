@@ -8,6 +8,7 @@
 
 import {
   cloneElement,
+  Fragment,
   isValidElement,
   useCallback,
   useEffect,
@@ -51,11 +52,14 @@ import { RenameInput, useSessionTitle } from '../session-rename.js'
 import { isRowArchived, rowMembershipKey } from '../drawer-item.js'
 import { Popover, PopoverContent, PopoverTrigger } from '../ui/popover.js'
 import {
+  addSlot,
   apply,
   focusRect,
   layout,
   liveBand,
   NEW_SPACE_H,
+  spaceFillHeight,
+  spacePad,
   tileSlot,
   type Altitude,
   type NeighborTile,
@@ -158,6 +162,10 @@ function isNeeds(row: ChatItem, blockedIds: ReadonlySet<string> | undefined): bo
   return tileStatus(row.status, isBlocked(row, blockedIds)) === 'needs'
 }
 
+function isIdle(row: ChatItem, blockedIds: ReadonlySet<string> | undefined): boolean {
+  return tileStatus(row.status, isBlocked(row, blockedIds)) === 'idle'
+}
+
 function isLive(row: ChatItem, blockedIds: ReadonlySet<string> | undefined): boolean {
   const status = tileStatus(row.status, isBlocked(row, blockedIds))
   return status === 'working' || status === 'needs'
@@ -199,23 +207,33 @@ function agentRows(root: HTMLElement | null): HTMLButtonElement[] {
   return [...root.querySelectorAll<HTMLButtonElement>('button[id^="agent-row-"]:not(:disabled)')]
 }
 
+/** Presses here leave History open: the HUD (its toggles, Agents, the dock)
+ *  and anything History opened over itself. */
+const HISTORY_KEEPS_OPEN =
+  '[data-hud], [role="dialog"], [role="alertdialog"], [role="menu"], [data-radix-popper-content-wrapper]'
+
 function plainEscape(event: KeyboardEvent): boolean {
   return (
     event.key === 'Escape' && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey
   )
 }
 
-function countLabel(active: number, waiting: number): JSX.Element {
-  if (waiting > 0) {
-    return (
-      <span>
-        {active} active · <span className="text-warn">{waiting} waiting on you</span>
-      </span>
-    )
-  }
+/** A project's counts, zeros left out: "2 active · 1 waiting on you · 3 idle".
+ *  Null when every count is zero. */
+export function countLabel(active: number, waiting: number, idle: number): JSX.Element | null {
+  const parts: ReactNode[] = []
+  if (active > 0) parts.push(`${String(active)} active`)
+  if (waiting > 0) parts.push(<span className="text-warn">{waitingPhrase(waiting)}</span>)
+  if (idle > 0) parts.push(`${String(idle)} idle`)
+  if (parts.length === 0) return null
   return (
     <span>
-      {active} active · {waiting} waiting on you
+      {parts.map((part, i) => (
+        <Fragment key={i}>
+          {i > 0 ? ' · ' : null}
+          {part}
+        </Fragment>
+      ))}
     </span>
   )
 }
@@ -533,7 +551,20 @@ export function SpacesCanvas(props: {
     })),
     { id: NEW_SPACE_ID, name: 'New project', count: 0, h: NEW_SPACE_H },
   ]
-  const laid = layout(layoutItems, view)
+  // Inside a project (and a session opened from it) the project grows to
+  // the window's height and its cards with it, rather than a short strip.
+  // Its padding drops to a thin margin and a band for the title pills, plus
+  // the counts line when there is something to count.
+  const framedCounts = (regions.find((region) => region.id === framedRegionId)?.rows ?? []).some(
+    (row) => isLive(row, blockedIds) || isNeeds(row, blockedIds) || isIdle(row, blockedIds),
+  )
+  const laid = layout(
+    layoutItems,
+    view,
+    altitude !== 'everything' && framedRegionId !== undefined
+      ? { id: framedRegionId, h: spaceFillHeight(view), pad: spacePad(view, framedCounts) }
+      : undefined,
+  )
   const placed: { row: ChatItem; spaceId: string; slot: (typeof laid.slots)[number] }[] = []
   for (const region of regions) {
     const laidRegion = laid.regions.find((item) => item.id === region.id)
@@ -849,6 +880,34 @@ export function SpacesCanvas(props: {
     window.addEventListener('pointerdown', onDown, { capture: true })
     return () => window.removeEventListener('pointerdown', onDown, { capture: true })
   }, [agentsOpen, setAgentsOpen])
+
+  // A click outside History closes it, as with the Agents pop-out. Only a
+  // press that does not move: dragging a card onto History, or panning,
+  // must leave it open. Pick mode stays open: it ends on a choice or Cancel.
+  useEffect(() => {
+    if (!historyWanted || pick) return
+    let down: { x: number; y: number } | null = null
+    const outside = (target: EventTarget | null): boolean =>
+      target instanceof Element &&
+      !panelRef.current?.contains(target) &&
+      target.closest(HISTORY_KEEPS_OPEN) === null
+    const onDown = (event: PointerEvent): void => {
+      down = outside(event.target) ? { x: event.clientX, y: event.clientY } : null
+    }
+    const onUp = (event: PointerEvent): void => {
+      const start = down
+      down = null
+      if (!start || !outside(event.target)) return
+      if (Math.hypot(event.clientX - start.x, event.clientY - start.y) >= DRAG_START_PX) return
+      setHistoryWanted(false)
+    }
+    window.addEventListener('pointerdown', onDown, { capture: true })
+    window.addEventListener('pointerup', onUp, { capture: true })
+    return () => {
+      window.removeEventListener('pointerdown', onDown, { capture: true })
+      window.removeEventListener('pointerup', onUp, { capture: true })
+    }
+  }, [historyWanted, pick])
 
   // A pop-out closed mid-drag never sees its dragend; it must not reopen
   // see-through.
@@ -1396,11 +1455,15 @@ export function SpacesCanvas(props: {
             const waitingOn = model
               ? model.rows.filter((row) => isNeeds(row, blockedIds)).length
               : 0
+            const idle = model ? model.rows.filter((row) => isIdle(row, blockedIds)).length : 0
             const real = !isNew && region.id !== UNPLACED_ID
             const regionSpace = real ? spaces.find((space) => space.id === region.id) : undefined
             const chip = regionSpace
               ? defaultAgentChip(regionSpace.defaults, rosterAgents)
               : undefined
+            // In Space the breadcrumb names the project, so the name row above
+            // the box goes, and the counts line up with the cards.
+            const framedHere = altitude === 'space' && region.id === framedRegionId
             return (
               <div
                 key={region.id}
@@ -1422,6 +1485,15 @@ export function SpacesCanvas(props: {
                       ? '2px solid var(--color-em)'
                       : undefined,
                 }}
+                // Double-click on the box's empty space, from Everything,
+                // opens that project. Cards and buttons sit above the box,
+                // so this only sees blank space.
+                onDoubleClick={(event) => {
+                  if (altitudeRef.current !== 'everything' || !real) return
+                  if (event.target !== event.currentTarget) return
+                  setSpaceFocus(region.id)
+                  leaveTo('space')
+                }}
               >
                 {isNew ? (
                   <button
@@ -1437,7 +1509,10 @@ export function SpacesCanvas(props: {
                   <div
                     data-region-label=""
                     className="absolute bottom-full left-0 flex items-baseline gap-3 pb-3 text-sm text-ink-dim"
-                    style={{ fontSize: 'calc(14px * var(--inv, 1))' }}
+                    style={{
+                      fontSize: 'calc(14px * var(--inv, 1))',
+                      display: framedHere ? 'none' : undefined,
+                    }}
                   >
                     <b className="text-ink" style={{ fontSize: '1.35em' }}>
                       {model?.name ?? region.id}
@@ -1483,13 +1558,13 @@ export function SpacesCanvas(props: {
                     data-region-count=""
                     className="pointer-events-none absolute text-ink-dim"
                     style={{
-                      left: 'min(calc(16px * var(--inv, 1)), 24px)',
+                      left: framedHere ? region.pad.x : 'min(calc(16px * var(--inv, 1)), 24px)',
                       top: 'min(calc(12px * var(--inv, 1)), 22px)',
                       fontSize: 'min(calc(13px * var(--inv, 1)), 30px)',
                       lineHeight: 1.2,
                     }}
                   >
-                    {countLabel(active, waitingOn)}
+                    {countLabel(active, waitingOn, idle)}
                   </div>
                 )}
               </div>
@@ -1528,7 +1603,13 @@ export function SpacesCanvas(props: {
             const laidRegion = laid.regions.find((item) => item.id === region.id)
             if (!laidRegion) return null
             const empty = region.rows.length === 0
-            const slot = tileSlot(region.id, laidRegion.rect, region.rows.length)
+            const slot = addSlot(
+              region.id,
+              laidRegion.rect,
+              region.rows.length,
+              laidRegion.tileH,
+              laidRegion.pad,
+            )
             const hidden = altitude === 'thread'
             const regionDefaults = spaces.find((space) => space.id === region.id)?.defaults
             const slotStartsIn = startsInDirectory(
@@ -1585,12 +1666,11 @@ export function SpacesCanvas(props: {
                   }
                 }}
               >
-                {/* Sized off the slot (cqmin), so it reads at every altitude. */}
-                <Plus
-                  aria-hidden="true"
-                  strokeWidth={1.5}
-                  className="size-[40cqmin] max-h-40 max-w-40"
-                />
+                {/* Sized off the slot (cqh), so it reads at every altitude. */}
+                <span className="flex items-center gap-[0.4em] text-[min(36cqh,40px)]">
+                  <Plus aria-hidden="true" strokeWidth={1.5} className="size-[1.2em]" />
+                  New session
+                </span>
               </button>
             )
           })}

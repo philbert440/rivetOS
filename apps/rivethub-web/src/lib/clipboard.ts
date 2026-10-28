@@ -231,6 +231,33 @@ export async function readTextFromClipboard(): Promise<string | undefined> {
   return undefined
 }
 
+/** The clipboard's image as a PNG File, or undefined when it holds none or
+ *  cannot be read. Shell bridge first, then the async Clipboard API. */
+export async function readImageFromClipboard(): Promise<File | undefined> {
+  const shell = rivetShell()
+  if (shell?.clipboardReadImage) {
+    try {
+      const png = await shell.clipboardReadImage()
+      return png
+        ? new File([new Uint8Array(png)], 'pasted-image.png', { type: 'image/png' })
+        : undefined
+    } catch {
+      return undefined
+    }
+  }
+  const clip = typeof navigator !== 'undefined' ? navigator.clipboard : undefined
+  if (!clip || typeof clip.read !== 'function') return undefined
+  try {
+    for (const item of await clip.read()) {
+      const type = item.types.find((t) => t.startsWith('image/'))
+      if (type) return new File([await item.getType(type)], 'pasted-image.png', { type })
+    }
+  } catch {
+    return undefined // permission denied / focus lost
+  }
+  return undefined
+}
+
 function fallbackCopy(text: string): Promise<void> {
   return new Promise((resolve, reject) => {
     try {

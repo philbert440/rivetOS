@@ -16,6 +16,7 @@ import {
   parseBackfillRevision,
   compareParsedPages,
   contentHashForRow,
+  sessionEntryHash,
   dropSystemMessages,
   filterOverlap,
   formatIngestPagesCounts,
@@ -234,23 +235,28 @@ describe('ingest-pages helpers', () => {
     expect(alone.kept).toHaveLength(1)
   })
 
-  it('dedupes existing backfill rows by source_id, not content hash', () => {
+  it('skips duplicate content at a different position by hash', () => {
+    const ok = hashOf('assistant', 'ok')
     const index: OverlapIndex = {
-      sourceIds: new Map([['readtranscript:alpha:5:0', undefined]]),
+      sourceIds: new Map([['readtranscript:alpha:5:0', ok]]),
+      contentHashes: new Set([ok]),
       v4Hits: [],
     }
     const sameTextNewPos = filterOverlap(
       [msg('assistant', 'ok', 'readtranscript:alpha:6:0', { position: 6 })],
       index,
     )
-    expect(sameTextNewPos.kept).toHaveLength(1)
+    expect(sameTextNewPos.kept).toHaveLength(0)
+    expect(sameTextNewPos.skippedDuplicateHash).toBe(1)
+    expect(sameTextNewPos.skippedChanged).toBe(0)
     expect(sameTextNewPos.skippedOverlap).toBe(0)
     const samePos = filterOverlap(
-      [msg('assistant', 'different text', 'readtranscript:alpha:5:0', { position: 5 })],
+      [msg('assistant', 'ok', 'readtranscript:alpha:5:0', { position: 5 })],
       index,
     )
     expect(samePos.kept).toHaveLength(0)
     expect(samePos.skippedOverlap).toBe(1)
+    expect(samePos.skippedDuplicateHash).toBe(0)
   })
 
   it('suppresses at most k copies inside a confirmed overlap run', () => {
@@ -336,6 +342,152 @@ describe('ingest-pages helpers', () => {
     expect(calls).toContain('rows:grokbot-alpha-v4')
     expect(calls.some((c) => c.startsWith('rows:grokbot-alpha-v4-backfill'))).toBe(false)
     expect(calls).not.toContain('newest')
+  })
+
+  it('appends ISO created_at when present and omits it when absent', () => {
+    const row = { role: 'assistant', content: 'hi' }
+    expect(sessionEntryHash(row)).toBe(contentHashForRow(row))
+    expect(sessionEntryHash({ ...row, createdAt: WHEN })).not.toBe(contentHashForRow(row))
+    expect(sessionEntryHash({ ...row, createdAt: WHEN })).toBe(
+      sessionEntryHash({ ...row, createdAt: new Date(WHEN) }),
+    )
+  })
+
+  it('hashes a legacy stored row that has no metadata.content_hash', async () => {
+    const ident = {
+      id: ALPHA_ID,
+      session: 'grokbot-alpha',
+      agent: 'grokbot-alpha',
+      persona: 'Alpha',
+    }
+    const index = await loadOverlapIndex(
+      {
+        newestCreatedAt: async () => undefined,
+        rowsSince: async () => [
+          { role: 'assistant', content: 'legacy', metadata: { source_id: 'readtranscript:alpha:5:0' } },
+        ],
+        sourceIds: async () => [{ sourceId: 'readtranscript:alpha:5:0' }],
+      },
+      ident,
+      { overlapHours: 0 },
+    )
+    expect(index.contentHashes?.has(hashOf('assistant', 'legacy'))).toBe(true)
+    const skipped = filterOverlap(
+      [msg('assistant', 'legacy', 'readtranscript:alpha:9:0', { position: 9 })],
+      index,
+    )
+    expect(skipped.kept).toHaveLength(0)
+    expect(skipped.skippedDuplicateHash).toBe(1)
+    expect(skipped.skippedChanged).toBe(0)
+  })
+
+  it('keeps a new content hash that is not already in the session', () => {
+    const stored = hashOf('assistant', 'old')
+    const kept = filterOverlap(
+      [msg('assistant', 'fresh', 'readtranscript:alpha:6:0', { position: 6 })],
+      {
+        sourceIds: new Map([['readtranscript:alpha:5:0', stored]]),
+        contentHashes: new Set([stored]),
+        v4Hits: [],
+      },
+    )
+    expect(kept.kept.map((m) => m.content)).toEqual(['fresh'])
+    expect(kept.skippedDuplicateHash).toBe(0)
+    expect(kept.skippedChanged).toBe(0)
+  })
+})
+
+function writeSparsePage(
+  dir: string,
+  a: number,
+  b: number,
+  records: unknown[],
+  total = b + 1,
+) {
+  const header = `Transcript of alpha, positions ${String(a)}–${String(b)} of ${String(total)}:`
+  writeFileSync(
+    join(dir, `alpha-${String(b + 1)}.txt`),
+    [header, ...records.map((r) => JSON.stringify(r)), ''].join('\n'),
+  )
+}
+
+describe('ingest-pages content-hash dedupe', () => {
+  const stamp = (text: string) =>
+    `<timestamp>Saturday, Oct 3, 2026, 3:00 AM (UTC+0)</timestamp>\n<user_query>\n${text}\n</user_query>`
+
+  it('does not map a short page onto the wrong stored rows', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gb-pages-sparse-'))
+    writeSparsePage(dir, 10, 13, [
+      userTurn(stamp('alpha')),
+      assistantTurn('mid'),
+      assistantTurn('last'),
+    ])
+    const written: string[] = []
+    const result = await ingestPages(dir, {
+      commit: true,
+      deps: {
+        overlap: {
+          newestCreatedAt: async () => undefined,
+          rowsSince: async () => [],
+          sourceIds: async () => [
+            { sourceId: 'readtranscript:alpha:10:0', contentHash: hashOf('user', 'alpha') },
+            { sourceId: 'readtranscript:alpha:11:0', contentHash: hashOf('assistant', 'mid') },
+            { sourceId: 'readtranscript:alpha:13:0', contentHash: hashOf('assistant', 'last') },
+          ],
+        },
+        commit: async (input) => {
+          written.push(...input.messages.map((row) => String(row.content)))
+          return commitResult(input)
+        },
+      },
+    })
+    expect(result.bots[0]?.pagesFailed).toBe(0)
+    expect(result.bots[0]?.skippedChanged).toBe(0)
+    expect(result.bots[0]?.skippedDuplicateHash).toBeGreaterThan(0)
+    expect(result.bots[0]?.new).toBe(0)
+    expect(written).toEqual([])
+    const dry = await ingestPages(dir, {
+      commit: false,
+      deps: {
+        overlap: {
+          newestCreatedAt: async () => undefined,
+          rowsSince: async () => [],
+          sourceIds: async () => [
+            { sourceId: 'readtranscript:alpha:13:0', contentHash: hashOf('assistant', 'last') },
+          ],
+        },
+      },
+    })
+    expect(dry.dryRun).toBe(true)
+    expect(dry.wrote).toBe(false)
+    expect(formatIngestPagesCounts(dry)).toMatch(/skipped_duplicate_hash=/)
+  })
+
+  it('writes only content that is not already stored, including on --commit', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gb-pages-new-hash-'))
+    pageFile(dir, 'alpha', 4, 3, [userTurn(stamp('write me')), assistantTurn('fresh')])
+    const written: string[] = []
+    const result = await ingestPages(dir, {
+      commit: true,
+      deps: {
+        overlap: {
+          newestCreatedAt: async () => undefined,
+          rowsSince: async () => [],
+          sourceIds: async () => [
+            { sourceId: 'readtranscript:alpha:3:0', contentHash: hashOf('user', 'write me') },
+          ],
+        },
+        commit: async (input) => {
+          written.push(...input.messages.map((row) => String(row.content)))
+          return commitResult(input)
+        },
+      },
+    })
+    expect(result.wrote).toBe(true)
+    expect(result.dryRun).toBe(false)
+    expect(written).toEqual(['fresh'])
+    expect(result.bots[0]?.new).toBe(1)
+    expect(result.bots[0]?.skippedChanged).toBe(0)
   })
 })
 
@@ -424,7 +576,7 @@ describe('ingest-pages dry-run / commit', () => {
       deps: { overlap: store },
     })
     const bot = result.bots[0]
-    expect(bot?.skippedOverlap).toBeGreaterThan(0)
+    expect((bot?.skippedOverlap ?? 0) + (bot?.skippedDuplicateHash ?? 0)).toBeGreaterThan(0)
     expect(bot?.new).toBeGreaterThan(0)
     expect(bot?.session).toBe('grokbot-alpha-v4-backfill')
   })

@@ -116,6 +116,8 @@ export interface SessionMessage {
   thinking?: string
   /** Tools the turn invoked, in call order (harness-transcript sourced). */
   tools?: HarnessTranscriptTool[]
+  /** Files a user turn carried (harness-transcript sourced). */
+  attachments?: TranscriptAttachment[]
 }
 
 export interface SessionsListResponse {
@@ -1069,6 +1071,66 @@ export interface HarnessSessionsResponse {
   sessions: HarnessSession[]
 }
 
+// -- session delete + trash ---------------------------------------------------
+//
+// Delete removes a session's conversation from memory (every agent's rows for
+// that `session_key`) and writes a tombstone so the session lists omit it. The
+// harness's own on-disk transcript is NOT touched. `{session}` is always the
+// canonical `<harness-id>:<native>` id. A live session (running PTY / live
+// view) is refused with 409 and never killed.
+
+/** Rows removed from memory for one deleted session. All may be 0 for a
+ *  session that only ever existed on disk — the tombstone is still written. */
+export interface SessionDeleteCounts {
+  conversations: number
+  messages: number
+  summaries: number
+}
+
+/** `DELETE /api/sessions/{session}` 200. 409 `{error:'session is live'}`, 404
+ *  when the session is not visible to the caller. */
+export interface SessionDeleteResponse extends SessionDeleteCounts {
+  ok: true
+  session: string
+}
+
+/** `POST /api/sessions/delete` body: 1..=200 canonical ids, deduped server-side. */
+export interface SessionsDeleteRequest {
+  sessions: string[]
+}
+
+export type SessionDeleteResult =
+  | (SessionDeleteCounts & { session: string; ok: true })
+  | { session: string; ok: false; error: string }
+
+/** `POST /api/sessions/delete` 200. A per-item failure never fails the batch;
+ *  `error` is `'session is live'` or `'not found'` today. */
+export interface SessionsDeleteResponse {
+  results: SessionDeleteResult[]
+}
+
+/** Why the node thinks a session is junk. Conservative: anything not
+ *  obviously junk is never a candidate. */
+export type SessionTrashReason = 'empty' | 'one-word-reply'
+
+export interface SessionTrashCandidate {
+  /** Canonical `<harness-id>:<native>` id. */
+  session: string
+  harness: string
+  title: string | null
+  /** RFC 3339. */
+  updatedAt: string
+  reason: SessionTrashReason
+  userTurns: number
+  /** Assistant reply text, ≤ 80 chars, or null when there was none. */
+  reply: string | null
+}
+
+/** `GET /api/sessions/trash` 200 — a review list only; nothing is deleted. */
+export interface SessionTrashResponse {
+  candidates: SessionTrashCandidate[]
+}
+
 /** One tool invocation recorded on an assistant transcript turn. */
 export interface HarnessTranscriptTool {
   /** Harness tool name verbatim (e.g. 'Bash', 'mcp:rivetos:memory_search'). */
@@ -1085,10 +1147,24 @@ export interface HarnessTranscriptTool {
   resultText?: string
 }
 
+/** A file a user turn carried. The node names it from its own record of the
+ *  send; a turn the node did not send (a TUI paste) carries only `mediaType`.
+ *  `uploadId` reads the bytes at GET /api/uploads/{id} until the upload
+ *  expires; `name` outlives it. */
+export interface TranscriptAttachment {
+  mediaType: string
+  name?: string
+  /** Absolute path of the staged upload on the node. */
+  uri?: string
+  uploadId?: string
+}
+
 /** One turn from GET /api/terminal/harness-sessions/:id/transcript (TUI store). */
 export interface HarnessTranscriptTurn {
   role: 'user' | 'assistant'
   text: string
+  /** User turns only: the files sent with the turn. */
+  attachments?: TranscriptAttachment[]
   /** Accumulated thinking text for the turn (tail-capped server-side). */
   thinking?: string
   /** Tools the turn invoked, in call order (Claude Code stores only). */
@@ -1139,6 +1215,12 @@ export interface HarnessTranscriptResponse {
  *  capability sheet at `GET /api/harnesses/:harnessId`. */
 export interface HarnessDescriptor {
   harnessId: HarnessId
+  /**
+   * The node can start a chat session for this harness over ACP
+   * (`POST /api/harness-sessions`). A new conversation starts that way
+   * rather than by spawning the TUI, which would own the session's turns.
+   */
+  chat?: boolean
   capabilities: HarnessCapabilities
   /**
    * The node can launch this harness: its roster argv[0] resolves on the den's
@@ -1395,13 +1477,16 @@ export interface FilesUploadResponse {
 }
 
 /** POST /api/uploads — attachment staging for remote clients. The returned
- *  `uri` is node-resolvable and belongs in `UserTurn.attachments[].pathOrUri`. */
+ *  `uri` is the file's absolute path on the node and belongs in
+ *  `UserTurn.attachments[].pathOrUri`. `expiresAt` is ISO-8601. */
 export interface StagedUploadResponse {
+  id: string
   uri: string
   name: string
-  mime: string
-  size: number
-  expiresAt: number
+  mediaType: string
+  bytes: number
+  expiresAt: string
+  session?: string
 }
 
 /** POST /api/voice/speak request body (den voice proxy). */

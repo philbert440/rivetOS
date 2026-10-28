@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  ADD_H,
   CGAP,
   GAP,
   LIVE_HI,
@@ -13,12 +14,18 @@ import {
   type Cam,
   type Rect,
   type Viewport,
+  addSlot,
   apply,
+  clampToRect,
   fit,
   flyStep,
   focusRect,
   insets,
   layout,
+  spaceFillHeight,
+  spacePad,
+  BOX_PAD,
+  stretchTileH,
   liveBand,
   neighbor,
   regH,
@@ -31,9 +38,65 @@ function project(cam: Cam, vp: Viewport, rect: Rect): Rect {
 }
 
 describe('regH', () => {
-  it('reserves a phantom slot so two threads are two rows', () => {
+  it('leaves a short bar, not a card slot, for a new session', () => {
     expect(regH(0)).toBe(PAD_TOP + PAD + TH)
-    expect(regH(2)).toBe(PAD_TOP + PAD + 2 * TH + GAP)
+    expect(regH(1)).toBe(PAD_TOP + PAD + TH)
+    expect(regH(2)).toBe(PAD_TOP + PAD + TH + GAP + ADD_H)
+    expect(regH(3)).toBe(PAD_TOP + PAD + 2 * TH + GAP)
+  })
+
+  it('puts the bar in the next free column', () => {
+    const origin = { x: 0, y: 0 }
+    expect(addSlot('r', origin, 1)).toMatchObject({
+      x: PAD + TW + GAP,
+      y: PAD_TOP,
+      w: TW,
+      h: ADD_H,
+    })
+    expect(addSlot('r', origin, 2)).toMatchObject({ x: PAD, y: PAD_TOP + TH + GAP, h: ADD_H })
+    expect(stretchTileH(2, regH(2))).toBe(TH)
+  })
+})
+
+describe('insets', () => {
+  it('lets a framed project run close to the window edges', () => {
+    const vp = { w: 1600, h: 1000 }
+    const space = insets('space', vp)
+    const everything = insets('everything', vp)
+    expect(space.t).toBeLessThan(everything.t)
+    expect(space.l).toBeLessThan(everything.l)
+    expect(space.b).toBeLessThan(everything.b)
+  })
+})
+
+describe('clampToRect', () => {
+  const vp = { w: 1600, h: 1000 }
+
+  it('pins a project that fits to where fit framed it', () => {
+    const rect = { x: 0, y: 0, w: REG_W, h: spaceFillHeight(vp) }
+    const framed = fit(rect, 'space', vp)
+    for (const [dx, dy] of [
+      [500, 0],
+      [0, -800],
+      [-3000, 3000],
+    ]) {
+      const moved = { cx: framed.cx + dx, cy: framed.cy + dy, z: framed.z }
+      const held = clampToRect(moved, rect, 'space', vp)
+      expect(held.cx).toBeCloseTo(framed.cx, 6)
+      expect(held.cy).toBeCloseTo(framed.cy, 6)
+    }
+  })
+
+  it('scrolls a tall project between its top and bottom edges only', () => {
+    const rect = { x: 0, y: 0, w: REG_W, h: regH(20) }
+    const framed = fit(rect, 'space', vp)
+    const i = insets('space', vp)
+    const up = clampToRect({ ...framed, cy: -1e6 }, rect, 'space', vp)
+    const down = clampToRect({ ...framed, cy: 1e6 }, rect, 'space', vp)
+    expect(up.cy).toBeCloseTo(framed.cy, 6)
+    expect(vp.h / 2 + (rect.y + rect.h - down.cy) * framed.z).toBeCloseTo(vp.h - i.b, 6)
+    const mid = { ...framed, cy: (up.cy + down.cy) / 2 }
+    expect(clampToRect(mid, rect, 'space', vp)).toEqual(mid)
   })
 })
 
@@ -69,12 +132,14 @@ describe('fit', () => {
     expect(cam.z).toBeGreaterThan(liveBand(vp).hi)
   })
 
-  it('holds a too-tall space at the band top, framed from its top edge', () => {
+  it('holds a too-tall space at full width, framed from its top edge', () => {
     const vp = { w: 1100, h: 700 }
     const rect = { x: 0, y: 0, w: REG_W, h: regH(12) }
     const cam = fit(rect, 'space', vp)
     const band = liveBand(vp)
-    expect(cam.z).toBeCloseTo(band.hi)
+    const i = insets('space', vp)
+    expect(cam.z).toBeCloseTo(Math.max(band.hi, Math.min(1, (vp.w - i.l - i.r) / REG_W)))
+    expect(cam.z).toBeGreaterThanOrEqual(band.hi)
     const { ty, z } = apply(cam, vp)
     expect(ty + rect.y * z).toBeCloseTo(insets('space', vp).t)
   })
@@ -82,7 +147,7 @@ describe('fit', () => {
 
 describe('liveBand', () => {
   it('keeps the fixed band as a floor on a small screen', () => {
-    expect(liveBand({ w: 600, h: 500 })).toEqual({ lo: LIVE_LO, hi: LIVE_HI })
+    expect(liveBand({ w: 560, h: 500 })).toEqual({ lo: LIVE_LO, hi: LIVE_HI })
   })
 
   it('rises with a wide screen so Everything can frame a small canvas larger', () => {
@@ -150,6 +215,70 @@ describe('layout', () => {
     expect(laid.slots[1]?.x).toBe(PAD + TW + GAP)
     expect(laid.regions[0]?.rect.w).toBe(REG_W)
     expect(CGAP).toBe(300)
+  })
+
+  it('stretches one region to fill a height without reshuffling the grid', () => {
+    const vp = { w: 1700, h: 1000 }
+    const plain = layout(regions, vp)
+    const fill = spaceFillHeight(vp)
+    const stretched = layout(regions, vp, { id: 'r0', h: fill })
+    expect(stretched.cols).toBe(plain.cols)
+    const r0 = stretched.regions[0]
+    expect(r0?.rect.h).toBe(fill)
+    expect(r0?.tileH).toBe(stretchTileH(1, fill))
+    expect(r0?.tileH).toBeGreaterThan(TH)
+    expect(r0?.slots[0]?.h).toBe(r0?.tileH)
+    // Same column, next row: pushed down past the taller region.
+    const below = stretched.regions[plain.cols]
+    if (below && r0) expect(below.rect.y).toBeGreaterThanOrEqual(r0.rect.y + fill)
+    // Everyone else keeps plain cards.
+    expect(stretched.regions[1]?.tileH).toBe(TH)
+  })
+
+  it('never shrinks a region already taller than the fill height', () => {
+    const laid = layout(
+      [{ id: 'a', name: 'A', count: 12 }],
+      { w: 1700, h: 1000 },
+      { id: 'a', h: 10 },
+    )
+    expect(laid.regions[0]?.tileH).toBe(TH)
+    expect(stretchTileH(12, 10)).toBe(TH)
+  })
+
+  it('a stretched project fills the Space box top to bottom', () => {
+    for (const vp of [
+      { w: 1700, h: 1000 },
+      { w: 1216, h: 760 },
+      { w: 2340, h: 1380 },
+    ]) {
+      const h = spaceFillHeight(vp)
+      const cam = fit({ x: 0, y: 0, w: REG_W, h }, 'space', vp)
+      const i = insets('space', vp)
+      expect(h * cam.z).toBeCloseTo(vp.h - i.t - i.b, 3)
+      // Top edge sits at the inset, not above it; the whole box is in view.
+      expect(vp.h / 2 - cam.cy * cam.z).toBeCloseTo(i.t, 3)
+      expect(REG_W * cam.z).toBeLessThanOrEqual(vp.w - i.l - i.r + 1e-6)
+    }
+  })
+
+  it('sets the framed project inside a thin screen-sized padding', () => {
+    const vp = { w: 1600, h: 1300 }
+    const items = [{ id: 'a', name: 'A', count: 2 }]
+    const z = fit({ x: 0, y: 0, w: REG_W, h: spaceFillHeight(vp) }, 'space', vp).z
+    for (const counts of [false, true]) {
+      const pad = spacePad(vp, counts)
+      const laid = layout(items, vp, { id: 'a', h: spaceFillHeight(vp), pad })
+      const region = laid.regions[0]
+      const first = laid.slots[0]
+      if (!region || !first) throw new Error('missing region')
+      expect(region.pad).toBe(pad)
+      expect((first.x - region.rect.x) * z).toBeCloseTo(16, 3)
+      expect((first.y - region.rect.y) * z).toBeCloseTo(counts ? 68 : 42, 3)
+      // Two columns still span the box between the side pads.
+      expect(first.w * 2 + GAP + 2 * pad.x).toBeCloseTo(REG_W, 6)
+      expect(pad.top).toBeLessThan(BOX_PAD.top)
+    }
+    expect(layout(items, vp).regions[0]?.pad).toBe(BOX_PAD)
   })
 })
 

@@ -4,7 +4,7 @@
  * / `show` / `is-active`, `sudo -n true`, or `rh config validate`.
  */
 
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { parse as parseYaml } from 'yaml'
 import { resolveEmbeddedPg, resolveEnvVars, type RivetConfig } from '@rivetos/boot'
 import { parseRivetEnv } from '../../lib/env-file.js'
@@ -52,6 +52,8 @@ export interface NodeFacts {
   /** User= of a system rivetos.service ('root' when unset). */
   tsUnitUser?: string
   hubUnit: UnitScope
+  /** Drop-in files systemd loads for rivetos.service; the migration carries them to rivethub.service. */
+  tsDropIns: string[]
   canRoot: boolean
   /** This process runs inside rivetos.service — stopping it would kill us. */
   insideTsService: boolean
@@ -270,6 +272,26 @@ export function detectHarnessGaps(rawConfig: string | undefined, host: Host): st
   return gaps
 }
 
+/**
+ * The unit's own drop-ins (`rivetos.service.d/*.conf` in /etc or ~/.config),
+ * as systemd loaded them. Shared `service.d` drop-ins already apply to every
+ * unit, and /run ones are transient, so neither is carried over.
+ */
+export function probeDropIns(host: Host, unit: UnitScope, scope: ScopeContext): string[] {
+  if (unit === 'none') return []
+  const show = `show ${TS_UNIT} -p DropInPaths --value`
+  const cmd = unit === 'system' ? `systemctl ${show}` : systemctl('user', show, scope)
+  return host
+    .run(`${cmd} 2>/dev/null`)
+    .stdout.split(/\s+/)
+    .filter(
+      (path) =>
+        path.endsWith('.conf') &&
+        !path.startsWith('/run/') &&
+        basename(dirname(path)) === `${TS_UNIT}.d`,
+    )
+}
+
 export function probeNode(host: Host, opts: MigrateOptions): NodeFacts {
   const legacyPath = join(host.home, '.rivetos')
   const hubPath = join(host.home, '.rivethub')
@@ -292,6 +314,7 @@ export function probeNode(host: Host, opts: MigrateOptions): NodeFacts {
       ? host.run(`systemctl show ${TS_UNIT} -p User --value`).stdout.trim() || 'root'
       : undefined
   const hubUnit = unitScope(host, HUB_UNIT, scope)
+  const tsDropIns = probeDropIns(host, tsUnit, scope)
   const canRoot = host.uid === 0 || host.run('sudo -n true 2>/dev/null').code === 0
   const insideTsService = (host.readText('/proc/self/cgroup') ?? '').includes(`/${TS_UNIT}`)
 
@@ -340,6 +363,7 @@ export function probeNode(host: Host, opts: MigrateOptions): NodeFacts {
     tsActive,
     tsUnitUser,
     hubUnit,
+    tsDropIns,
     canRoot,
     insideTsService,
     ownershipBlockers: ownershipBlockers(host, legacyPath, memory),

@@ -26,10 +26,16 @@ class DirectTransport(
     override fun clear() = cache.clear()
 
     override suspend fun discover(): List<NodeRef> {
-        val mesh = entry().mesh()
-        val fromMesh = mesh.nodes.filter { it.denUrl.isNotBlank() }.map {
-            NodeRef(id = it.id, name = it.name, denUrl = it.denUrl, online = it.online, sessions = it.sessions)
-        }
+        val entry = entry()
+        val mesh = entry.mesh()
+        val entryNode = runCatching { entry.healthz().node }.getOrDefault("")
+        val fromMesh = withEntryUrl(
+            mesh.nodes.filter { it.denUrl.isNotBlank() }.map {
+                NodeRef(id = it.id, name = it.name, denUrl = it.denUrl, online = it.online, sessions = it.sessions)
+            },
+            entryNode,
+            entryUrl,
+        )
         val extra = extraNodes.filter { u ->
             fromMesh.none { it.denUrl.trimEnd('/') == u.trimEnd('/') }
         }
@@ -55,5 +61,17 @@ class DirectTransport(
 
     companion object {
         fun hostOf(url: String): String = hostOfUrl(url)
+
+        /**
+         * The entry node is reached at the URL the user typed, not the one it
+         * advertises to the mesh: a node advertises its LAN address, which a
+         * phone on Tailscale (or any other route) cannot reach. [entryNode] is
+         * the entry URL's `/healthz` node name; blank leaves every node as is.
+         */
+        fun withEntryUrl(nodes: List<NodeRef>, entryNode: String, entryUrl: String): List<NodeRef> {
+            val url = entryUrl.trim().trimEnd('/')
+            if (entryNode.isBlank() || url.isBlank()) return nodes
+            return nodes.map { if (it.id == entryNode || it.name == entryNode) it.copy(denUrl = url) else it }
+        }
     }
 }

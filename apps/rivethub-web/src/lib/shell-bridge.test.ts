@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { isDesktopShell, rivetShell, type RivetShell } from './shell-bridge.js'
-import { copyTextToClipboard, hasTauriClipboard, readTextFromClipboard } from './clipboard.js'
+import {
+  copyTextToClipboard,
+  hasTauriClipboard,
+  readImageFromClipboard,
+  readTextFromClipboard,
+} from './clipboard.js'
 import { openExternal } from './open-external.js'
 
 function stubShell(): RivetShell {
@@ -60,6 +65,18 @@ describe('consumers prefer rivetShell', () => {
     await copyTextToClipboard('hello')
     expect(shell.clipboardWriteText).toHaveBeenCalledWith('hello')
     expect(await readTextFromClipboard()).toBe('from-shell')
+  })
+
+  it('a clipboard image rides the bridge as a PNG file', async () => {
+    const shell = stubShell()
+    shell.clipboardReadImage = vi.fn(async () => new Uint8Array([137, 80, 78, 71]))
+    setShell(shell)
+    const image = await readImageFromClipboard()
+    expect(image?.name).toBe('pasted-image.png')
+    expect(image?.type).toBe('image/png')
+    expect(new Uint8Array(await image!.arrayBuffer())).toEqual(new Uint8Array([137, 80, 78, 71]))
+    shell.clipboardReadImage = vi.fn(async () => undefined)
+    expect(await readImageFromClipboard()).toBeUndefined()
   })
 
   it('openExternal rides the bridge and never forwards non-http', () => {

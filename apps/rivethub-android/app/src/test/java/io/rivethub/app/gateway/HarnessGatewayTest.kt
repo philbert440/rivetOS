@@ -89,7 +89,7 @@ class HarnessGatewayTest {
         }
     }
 
-    @Test fun `sendTurn posts UserTurn under the enc path`() = runBlocking {
+    @Test fun `sendTurn posts UserTurn under the raw id turn path`() = runBlocking {
         withTimeout(2_000) {
             val seen = CopyOnWriteArrayList<String>()
             val gw = HarnessGateway(
@@ -105,12 +105,9 @@ class HarnessGatewayTest {
                 },
                 base,
             )
-            val accepted = gw.sendTurn(enc, UserTurn("hello"))
+            val accepted = gw.sendTurn(sid, UserTurn("hello"))
             assertTrue(accepted.ok)
-            assertTrue(seen.single().startsWith("POST "))
-            assertTrue(seen.single().contains("/api/harness-sessions/"))
-            assertTrue(seen.single().endsWith("/turns"))
-            assertTrue(seen.single().contains(enc))
+            assertEquals("POST /api/harness-sessions/$sid/turn", seen.single())
         }
     }
 
@@ -152,7 +149,7 @@ class HarnessGatewayTest {
             val gw = HarnessGateway(
                 client { req ->
                     seen += "${req.method} ${req.url.encodedPath}?${req.url.query}"
-                    json(req, 201, """{"uri":"/tmp/uploads/x.png","name":"x.png","mime":"image/png","size":4,"expiresAt":"2026-09-02T18:00:00.000Z"}""")
+                    json(req, 201, """{"id":"5f0c","uri":"/tmp/uploads/x.png","name":"x.png","mediaType":"image/png","bytes":4,"expiresAt":"2026-09-02T18:00:00.000Z"}""")
                 },
                 base,
             )
@@ -162,7 +159,7 @@ class HarnessGatewayTest {
             assertTrue(seen.single().startsWith("POST "))
             assertTrue(seen.single().contains("/api/uploads"))
             assertTrue(seen.single().contains("name=x.png"))
-            assertTrue(seen.single().contains("mime=image/png"))
+            assertTrue(seen.single().contains("mediaType=image/png"))
         }
     }
 
@@ -201,7 +198,7 @@ class HarnessGatewayTest {
         }
     }
 
-    @Test fun `interrupt posts under the enc path`() = runBlocking {
+    @Test fun `interrupt posts stop under the raw id path`() = runBlocking {
         withTimeout(2_000) {
             val seen = CopyOnWriteArrayList<String>()
             val gw = HarnessGateway(
@@ -211,10 +208,9 @@ class HarnessGatewayTest {
                 },
                 base,
             )
-            val accepted = gw.interrupt(enc)
+            val accepted = gw.interrupt(sid)
             assertTrue(accepted.ok)
-            assertTrue(seen.single().startsWith("POST "))
-            assertTrue(seen.single().endsWith("/api/harness-sessions/$enc/interrupt"))
+            assertEquals("POST /api/harness-sessions/$sid/stop", seen.single())
         }
     }
 
@@ -227,9 +223,27 @@ class HarnessGatewayTest {
         assertTrue(gw.registryWatchUrl("claude-code").contains("harness=claude-code"))
     }
 
-    @Test fun `HarnessGateway has no startSession member`() {
-        val names = HarnessGateway::class.java.methods.map { it.name }
-        assertTrue(names.none { it.contains("start", ignoreCase = true) })
+    @Test fun `startChat posts the harness and model and reads the summary`() = runBlocking {
+        withTimeout(2_000) {
+            val seen = CopyOnWriteArrayList<String>()
+            val gw = HarnessGateway(
+                client { req ->
+                    val buffer = okio.Buffer()
+                    req.body?.writeTo(buffer)
+                    seen += "${req.method} ${req.url.encodedPath} ${buffer.readUtf8()}"
+                    json(req, 200, """{"sessionId":"$sid","harnessId":"claude-code","status":"idle","transport":"protocol"}""")
+                },
+                base,
+            )
+            val summary = gw.startChat("claude-code", "opus")
+            assertEquals(sid, summary.sessionId)
+            assertEquals("protocol", summary.transport)
+            val call = seen.single()
+            assertTrue(call.startsWith("POST /api/harness-sessions {"))
+            assertTrue(call.contains("\"harness\":\"claude-code\""))
+            assertTrue(call.contains("\"model\":\"opus\""))
+            assertFalse(call.contains("cwd\":\""))
+        }
     }
 
     @Test fun `answerPrompt posts answers under the enc prompts path`() = runBlocking {

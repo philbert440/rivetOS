@@ -117,6 +117,9 @@ describe('foldHarnessEvent', () => {
     expect(
       foldHarnessEvent(base, ev({ type: 'session-updated', sessionId: SID, status: 'idle' })),
     ).toBe(base)
+    expect(
+      foldHarnessEvent(undefined, ev({ type: 'session-updated', sessionId: SID, status: 'idle' })),
+    ).toBeUndefined()
   })
 
   it('surfaces an error as the activity line without dropping the turn', () => {
@@ -129,38 +132,50 @@ describe('foldHarnessEvent', () => {
   })
 
   it('sets activity from a status frame', () => {
-    const thinking = foldHarnessEvent(undefined, ev({
-      type: 'status',
-      sessionId: SID,
-      status: 'working',
-      since: 1,
-      phase: 'thinking',
-    }))
+    const thinking = foldHarnessEvent(
+      undefined,
+      ev({
+        type: 'status',
+        sessionId: SID,
+        status: 'working',
+        since: 1,
+        phase: 'thinking',
+      }),
+    )
     expect(thinking?.activity).toBe('thinking…')
-    const tool = foldHarnessEvent(thinking, ev({
-      type: 'status',
-      sessionId: SID,
-      status: 'working',
-      since: 2,
-      phase: 'tool',
-      tool: { name: 'Bash' },
-    }))
+    const tool = foldHarnessEvent(
+      thinking,
+      ev({
+        type: 'status',
+        sessionId: SID,
+        status: 'working',
+        since: 2,
+        phase: 'tool',
+        tool: { name: 'Bash' },
+      }),
+    )
     expect(tool?.activity).toBe('running Ran a command…')
-    const writing = foldHarnessEvent(tool, ev({
-      type: 'status',
-      sessionId: SID,
-      status: 'working',
-      since: 3,
-      phase: 'writing',
-    }))
+    const writing = foldHarnessEvent(
+      tool,
+      ev({
+        type: 'status',
+        sessionId: SID,
+        status: 'working',
+        since: 3,
+        phase: 'writing',
+      }),
+    )
     expect(writing?.activity).toBe('writing…')
-    const waiting = foldHarnessEvent(writing, ev({
-      type: 'status',
-      sessionId: SID,
-      status: 'blocked',
-      since: 4,
-      phase: 'prompt',
-    }))
+    const waiting = foldHarnessEvent(
+      writing,
+      ev({
+        type: 'status',
+        sessionId: SID,
+        status: 'blocked',
+        since: 4,
+        phase: 'prompt',
+      }),
+    )
     expect(waiting?.activity).toBe('waiting for you')
   })
 

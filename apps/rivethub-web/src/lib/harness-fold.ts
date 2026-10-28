@@ -104,7 +104,9 @@ export function foldHarnessEvent(
     }
     case 'session-updated':
       // A session that ended or errored out has no live turn left to show.
-      return event.status === 'ended' || event.status === 'error' ? undefined : base
+      // Idle never starts one: RivetHub reports it right after turn-complete.
+      if (event.status === 'ended' || event.status === 'error') return undefined
+      return event.status === 'idle' ? turn : base
     default:
       // session-created / approval-request / approval-resolved / transcript / prompt: not turn state.
       return turn

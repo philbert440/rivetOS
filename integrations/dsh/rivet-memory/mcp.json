@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "rivetos": {
+      "command": "/home/phil/rivetOS/integrations/dsh/rivet-memory/bin/dsh-memory-mcp.sh"
+    }
+  }
+}

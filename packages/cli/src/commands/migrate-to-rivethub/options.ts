@@ -134,7 +134,8 @@ export const HELP_TEXT = `
     5. Memory: rivethub-migrate postgres (Postgres installs), or a PGlite dump
        imported into SQLite (standalone installs)
     6. Moves ~/.rivetos to ~/.rivethub and links ~/.rivetos back (before the start)
-    7. Installs, enables and starts rivethub.service in the old unit's scope
+    7. Installs, enables and starts rivethub.service in the old unit's scope,
+       with rivetos.service's drop-ins copied over
     8. Health: rivethub.service active, gateway /healthz, rh status
     A failure or an interrupt (Ctrl-C, SSH drop) from step 3 on puts
     rivetos.service and ~/.rivetos back. Only one run per node at a time.

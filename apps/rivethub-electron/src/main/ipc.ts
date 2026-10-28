@@ -88,6 +88,12 @@ export function registerIpc(deps: IpcDeps): void {
 
   guarded('clipboard:readText', () => clipboard.readText())
 
+  // PNG bytes of a clipboard image, or undefined when the clipboard holds none.
+  guarded('clipboard:readImage', (): Uint8Array | undefined => {
+    const image = clipboard.readImage()
+    return image.isEmpty() ? undefined : image.toPNG()
+  })
+
   // Live notifications: an unreferenced Notification is eligible for GC the
   // moment the handler returns, and Electron drops its click/close listeners
   // with the JS object while the OS banner stays on screen — the click

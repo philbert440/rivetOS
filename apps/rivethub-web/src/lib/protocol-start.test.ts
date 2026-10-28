@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest'
 import { protocolStartPlan } from './protocol-start.js'
 
 const registry = [
-  { harnessId: 'opencode' as const, capabilities: { protocolStart: true } },
-  { harnessId: 'claude-code' as const, capabilities: {} },
+  { harnessId: 'opencode' as const, chat: true },
+  { harnessId: 'claude-code' as const },
 ]
 const base = {
   isDraft: true,
@@ -16,14 +16,13 @@ const base = {
 }
 
 describe('protocolStartPlan', () => {
-  it('starts a draft through the control plane when the driver asks for it', () => {
+  it('starts a draft through the control plane when the harness can chat', () => {
     expect(protocolStartPlan(base)).toEqual({ harnessId: 'opencode' })
   })
 
-  it('passes an agent preset along when its harness asks for it', () => {
+  it("starts an agent preset's conversation on the preset's harness", () => {
     expect(protocolStartPlan({ ...base, agentId: 'a1', presetHasHarness: true })).toEqual({
       harnessId: 'opencode',
-      agentId: 'a1',
     })
   })
 
@@ -48,7 +47,7 @@ describe('protocolStartPlan', () => {
     ).toBeUndefined()
   })
 
-  it('spawns for a harness without protocolStart, an existing session or PTY, or no registry', () => {
+  it('spawns for a harness without chat, an existing session or PTY, or no registry', () => {
     expect(protocolStartPlan({ ...base, harnessId: 'claude-code' })).toBeUndefined()
     expect(protocolStartPlan({ ...base, isDraft: false })).toBeUndefined()
     expect(protocolStartPlan({ ...base, hasPty: true })).toBeUndefined()

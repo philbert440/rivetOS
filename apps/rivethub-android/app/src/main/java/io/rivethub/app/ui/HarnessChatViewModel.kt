@@ -131,6 +131,7 @@ import io.rivethub.app.plane.harnessLabel
 import io.rivethub.app.plane.nextInjectTry
 import io.rivethub.app.plane.persistSessionMode
 import io.rivethub.app.plane.ptySpawnIsFresh
+import io.rivethub.app.plane.harnessForRosterCommand
 import io.rivethub.app.plane.rosterCommandFor
 import io.rivethub.app.plane.sessionMatchesNative
 import io.rivethub.app.plane.SpawnAttempt
@@ -198,6 +199,8 @@ class HarnessChatViewModel(
     private val initialTransport: String? = null,
     private val openStream: (Uri) -> java.io.InputStream? = { null },
     private val agentId: String = "",
+    /** Project directory a new session starts in; blank = the preset's. */
+    private val directory: String = "",
     private val onAdoptPointer: ((from: String, canonical: String) -> Unit)? = null,
     /** Wall clock for the reasoning timer; injectable so tests can drive it. */
     private val clock: () -> Long = System::currentTimeMillis,
@@ -845,7 +848,7 @@ class HarnessChatViewModel(
         val st = _state.value
         if (!st.gate.canInterrupt || st.draft) return
         viewModelScope.launch(Dispatchers.IO) {
-            runCatching { c.harness(nodeDenUrl).interrupt(sessionKeyEnc(st.sessionId)) }
+            runCatching { c.harness(nodeDenUrl).interrupt(st.sessionId) }
         }
     }
 
@@ -925,7 +928,7 @@ class HarnessChatViewModel(
         viewModelScope.launch {
             if (st.inFlight && st.gate.canInterrupt && !st.draft) {
                 runCatching {
-                    withContext(Dispatchers.IO) { c.harness(nodeDenUrl).interrupt(sessionKeyEnc(st.sessionId)) }
+                    withContext(Dispatchers.IO) { c.harness(nodeDenUrl).interrupt(st.sessionId) }
                 }
             }
             try {
@@ -1215,7 +1218,10 @@ class HarnessChatViewModel(
             _state.update { it.copy(errors = stackError(it.errors, e)) }
         }
         startRegistry()
+        // A draft has no live stream until it is adopted (rh refuses a bare
+        // id); its composer is ready, not "reconnecting", so the first send can start it.
         if (!_state.value.draft) startAttach(_state.value.sessionId)
+        else _state.update { it.copy(ws = WsStatus.OPEN) }
     }
 
     private fun recomputeGate() {
@@ -1273,9 +1279,15 @@ class HarnessChatViewModel(
     private fun startRegistry() {
         registryWatch?.close()
         val hg = c.harness(nodeDenUrl)
-        registryWatch = hg.watchRegistry(
-            onEvent = { event -> viewModelScope.launch { onRegistry(event) } },
-        )
+        val onEvent: (HarnessEvent) -> Unit = { event -> viewModelScope.launch { onRegistry(event) } }
+        // A den node serves the registry stream, an rh node only its session
+        // event stream; whichever the node lacks just retries quietly.
+        val den = hg.watchRegistry(onEvent = onEvent)
+        val rh = hg.watchSessionEvents(onEvent)
+        registryWatch = Closeable {
+            den.close()
+            rh.close()
+        }
     }
 
     private fun onRegistry(event: HarnessEvent) {
@@ -1555,11 +1567,45 @@ class HarnessChatViewModel(
             return
         }
         AndroidLogger.debug("RivetHub", "send: draft=${_state.value.draft} session=${_state.value.sessionId} node=$nodeDenUrl", null)
+        if (_state.value.draft && ptyCache.cached() == null && protocolChatHarness() != null) startProtocolChat()
         val st = _state.value
         when (val action = chatSendAction(st.draft, st.sessionId, text)) {
             is ChatSendAction.Inject -> injectDraft(action)
             is ChatSendAction.SendTurn -> sendAdopted(action, attachments)
         }
+    }
+
+    /**
+     * The harness a new chat starts over the protocol on, when its row says
+     * `chat` (RivetHub). The conversation's own harness, else (no preset) the
+     * node's default roster command, as desktop's protocolStartPlan does. A
+     * preset with no harness keeps the spawn path.
+     */
+    private suspend fun protocolChatHarness(): String? {
+        val id = resolvedHarnessId() ?: if (agentId.isBlank()) defaultHarnessId() else null
+        return id?.takeIf { descriptors.any { d -> d.harnessId == id && d.chat == true } }
+    }
+
+    private var defaultHarness: String? = null
+
+    /** The harness behind the node's default roster command (`GET /api/terminal/config`). */
+    private suspend fun defaultHarnessId(): String? {
+        defaultHarness?.let { return it }
+        val command = withContext(Dispatchers.IO) { runCatching { gateway().termConfig().default }.getOrNull() }
+        return harnessForRosterCommand(command).also { defaultHarness = it }
+    }
+
+    /**
+     * Start the draft as a protocol chat session: the node mints the id, which
+     * the draft adopts, so the first message goes out as an ordinary turn
+     * instead of being typed into a fresh PTY.
+     */
+    private suspend fun startProtocolChat() {
+        val harness = protocolChatHarness() ?: return
+        val summary = c.harness(nodeDenUrl).startChat(harness, turnOptions().effectiveModel)
+        AndroidLogger.debug("RivetHub", "protocol chat: ${summary.sessionId} draft=${_state.value.sessionId}", null)
+        applySummaryControls(summary.transport, summary.model, summary.effort)
+        adoptCanonical(summary.sessionId)
     }
 
     private suspend fun sendAdopted(action: ChatSendAction.SendTurn, attachments: List<StagedTurnAttachment>) {
@@ -1571,7 +1617,7 @@ class HarnessChatViewModel(
         val turn = buildUserTurn(action.text, attachments, st.sheet, st.transport, opts.effectiveModel, opts.effectiveEffort)
         val accepted = try {
             withContext(Dispatchers.IO) {
-                hg.sendTurn(sessionKeyEnc(action.sessionId), turn)
+                hg.sendTurn(action.sessionId, turn)
             }
         } catch (e: Exception) {
             // The den holds a turn "in flight" for up to 5 min when its hook events are
@@ -1642,6 +1688,7 @@ class HarnessChatViewModel(
                         effort = attempt.effort,
                         agentId = attempt.agentId,
                         force = if (attempt.force) true else null,
+                        directory = directory.takeIf { it.isNotBlank() },
                     )
                 }
                 val fresh = ptySpawnIsFresh(alreadyHeld = false, reattached = spawned.reattached)

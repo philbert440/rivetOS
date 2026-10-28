@@ -27,7 +27,7 @@ vi.mock('../stores/connection.js', () => ({
   },
 }))
 
-const { discardDraft } = await import('./discard-session.js')
+const { discardDraft, forgetDeletedSession } = await import('./discard-session.js')
 const { useChat } = await import('../stores/chat.js')
 const { useChatSettings } = await import('../stores/chat-settings.js')
 const { useSessionNames } = await import('../stores/session-names.js')
@@ -35,6 +35,7 @@ const { useArchived } = await import('../stores/archived.js')
 const { getSessionMode, setSessionMode } = await import('./session-mode.js')
 const { markSystemPromptSent, wasSystemPromptSent } = await import('./system-prompt-sent.js')
 const { getAgentLastSession, setAgentLastSession } = await import('./agent-session.js')
+const { getSessionNodeBinding, setSessionNodeBinding } = await import('./session-node.js')
 
 const BASE = 'https://node.example'
 const SID = 'draft-uuid-1'
@@ -91,5 +92,48 @@ describe('discardDraft', () => {
 
     expect(getAgentLastSession('agent-3', BASE)).toBeUndefined()
     expect(store.getItem(`rivethub.agent.${SID}`)).toBeNull()
+  })
+})
+
+describe('forgetDeletedSession', () => {
+  const NATIVE = '00000000-0000-4000-8000-000000000001'
+  const CANON = `claude-code:${NATIVE}`
+  const CANON_KEY = `${BASE}::${CANON}`
+  const NATIVE_KEY = `${BASE}::${NATIVE}`
+
+  it('clears canonical and pre-canonical (native) keys so nothing resurrects', () => {
+    useChat.getState().setActive(CANON)
+    useSessionNames.getState().set(CANON_KEY, 'canonical name')
+    useSessionNames.getState().set(NATIVE_KEY, 'legacy name')
+    useChatSettings.getState().set(CANON_KEY, { agent: 'claude' })
+    useChatSettings.getState().set(NATIVE_KEY, { agent: 'claude' })
+    useArchived.getState().archive(CANON_KEY)
+    useArchived.getState().archive(NATIVE_KEY)
+    setSessionMode(CANON_KEY, 'terminal')
+    markSystemPromptSent(CANON)
+    setAgentLastSession('agent-del', CANON, BASE)
+    setSessionNodeBinding(CANON, 'https://other.example', BASE)
+    expect(getSessionNodeBinding(CANON)).toBe('https://other.example')
+
+    forgetDeletedSession(BASE, CANON)
+
+    expect(useChat.getState().active).toBeUndefined()
+    expect(useSessionNames.getState().get(CANON_KEY)).toBeUndefined()
+    expect(useSessionNames.getState().get(NATIVE_KEY)).toBeUndefined()
+    expect(useChatSettings.getState().byKey[CANON_KEY]).toBeUndefined()
+    expect(useChatSettings.getState().byKey[NATIVE_KEY]).toBeUndefined()
+    expect(useArchived.getState().isArchived(CANON_KEY)).toBe(false)
+    expect(useArchived.getState().isArchived(NATIVE_KEY)).toBe(false)
+    expect(getSessionMode(CANON_KEY)).toBe('chat')
+    expect(wasSystemPromptSent(CANON)).toBe(false)
+    expect(getAgentLastSession('agent-del', BASE)).toBeUndefined()
+    expect(getSessionNodeBinding(CANON)).toBeUndefined()
+  })
+
+  it('leaves other sessions alone', () => {
+    const OTHER_KEY = `${BASE}::claude-code:00000000-0000-4000-8000-000000000002`
+    useSessionNames.getState().set(OTHER_KEY, 'keep')
+    forgetDeletedSession(BASE, CANON)
+    expect(useSessionNames.getState().get(OTHER_KEY)).toBe('keep')
   })
 })

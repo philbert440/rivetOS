@@ -15,8 +15,7 @@ export interface StagedFile {
 }
 
 /** Subset of RivetGateway.stageUpload — fakes implement this, the real
- *  client is assignable. `expiresAt` is `number | string` because den
- *  sends an ISO string while StagedUploadResponse declares a number. */
+ *  client is assignable. */
 export interface StageGateway {
   stageUpload(
     name: string,
@@ -25,9 +24,9 @@ export interface StageGateway {
   ): Promise<{
     uri: string
     name?: string
-    mime?: string
-    size?: number
-    expiresAt?: number | string
+    mediaType?: string
+    bytes?: number
+    expiresAt?: string
   }>
 }
 
@@ -43,11 +42,9 @@ function fallbackName(file: File, mime: string): string {
 }
 
 /** Epoch ms, or undefined when the wire value is missing/unusable. */
-function normalizeExpiresAt(raw: unknown): number | undefined {
-  let n: number
-  if (typeof raw === 'number') n = raw
-  else if (typeof raw === 'string') n = Date.parse(raw)
-  else return undefined
+function normalizeExpiresAt(raw: string | undefined): number | undefined {
+  if (raw === undefined) return undefined
+  const n = Date.parse(raw)
   return Number.isFinite(n) ? n : undefined
 }
 
@@ -74,8 +71,8 @@ export async function stageFiles(
       staged.push({
         uri: res.uri,
         name: res.name ?? name,
-        mime: res.mime ?? mime,
-        size: res.size ?? file.size,
+        mime: res.mediaType ?? mime,
+        size: res.bytes ?? file.size,
         expiresAt: normalizeExpiresAt(res.expiresAt),
       })
     } catch {

@@ -24,16 +24,21 @@ import androidx.compose.runtime.rememberCoroutineScope
 import io.rivethub.app.ui.theme.resolveRivetColors
 import io.rivethub.app.ui.theme.themeModeOf
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.core.content.IntentCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelStore
 import androidx.lifecycle.ViewModelStoreOwner
@@ -62,6 +67,7 @@ import io.rivethub.app.plane.findChatItem
 import io.rivethub.app.plane.findLocatedChat
 import io.rivethub.app.plane.isDraftSessionId
 import io.rivethub.app.plane.narrowLaunchTarget
+import io.rivethub.app.plane.handoffTarget
 import io.rivethub.app.plane.persistableLastSession
 import io.rivethub.app.plane.resumedSessionStale
 import io.rivethub.app.ui.HarnessChatViewModel
@@ -119,6 +125,12 @@ class MainActivity : ComponentActivity() {
         // Single singleTask activity: its start/stop is the app's
         // foreground/background (notify/AppVisibility).
         lifecycle.addObserver(container.visibility)
+        // Hub state (names, archive, pins, modes shared with desktop): sync on
+        // launch and every time the app comes back to the foreground.
+        container.hubState.start()
+        lifecycle.addObserver(object : DefaultLifecycleObserver {
+            override fun onStart(owner: LifecycleOwner) = container.hubState.kick()
+        })
         container.taskNotifier.ensureChannel()
         setContent {
             val prefs by container.settings.prefs.collectAsState(initial = null)
@@ -431,6 +443,7 @@ fun App(
                 model = open.model,
                 effort = open.effort,
                 agentId = open.agentId,
+                directory = open.directory,
             ),
             replaceAll,
         )
@@ -450,6 +463,36 @@ fun App(
             ),
             replaceAll,
         )
+    }
+    // Continue on phone (hub state slice 5): instant resume paints the phone's
+    // own last session first; when the first sync after launch reports a newer
+    // open from another device, switch to it, but only while the user is
+    // still on the launch screen they started on.
+    LaunchedEffect(Unit) {
+        if (nav.current is Screen.Enroll) return@LaunchedEffect
+        val initial = nav.current
+        val remote = withTimeoutOrNull(HANDOFF_WAIT_MS) { c.hubState.lastSession.filterNotNull().first() }
+        val target = handoffTarget(remote, p.lastSessionKey, p.lastSessionAt) ?: return@LaunchedEffect
+        val url = withTimeoutOrNull(HANDOFF_WAIT_MS) {
+            hubVm.state.map { hubVm.denUrlForNode(target.nodeId) }.filterNotNull().first()
+        } ?: return@LaunchedEffect
+        if (nav.current != initial || nav.stack.size > 1) return@LaunchedEffect
+        val row = hubVm.state.value.items.firstOrNull { it.item.key == target.sessionKey }
+        if (row != null) {
+            openRowScreen(row, replaceAll = true)
+        } else {
+            openChat(
+                Screen.Chat(
+                    sessionKey = target.sessionKey,
+                    nodeDenUrl = url,
+                    harnessId = null,
+                    title = target.sessionKey,
+                    draft = false,
+                ),
+                replaceAll = true,
+            )
+        }
+        resumedKey = target.sessionKey
     }
     // Open the current agent's thread as the compose surface (never a list).
     // Tap, not Plus: Tap resumes the agent's pinned draft if one exists (a
@@ -663,6 +706,7 @@ fun App(
                         presetModel = s.model, presetEffort = s.effort, initialTransport = s.transport,
                         openStream = openStream,
                         agentId = s.agentId,
+                        directory = s.directory,
                         onAdoptPointer = { from, canonical ->
                             hubVm.adoptChatPointer(s.agentId, from, canonical, s.nodeDenUrl)
                         },
@@ -774,3 +818,6 @@ fun App(
     }
     }
 }
+
+/** How long a launch waits for hub state before keeping the phone's own resume. */
+private const val HANDOFF_WAIT_MS = 20_000L
