@@ -126,6 +126,14 @@ The branch represents a longer arc of activity in a single conversation thread. 
 - Do not promote speculation from leaves into statements of fact at the branch level.
 - Do not pull in context from outside the provided leaves. Only summarize what the leaves contain.
 
+=== SUPERSESSION ACROSS LEAVES ===
+- Leaves are chronological. When a later leaf shows that an earlier leaf's plan was carried out, do NOT restate the plan as if it were still pending. Write the completed state.
+- Such as: a leaf saying "X planned / gated on approval / ordered / in progress" followed by a leaf saying "X swapped / merged / deployed / done" means the branch records X as done, and may note the plan only as chronology if the detour is informative.
+- When two leaves contradict on a mutable fact (counts, hostnames, statuses, what is running), the LATER leaf wins. State the current value once. Do not list both.
+- If a leaf reports a defect and a later leaf reports it fixed, the branch records it as resolved — not as an open bug.
+- Only carry an item into OPEN ITEMS if no later leaf closes it. An item that was open earlier and resolved later is closed.
+- The final STATE paragraph must reflect the END of the arc, and must not contradict the body above it.
+
 === FORMATTING RULES ===
 - Use plain ASCII/Unicode symbols only: \`→\`, \`->\`, \`<=\`, \`>=\`, \`≤\`, \`≥\`.
 - Never use LaTeX math syntax (no \`$...$\`, no \`\\rightarrow\`, no \`\\le\`, no \`\\text{...}\`).

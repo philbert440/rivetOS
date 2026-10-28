@@ -52,6 +52,9 @@ Rules:
 - One real subject → one slug. Session detail goes in history_entry, not a new page.
 - Prefer **summary_delta** (new sentences to fold into the lead) over full **summary** rewrite. Full **summary** only when creating a page or the standing lead is wrong/stale.
 - Prefer **article_patches** over full **article**. Never shrink a rich lead into a narrow session blurb.
+- **Supersede, don't accumulate.** When this leaf shows a previously-recorded state has changed, write the NEW state and move the old one to **history_entry**. Specifically: if the page says something is "planned / pending / ordered / in progress / broken" and this leaf shows it was done / arrived / fixed, the lead MUST be corrected (use full **summary** rewrite in that case — this is the exception to the delta preference). Never leave a stale "pending" clause standing next to a finished outcome.
+- Do not preserve a contradiction for the sake of richness. On a mutable fact (counts, hostnames, ports, statuses, GPU/inventory, what is running), newer wins; record the older value only in history_entry.
+- This applies to counts above all: if the page leads with "7-GPU" and this leaf shows 8 working, the lead must say 8.
 - Crosslink peers with [[slug]] using candidate slugs when possible (e.g. [[hv-c]], [[rivetos-dev]]).
 - entities: stable kind:name ids (host:hv-c, model:deckard-40b, project:rivetos, domain:rivetos.dev).
 - Reviewed tags (when given) were added or accepted by a person (or imported), and are shown in their canonical lowercase form — copy them exactly when you use them as entities: a project:<x> tag names the project this session belongs to and is a strong signal for which candidate to UPDATE; topic:<x> tags say what the work was about. Carry them into the patch's entities (project:<x>) and tags (<x>) when the patch is about that subject. Do not contradict a reviewed tag.
@@ -105,10 +108,17 @@ Produce ONE JSON object (not an array, no fence):
 
 Hard rules:
 - Do NOT invent hosts, IPs, ports, or versions not supported by the source material.
-- Prefer denser older superseded states over thin recent session blurbs when they conflict on richness (keep both facts if compatible).
+- Prefer denser older superseded states over thin recent session blurbs when they conflict on richness — BUT only for facts that are not time-varying (architecture, part numbers, serials, rationale). Never let "richer" win over "newer" on a state that the newer material shows has changed.
 - summary must NOT be a single session status line.
 - Crosslink every durable peer you mention with [[kebab-slug]] from the known peer list when possible.
-- Keep identifiers verbatim.`
+- Keep identifiers verbatim.
+
+Supersession rule — the lead must describe the state as of the NEWEST material, not the union of everything ever true:
+- If earlier material says a change is "planned", "gated on approval", "pending", "in progress", or "ordered", and later material shows it was carried out, the lead must state the completed outcome. Never keep the pending wording as the headline. The plan belongs in History, not the lead.
+- If two facts conflict and one is newer, the newer wins on mutable state (counts, hostnames, service status, GPU/module inventory, IPs, ports, config values, what is running). Do not "keep both facts" on a direct contradiction — pick the current one and record the old one in history_entry.
+- Do not report a defect as present if later material shows it was fixed. Fixed defects go to History with the resolution.
+- If material is genuinely ambiguous about whether something completed, say so explicitly ("last recorded as planned; completion unconfirmed") rather than asserting either way.
+- Counts and statuses in the lead must be internally consistent with the rest of the lead. A page must not lead with one count and later state another.`
 
 /** Prompt section headers for tags (see the two tag rules in the system prompt). */
 export const REVIEWED_TAGS_HEADER =
