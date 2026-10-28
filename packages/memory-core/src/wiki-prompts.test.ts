@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest'
+import { applyPatch } from '@rivetos/wiki-core'
 import {
   REVIEWED_TAGS_HEADER,
   RULE_TAGS_HEADER,
@@ -35,8 +36,7 @@ describe('parseWikiPatches', () => {
   })
 
   it('tolerates a fenced block; drops invalid entries without throwing', () => {
-    const raw =
-      '```json\n[{"action":"update","slug":"ok","current_state":"x"},{"action":"nuke","slug":"bad"},{"action":"update","slug":""},"garbage"]\n```'
+    const raw = '```json\n[{"action":"update","slug":"ok","current_state":"x"},{"action":"nuke","slug":"bad"},{"action":"update","slug":""},"garbage"]\n```'
     const { patches, rejected } = parseWikiPatches(raw, AT)
     expect(patches).toHaveLength(1)
     expect(patches[0].slug).toBe('ok')
@@ -64,11 +64,7 @@ describe('parseWikiPatches', () => {
 describe('patch cap', () => {
   it('caps at 3 patches regardless of what the LLM emits', () => {
     const many = JSON.stringify(
-      Array.from({ length: 6 }, (_, i) => ({
-        action: 'create',
-        slug: `t${i}`,
-        current_state: 'x',
-      })),
+      Array.from({ length: 6 }, (_, i) => ({ action: 'create', slug: `t${i}`, current_state: 'x' })),
     )
     const { patches, rejected } = parseWikiPatches(many, '2026-07-07T00:00:00Z')
     expect(patches).toHaveLength(3)
@@ -86,11 +82,7 @@ describe('formatExtractionPrompt', () => {
     })
     expect(withC).toContain('### a — A')
     expect(withC).toContain('aliases: aa')
-    const without = formatExtractionPrompt({
-      summary: 's',
-      summaryDate: '2026-07-07',
-      candidates: [],
-    })
+    const without = formatExtractionPrompt({ summary: 's', summaryDate: '2026-07-07', candidates: [] })
     expect(without).toContain('no matching durable topics yet')
   })
 
@@ -133,9 +125,7 @@ describe('formatExtractionPrompt', () => {
   })
 
   it('the system prompt keeps the unreviewed directory tag out of entities', () => {
-    expect(WIKI_EXTRACT_SYSTEM_PROMPT).toMatch(
-      /working-directory tag[^\n]*automatic and unreviewed/i,
-    )
+    expect(WIKI_EXTRACT_SYSTEM_PROMPT).toMatch(/working-directory tag[^\n]*automatic and unreviewed/i)
     expect(WIKI_EXTRACT_SYSTEM_PROMPT).toMatch(/Never add it as an entity/)
   })
 })
@@ -149,7 +139,9 @@ describe('v7 summary_delta + article_patches', () => {
           slug: 'deckard-40b',
           related: ['hv-c', '1cat-vllm'],
           summary_delta: 'Now serves MTP k=4.',
-          article_patches: [{ heading: 'Configuration', mode: 'merge', body: 'MTP k=4 on :8003.' }],
+          article_patches: [
+            { heading: 'Configuration', mode: 'merge', body: 'MTP k=4 on :8003.' },
+          ],
           history_entry: { date: '2026-07-27', title: 'MTP', body: '- k=4' },
         },
         {
@@ -175,16 +167,15 @@ describe('v7 summary_delta + article_patches', () => {
 })
 
 describe('supersession (2026-10-26 regression)', () => {
-  // Context: the `gpubox` topic led with "7-GPU, swap planned and gated on
-  // explicit user approval" long after the swap had completed, because the
-  // prompts told the model to prefer denser OLDER states and to "keep both
-  // facts if compatible". The lead must now resolve to the newest material.
+  // Context: a host topic led with "7-GPU, swap planned and gated on explicit
+  // user approval" long after the swap had completed, because the prompts told
+  // the model to prefer denser OLDER states and to "keep both facts if
+  // compatible". The lead must now resolve to the newest material.
 
   it('extract prompt requires superseding stale statements', () => {
     expect(WIKI_EXTRACT_SYSTEM_PROMPT).toContain("Supersede, don't accumulate")
     expect(WIKI_EXTRACT_SYSTEM_PROMPT).toMatch(/newer wins/i)
-    // The 7->8 GPU case is called out explicitly.
-    expect(WIKI_EXTRACT_SYSTEM_PROMPT).toMatch(/leads with "7-GPU"/)
+    expect(WIKI_EXTRACT_SYSTEM_PROMPT).toMatch(/supersedes: true/)
   })
 
   it('recompile prompt no longer prefers older states unconditionally', () => {
@@ -196,11 +187,44 @@ describe('supersession (2026-10-26 regression)', () => {
 
   it('recompile prompt states the supersession rule', () => {
     expect(WIKI_RECOMPILE_SYSTEM_PROMPT).toContain('Supersession rule')
-    // planned -> completed must move to the lead, not stay as a headline
     expect(WIKI_RECOMPILE_SYSTEM_PROMPT).toMatch(/planned.*completed outcome/is)
-    // a fixed defect must not still read as present
     expect(WIKI_RECOMPILE_SYSTEM_PROMPT).toMatch(/fixed defects go to History/i)
-    // lead counts must be internally consistent
     expect(WIKI_RECOMPILE_SYSTEM_PROMPT).toMatch(/internally consistent/i)
+  })
+
+  const stale =
+    'box-a is a 7-GPU inference host. A module swap is planned and gated on explicit approval. ' +
+    'It serves the house models over the LAN and hosts the shared embedding service for every node.'
+  const corrected = 'box-a is an 8-GPU inference host serving the house models.'
+  const page = applyPatch(undefined, {
+    action: 'create',
+    slug: 'box-a',
+    currentState: stale,
+    verifiedAt: '2026-10-01T00:00:00Z',
+  })
+  const leaf = (extra: Record<string, unknown>): string =>
+    JSON.stringify([{ action: 'update', slug: 'box-a', summary: corrected, ...extra }])
+
+  it('maps supersedes on a full summary to allowShrink', () => {
+    expect(parseWikiPatches(leaf({ supersedes: true }), AT).patches[0].allowShrink).toBe(true)
+    expect(parseWikiPatches(leaf({}), AT).patches[0].allowShrink).toBeUndefined()
+    const deltaOnly = JSON.stringify([
+      { action: 'update', slug: 'box-a', summary_delta: 'x', supersedes: true },
+    ])
+    expect(parseWikiPatches(deltaOnly, AT).patches[0].allowShrink).toBeUndefined()
+  })
+
+  it('a superseding rewrite replaces a longer stale lead and archives it', () => {
+    const [patch] = parseWikiPatches(leaf({ supersedes: true }), AT).patches
+    const next = applyPatch(page, patch)
+    expect(next.currentState).toBe(corrected)
+    expect(next.history.some((h) => h.body.includes('gated on explicit approval'))).toBe(true)
+  })
+
+  it('without supersedes the shrink guard keeps the stale clause in the lead', () => {
+    // The failure mode the flag exists for: the short correction is folded in
+    // beside the stale text instead of replacing it.
+    const [patch] = parseWikiPatches(leaf({}), AT).patches
+    expect(applyPatch(page, patch).currentState).toContain('gated on explicit approval')
   })
 })
