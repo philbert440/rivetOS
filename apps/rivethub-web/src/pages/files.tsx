@@ -5,7 +5,7 @@
  */
 
 import { type DragEvent, type JSX, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery } from '@tanstack/react-query'
 import { useBlocker, useNavigate, useSearch } from '@tanstack/react-router'
 import type { FileEntry } from '@rivetos/types'
 import { useConnection } from '../stores/connection.js'
@@ -16,7 +16,7 @@ import {
   guardOpenFile,
   shouldBlockFilesLeave,
 } from '../lib/files-dirty-guard.js'
-import { baseName, joinRel, parentRel, previewKind } from '../lib/files-ui.js'
+import { baseName, filesQueryKey, joinRel, parentRel, previewKind } from '../lib/files-ui.js'
 import { useGateway } from '../lib/use-gateway.js'
 import { useUiInteraction } from '../stores/ui-interaction.js'
 import { useConfirmDialog } from '../components/confirm-dialog.js'
@@ -32,18 +32,11 @@ export function FilesPage(): JSX.Element {
   const baseUrl = useConnection((s) => s.baseUrl)
   const connected = useGatewayReady()
   const gateway = useGateway()
-  const queryClient = useQueryClient()
   const navigate = useNavigate()
   // The current directory lives in ?path= so a location survives refresh and
   // is shareable; navigation pushes history (back = up a directory).
   const { path: pathFromUrl } = useSearch({ from: '/files' })
   const path = pathFromUrl ?? ''
-  const setPath = useCallback(
-    (next: string): void => {
-      void navigate({ to: '/files', search: next ? { path: next } : {} })
-    },
-    [navigate],
-  )
   const filter = useFilesView((s) => s.filter)
   const sort = useFilesView((s) => s.sort)
   const selected = useFilesView((s) => s.selected)
@@ -65,7 +58,7 @@ export function FilesPage(): JSX.Element {
   const suppressRawUntilRef = useRef(0)
 
   const listing = useQuery({
-    queryKey: ['files', baseUrl, path],
+    queryKey: filesQueryKey(baseUrl, path),
     queryFn: ({ signal }) => useConnection.getState().gateway.filesList(path, signal),
     enabled: connected,
   })
@@ -117,9 +110,9 @@ export function FilesPage(): JSX.Element {
       // stays open and leave later closes unguarded.
       if (next === path) return
       markDirNavigated()
-      setPath(next)
+      void navigate({ to: '/files', search: next ? { path: next } : {} })
     },
-    [markDirNavigated, path, setPath],
+    [markDirNavigated, navigate, path],
   )
 
   useEffect(() => {
@@ -173,10 +166,6 @@ export function FilesPage(): JSX.Element {
     [gateway, openEntry],
   )
 
-  const refresh = useCallback(async (): Promise<void> => {
-    await queryClient.invalidateQueries({ queryKey: ['files', baseUrl, path] })
-  }, [queryClient, baseUrl, path])
-
   const entries = useMemo(() => {
     const raw = listing.data?.entries ?? []
     const q = filter.trim().toLowerCase()
@@ -201,21 +190,8 @@ export function FilesPage(): JSX.Element {
 
   const ops = useFileOps({
     path,
-    refresh: () => refresh(),
     confirm,
     prompt: dialog.prompt,
-    onPreviewRenamed: (from, to) => {
-      if (previewPath === from) setPreviewPath(to)
-    },
-    onPreviewDeleted: (deletedPaths) => {
-      setSelected(new Set())
-      if (
-        previewPath &&
-        deletedPaths.some((d) => previewPath === d || previewPath.startsWith(d + '/'))
-      ) {
-        setPreviewPath(undefined)
-      }
-    },
   })
 
   const { busy, upload, mkdir, renameOne, deleteSelected, moveOntoDir, copyPaths, copyUrls } = ops

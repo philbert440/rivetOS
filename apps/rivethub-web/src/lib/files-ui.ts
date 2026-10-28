@@ -117,3 +117,9 @@ export function baseName(path: string): string {
   const i = path.lastIndexOf('/')
   return i < 0 ? path : path.slice(i + 1)
 }
+
+/** React-query key for a directory listing. Shared by the page's useQuery and
+ *  the mutation hook's invalidate so the two cannot drift apart. */
+export function filesQueryKey(baseUrl: string, path: string): [string, string, string] {
+  return ['files', baseUrl, path]
+}

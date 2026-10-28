@@ -1,8 +1,10 @@
 import { useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { GatewayError } from '@rivetos/gateway-client'
 import type { FileEntry } from '@rivetos/types'
-import { joinRel } from '../../lib/files-ui.js'
+import { filesQueryKey, joinRel } from '../../lib/files-ui.js'
 import { copyTextToClipboard } from '../../lib/clipboard.js'
+import { useConnection } from '../../stores/connection.js'
 import { useGateway } from '../../lib/use-gateway.js'
 import type { Notice } from './notice.js'
 import { useFilesView } from './files-view-store.js'
@@ -10,20 +12,14 @@ import { useFilesView } from './files-view-store.js'
 /**
  * The Files page mutation operations: upload (with 409-overwrite confirm),
  * mkdir, rename, delete (with recursive confirm), move-onto-dir, copy
- * paths/URLs. Owns the busy flag; the notice bar lives in the view store.
- * Refresh and the confirm/prompt functions are injected by the page.
- *
- * Ops that can invalidate the open preview buffer receive callbacks
- * (`onPreviewRenamed`, `onPreviewDeleted`) so the page keeps owning its
- * previewPath state.
+ * paths/URLs. Owns the busy flag only — the notice bar and the preview target
+ * live in the view store, and the listing is invalidated through the shared
+ * query key. The page injects nothing but its confirm/prompt dialogs.
  */
 export function useFileOps(args: {
   path: string
-  refresh: () => Promise<void>
   confirm: (message: string, opts?: { confirmLabel?: string; danger?: boolean }) => Promise<boolean>
   prompt: (message: string, opts?: { defaultValue?: string }) => Promise<string | null | undefined>
-  onPreviewRenamed: (from: string, to: string) => void
-  onPreviewDeleted: (deletedPaths: string[]) => void
 }): {
   busy: boolean
   showNotice: (n: Notice) => void
@@ -36,11 +32,18 @@ export function useFileOps(args: {
   copyPaths: (selected: Set<string>) => Promise<void>
   copyUrls: (selected: Set<string>, entries: FileEntry[]) => Promise<void>
 } {
-  const { path, refresh, confirm, prompt, onPreviewRenamed, onPreviewDeleted } = args
+  const { path, confirm, prompt } = args
   const gateway = useGateway()
+  const queryClient = useQueryClient()
   const [busy, setBusy] = useState(false)
 
   const showNotice = (n: Notice): void => useFilesView.getState().setNotice(n)
+
+  const refresh = async (): Promise<void> => {
+    await queryClient.invalidateQueries({
+      queryKey: filesQueryKey(useConnection.getState().baseUrl, path),
+    })
+  }
 
   const uploadInto = async (dirPath: string, files: FileList | File[]): Promise<void> => {
     setBusy(true)
@@ -109,7 +112,9 @@ export function useFileOps(args: {
     setBusy(true)
     try {
       await gateway.filesRename(from, to)
-      onPreviewRenamed(from, to)
+      // The open preview follows the file it is showing.
+      const { previewPath, setPreviewPath } = useFilesView.getState()
+      if (previewPath === from) setPreviewPath(to)
       await refresh()
       showNotice({ kind: 'ok', text: `renamed → ${next.trim()}` })
     } catch (err) {
@@ -149,7 +154,13 @@ export function useFileOps(args: {
       }
     }
     const deletedPaths = names.map((n) => joinRel(path, n))
-    onPreviewDeleted(deletedPaths)
+    // Drop the selection, and close the preview if it showed something deleted.
+    const view = useFilesView.getState()
+    const openPath = view.previewPath
+    view.setSelected(new Set<string>())
+    if (openPath && deletedPaths.some((d) => openPath === d || openPath.startsWith(d + '/'))) {
+      view.setPreviewPath(undefined)
+    }
     await refresh()
     setBusy(false)
     showNotice(
