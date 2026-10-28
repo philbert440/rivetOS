@@ -3,7 +3,10 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type {
   CatalogSheet,
   OutcomesResponse,
+  SessionDeleteResponse,
+  SessionsDeleteResponse,
   SessionsListResponse,
+  SessionTrashResponse,
   TaskResponse,
   TaskWire,
 } from '@rivetos/types'
@@ -68,6 +71,24 @@ const OUTCOMES_FIXTURE = {
   byDay: {},
 } satisfies OutcomesResponse
 
+const DEL_SID = 'claude-code:00000000-0000-4000-8000-000000000001'
+const LIVE_SID = 'claude-code:00000000-0000-4000-8000-000000000002'
+const GONE_SID = 'claude-code:00000000-0000-4000-8000-000000000003'
+
+const TRASH_FIXTURE = {
+  candidates: [
+    {
+      session: DEL_SID,
+      harness: 'claude-code',
+      title: null,
+      updatedAt: '2026-10-01T00:00:00Z',
+      reason: 'empty',
+      userTurns: 0,
+      reply: null,
+    },
+  ],
+} satisfies SessionTrashResponse
+
 interface Captured {
   method?: string
   url?: string
@@ -95,6 +116,29 @@ function handle(req: IncomingMessage, res: ServerResponse): void {
     }
     const path = (req.url ?? '').split('?')[0]
     if (path === '/healthz') return respond(200, { ok: true })
+    if (path === '/api/sessions/trash' && req.method === 'GET') return respond(200, TRASH_FIXTURE)
+    if (path === '/api/sessions/delete' && req.method === 'POST') {
+      const ids = (JSON.parse(raw) as { sessions: string[] }).sessions
+      return respond(200, {
+        results: ids.map((session) =>
+          session === LIVE_SID
+            ? { session, ok: false as const, error: 'session is live' }
+            : { session, ok: true as const, conversations: 1, messages: 2, summaries: 0 },
+        ),
+      } satisfies SessionsDeleteResponse)
+    }
+    if (path.startsWith('/api/sessions/') && req.method === 'DELETE') {
+      const session = decodeURIComponent(path.slice('/api/sessions/'.length))
+      if (session === LIVE_SID) return respond(409, { error: 'session is live' })
+      if (session === GONE_SID) return respond(404, { error: 'not found' })
+      return respond(200, {
+        ok: true,
+        session,
+        conversations: 1,
+        messages: 4,
+        summaries: 1,
+      } satisfies SessionDeleteResponse)
+    }
     if (path === '/api/sessions') return respond(200, SESSIONS_FIXTURE)
     if (path === '/api/tasks' && req.method === 'POST')
       return respond(201, { task: TASK_FIXTURE } satisfies TaskResponse)
@@ -158,6 +202,47 @@ afterAll(async () => {
 })
 
 describe('RivetGateway HTTP', () => {
+  it('deletes one session by its URL-encoded canonical id', async () => {
+    const gw = new RivetGateway({ baseUrl })
+    const res = await gw.deleteSession(DEL_SID)
+    expect(captured.method).toBe('DELETE')
+    // One path segment: the ':' is percent-encoded, not a path split.
+    expect(captured.url).toBe(`/api/sessions/${encodeURIComponent(DEL_SID)}`)
+    expect(res).toEqual({ ok: true, session: DEL_SID, conversations: 1, messages: 4, summaries: 1 })
+  })
+
+  it('surfaces a live session as a 409 GatewayError and a hidden one as 404', async () => {
+    const gw = new RivetGateway({ baseUrl })
+    const live = await gw.deleteSession(LIVE_SID).catch((e: unknown) => e)
+    expect(live).toBeInstanceOf(GatewayError)
+    expect((live as GatewayError).status).toBe(409)
+    expect((live as GatewayError).message).toBe('session is live')
+    const gone = await gw.deleteSession(GONE_SID).catch((e: unknown) => e)
+    expect((gone as GatewayError).status).toBe(404)
+  })
+
+  it('bulk-deletes with a {sessions} body and keeps per-item failures', async () => {
+    const gw = new RivetGateway({ baseUrl })
+    const res = await gw.deleteSessions([DEL_SID, LIVE_SID])
+    expect(captured.method).toBe('POST')
+    expect(captured.url).toBe('/api/sessions/delete')
+    expect(captured.contentType).toBe('application/json')
+    expect(JSON.parse(captured.body ?? '{}')).toEqual({ sessions: [DEL_SID, LIVE_SID] })
+    expect(res.results).toEqual([
+      { session: DEL_SID, ok: true, conversations: 1, messages: 2, summaries: 0 },
+      { session: LIVE_SID, ok: false, error: 'session is live' },
+    ])
+  })
+
+  it('reads trash candidates with a GET and no body', async () => {
+    const gw = new RivetGateway({ baseUrl })
+    const res = await gw.trashSessions()
+    expect(captured.method).toBe('GET')
+    expect(captured.url).toBe('/api/sessions/trash')
+    expect(captured.body).toBe('')
+    expect(res.candidates[0]?.reason).toBe('empty')
+  })
+
   it('lists sessions', async () => {
     const gw = new RivetGateway({ baseUrl })
     const res = await gw.listSessions()

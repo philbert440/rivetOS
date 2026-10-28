@@ -1071,6 +1071,66 @@ export interface HarnessSessionsResponse {
   sessions: HarnessSession[]
 }
 
+// -- session delete + trash ---------------------------------------------------
+//
+// Delete removes a session's conversation from memory (every agent's rows for
+// that `session_key`) and writes a tombstone so the session lists omit it. The
+// harness's own on-disk transcript is NOT touched. `{session}` is always the
+// canonical `<harness-id>:<native>` id. A live session (running PTY / live
+// view) is refused with 409 and never killed.
+
+/** Rows removed from memory for one deleted session. All may be 0 for a
+ *  session that only ever existed on disk — the tombstone is still written. */
+export interface SessionDeleteCounts {
+  conversations: number
+  messages: number
+  summaries: number
+}
+
+/** `DELETE /api/sessions/{session}` 200. 409 `{error:'session is live'}`, 404
+ *  when the session is not visible to the caller. */
+export interface SessionDeleteResponse extends SessionDeleteCounts {
+  ok: true
+  session: string
+}
+
+/** `POST /api/sessions/delete` body: 1..=200 canonical ids, deduped server-side. */
+export interface SessionsDeleteRequest {
+  sessions: string[]
+}
+
+export type SessionDeleteResult =
+  | (SessionDeleteCounts & { session: string; ok: true })
+  | { session: string; ok: false; error: string }
+
+/** `POST /api/sessions/delete` 200. A per-item failure never fails the batch;
+ *  `error` is `'session is live'` or `'not found'` today. */
+export interface SessionsDeleteResponse {
+  results: SessionDeleteResult[]
+}
+
+/** Why the node thinks a session is junk. Conservative: anything not
+ *  obviously junk is never a candidate. */
+export type SessionTrashReason = 'empty' | 'one-word-reply'
+
+export interface SessionTrashCandidate {
+  /** Canonical `<harness-id>:<native>` id. */
+  session: string
+  harness: string
+  title: string | null
+  /** RFC 3339. */
+  updatedAt: string
+  reason: SessionTrashReason
+  userTurns: number
+  /** Assistant reply text, ≤ 80 chars, or null when there was none. */
+  reply: string | null
+}
+
+/** `GET /api/sessions/trash` 200 — a review list only; nothing is deleted. */
+export interface SessionTrashResponse {
+  candidates: SessionTrashCandidate[]
+}
+
 /** One tool invocation recorded on an assistant transcript turn. */
 export interface HarnessTranscriptTool {
   /** Harness tool name verbatim (e.g. 'Bash', 'mcp:rivetos:memory_search'). */
