@@ -108,6 +108,14 @@ export function DrawerItem(props: {
   onUnarchive: () => void
   /** Drafts only — a draft is local, so discarding it is a real delete. */
   onDiscard?: () => void
+  /** Non-draft rows the node can delete. Opens the confirm; never deletes directly. */
+  onDelete?: () => void
+  /**
+   * Multi-select mode: the row is a checkbox (clicking toggles instead of
+   * opening) and the hover actions are hidden. `disabled` rows (drafts,
+   * other-node pins) cannot be picked.
+   */
+  select?: { checked: boolean; disabled?: boolean; onToggle: () => void }
   /** Nested conversations under this row. 0 hides the disclosure. */
   childCount?: number
   expanded?: boolean
@@ -170,6 +178,17 @@ export function DrawerItem(props: {
   // conversation title. A custom rename still wins.
   const showTypePill = props.nested === true && !customName && !!typeLabel
   const visibleLabel = showTypePill ? typeLabel : (customName ?? props.item.title)
+  const deleteButton = props.onDelete ? (
+    <button
+      type="button"
+      onClick={props.onDelete}
+      aria-label="delete session…"
+      title="delete… (removes its memory; the harness transcript is kept)"
+      className="px-1 py-2 text-ink-dim hover:text-red"
+    >
+      <Trash2 className="size-3" />
+    </button>
+  ) : null
   return (
     <div
       className={`group mb-0.5 flex items-center rounded-xl transition-colors classic:mb-1 ${
@@ -188,9 +207,38 @@ export function DrawerItem(props: {
           {props.expanded ? '▾' : '▸'}
         </button>
       )}
+      {props.select && (
+        <button
+          type="button"
+          role="checkbox"
+          aria-checked={props.select.checked}
+          aria-label={`select ${visibleLabel}`}
+          disabled={props.select.disabled}
+          title={
+            props.select.disabled ? 'drafts and pinned rows cannot be deleted here' : undefined
+          }
+          onClick={props.select.onToggle}
+          className="flex shrink-0 items-center py-2 pl-2.5 pr-0.5 disabled:opacity-30"
+        >
+          <span
+            aria-hidden
+            className={`flex size-3.5 items-center justify-center rounded border text-[10px] leading-none ${
+              props.select.checked ? 'border-red bg-red/15 text-red' : 'border-line'
+            }`}
+          >
+            {props.select.checked ? '✓' : ''}
+          </span>
+        </button>
+      )}
       <button
         type="button"
-        onClick={props.onSelect}
+        onClick={
+          props.select
+            ? props.select.disabled
+              ? undefined
+              : props.select.onToggle
+            : props.onSelect
+        }
         title={
           showTypePill
             ? `${props.item.title} · ${props.item.sessionId ?? props.item.key}`
@@ -279,51 +327,59 @@ export function DrawerItem(props: {
           ) : null
         })()}
       </button>
-      <span className="hidden shrink-0 items-center group-hover:flex group-focus-within:flex">
-        <button
-          type="button"
-          onClick={() => {
-            setDraft(customName ?? props.item.title)
-            setEditing(true)
-          }}
-          aria-label="rename session"
-          title="rename"
-          className="px-1 py-2 text-ink-dim hover:text-em"
-        >
-          <Pencil className="size-3" />
-        </button>
-        {props.onDiscard ? (
+      {!props.select && (
+        <span className="hidden shrink-0 items-center group-hover:flex group-focus-within:flex">
           <button
             type="button"
-            onClick={props.onDiscard}
-            aria-label="discard draft"
-            title="discard draft"
-            className="px-1 py-2 pr-2 text-ink-dim hover:text-red"
+            onClick={() => {
+              setDraft(customName ?? props.item.title)
+              setEditing(true)
+            }}
+            aria-label="rename session"
+            title="rename"
+            className="px-1 py-2 text-ink-dim hover:text-em"
           >
-            <Trash2 className="size-3" />
+            <Pencil className="size-3" />
           </button>
-        ) : props.archived ? (
-          <button
-            type="button"
-            onClick={props.onUnarchive}
-            aria-label="unarchive session"
-            title="unarchive"
-            className="px-1 py-2 pr-2 text-ink-dim hover:text-em"
-          >
-            <ArchiveRestore className="size-3" />
-          </button>
-        ) : (
-          <button
-            type="button"
-            onClick={props.onArchive}
-            aria-label="archive session"
-            title="archive (hides the row — the session itself is untouched)"
-            className="px-1 py-2 pr-2 text-ink-dim hover:text-em"
-          >
-            <Archive className="size-3" />
-          </button>
-        )}
-      </span>
+          {props.onDiscard ? (
+            <button
+              type="button"
+              onClick={props.onDiscard}
+              aria-label="discard draft"
+              title="discard draft"
+              className="px-1 py-2 pr-2 text-ink-dim hover:text-red"
+            >
+              <Trash2 className="size-3" />
+            </button>
+          ) : props.archived ? (
+            <>
+              {deleteButton}
+              <button
+                type="button"
+                onClick={props.onUnarchive}
+                aria-label="unarchive session"
+                title="unarchive"
+                className="px-1 py-2 pr-2 text-ink-dim hover:text-em"
+              >
+                <ArchiveRestore className="size-3" />
+              </button>
+            </>
+          ) : (
+            <>
+              {deleteButton}
+              <button
+                type="button"
+                onClick={props.onArchive}
+                aria-label="archive session"
+                title="archive (hides the row — the session itself is untouched)"
+                className="px-1 py-2 pr-2 text-ink-dim hover:text-em"
+              >
+                <Archive className="size-3" />
+              </button>
+            </>
+          )}
+        </span>
+      )}
     </div>
   )
 }

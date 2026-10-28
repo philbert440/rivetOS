@@ -16,6 +16,9 @@ import type {
   SessionPostAccepted,
   SessionPostRequest,
   SessionsListResponse,
+  SessionDeleteResponse,
+  SessionsDeleteResponse,
+  SessionTrashResponse,
   SessionWsFrame,
   TaskApprovalAccepted,
   TaskApprovalWaitResponse,
@@ -183,6 +186,34 @@ export class RivetGateway {
     return request(this.config, `/api/sessions/${encodeURIComponent(sessionId)}/messages`, {
       signal,
     })
+  }
+
+  /**
+   * Delete one session: its conversation leaves memory (every agent's rows)
+   * and a tombstone drops it from the session lists. The harness's on-disk
+   * transcript is untouched. `sessionId` is the canonical
+   * `<harness-id>:<native>` id, URL-encoded as one segment. A live session
+   * answers 409 and is never killed; 404 means not visible to this caller.
+   */
+  deleteSession(sessionId: string): Promise<SessionDeleteResponse> {
+    return request(this.config, `/api/sessions/${sessionSegment(sessionId)}`, {
+      method: 'DELETE',
+    })
+  }
+
+  /** Bulk delete (1..=200 canonical ids). Per-item failures ride `results`
+   *  with `ok: false`; only a transport/whole-request failure throws. */
+  deleteSessions(sessionIds: string[]): Promise<SessionsDeleteResponse> {
+    return request(this.config, '/api/sessions/delete', {
+      method: 'POST',
+      body: { sessions: sessionIds },
+    })
+  }
+
+  /** Sessions the node thinks are junk, for the user to review. Read-only —
+   *  nothing is deleted until `deleteSessions` is called with a selection. */
+  trashSessions(signal?: AbortSignal): Promise<SessionTrashResponse> {
+    return request(this.config, '/api/sessions/trash', { signal })
   }
 
   /** Durable backfill for a harness conversation (seamless modes): the
