@@ -227,7 +227,7 @@ export function WorkflowTriggerPage(): JSX.Element {
   const switchMode = useCallback(
     async (next: 'run' | 'edit') => {
       // Clicking the already-active chip must be a pure no-op — clearing the
-      // dirty ref here would disarm the guard without any re-render to
+      // guard's dirty flag here would disarm it without any re-render to
       // re-report dirty (same-value setState bails).
       if (next === pageMode) return
       if (!(await workflowsGuard.confirmDiscard(confirm))) return
