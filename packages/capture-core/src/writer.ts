@@ -20,6 +20,9 @@ import type {
 
 class CaptureClientError extends Error {}
 
+/** The den answered with a server error: an outage, or a batch it cannot take. */
+class CaptureServerError extends Error {}
+
 const CONTENT_LIMIT = 16_000
 const DEFAULT_CHUNK_BYTES = 768 * 1024
 const CHUNK_OVER_LIMIT = 'chunk exceeds maxChunkBytes after elision'
@@ -98,7 +101,7 @@ const USER_TOKEN_HEADER = 'x-rivetos-user-token'
 /** The den did not accept this session's token, or has this user's store blocked. Retried later, for a while. */
 class CaptureTokenRefused extends Error {}
 
-/** How long a batch the den keeps refusing stays in a user's spool before it is set aside. */
+/** How long a batch the den keeps refusing, or failing on, stays in a spool before it is set aside. */
 const SPOOL_REFUSED_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
 
 async function olderThan(path: string, ms: number): Promise<boolean> {
@@ -271,7 +274,7 @@ export function createCaptureWriter(opts: CaptureWriterOptions): CaptureWriter {
     if (response.status >= 400 && response.status < 500) {
       throw new CaptureClientError(`capture HTTP ${response.status}`)
     }
-    if (!response.ok) throw new Error(`capture HTTP ${response.status}`)
+    if (!response.ok) throw new CaptureServerError(`capture HTTP ${response.status}`)
     return (await response.json()) as CaptureResult
   }
   const replay: CaptureWriter['replay'] = async (options) => {
@@ -281,23 +284,31 @@ export function createCaptureWriter(opts: CaptureWriterOptions): CaptureWriter {
       const files = await spoolFiles(dir)
       const requestedMax = options?.max ?? 50
       const max = Number.isFinite(requestedMax) ? Math.max(0, Math.floor(requestedMax)) : 50
+      // A server error on one batch moves on to the next: if that one lands,
+      // the den is up and the failed batch alone is the problem, so it waits
+      // in the spool and the rest replay. A second server error with no batch
+      // landing in between is an outage, and replay stops.
+      let failing = false
       for (const file of files.slice(0, max)) {
         try {
           const body = await readFile(join(dir, file), 'utf8')
           await post(body)
           await unlink(join(dir, file))
           replayed++
+          failing = false
         } catch (error) {
           log(error)
-          if (
-            error instanceof CaptureClientError ||
-            (error instanceof CaptureTokenRefused &&
-              (await olderThan(join(dir, file), SPOOL_REFUSED_MAX_AGE_MS)))
-          ) {
-            // A bad batch, or one the den has refused for a week (the user
-            // is gone from the registry, or their store is blocked).
+          const stale =
+            (error instanceof CaptureTokenRefused || error instanceof CaptureServerError) &&
+            (await olderThan(join(dir, file), SPOOL_REFUSED_MAX_AGE_MS))
+          if (error instanceof CaptureClientError || stale) {
+            // A bad batch, or one the den has refused or failed on for a week
+            // (the user is gone from the registry, their store is blocked, or
+            // the den cannot take it).
             await deadLetter(dir, file)
             dead++
+          } else if (error instanceof CaptureServerError && !failing) {
+            failing = true
           } else if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
             break
           }

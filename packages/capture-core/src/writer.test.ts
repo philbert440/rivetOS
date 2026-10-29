@@ -237,19 +237,40 @@ describe('capture writer', () => {
     expect(await readdir(join(spoolDir, 'dead'))).toHaveLength(1)
     expect(await writer.replay()).toEqual({ replayed: 1, dead: 0, remaining: 0 })
   })
-  it.each(['network', 'server'])(
-    'stops replay on %s failure and keeps the files',
-    async (failure) => {
-      const fetch = vi.fn<typeof globalThis.fetch>()
-      if (failure === 'network') fetch.mockRejectedValue(new Error('offline'))
-      else fetch.mockResolvedValue(new Response('', { status: 500 }))
-      const { writer, spoolDir } = await setup(fetch)
-      await spoolBatch(spoolDir, batch, new Date(1))
-      await spoolBatch(spoolDir, batch, new Date(2))
-      expect(await writer.replay()).toEqual({ replayed: 0, remaining: 2, dead: 0 })
-      expect(fetch).toHaveBeenCalledTimes(1)
-    },
-  )
+  it.each([
+    ['network', 1],
+    ['server', 2],
+  ] as const)('stops replay on %s failure and keeps the files', async (failure, calls) => {
+    const fetch = vi.fn<typeof globalThis.fetch>()
+    if (failure === 'network') fetch.mockRejectedValue(new Error('offline'))
+    else fetch.mockResolvedValue(new Response('', { status: 500 }))
+    const { writer, spoolDir } = await setup(fetch)
+    await spoolBatch(spoolDir, batch, new Date(1))
+    await spoolBatch(spoolDir, batch, new Date(2))
+    expect(await writer.replay()).toEqual({ replayed: 0, remaining: 2, dead: 0 })
+    // A server error tries one more batch to tell an outage from a bad batch.
+    expect(fetch).toHaveBeenCalledTimes(calls)
+  })
+  it('replays past a batch the den keeps failing on, and sets it aside after a week', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async (_url, init) =>
+      JSON.parse(String(init?.body)).session_key === 'poison'
+        ? new Response('', { status: 500 })
+        : Response.json(result),
+    )
+    const { writer, spoolDir } = await setup(fetch)
+    for (const [time, key] of [
+      [10, 'poison'],
+      [20, 'next'],
+      [30, 'last'],
+    ] as const)
+      await spoolBatch(spoolDir, { ...batch, session_key: key }, new Date(time))
+    expect(await writer.replay()).toEqual({ replayed: 2, dead: 0, remaining: 1 })
+    const [poison] = await readdir(spoolDir)
+    const old = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000)
+    await utimes(join(spoolDir, poison), old, old)
+    expect(await writer.replay()).toEqual({ replayed: 0, dead: 1, remaining: 0 })
+    expect(await readdir(join(spoolDir, 'dead'))).toEqual([poison])
+  })
   it('drains up to 50 pending files before the new write', async () => {
     const fetch = vi
       .fn<typeof globalThis.fetch>()
