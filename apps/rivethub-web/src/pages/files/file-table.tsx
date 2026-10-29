@@ -1,7 +1,7 @@
 import type { JSX } from 'react'
 import type { FileEntry } from '@rivetos/types'
 import { joinRel } from '../../lib/files-ui.js'
-import { selectionTextWithin, shouldIgnoreRowActivate } from '../../lib/files-dirty-guard.js'
+import { selectionTextWithin, shouldIgnoreRowActivate } from './table-interactions.js'
 import { fmtSize, fmtMtime } from './format.js'
 
 /**

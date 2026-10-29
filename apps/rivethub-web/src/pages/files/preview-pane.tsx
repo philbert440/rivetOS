@@ -3,13 +3,13 @@ import { baseName, previewKind } from '../../lib/files-ui.js'
 import { saveViaGateway } from './save-via-gateway.js'
 import { rivetShell } from '../../lib/shell-bridge.js'
 import { FileEditor } from '../../components/file-editor.js'
-import { useUiInteraction } from '../../stores/ui-interaction.js'
+import { filesGuard } from './guard.js'
 import { useFilesView } from './files-view-store.js'
 
 /**
- * The right-hand preview/edit pane of the Files page. Stateless w.r.t.
- * guard state: dirty reporting is an injected callback; the discard
- * decision belongs to the page. The notice bar lives in the view store.
+ * The right-hand preview/edit pane of the Files page: a header strip with
+ * download and close, an image for picture types, or the shared editor for
+ * text files.
  */
 export function PreviewPane(props: {
   path: string
@@ -19,7 +19,6 @@ export function PreviewPane(props: {
   size?: number
 }): JSX.Element {
   const name = baseName(props.path)
-  const { setFilesDirty } = useUiInteraction.getState()
   // Prefer known size; when unknown assume under text cap for extension classification.
   const kind = previewKind(name, props.size ?? 100_000)
   const inShell = rivetShell() != null
@@ -75,7 +74,7 @@ export function PreviewPane(props: {
           key={props.path}
           path={props.path}
           size={props.size}
-          onDirtyChange={setFilesDirty}
+          onDirtyChange={filesGuard.report}
           className="min-h-0 flex-1"
           minHeight="12rem"
         />

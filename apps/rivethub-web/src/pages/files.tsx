@@ -11,14 +11,9 @@ import type { FileEntry } from '@rivetos/types'
 import { useConnection } from '../stores/connection.js'
 import { NotConnected, useGatewayReady } from '../components/not-connected.js'
 import { rivetShell } from '../lib/shell-bridge.js'
-import {
-  guardClosePreview,
-  guardOpenFile,
-  shouldBlockFilesLeave,
-} from '../lib/files-dirty-guard.js'
-import { baseName, filesQueryKey, joinRel, parentRel, previewKind } from '../lib/files-ui.js'
+import { filesQueryKey, joinRel, parentRel, previewKind } from '../lib/files-ui.js'
 import { useGateway } from '../lib/use-gateway.js'
-import { useUiInteraction } from '../stores/ui-interaction.js'
+import { filesGuard } from './files/guard.js'
 import { useConfirmDialog } from '../components/confirm-dialog.js'
 import { saveViaGateway } from './files/save-via-gateway.js'
 import { PreviewPane } from './files/preview-pane.js'
@@ -49,8 +44,6 @@ export function FilesPage(): JSX.Element {
   // its own dialog).
   const dialog = useConfirmDialog()
   const confirm = dialog.confirm
-  const filesDirty = useUiInteraction((s) => s.filesDirty)
-  const { setFilesDirty } = useUiInteraction.getState()
   const [dragging, setDragging] = useState(false)
   const dragDepth = useRef(0)
   /** Ignore openRaw briefly after a dir navigate so a folder double-click
@@ -63,24 +56,12 @@ export function FilesPage(): JSX.Element {
     enabled: connected,
   })
 
-  const dirtyFileName = previewPath ? baseName(previewPath) : undefined
+  const shouldBlockFn = useCallback(
+    async () => !(await filesGuard.confirmLeave(confirm)),
+    [confirm],
+  )
 
-  // Blocker callbacks must have stable identity: the router tears down and
-  // re-registers the blocker when these change, and a re-register that lands
-  // mid-navigation silently swallows it. Read the store imperatively at call
-  // time instead of subscribing (the store is still the single source).
-  const shouldBlockFn = useCallback(async () => {
-    const { filesDirty } = useUiInteraction.getState()
-    // useBlocker contract: return true to BLOCK. Clean → false (proceed).
-    return shouldBlockFilesLeave({
-      dirty: filesDirty.dirty,
-      fileName: filesDirty.fileName || undefined,
-      confirm,
-      clearDirty: () => useUiInteraction.getState().clearFilesDirty(),
-    })
-  }, [confirm])
-
-  const enableBeforeUnload = useCallback(() => useUiInteraction.getState().filesDirty.dirty, [])
+  const enableBeforeUnload = useCallback(() => filesGuard.isDirty(), [])
 
   // Route changes (sidebar leave, ?path= crumbs, browser Back/Forward) go
   // through the router blocker so Cancel never leaves a foreign listing under
@@ -116,8 +97,8 @@ export function FilesPage(): JSX.Element {
   )
 
   useEffect(() => {
-    setFilesDirty(false)
-  }, [previewPath, setFilesDirty])
+    filesGuard.setOpenFile(previewPath)
+  }, [previewPath])
 
   const openEntry = useCallback(
     async (child: string, isDir: boolean): Promise<void> => {
@@ -125,23 +106,11 @@ export function FilesPage(): JSX.Element {
         navigateGuarded(child)
         return
       }
-      const storeDirty = useUiInteraction.getState().filesDirty.dirty
-      const decision = await guardOpenFile({
-        // Read the store at call time, not from the render closure: this
-        // callback is memoized on deps that never include `dirty`, so a
-        // captured value goes stale the moment you type and stays stale until
-        // path/previewPath next changes.
-        dirty: storeDirty,
-        previewPath,
-        child,
-        fileName: dirtyFileName,
-        confirm,
-        clearDirty: () => useUiInteraction.getState().clearFilesDirty(),
-      })
+      const decision = await filesGuard.confirmSwitchFile(confirm, child)
       if (decision !== 'proceed') return
       setPreviewPath(child)
     },
-    [confirm, dirtyFileName, navigateGuarded, path, previewPath],
+    [confirm, navigateGuarded, setPreviewPath],
   )
 
   const openRaw = useCallback(
@@ -269,12 +238,7 @@ export function FilesPage(): JSX.Element {
             path={previewPath}
             onClose={() => {
               void (async () => {
-                const decision = await guardClosePreview({
-                  dirty: filesDirty.dirty,
-                  fileName: dirtyFileName,
-                  confirm,
-                  clearDirty: () => useUiInteraction.getState().clearFilesDirty(),
-                })
+                const decision = await filesGuard.confirmClosePreview(confirm)
                 if (decision !== 'proceed') return
                 setPreviewPath(undefined)
               })()
