@@ -8,7 +8,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState, type JSX } from 'react'
-import { Link, useNavigate, useParams } from '@tanstack/react-router'
+import { Link, useBlocker, useNavigate, useParams } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type {
   WorkflowField,
@@ -21,7 +21,7 @@ import { GatewayError } from '@rivetos/gateway-client'
 import { useConnection } from '../stores/connection.js'
 import { useIsNarrow } from '../lib/use-narrow.js'
 import { joinRel } from '../lib/files-ui.js'
-import { useWorkflowDirtyGuard } from '../lib/workflow-dirty-guard.js'
+import { workflowsGuard } from './workflows/guard.js'
 import { NotConnected, useGatewayReady } from '../components/not-connected.js'
 import { SegmentedControl } from '../components/segmented-control.js'
 import { useConfirmDialog } from '../components/confirm-dialog.js'
@@ -216,21 +216,24 @@ export function WorkflowTriggerPage(): JSX.Element {
   const [submitting, setSubmitting] = useState(false)
   /** Run | Edit — Edit only when the def exposes editPath (under files root). */
   const [pageMode, setPageMode] = useState<'run' | 'edit'>('run')
-  const {
-    markDirty: setEditDirty,
-    confirmDiscard: confirmEditDiscard,
-    element: discardDialogElement,
-  } = useWorkflowDirtyGuard()
+  const dialog = useConfirmDialog()
+  const confirm = dialog.confirm
+  const shouldBlockFn = useCallback(
+    async () => !(await workflowsGuard.confirmLeave(confirm)),
+    [confirm],
+  )
+  const enableBeforeUnload = useCallback(() => workflowsGuard.isDirty(), [])
+  useBlocker({ shouldBlockFn, enableBeforeUnload })
   const switchMode = useCallback(
     async (next: 'run' | 'edit') => {
       // Clicking the already-active chip must be a pure no-op — clearing the
       // dirty ref here would disarm the guard without any re-render to
       // re-report dirty (same-value setState bails).
       if (next === pageMode) return
-      if (!(await confirmEditDiscard())) return
+      if (!(await workflowsGuard.confirmDiscard(confirm))) return
       setPageMode(next)
     },
-    [pageMode, confirmEditDiscard],
+    [pageMode, confirm],
   )
 
   const fields: WorkflowField[] = def.data?.workflow.input ?? []
@@ -309,7 +312,7 @@ export function WorkflowTriggerPage(): JSX.Element {
           : `mx-auto px-4 py-8 md:px-6 ${pageMode === 'edit' ? 'max-w-5xl' : 'max-w-3xl'}`
       }
     >
-      {discardDialogElement}
+      {dialog.element}
       {!runWithCanvas && (
         <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
           {/* No click handler: leaving is a route change, and the dirty guard's
@@ -358,7 +361,7 @@ export function WorkflowTriggerPage(): JSX.Element {
             key={editPath}
             workflowId={workflowId}
             editPath={editPath}
-            onDirtyChange={setEditDirty}
+            onDirtyChange={workflowsGuard.report}
           />
         </>
       )}
@@ -391,10 +394,10 @@ export function WorkflowTriggerPage(): JSX.Element {
             input={def.data.workflow.input}
             output={def.data.workflow.output}
             workflowOptions={workflowOptions}
-            onDirtyChange={setEditDirty}
+            onDirtyChange={workflowsGuard.report}
             onWorkflowChange={(id) => {
               void (async () => {
-                if (!(await confirmEditDiscard())) return
+                if (!(await workflowsGuard.confirmDiscard(confirm))) return
                 void navigate({ to: '/workflows/$workflowId', params: { workflowId: id } })
               })()
             }}
