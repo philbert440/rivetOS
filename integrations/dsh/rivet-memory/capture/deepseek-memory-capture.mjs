@@ -128,9 +128,20 @@ export function resolveSessionJsonlPath(sessionId) {
   const files = findSessionFiles(root)
   const needle = String(sessionId)
   for (const f of files) {
-    if (f.includes(`/${needle}/`) || f.includes(`/${path.basename(needle)}/`)) return f
+    if (sessionFileMatches(f, needle)) return f
   }
   return null
+}
+
+/**
+ * True when `file` sits in the directory named for `sessionId`. Compares on
+ * '/'-separated form: on Windows the session store hands back backslash paths,
+ * and a '/'-only match never resolved, so reconcile silently found nothing.
+ */
+export function sessionFileMatches(file, sessionId) {
+  const posix = String(file).replace(/\\/g, '/')
+  const id = String(sessionId)
+  return posix.includes(`/${id}/`) || posix.includes(`/${path.basename(id)}/`)
 }
 
 export function findEventLineIndex(text, event) {
