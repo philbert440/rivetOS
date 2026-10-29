@@ -19,6 +19,7 @@ import { GatewayError } from '@rivetos/gateway-client'
 import { useConnection } from '../stores/connection.js'
 import { useCanvasDock } from '../stores/canvas-dock.js'
 import { agentDraftDirty, captureAgentDraft } from '../lib/agent-draft-dirty.js'
+import { agentsGuard } from './agents-guard.js'
 import { healthzQueryOptions, useMeshNodeName, useNodeName, urlLabel } from '../lib/node-name.js'
 import { useNodeDiscovery } from '../lib/use-node-discovery.js'
 import { agentDirectoryPlaceholder } from '../lib/agent-directory.js'
@@ -266,13 +267,9 @@ function AgentEditor({
   )
 
   const discardDialog = useConfirmDialog()
-  const confirmLeave = useCallback(async (): Promise<boolean> => {
-    if (!isDirty()) return true
-    return discardDialog.confirm(
-      `Discard unsaved changes to agent "${trimmedName || 'new agent'}"?`,
-      { confirmLabel: 'Discard', danger: true },
-    )
-  }, [isDirty, discardDialog, trimmedName])
+  useEffect(() => {
+    agentsGuard.report(trimmedName, isDirty())
+  }, [trimmedName, isDirty])
 
   const harnessesQuery = useQuery({
     queryKey: ['harnesses', nodeBaseUrl, transportEpoch],
@@ -389,7 +386,7 @@ function AgentEditor({
       onOpenChange={(open) => {
         if (!open)
           void (async () => {
-            if (!(await confirmLeave())) return
+            if (!(await agentsGuard.confirmDiscard(discardDialog.confirm))) return
             onCancel()
           })()
       }}
@@ -418,7 +415,7 @@ function AgentEditor({
                 type="button"
                 onClick={() => {
                   void (async () => {
-                    if (!(await confirmLeave())) return
+                    if (!(await agentsGuard.confirmDiscard(discardDialog.confirm))) return
                     onCancel()
                   })()
                 }}
@@ -648,7 +645,7 @@ function AgentEditor({
                 type="button"
                 onClick={() => {
                   void (async () => {
-                    if (!(await confirmLeave())) return
+                    if (!(await agentsGuard.confirmDiscard(discardDialog.confirm))) return
                     onCancel()
                   })()
                 }}
