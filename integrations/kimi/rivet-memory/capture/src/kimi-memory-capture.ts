@@ -690,6 +690,19 @@ async function eventIdExists(
   return (r.rowCount ?? 0) > 0
 }
 
+// Postgres refuses NUL in text and \u0000 in jsonb; transcripts can carry them.
+function withoutNul(value: unknown): unknown {
+  return typeof value === 'string'
+    ? value.replace(/\u0000/g, '').replace(/(?<!\\)\\u0000/g, '')
+    : value
+}
+
+function stripNulParams(client: PoolClient): void {
+  const query = client.query.bind(client) as (text: string, params?: unknown[]) => Promise<unknown>
+  client.query = ((text: string, params?: unknown[]) =>
+    query(text, Array.isArray(params) ? params.map(withoutNul) : params)) as typeof client.query
+}
+
 async function insertMessage(
   client: PoolClient,
   conversationId: string,
@@ -883,6 +896,7 @@ export async function processOp(
   const { default: pg } = await import('pg')
   const pool = new pg.Pool({ connectionString: pgUrl, max: 1 })
   const client = await pool.connect()
+  stripNulParams(client)
 
   try {
     const sessionKey = deriveSessionKey(op.sessionId)

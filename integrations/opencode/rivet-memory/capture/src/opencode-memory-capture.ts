@@ -48,6 +48,7 @@ import { createRequire } from 'node:module'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import type { PoolClient } from 'pg'
 
 const require_ = createRequire(import.meta.url)
 
@@ -1175,6 +1176,19 @@ export async function ingestSession(
   }
 }
 
+// Postgres refuses NUL in text and \u0000 in jsonb; transcripts can carry them.
+function withoutNul(value: unknown): unknown {
+  return typeof value === 'string'
+    ? value.replace(/\u0000/g, '').replace(/(?<!\\)\\u0000/g, '')
+    : value
+}
+
+function stripNulParams(client: PoolClient): void {
+  const query = client.query.bind(client) as (text: string, params?: unknown[]) => Promise<unknown>
+  client.query = ((text: string, params?: unknown[]) =>
+    query(text, Array.isArray(params) ? params.map(withoutNul) : params)) as typeof client.query
+}
+
 async function withPool<T>(fn: (client: Queryable | null) => Promise<T>): Promise<T> {
   const transport = resolveCaptureTransport(process.env)
   if (transport.kind === 'none') throw new Error(transport.reason)
@@ -1182,6 +1196,7 @@ async function withPool<T>(fn: (client: Queryable | null) => Promise<T>): Promis
   const { default: pg } = await import('pg')
   const pool = new pg.Pool({ connectionString: resolvePgUrl(), max: 1 })
   const client = await pool.connect()
+  stripNulParams(client)
   try {
     await client.query(`SET statement_timeout = ${STATEMENT_TIMEOUT_MS}`)
     return await fn(client)
