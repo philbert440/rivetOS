@@ -662,6 +662,11 @@ async function eventIdExists(client, conversationId, eventId) {
   return (r.rowCount ?? 0) > 0
 }
 
+// Postgres refuses NUL in text and \u0000 in jsonb; dsh transcripts can carry them.
+function withoutNul(value) {
+  return typeof value === 'string' ? value.replace(/\u0000/g, '').replace(/(?<!\\)\\u0000/g, '') : value
+}
+
 async function insertMessage(client, conversationId, m, transcriptPath) {
   if (await eventIdExists(client, conversationId, m.eventId)) return 'skipped'
 
@@ -753,6 +758,8 @@ export async function ingestMessages(sessionId, messages, opts = {}) {
   const pg = await loadPg()
   const pool = new pg.Pool({ connectionString: pgUrl, max: 1 })
   const client = await pool.connect()
+  const query = client.query.bind(client)
+  client.query = (text, params) => query(text, Array.isArray(params) ? params.map(withoutNul) : params)
   const sessionKey = deriveSessionKey(sessionId)
   try {
     await client.query(`SET statement_timeout = ${STATEMENT_TIMEOUT_MS}`)
