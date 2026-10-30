@@ -118,7 +118,6 @@ rivetOS/
 │   ├── rivethub-web/      # RivetHub web client (gateway UI)
 │   ├── rivethub-electron/ # RivetHub Electron desktop shell (own lockfile; not an npm workspace member)
 │   ├── rivethub-android/  # RivetHub Android client (thin gateway client, Apache-2.0)
-│   ├── rivet-android/     # On-device RivetOS node (AGPL RikkaHub fork) — not the Hub client
 │   ├── rivethub-site/     # rivethub.io marketing / install pages (Nx only; not an npm workspace member)
 │   └── site/              # rivetos.dev Astro docs (synced from docs/ via apps/site/scripts/sync-docs.mjs)
 ├── infra/              # Container Dockerfiles, Compose files, provisioning scripts
@@ -289,25 +288,6 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full development guide.
 ## License
 
 [Apache License 2.0](LICENSE)
-
-### License boundary: `apps/rivet-android`
-
-The Android client (`apps/rivet-android`) is **vendored source** — a RikkaHub
-fork licensed **AGPL-3.0**, a different license than the rest of this
-repository (Apache-2.0). Its `LICENSE` lives in that directory and governs it.
-The boundary rules:
-
-- It is **Gradle-built, not npm/nx-built**: a minimal `package.json` (no JS
-  dependencies) registers it in the nx graph for DDD tags and boundary
-  enforcement only. Its real targets are `apk`/`apk-release`/`check`/`verify`
-  (gradle wrappers), deliberately not `build`/`test`/`lint`, so CI's
-  Android-SDK-less nx sweeps skip it. Builds happen where an SDK lives, same
-  posture as `apps/rivethub-electron`.
-- Dependency direction is **one-way**: the Android app may consume this
-  repo's published artifacts and gateway APIs; **no code may be copied FROM
-  the AGPL-licensed `apps/rivet-android/` tree INTO the Apache-2.0 tree.**
-- RivetHub web/desktop reimplement the client UX against the same gateway
-  contracts (`@rivetos/types` gateway-api): shared design, independent code.
 
 ---
 

@@ -28,12 +28,12 @@ lives in `ui/screens/ConversationsPane.kt`, hosted by `HubDrawer` (U2b; `History
 ## Clean-room (UX program 2026-09-24)
 
 This app rebuilds the RikkaHub-era chat/terminal UX from `docs/UX-SPEC.md` only. The retired
-`apps/rivet-android` tree is AGPL and is a behavioural reference for the orchestrator, never for
-builders. `NoAgplLineageTest` is the guard.
+AGPL rivet-android app, deleted from the repo and kept at the `archive/rivet-android-final` tag, is a
+behavioural reference for the orchestrator, never for builders. `NoAgplLineageTest` is the guard.
 
 **Builder rules**
 
-- Never open `apps/rivet-android`, nor any `com.github.rikkahub`, `hugeicons`, `jlatexmath`, or
+- Never open the `archive/rivet-android-final` tree, nor any `com.github.rikkahub`, `hugeicons`, `jlatexmath`, or
   `me.rerere` source.
 - Only permissive dependencies (Apache-2.0 / MIT / BSD / OFL). Allowed additions in this program:
   `org.jetbrains:markdown`, Coil, Termux `terminal-view` / `terminal-emulator` (Apache-2.0) if ever
