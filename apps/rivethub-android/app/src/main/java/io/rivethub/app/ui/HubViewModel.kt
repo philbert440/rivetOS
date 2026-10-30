@@ -89,7 +89,17 @@ import io.rivethub.app.plane.pushInbox
 import io.rivethub.app.plane.runNotificationHook
 import io.rivethub.app.plane.shouldPostSystemNotification
 import io.rivethub.app.plane.unreadCount
+import io.rivethub.app.gateway.SESSION_DELETE_BATCH_MAX
+import io.rivethub.app.gateway.SessionDeleteUnsupported
+import io.rivethub.app.gateway.SessionTrashCandidate
+import io.rivethub.app.plane.DeleteFailure
+import io.rivethub.app.plane.DeleteOutcome
+import io.rivethub.app.plane.deleteTargetFor
+import io.rivethub.app.plane.failAll
+import io.rivethub.app.plane.foldDeleteResults
+import io.rivethub.app.plane.localKeysFor
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -413,6 +423,97 @@ class HubViewModel(private val c: AppContainer, inboxLabels: InboxLabels) : View
         if (pinned != null) pointers.clear(pinned)
         viewModelScope.launch { persistPointers() }
         rebuildItems()
+    }
+
+    // -- Delete + clean up (plane/SessionDelete.kt) --
+
+    /** A session to delete and the node that owns it. */
+    data class DeleteTarget(val session: String, val nodeDenUrl: String)
+
+    /** One clean-up candidate and the node that offered it. */
+    data class TrashRow(val candidate: SessionTrashCandidate, val nodeDenUrl: String, val nodeName: String)
+
+    /** A clean-up review read: [unsupported] when no node answered with the route. */
+    data class TrashLoad(val rows: List<TrashRow>, val unsupported: Boolean, val failedNodes: Int)
+
+    /** The delete target for a drawer row, or null when it offers no Delete. */
+    fun deleteTargetOf(row: LocatedChatItem): DeleteTarget? =
+        deleteTargetFor(row.item, _state.value.agents.mapNotNull { it.pointerSessionId })
+            ?.let { DeleteTarget(it, row.nodeDenUrl) }
+
+    /**
+     * Delete [targets] on their own nodes, in batches of the bulk cap. Only
+     * what a node reports deleted is swept locally; a live, missing or failed
+     * session keeps its row and every local trace. [onDone] runs on the main
+     * thread with the folded outcome.
+     */
+    fun deleteSessions(targets: List<DeleteTarget>, onDone: (DeleteOutcome) -> Unit) {
+        if (targets.isEmpty()) return
+        viewModelScope.launch {
+            var outcome = DeleteOutcome()
+            for ((url, group) in targets.distinct().groupBy { it.nodeDenUrl.trimEnd('/') }) {
+                val hg = c.harness(url)
+                for (chunk in group.map { it.session }.chunked(SESSION_DELETE_BATCH_MAX)) {
+                    outcome += try {
+                        foldDeleteResults(chunk, hg.deleteSessions(chunk).results)
+                    } catch (e: SessionDeleteUnsupported) {
+                        failAll(chunk, DeleteFailure.Error, e.message.orEmpty())
+                    } catch (e: Exception) {
+                        if (e is kotlinx.coroutines.CancellationException) throw e
+                        failAll(chunk, DeleteFailure.Error, e.message ?: e.javaClass.simpleName)
+                    }
+                }
+            }
+            if (outcome.deleted.isNotEmpty()) forgetDeleted(outcome.deleted.toSet())
+            onDone(outcome)
+        }
+    }
+
+    private suspend fun forgetDeleted(deleted: Set<String>) {
+        val keys = deleted.flatMap(::localKeysFor).toSet()
+        for (rows in plane.values) {
+            for (entry in rows.entries) {
+                val list = entry.value.getOrNull() ?: continue
+                entry.setValue(Result.success(list.filter { it.sessionId !in keys }))
+            }
+        }
+        for (entry in legacy.entries) {
+            val list = entry.value.getOrNull() ?: continue
+            entry.setValue(Result.success(list.filter { it.id !in keys }))
+        }
+        var droppedPointer = false
+        for ((agentId, ptr) in pointers.all()) {
+            if (ptr.sessionId in keys) {
+                pointers.clear(agentId)
+                droppedPointer = true
+            }
+        }
+        if (droppedPointer) persistPointers()
+        c.settings.forgetSessions(keys)
+        rebuildItems()
+    }
+
+    /** Read every online node's clean-up candidates. */
+    fun loadTrash(onDone: (TrashLoad) -> Unit) {
+        val nodes = _state.value.nodes.filter { it.online }
+        viewModelScope.launch {
+            val rows = ArrayList<TrashRow>()
+            var unsupported = 0
+            var failed = 0
+            coroutineScope {
+                nodes.map { node ->
+                    node to async { runCatching { c.harness(node.denUrl).trashSessions() } }
+                }.forEach { (node, call) ->
+                    call.await().fold(
+                        onSuccess = { list ->
+                            list.forEach { rows += TrashRow(it, node.denUrl, node.name.ifBlank { node.id }) }
+                        },
+                        onFailure = { if (it is SessionDeleteUnsupported) unsupported++ else failed++ },
+                    )
+                }
+            }
+            onDone(TrashLoad(rows, unsupported = nodes.isNotEmpty() && unsupported == nodes.size, failedNodes = failed))
+        }
     }
 
     fun agentForSession(sessionId: String): String? = pointers.agentForSession(sessionId)

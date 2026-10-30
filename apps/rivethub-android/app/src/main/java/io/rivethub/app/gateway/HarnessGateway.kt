@@ -239,6 +239,45 @@ class HarnessGateway(
             }
         }
 
+    /**
+     * POST /api/sessions/delete with up to [SESSION_DELETE_BATCH_MAX] canonical
+     * ids. A per-session failure (live, not found) comes back in its result,
+     * never as a thrown error. A gateway without the route throws
+     * [SessionDeleteUnsupported].
+     */
+    suspend fun deleteSessions(ids: List<String>): SessionsDeleteResponse =
+        withContext(Dispatchers.IO) {
+            require(ids.size in 1..SESSION_DELETE_BATCH_MAX) { "1..$SESSION_DELETE_BATCH_MAX ids per request" }
+            val body = wireJson.encodeToString(SessionsDeleteRequest.serializer(), SessionsDeleteRequest(ids))
+                .toRequestBody("application/json".toMediaType())
+            val req = Request.Builder().url(url(listOf("api", "sessions", "delete"))).post(body).build()
+            withClients { c ->
+                c.newCall(req).execute().use { res ->
+                    val text = res.body.string()
+                    if (res.code in UNSUPPORTED_ROUTE_STATUS) throw SessionDeleteUnsupported(res.code)
+                    if (!res.isSuccessful) throw GatewayException(res.code, errorText(res, text))
+                    wireJson.decodeFromString(SessionsDeleteResponse.serializer(), text)
+                }
+            }
+        }
+
+    /** GET /api/sessions/trash — the node's clean-up candidates. [SessionDeleteUnsupported] on an older gateway. */
+    suspend fun trashSessions(): List<SessionTrashCandidate> =
+        withContext(Dispatchers.IO) {
+            val req = Request.Builder().url(url(listOf("api", "sessions", "trash"))).get().build()
+            withClients { c ->
+                c.newCall(req).execute().use { res ->
+                    val text = res.body.string()
+                    if (res.code in UNSUPPORTED_ROUTE_STATUS) throw SessionDeleteUnsupported(res.code)
+                    if (!res.isSuccessful) throw GatewayException(res.code, errorText(res, text))
+                    // An older router may answer this path with some other 200 body.
+                    runCatching { wireJson.decodeFromString(SessionTrashResponse.serializer(), text) }
+                        .getOrNull()?.candidates
+                        ?: throw SessionDeleteUnsupported(res.code)
+                }
+            }
+        }
+
     /** POST /api/harness-sessions/{enc}/prompts/{promptId} — answer an AskUser prompt. */
     suspend fun answerPrompt(enc: String, promptId: String, answers: List<HarnessPromptAnswer>): HarnessTurnAccepted =
         withContext(Dispatchers.IO) {

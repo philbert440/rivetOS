@@ -461,4 +461,48 @@
     <string name="notif_needs_you_title">An agent needs you</string>
     <string name="settings_needs_you">When an agent needs you</string>
     <string name="settings_needs_you_helper">Notify when a conversation stops to wait for your answer or approval. Needs the app to be running.</string>
+    <!-- Delete + clean up (plane/SessionDelete.kt) -->
+    <string name="action_delete_session">Delete…</string>
+    <string name="delete_session_title">Delete session?</string>
+    <string name="delete_one_body">Delete %1$s? Its conversation is removed from memory and the session leaves this list. The harness\'s own transcript on disk is kept. This can\'t be undone.</string>
+    <string name="delete_many_body">Delete %1$d sessions (%2$s)? Their conversations are removed from memory and they leave this list. Each harness\'s own transcript on disk is kept. This can\'t be undone.</string>
+    <string name="delete_confirm">Delete</string>
+    <plurals name="delete_and_more">
+        <item quantity="one">and %1$d more</item>
+        <item quantity="other">and %1$d more</item>
+    </plurals>
+    <string name="select_sessions">select</string>
+    <string name="clean_up_open">clean up…</string>
+    <string name="select_count">%1$d selected</string>
+    <string name="delete_selected">delete %1$d…</string>
+    <string name="select_cancel">cancel</string>
+    <string name="delete_notice_one">Deleted %1$s.</string>
+    <plurals name="delete_notice_many">
+        <item quantity="one">Deleted %1$d session.</item>
+        <item quantity="other">Deleted %1$d sessions.</item>
+    </plurals>
+    <string name="delete_notice_live_one">%1$s is running, so it was left alone.</string>
+    <string name="delete_notice_live_many">%1$s are running, so they were left alone.</string>
+    <string name="delete_notice_missing_one">%1$s was not found on its node; nothing was removed.</string>
+    <string name="delete_notice_missing_many">%1$s were not found on their nodes; nothing was removed.</string>
+    <string name="delete_notice_failed">%1$s could not be deleted.</string>
+    <string name="delete_notice_failed_reason">%1$s could not be deleted (%2$s).</string>
+    <string name="cleanup_title">Clean up</string>
+    <string name="cleanup_intro">Sessions the node flags as junk: empty, or a one-word reply. Nothing is selected for you.</string>
+    <string name="cleanup_loading">Looking for sessions to clean up…</string>
+    <string name="cleanup_empty">Nothing to clean up.</string>
+    <string name="cleanup_unsupported">Clean up is not supported by this node yet.</string>
+    <plurals name="cleanup_nodes_failed">
+        <item quantity="one">%1$d node did not answer.</item>
+        <item quantity="other">%1$d nodes did not answer.</item>
+    </plurals>
+    <string name="cleanup_select_all">Select all</string>
+    <string name="cleanup_select_none">Select none</string>
+    <string name="cleanup_delete_selected">Delete selected (%1$d)</string>
+    <string name="cleanup_untitled">untitled session</string>
+    <string name="cleanup_reason_empty">empty</string>
+    <string name="cleanup_reason_one_word">one-word reply</string>
+    <string name="cleanup_failed_live">running — left alone</string>
+    <string name="cleanup_failed_missing">not found on its node</string>
+    <string name="cleanup_failed_error">failed: %1$s</string>
 </resources>

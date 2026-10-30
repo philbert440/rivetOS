@@ -87,4 +87,12 @@ class ConversationMenuTest {
         val before = mapOf("a1" to AgentPointer("s1", nodeA, 1))
         assertEquals(mapOf("a1" to AgentPointer("s1", nodeA, 7)), moveSessionToAgent(before, "s1", "a1", nodeA, 7))
     }
+
+    @Test fun `delete comes last, only when deletable`() {
+        val plain = conversationActions(pinned = false, archived = false, draft = false, agentCount = 1)
+        assertFalse(ConversationAction.Delete in plain)
+        val del = conversationActions(pinned = false, archived = false, draft = false, agentCount = 1, deletable = true)
+        assertEquals(ConversationAction.Delete, del.last())
+        assertEquals(listOf(DiscardDraft), conversationActions(pinned = false, archived = false, draft = true, agentCount = 1, deletable = true))
+    }
 }

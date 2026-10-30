@@ -162,7 +162,19 @@ Top to bottom:
    - the existing filter field appears above the list past the same row-count threshold as today;
    - **long-press menu**: Pin / Unpin · Rename · Move to agent (sheet listing agents; re-points that
      agent's pointer at this session) · Archive / Unarchive · Hide (removes the row locally; the session
-     itself is untouched because the den has no delete) · Discard draft (drafts only).
+     itself is untouched) · Delete… (rows with a canonical id on a known node; see below) · Discard draft
+     (drafts only);
+   - **delete and clean up**: under the header, `select · clean up…`. Select turns taps into check
+     toggles on deletable rows (swipe and long-press are off) and the line reads `N selected · delete N… ·
+     cancel`. Clean up… opens a sheet of the online nodes' junk candidates (`GET /api/sessions/trash`:
+     empty, or a one-word reply) with title, harness, age, reason, node and reply preview; renamed
+     sessions and the open one are never offered, nothing is preselected, and Select all / none toggles.
+     Every delete goes through one confirm that names up to three sessions and says the conversation
+     leaves memory and the list while the harness's transcript on disk is kept. Deletes go to each
+     row's own node (`POST /api/sessions/delete`, 200 per call). Only what a node reports deleted is
+     cleared locally (name, archive, pin, hide, view mode, turn pick, project, resume pointer, agent
+     pointer, under canonical and native keys); a running session or one the node cannot find keeps
+     its row and the notice says so. A node without the routes says clean up is not supported yet.
 3. **Node switcher** chip (current node name; existing sheet).
 4. **Footer**: round icon buttons — **Agents** (opens the agents picker sheet: one row per agent preset
    with colour, name, node and directory basename; tap opens a new conversation for that agent; long-press

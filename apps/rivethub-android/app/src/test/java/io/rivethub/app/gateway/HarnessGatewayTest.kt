@@ -304,4 +304,54 @@ class HarnessGatewayTest {
         val gw = HarnessGateway(client { error("no") }, base)
         assertTrue(gw.sessionWatchUrl(pathEnc).contains("session=$pathEnc"))
     }
+
+    @Test fun `deleteSessions posts the ids and keeps per-item failures`() = runBlocking {
+        withTimeout(2_000) {
+            val seen = CopyOnWriteArrayList<String>()
+            val bodies = CopyOnWriteArrayList<String>()
+            val gw = HarnessGateway(
+                client { req ->
+                    seen += "${req.method} ${req.url.encodedPath}"
+                    val buf = okio.Buffer()
+                    req.body?.writeTo(buf)
+                    bodies += buf.readUtf8()
+                    json(req, 200, """{"results":[{"session":"$sid","ok":true,"conversations":1,"messages":4,"summaries":0},{"session":"codex:x","ok":false,"error":"session is live"}]}""")
+                },
+                base,
+            )
+            val res = gw.deleteSessions(listOf(sid, "codex:x"))
+            assertEquals("POST /api/sessions/delete", seen.single())
+            assertEquals("""{"sessions":["$sid","codex:x"]}""", bodies.single())
+            assertTrue(res.results[0].ok)
+            assertEquals("session is live", res.results[1].error)
+        }
+    }
+
+    @Test fun `delete routes missing on an older gateway are typed`() = runBlocking {
+        withTimeout(2_000) {
+            val gw = HarnessGateway(client { req -> json(req, 404, """{"error":"not found"}""") }, base)
+            val del = runCatching { gw.deleteSessions(listOf(sid)) }.exceptionOrNull()
+            assertTrue(del is SessionDeleteUnsupported)
+            val trash = runCatching { gw.trashSessions() }.exceptionOrNull()
+            assertTrue(trash is SessionDeleteUnsupported)
+        }
+    }
+
+    @Test fun `trashSessions reads candidates and rejects another 200 shape`() = runBlocking {
+        withTimeout(2_000) {
+            val ok = HarnessGateway(
+                client { req ->
+                    assertEquals("GET", req.method)
+                    assertTrue(req.url.encodedPath.endsWith("/api/sessions/trash"))
+                    json(req, 200, """{"candidates":[{"session":"$sid","harness":"claude-code","title":null,"updatedAt":"2026-10-01T00:00:00Z","reason":"empty","userTurns":0,"reply":null}]}""")
+                },
+                base,
+            )
+            val rows = ok.trashSessions()
+            assertEquals(sid, rows.single().session)
+            assertEquals("empty", rows.single().reason)
+            val odd = HarnessGateway(client { req -> json(req, 200, """{"session":{"id":"x"}}""") }, base)
+            assertTrue(runCatching { odd.trashSessions() }.exceptionOrNull() is SessionDeleteUnsupported)
+        }
+    }
 }
