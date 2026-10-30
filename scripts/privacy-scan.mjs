@@ -48,26 +48,8 @@ const FAKE_UUIDS = new Set([
 
 const ALLOWED_HOME_USERS = new Set(['ubuntu', 'runner', 'rivet', 'rivetos', 'user', 'example'])
 
-/** Vendored trees: skip persona/home false positives. Still scan README at dropbear root. */
-const VENDORED_RE = [
-  /(^|\/)com\/artifex\/mupdf\//,
-  /(^|\/)material-color-utilities\//,
-  /(^|\/)native\/dropbear\/(?!README\.md$)/,
-  /(^|\/)highlight\/src\/main\/res\/raw\/prism\.js$/,
-  /(^|\/)simple_dict\//,
-  /(^|\/)jieba\//,
-]
-
-export function isVendoredPath(file) {
-  return VENDORED_RE.some((re) => re.test(file))
-}
-
 export function isArchivePath(file) {
   return /\.(bin|tar\.gz|tgz)$/i.test(file)
-}
-
-export function isCommittedOverlayArchive(file) {
-  return /(^|\/)assets\/[^/]*overlay[^/]*\.(bin|tar\.gz|tgz)$/i.test(file)
 }
 
 /** Path markers apply to READMEs, docs, fixtures — not application source. */
@@ -262,46 +244,44 @@ export function scanLine(line, { file = '', denyHashes = new Set() } = {}) {
       hint: 'hardcoded rivet- agent prefix — tags come from the slug rule',
     })
   }
-  if (!isVendoredPath(file)) {
-    for (const m of line.matchAll(IPV4_LIKE_RE)) {
-      const token = m[0]
-      const parts = token.split('.')
-      const candidates = [token]
-      if (parts.length >= 3) candidates.push(parts.slice(0, 3).join('.'))
-      if (parts.length >= 2) candidates.push(parts.slice(0, 2).join('.'))
-      if (candidates.some((c) => denyHashes.has(sha256(c)))) {
-        out.push({
-          rule: 'denylist-ip-prefix',
-          severity: 'block',
-          match: token,
-          hint: 'hashed denylist address or prefix',
-        })
-      }
-    }
-    for (const m of line.matchAll(WORD_RE)) {
-      if (shouldCheckPersonaToken(m[0], line, m.index ?? 0)) continue
-      // Short letter+digit tokens (lab hosts like box3) skip the persona gate.
-      if (!/^[A-Za-z]{2,}\d+$/.test(m[0])) continue
-      if (denyHashes.has(sha256(m[0].toLowerCase()))) {
-        out.push({
-          rule: 'denylist-host',
-          severity: 'block',
-          match: m[0],
-          hint: 'hashed denylist host or token',
-        })
-      }
-    }
-    for (const m of line.matchAll(HOME_RE)) {
-      if (ALLOWED_HOME_USERS.has(m[1])) continue
-      const personal = denyHashes.has(sha256(m[1].toLowerCase()))
-      if (!personal && !isPathMarkerFile(file)) continue
+  for (const m of line.matchAll(IPV4_LIKE_RE)) {
+    const token = m[0]
+    const parts = token.split('.')
+    const candidates = [token]
+    if (parts.length >= 3) candidates.push(parts.slice(0, 3).join('.'))
+    if (parts.length >= 2) candidates.push(parts.slice(0, 2).join('.'))
+    if (candidates.some((c) => denyHashes.has(sha256(c)))) {
       out.push({
-        rule: 'home-path',
+        rule: 'denylist-ip-prefix',
         severity: 'block',
-        match: m[0],
-        hint: '/home/<user> — use /home/user, /home/ubuntu, /home/rivet, or $HOME',
+        match: token,
+        hint: 'hashed denylist address or prefix',
       })
     }
+  }
+  for (const m of line.matchAll(WORD_RE)) {
+    if (shouldCheckPersonaToken(m[0], line, m.index ?? 0)) continue
+    // Short letter+digit tokens (lab hosts like box3) skip the persona gate.
+    if (!/^[A-Za-z]{2,}\d+$/.test(m[0])) continue
+    if (denyHashes.has(sha256(m[0].toLowerCase()))) {
+      out.push({
+        rule: 'denylist-host',
+        severity: 'block',
+        match: m[0],
+        hint: 'hashed denylist host or token',
+      })
+    }
+  }
+  for (const m of line.matchAll(HOME_RE)) {
+    if (ALLOWED_HOME_USERS.has(m[1])) continue
+    const personal = denyHashes.has(sha256(m[1].toLowerCase()))
+    if (!personal && !isPathMarkerFile(file)) continue
+    out.push({
+      rule: 'home-path',
+      severity: 'block',
+      match: m[0],
+      hint: '/home/<user> — use /home/user, /home/ubuntu, /home/rivet, or $HOME',
+    })
   }
   if (isPathMarkerFile(file)) {
     for (const m of line.matchAll(AGENT_DATA_RE)) {
@@ -372,10 +352,9 @@ const SKIP = [
   /(^|\/)dist\//,
   /(^|\/)__pycache__\//,
   /(^|\/)prebuilt\//,
-  /(^|\/)simple_dict\/idf\.utf8$/,
   /\.(png|jpg|jpeg|gif|webp|ico|svg|pdf|zip|woff2?|ttf|otf|mp3|wav|ogg|mp4|m4a|webm|so|a|dll|dylib|jar|class|keystore|jks|wasm|pyc|pyo)$/i,
 ]
-const skip = (f) => SKIP.some((re) => re.test(f)) || isVendoredPath(f)
+const skip = (f) => SKIP.some((re) => re.test(f))
 
 function archiveMembers(file) {
   try {
@@ -405,16 +384,6 @@ function archiveMemberText(file, member) {
 
 export function scanArchiveFile(file, denyHashes) {
   const findings = []
-  if (isCommittedOverlayArchive(file)) {
-    findings.push({
-      rule: 'committed-archive',
-      severity: 'block',
-      match: file,
-      hint: 'overlay archives must be built from overlay-src, not committed',
-      file,
-      line: 1,
-    })
-  }
   const members = archiveMembers(file)
   if (members === null) {
     findings.push({

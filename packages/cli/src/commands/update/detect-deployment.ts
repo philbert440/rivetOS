@@ -194,8 +194,6 @@ export const OWNERSHIP_PREFLIGHT_PATHS: readonly string[] = [
   '.git',
   'apps/rivethub-electron/dist-electron',
   'apps/rivethub-electron/release',
-  'apps/rivet-android/.gradle',
-  'apps/rivet-android/build',
   'apps/rivethub-android/.gradle',
   'apps/rivethub-android/build',
 ]

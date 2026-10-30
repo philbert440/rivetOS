@@ -11,9 +11,7 @@ dist/
 
 # Build artifacts
 **/*.js
-!apps/rivet-android/highlight/src/main/res/raw/prism.js
 !apps/rivethub-web/public/theme-boot.js
-!apps/rivet-android/app/src/main/assets/rivet-bridge-server-v2.js
 **/*.js.map
 **/*.d.ts
 **/*.d.ts.map
@@ -42,11 +40,6 @@ packages/cli/workspace-templates/
 # Tauri (rivethub-desktop) build output
 apps/rivethub-desktop/src-tauri/target/
 apps/rivethub-desktop/src-tauri/gen/
-
-# RivetHub ships a hand-maintained bridge server as a .js asset (bespoke runtime
-# file, not a compiled build output). The blanket **/*.js above would drop it from
-# clean checkouts, breaking installBridge on fresh-build APKs. Force-track it.
-!apps/rivet-android/app/src/main/assets/rivet-bridge-server-v2.js
 
 # Python bytecode
 __pycache__/
