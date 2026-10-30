@@ -61,7 +61,6 @@
     "packages/*",
     "apps/site",
     "apps/rivethub-web",
-    "apps/rivet-android",
     "apps/rivethub-android",
     "plugins/channels/*",
     "plugins/memory/*",
