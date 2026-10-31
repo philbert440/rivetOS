@@ -103,7 +103,6 @@ RivetOS is a lightweight AI agent runtime. It connects LLM providers (Anthropic,
 │   ├── den/                     # rivet-den companion renderer
 │   ├── rivethub-web/            # RivetHub web client
 │   ├── rivethub-electron/       # RivetHub Electron desktop shell
-│   ├── rivet-android/           # RivetHub Android client (AGPL)
 │   └── site/                    # Astro docs site (rivetos.dev)
 │
 ├── integrations/                # Per-harness memory + den bridges (installed onto harness hosts)

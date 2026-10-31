@@ -4,12 +4,9 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import {
   isAcronymToken,
-  isArchivePath,
-  isCommittedOverlayArchive,
   isFakeUuid,
   isOwnerIdentityPath,
   isPathMarkerFile,
-  isVendoredPath,
   parseDenyHashes,
   shouldCheckPersonaToken,
   loadDenyHashes,
@@ -105,7 +102,7 @@ test('/home/<user> is blocked in docs and fixtures', () => {
   assert.equal(isPathMarkerFile('integrations/grok-bot/rivet-memory/README.md'), true)
   assert.equal(isPathMarkerFile('capture/test/fixtures/page-start.txt'), true)
   assert.equal(
-    isPathMarkerFile('apps/rivet-android/app/src/main/java/dev/rivet/app/runtime/RivetRuntime.kt'),
+    isPathMarkerFile('apps/rivethub-android/app/src/main/java/io/rivethub/app/MainActivity.kt'),
     false,
   )
   const someone = ['al', 'ice'].join('')
@@ -135,7 +132,7 @@ test('/home/<user> is blocked in docs and fixtures', () => {
     false,
   )
   const src = scanText(`cd /home/${someone}/app`, {
-    file: 'apps/rivet-android/app/src/main/java/dev/rivet/app/runtime/RivetRuntime.kt',
+    file: 'apps/rivethub-android/app/src/main/java/io/rivethub/app/MainActivity.kt',
   })
   assert.equal(
     src.some((h) => h.rule === 'home-path'),
@@ -143,7 +140,7 @@ test('/home/<user> is blocked in docs and fixtures', () => {
   )
   const hashedUser = ['Qx', 'ypHome'].join('')
   const hashed = scanText(`cd /home/${hashedUser}/app`, {
-    file: 'apps/rivet-android/app/src/main/java/dev/rivet/app/runtime/RivetRuntime.kt',
+    file: 'apps/rivethub-android/app/src/main/java/io/rivethub/app/MainActivity.kt',
     denyHashes: new Set([sha256(hashedUser.toLowerCase())]),
   })
   assert.equal(
@@ -371,32 +368,4 @@ test('short hashed host tokens are caught outside tag context', () => {
     ),
     true,
   )
-})
-
-test('vendored paths skip home and host rules; dropbear README still scans', () => {
-  assert.equal(
-    isVendoredPath('apps/rivet-android/document/src/main/java/com/artifex/mupdf/fitz/Archive.java'),
-    true,
-  )
-  assert.equal(isVendoredPath('apps/rivet-android/native/dropbear/localoptions.h'), true)
-  assert.equal(isVendoredPath('apps/rivet-android/native/dropbear/README.md'), false)
-  const someone = ['al', 'ice'].join('')
-  assert.equal(
-    scanText(`cd /home/${someone}/x`, {
-      file: 'apps/rivet-android/native/dropbear/localoptions.h',
-    }).some((h) => h.rule === 'home-path'),
-    false,
-  )
-})
-
-test('overlay archives are identified as committed assets', () => {
-  assert.equal(
-    isArchivePath('apps/rivet-android/app/src/main/assets/rivet-phone-overlay.bin'),
-    true,
-  )
-  assert.equal(
-    isCommittedOverlayArchive('apps/rivet-android/app/src/main/assets/rivet-phone-overlay.bin'),
-    true,
-  )
-  assert.equal(isCommittedOverlayArchive('docs/foo.md'), false)
 })

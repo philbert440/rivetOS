@@ -115,7 +115,7 @@ describe('probeRemoteInstallWritable', () => {
     expect(res.blockers.some((b) => b.path === '/opt/rivetos')).toBe(true)
     // Electron + Gradle trees are part of the same preflight (when present remotely).
     expect(res.blockers.some((b) => b.path.endsWith('apps/rivethub-electron/release'))).toBe(true)
-    expect(res.blockers.some((b) => b.path.endsWith('apps/rivet-android/.gradle'))).toBe(true)
+    expect(res.blockers.some((b) => b.path.endsWith('apps/rivethub-android/.gradle'))).toBe(true)
     expect(res.blockers.some((b) => b.path.endsWith('apps/rivethub-android/build'))).toBe(true)
   })
 

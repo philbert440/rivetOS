@@ -210,14 +210,14 @@ describe('findOwnershipBlockers', () => {
       return
     }
     const root = scratch()
-    const gradle = join(root, 'apps/rivet-android/.gradle')
+    const gradle = join(root, 'apps/rivethub-android/.gradle')
     const build = join(root, 'apps/rivethub-android/build')
     mkdirSync(gradle, { recursive: true })
     mkdirSync(build, { recursive: true })
     chmodSync(gradle, 0o555)
     chmodSync(build, 0o555)
     const blockers = findOwnershipBlockers(root)
-    expect(blockers).toContain('apps/rivet-android/.gradle')
+    expect(blockers).toContain('apps/rivethub-android/.gradle')
     expect(blockers).toContain('apps/rivethub-android/build')
   })
 

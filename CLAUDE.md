@@ -68,9 +68,9 @@ not just **what** (the diff already shows that).
 This is an **npm workspace** monorepo (`package-lock.json`, `npm ci` in CI) —
 not pnpm and not yarn. Workspace members are enumerated under `workspaces` in
 the root `package.json`: `packages/*`, five per-category plugin globs
-(`plugins/{channels,memory,providers,tools,transports}/*`), `services/*`, four
+(`plugins/{channels,memory,providers,tools,transports}/*`), `services/*`, three
 explicitly-listed apps (`apps/site`, `apps/rivethub-web`,
-`apps/rivet-android` — note the Electron shell `apps/rivethub-electron` is _not_ a
+`apps/rivethub-android` — note the Electron shell `apps/rivethub-electron` is _not_ a
 member), and the
 two `integrations/*/rivet-memory/capture` packages.
 
@@ -83,12 +83,11 @@ the same in-tree and on the registry.
 The pins track each dependency's own version, so they are not uniform. Most
 of the tree is at `0.4.0-beta.6`, but several members are not — e.g.
 `den-protocol` at `0.1.0`; `den-server`, `embedding-worker`,
-`compaction-worker`, and `site` at `0.4.0`; `rivet-android` at
-`0.0.0`; and the two capture packages at `0.3.0` and `0.1.0`. Check the
-member's own `version` rather than assuming the common one. A handful of edges
-opt out with `"*"` (`gateway-client` → types, `den-server` → types,
-`rivethub-web` → types and gateway-client); those always resolve to the local
-member.
+`compaction-worker`, and `site` at `0.4.0`; and the two capture packages at
+`0.3.0` and `0.1.0`. Check the member's own `version` rather than assuming the
+common one. A handful of edges opt out with `"*"` (`gateway-client` → types,
+`den-server` → types, `rivethub-web` → types and gateway-client); those always
+resolve to the local member.
 
 For every pinned edge, npm links the workspace member locally only while the
 pin still matches that member's own `version`. Bump a package's version
