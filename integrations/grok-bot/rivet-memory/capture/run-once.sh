@@ -2,6 +2,7 @@
 # Grok Bot capture runner: convert transcripts and ingest to RivetOS memory.
 # Runs for all models on the grokbot node.
 # Requires RIVETOS_PG_URL and RIVETOS_ROOT with built packages; fails closed if missing.
+# Set RIVETOS_RH_PRINCIPAL when rh_* tables enforce RLS via current_setting('rh.principal').
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

@@ -44,7 +44,11 @@ import type { GrokbotIngestInput, GrokbotIngestResult } from './ingest-rows.js'
 import { clampCreatedAt, toIngestRows, type TimeClock } from './normalize.js'
 import { normalizePages } from './pages.js'
 import { partText, recordParts, recordRole } from './parse.js'
-import { READONLY_POOL_OPTIONS, wrapReadOnlyClient } from './pg-readonly.js'
+import {
+  READONLY_POOL_OPTIONS,
+  applyRhPrincipalOnConnect,
+  wrapReadOnlyClient,
+} from './pg-readonly.js'
 import { extractTimestampTag } from './timestamps.js'
 import { applySpoolConsensus, inspectPageFiles, toParsedInput } from './page-validate.js'
 import {
@@ -1049,6 +1053,7 @@ export function createPgOverlapStore(connectionString: string): OverlapStore {
     connectionString,
     ...READONLY_POOL_OPTIONS,
   })
+  applyRhPrincipalOnConnect(pool)
   const guarded = wrapReadOnlyClient({
     query: async (sql, params) => pool.query(sql, params),
   })

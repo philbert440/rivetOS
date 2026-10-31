@@ -2,10 +2,13 @@ import { describe, expect, it } from 'vitest'
 import {
   LIST_CONVERSATIONS_SQL,
   READONLY_POOL_OPTIONS,
+  RH_PRINCIPAL_ENV,
   ROWS_BY_CONVERSATION_SQL,
+  applyRhPrincipalOnConnect,
   assertReadOnlySql,
   fetchGrokbotRows,
   loadRivetosPgUrlFromEnv,
+  rhPrincipalFromEnv,
   wrapReadOnlyClient,
 } from '../src/pg-readonly.js'
 import { FROM_ROWS_LIMITS } from '../src/reclean.js'
@@ -85,5 +88,36 @@ describe('read-only rows source', () => {
     expect(FROM_ROWS_LIMITS).toMatch(/cannot restore tool results/)
     expect(FROM_ROWS_LIMITS).toMatch(/<session>-vN-rows/)
     expect(FROM_ROWS_LIMITS).not.toMatch(/\$\{SUFFIX\}/)
+  })
+
+  it('sets rh.principal on connect only when RIVETOS_RH_PRINCIPAL is non-empty', () => {
+    expect(rhPrincipalFromEnv({} as NodeJS.ProcessEnv)).toBeUndefined()
+    expect(rhPrincipalFromEnv({ [RH_PRINCIPAL_ENV]: '   ' } as NodeJS.ProcessEnv)).toBeUndefined()
+    const principal = rhPrincipalFromEnv({ [RH_PRINCIPAL_ENV]: '  unit  ' } as NodeJS.ProcessEnv)
+    expect(principal).toBe('unit')
+
+    type FakeClient = {
+      query: (sql: string, params?: unknown[]) => Promise<{ rows: unknown[] }>
+    }
+    const queries: Array<{ sql: string; params?: unknown[] }> = []
+    const listeners: Array<(client: FakeClient) => void> = []
+    const pool = {
+      on: (_event: 'connect', cb: (client: FakeClient) => void) => {
+        listeners.push(cb)
+      },
+    }
+    applyRhPrincipalOnConnect(pool, undefined)
+    expect(listeners).toHaveLength(0)
+    applyRhPrincipalOnConnect(pool, principal)
+    expect(listeners).toHaveLength(1)
+    listeners[0]({
+      query: async (sql, params) => {
+        queries.push({ sql, params })
+        return { rows: [] }
+      },
+    })
+    expect(queries).toEqual([
+      { sql: "SELECT set_config('rh.principal', $1, false)", params: [principal] },
+    ])
   })
 })
