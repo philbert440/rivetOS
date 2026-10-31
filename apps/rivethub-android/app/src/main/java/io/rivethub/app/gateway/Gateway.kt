@@ -235,7 +235,7 @@ class Gateway(
      * the phone holds ONE of these on the entry node.
      */
     fun watchNotifications(onFrame: (NotificationFrame) -> Unit, onStatus: (WsStatus) -> Unit = {}): Closeable =
-        WsSubscription(clients(), url(listOf("api", "notifications", "ws")).toString(), onStatus) { text ->
+        WsSubscription(clients(), url(listOf("api", "notifications", "ws")).toString(), onStatus, watcher = true) { text ->
             parseNotificationFrame(text)?.let(onFrame)
         }
 
@@ -338,12 +338,14 @@ enum class WsStatus { CONNECTING, OPEN, CLOSED }
  * generation number captured in its listener — no lock is held across
  * OkHttp calls (its callbacks can re-enter from `cancel()`/`close()`), and a
  * late `onOpen` from a superseded socket can't report OPEN or reset the
- * backoff.
+ * backoff. A [watcher] socket feeds alerts and keeps retrying in the
+ * background while the background connection runs (plane/BackgroundWatch.kt).
  */
 class WsSubscription(
     private val clientOrder: List<OkHttpClient>,
     private val url: String,
     private val onStatus: (WsStatus) -> Unit,
+    private val watcher: Boolean = false,
     private val onText: (String) -> Unit,
 ) : Closeable {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -351,9 +353,13 @@ class WsSubscription(
     @Volatile private var ws: WebSocket? = null
     @Volatile private var generation = 0
     @Volatile private var status = WsStatus.CONNECTING
-    private val retry = ReconnectScheduler(scope) { connect() }
+    private val retry = ReconnectScheduler(scope, isForeground = { AppForeground.retries(watcher) }) { connect() }
     private val foreground = AppForeground.register { fg, away ->
-        if (!fg) retry.pause() else if (reconnectOnForeground(status, away)) retry.connectNow()
+        if (!fg) {
+            if (!AppForeground.retries(watcher)) retry.pause()
+        } else if (reconnectOnForeground(status, away)) {
+            retry.connectNow()
+        }
     }
 
     init { connect() }

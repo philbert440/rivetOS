@@ -229,11 +229,19 @@ Reached by the Terminal chip; the same session, same PTY.
 - **Inbox** (bell in the drawer): filled by the notifications socket — task completed, escalation,
   workflow gate. Tapping a task item opens its detail. When the app is backgrounded, task completion also
   posts a system notification (behind a Settings toggle).
+- **Background connection:** while any alert toggle is on (task notifications, agent finished, needs
+  you) and a node is paired, a foreground service keeps the app connected in the background and shows
+  one quiet ongoing notice, "Watching for alerts", that opens the app. Only the sockets alerts come from
+  (each node's registry stream and the notifications socket) keep reconnecting while away; chat and
+  terminal sockets still pause. The hub that watches them lives as long as the process, not the screen.
+  Turning every alert off stops the service. No push: if Android kills the process the alerts stop until
+  the app is opened again.
 
 ## 7. Settings additions
 
 Show message stats · Show action row always · Code: line numbers · Code: word wrap · Font scale ·
-Task notifications (system) · existing items unchanged.
+Task notifications (system) · existing items unchanged. Under the alert toggles, one helper line says
+that any alert keeps RivetHub connected in the background with a quiet notice.
 
 ## 8. Out of scope for this program
 

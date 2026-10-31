@@ -18,9 +18,11 @@ import io.rivethub.app.gateway.HubStatePutResult
 import io.rivethub.app.gateway.HubStateResponse
 import io.rivethub.app.notify.AppVisibility
 import io.rivethub.app.notify.TaskNotifier
+import io.rivethub.app.plane.InboxLabels
 import io.rivethub.app.plane.LocalHubPrefs
 import io.rivethub.app.transport.DirectTransport
 import io.rivethub.app.transport.NodeTransport
+import io.rivethub.app.ui.HubViewModel
 import io.rivethub.app.update.Updater
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -29,7 +31,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 
 /** Process-wide wiring. Small enough that a DI framework would be more code than it saves. */
-class AppContainer(app: Application) {
+class AppContainer(private val app: Application) {
     val settings = Settings(app)
     val identity = DeviceIdentityStore(app)
     val lan = LanNetwork(app)
@@ -88,6 +90,29 @@ class AppContainer(app: Application) {
         },
         prefs = settings.hubPrefs,
         scope = scope,
+    )
+
+    /**
+     * The hub: conversation list, registry watches and the alert detection
+     * (needs you, agent finished, inbox). It lives as long as the process,
+     * not the activity, so the background connection (notify/AlertService)
+     * keeps alerting after the screen is gone. Main thread only. MainActivity
+     * re-hands the labels after a locale change and adds the open chat.
+     */
+    val hub: HubViewModel by lazy {
+        HubViewModel(this, inboxLabels()).apply {
+            systemNotifier = taskNotifier
+            appResumed = { visibility.resumed }
+            agentFinishedTitle = app.getString(R.string.notif_agent_finished_title)
+            needsYouTitle = app.getString(R.string.notif_needs_you_title)
+        }
+    }
+
+    fun inboxLabels() = InboxLabels(
+        escalationTitle = app.getString(R.string.inbox_escalation_title),
+        taskDoneTitle = app.getString(R.string.inbox_task_done_title),
+        gateTitle = app.getString(R.string.inbox_gate_title),
+        taskDoneStatusFallback = app.getString(R.string.inbox_task_done_status_fallback),
     )
 
     init {

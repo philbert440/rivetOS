@@ -6,6 +6,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.io.Closeable
 import java.util.concurrent.CopyOnWriteArraySet
+import io.rivethub.app.plane.retriesAllowed
 import kotlin.random.Random
 
 /**
@@ -17,7 +18,9 @@ import kotlin.random.Random
  * background, and coming back resets the wait and reconnects at once: a
  * socket that is not open, or one that claims to be open after
  * [STALE_AFTER_MS] away (it may have died silently and only the next ping
- * would notice).
+ * would notice). The exception is a watcher socket while the background
+ * connection runs ([AppForeground.backgroundWatch], plane/BackgroundWatch.kt):
+ * it keeps retrying so alerts still arrive.
  */
 
 /** Wait before retry number [attempt] (0-based), without jitter. */
@@ -42,6 +45,12 @@ object AppForeground {
     /** True until told otherwise, so a socket opened outside an activity still retries. */
     @Volatile var foreground: Boolean = true
         private set
+
+    /** The background connection runs (notify/AlertService): watcher sockets keep retrying while away. */
+    @Volatile var backgroundWatch: Boolean = false
+
+    /** Whether a socket ([watcher] or not) may retry right now. */
+    fun retries(watcher: Boolean): Boolean = retriesAllowed(foreground, watcher, backgroundWatch)
     @Volatile private var backgroundedAt: Long = 0L
 
     fun set(foreground: Boolean, nowMs: Long = System.currentTimeMillis()) {

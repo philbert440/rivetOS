@@ -17,6 +17,7 @@ class ReconnectTest {
     @After fun tearDown() {
         scope.cancel()
         AppForeground.set(true)
+        AppForeground.backgroundWatch = false
     }
 
     @Test fun `waits double from 500ms and cap at 15s`() {
@@ -77,5 +78,22 @@ class ReconnectTest {
         assertEquals(2, retry.attempt)
         retry.onOpen()
         assertEquals(0, retry.attempt)
+    }
+
+    @Test fun `in the background only a watcher socket retries, and only while the background connection runs`() {
+        AppForeground.set(false, nowMs = 1_000)
+        assertFalse(AppForeground.retries(watcher = false))
+        assertFalse(AppForeground.retries(watcher = true))
+        AppForeground.backgroundWatch = true
+        assertFalse(AppForeground.retries(watcher = false))
+        assertTrue(AppForeground.retries(watcher = true))
+        val watcher = ReconnectScheduler(scope, isForeground = { AppForeground.retries(true) }, jitterMs = { 0 }) {}
+        val chat = ReconnectScheduler(scope, isForeground = { AppForeground.retries(false) }, jitterMs = { 0 }) {}
+        watcher.schedule()
+        chat.schedule()
+        assertEquals(1, watcher.attempt)
+        assertEquals(0, chat.attempt)
+        AppForeground.set(true, nowMs = 2_000)
+        assertTrue(AppForeground.retries(watcher = false))
     }
 }
