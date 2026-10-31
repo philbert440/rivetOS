@@ -156,13 +156,47 @@ Top to bottom:
      device's local time zone (with the year when not the current year); a conversation whose timestamp
      is missing or unparsable sorts under Today; archived conversations remain in their existing
      collapsible block at the end;
+   - **Topics** sit above the dated sections: rh's work topics (`GET /api/topics`, `GET /api/topics/filing`
+     on the entry node), the same ones RivetHub desktop files sessions under. Each open topic is a
+     foldable section of its sessions; a nested topic follows its parent, named by its path (`Parent ›
+     Child`); roots and siblings are newest activity first; a closed topic is hidden until one of its
+     sessions is active after it closed. **+ topic** creates one (`POST /api/topics`); a topic's menu
+     renames it (`PATCH`, its own name only) or deletes it (`DELETE`: its sessions return to the dated
+     list; a topic with subtopics is refused and the snackbar says so). **Move to topic…** files a session
+     (`PUT /api/sessions/{session}/placement`) or takes it out (`DELETE`); a draft, or "+" inside a topic
+     (which always asks for the agent), is filed once the node adopts it. Topics reload on refresh, after
+     each change and when a turn ends (rh sends no topic notice). On first load the hub-state projects
+     move over once: each joins the topic of the same name or becomes a new topic, its sessions are
+     filed, and the projects leave hub state. A node without topics keeps the hub-state projects as
+     before;
+   - on a node with topics, **Rename** sets the session's title on its own node (`PUT
+     /api/harness-sessions/{session}/title`), so desktop shows the same name; the phone shows the new
+     name at once and keeps it locally only until the node takes it (and for drafts, a cleared name or
+     a node without the route). **Archive** marks the session as history (`PUT /api/sessions/{session}/
+     history`, from the filing's `history`); Unarchive removes the mark. A marked session shows as
+     archived until it is active after its mark. Names and archive marks made on the phone before move
+     to rh once, like the projects; drafts and older nodes keep the local archive;
    - rows are single-line pills: title (or the draft placeholder), a small pulsing accent dot while that
      session has a turn in flight, a pin glyph on pinned rows; the current conversation is highlighted
      and scrolled into view when the drawer opens;
    - the existing filter field appears above the list past the same row-count threshold as today;
    - **long-press menu**: Pin / Unpin · Rename · Move to agent (sheet listing agents; re-points that
      agent's pointer at this session) · Archive / Unarchive · Hide (removes the row locally; the session
-     itself is untouched because the den has no delete) · Discard draft (drafts only).
+     itself is untouched) · Delete… (rows with a canonical id on a known node; see below) · Discard draft
+     (drafts only);
+   - **delete and clean up**: under the header, `select · clean up…`. Select turns taps into check
+     toggles on deletable rows (swipe and long-press are off) and the line reads `N selected · delete N… ·
+     cancel`. Clean up… opens a sheet of the online nodes' junk candidates (`GET /api/sessions/trash`:
+     empty, or a one-word reply) with title, harness, age, reason, node and reply preview; renamed
+     sessions and the open one are never offered, nothing is preselected, and Select all / none toggles.
+     Each row has **keep**: the node records it is not trash (`PUT /api/sessions/{session}/keep`) and
+     leaves it out of later reviews unless it is used again and still looks like trash; the row leaves
+     the sheet and a notice says so. Every delete goes through one confirm that names up to three sessions and says the conversation
+     leaves memory and the list while the harness's transcript on disk is kept. Deletes go to each
+     row's own node (`POST /api/sessions/delete`, 200 per call). Only what a node reports deleted is
+     cleared locally (name, archive, pin, hide, view mode, turn pick, project, resume pointer, agent
+     pointer, under canonical and native keys); a running session or one the node cannot find keeps
+     its row and the notice says so. A node without the routes says clean up is not supported yet.
 3. **Node switcher** chip (current node name; existing sheet).
 4. **Footer**: round icon buttons — **Agents** (opens the agents picker sheet: one row per agent preset
    with colour, name, node and directory basename; tap opens a new conversation for that agent; long-press
@@ -195,6 +229,12 @@ A rounded card with a hairline outline, sitting above the keyboard.
   **Send** (up arrow). While a turn is in flight Send turns red and becomes **Stop** if the driver
   supports interrupt; long-press Send while in flight queues the text (existing queue strip).
 - Sending is refused while an attachment is still uploading.
+- **Who holds the session** (rh's `driver` frame on the session stream): while the terminal holds it, one
+  dim line above the composer says so: "The terminal is running a turn. What you send here waits until it
+  ends." while rh counts it busy, else "The terminal has this session. Sending here takes it back." Each
+  chat message rh holds for it is listed under that line as "Waiting: <text>", read-only. When rh's
+  `busy` goes from true to false while the chat still shows a turn running, the chat ends that turn as if
+  its end frame had come (a single stale frame never ends one).
 
 ## 5. Terminal view
 
