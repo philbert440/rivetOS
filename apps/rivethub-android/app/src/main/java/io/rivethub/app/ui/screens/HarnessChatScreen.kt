@@ -125,6 +125,7 @@ import io.rivethub.app.ui.components.ChatSessionHeader
 import io.rivethub.app.ui.components.ChatStatusStrip
 import io.rivethub.app.ui.components.TerminalHeader
 import io.rivethub.app.ui.components.Composer
+import io.rivethub.app.ui.components.DriverStripView
 import io.rivethub.app.ui.components.QueuedStrip
 import io.rivethub.app.ui.components.ComposerModelPicker
 import io.rivethub.app.ui.components.RivetConfirmDialog
@@ -483,6 +484,7 @@ fun HarnessChatScreen(
                 onDismiss = vm::dismissError,
                 onClearAll = vm::clearErrors,
             )
+            DriverStripView(st.driver)
             QueuedStrip(
                 items = st.queued,
                 onInject = vm::injectQueued,

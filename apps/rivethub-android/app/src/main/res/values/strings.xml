@@ -501,6 +501,10 @@
     <string name="cleanup_select_all">Select all</string>
     <string name="cleanup_select_none">Select none</string>
     <string name="cleanup_delete_selected">Delete selected (%1$d)</string>
+    <!-- Session driver (plane/SessionDriver.kt, rh note 79) -->
+    <string name="driver_terminal_working">The terminal is running a turn. What you send here waits until it ends.</string>
+    <string name="driver_terminal_idle">The terminal has this session. Sending here takes it back.</string>
+    <string name="driver_waiting">Waiting: %1$s</string>
     <string name="cleanup_keep">keep</string>
     <string name="cleanup_kept">Kept “%1$s”. It won\'t be offered again unless it\'s used and still looks like trash.</string>
     <string name="cleanup_keep_failed">Couldn\'t keep “%1$s”: %2$s</string>

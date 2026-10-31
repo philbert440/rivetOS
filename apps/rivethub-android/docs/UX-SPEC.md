@@ -229,6 +229,12 @@ A rounded card with a hairline outline, sitting above the keyboard.
   **Send** (up arrow). While a turn is in flight Send turns red and becomes **Stop** if the driver
   supports interrupt; long-press Send while in flight queues the text (existing queue strip).
 - Sending is refused while an attachment is still uploading.
+- **Who holds the session** (rh's `driver` frame on the session stream): while the terminal holds it, one
+  dim line above the composer says so: "The terminal is running a turn. What you send here waits until it
+  ends." while rh counts it busy, else "The terminal has this session. Sending here takes it back." Each
+  chat message rh holds for it is listed under that line as "Waiting: <text>", read-only. When rh's
+  `busy` goes from true to false while the chat still shows a turn running, the chat ends that turn as if
+  its end frame had come (a single stale frame never ends one).
 
 ## 5. Terminal view
 

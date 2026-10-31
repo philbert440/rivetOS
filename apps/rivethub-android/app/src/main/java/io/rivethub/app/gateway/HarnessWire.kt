@@ -352,6 +352,17 @@ sealed class HarnessEvent {
         val requestId: String,
         val decision: String,
     ) : HarnessEvent()
+    /**
+     * Who holds the session (rh contract note 79): [holder] `chat` or
+     * `terminal`, null while neither does; [busy] a turn is running as rh
+     * knows it; [queued] the chat messages waiting, oldest first.
+     */
+    data class Driver(
+        val sessionId: String,
+        val holder: String?,
+        val busy: Boolean,
+        val queued: List<String>,
+    ) : HarnessEvent()
     data class Unknown(val type: String, val raw: JsonObject) : HarnessEvent()
 }
 
@@ -442,6 +453,14 @@ fun parseHarnessEvent(el: JsonObject): HarnessEvent {
     val text = el.str("text") ?: el.str("content") ?: ""
     return when (type) {
         "turn-complete" -> HarnessEvent.TurnComplete(sessionId, turnId, el.str("stopReason"))
+        "driver" -> HarnessEvent.Driver(
+            sessionId = sessionId,
+            holder = el.str("driver")?.takeIf { it == "chat" || it == "terminal" },
+            busy = (el["busy"] as? kotlinx.serialization.json.JsonPrimitive)?.booleanOrNull ?: false,
+            queued = (el["queued"] as? kotlinx.serialization.json.JsonArray)
+                ?.mapNotNull { (it as? kotlinx.serialization.json.JsonPrimitive)?.contentOrNull }
+                .orEmpty(),
+        )
         "assistant-delta", "assistant-response", "text" ->
             HarnessEvent.AssistantDelta(sessionId, text, turnId)
         "reasoning-delta", "reasoning" ->
