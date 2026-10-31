@@ -187,8 +187,11 @@ A rounded card with a hairline outline, sitting above the keyboard.
 - Attachment chips (thumbnail or file pill, ✕ to remove) sit in a row above the text field.
 - An **"Editing ✕"** banner appears at the top of the card while editing (§1.3).
 - Text field grows to a few lines then scrolls.
-- **Bottom row**: **Model** pill (opens a sheet: search field, a Favourites group first, then models
-  grouped by provider/harness; long-press a row to favourite) · **Effort** pill (harness sheet levels) ·
+- **Bottom row**: **Node** pill (the conversation's node) · **Model** pill (opens a sheet: search field,
+  a Favourites group first, then models grouped by provider/harness; long-press a row to favourite) ·
+  **Effort** pill (harness sheet levels) — when the harness declares per-turn model and effort options,
+  the Model and Effort pills offer those instead (first entry: the session's or harness's default), in
+  the same place, so there is no separate row above the composer ·
   **+** button (panel: Photo from library, Camera, File, Compress context — sends the harness's compact
   command through the normal inject path when the harness has one, otherwise hidden) · **Delegate…**
   (visible when the field has text: opens the delegate sheet, §6) · mic placeholder (disabled; phase 2) ·
