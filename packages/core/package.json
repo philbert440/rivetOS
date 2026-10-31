@@ -1,7 +1,7 @@
 {
   "name": "@rivetos/core",
   "version": "0.5.0",
-  "description": "RivetOS agent runtime \u2014 the loop, the router, the lifecycle",
+  "description": "RivetOS agent runtime — the loop, the router, the lifecycle",
   "license": "Apache-2.0",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -16,16 +16,16 @@
   },
   "dependencies": {
     "@ai-sdk/provider": "^3.0.10",
-    "@ai-sdk/provider-utils": "^4.0.27",
+    "@ai-sdk/provider-utils": "^4.0.63",
     "@rivetos/agent-registry": "0.5.0",
     "@rivetos/aisdk": "0.5.0",
     "@rivetos/types": "0.5.0",
-    "@rivetos/workflows": "0.5.0",
     "@rivetos/wiki-core": "0.5.0",
-    "ai": "^6.0.177",
+    "@rivetos/workflows": "0.5.0",
+    "ai": "^6.0.320",
     "graphile-worker": "^0.17.3",
     "pg": "^8.22.0",
-    "undici": "^8.10.2",
+    "undici": "^8.11.2",
     "ws": "^8.21.2"
   },
   "devDependencies": {
