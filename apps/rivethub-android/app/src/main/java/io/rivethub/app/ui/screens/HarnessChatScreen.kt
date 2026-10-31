@@ -130,7 +130,6 @@ import io.rivethub.app.ui.components.ComposerModelPicker
 import io.rivethub.app.ui.components.RivetConfirmDialog
 import io.rivethub.app.ui.components.ComposerPicker
 import io.rivethub.app.ui.components.Lucide
-import io.rivethub.app.ui.components.NativeTurnControls
 import io.rivethub.app.ui.components.ModePager
 import io.rivethub.app.ui.components.SelectOption
 import io.rivethub.app.ui.components.TerminalRetryState
@@ -488,32 +487,6 @@ fun HarnessChatScreen(
                 onInject = vm::injectQueued,
                 onCancel = vm::cancelQueued,
             )
-            if (nativeModels.isNotEmpty()) {
-                val sessionDefault = turnOpts.sessionDefaultLabel
-                NativeTurnControls(
-                    models = listOf(
-                        SelectOption(
-                            "",
-                            if (sessionDefault != null) {
-                                stringResource(R.string.turn_model_session_default, sessionDefault)
-                            } else {
-                                stringResource(R.string.turn_model_harness_default)
-                            },
-                        ),
-                    ) + nativeModels.map { SelectOption(it.id, it.label) },
-                    model = turnOpts.effectiveModel.orEmpty(),
-                    onModel = { vm.setTurnPick(it, turnOpts.effectiveEffort) },
-                    efforts = if (turnOpts.efforts.isEmpty()) {
-                        emptyList()
-                    } else {
-                        listOf(SelectOption("", stringResource(R.string.turn_effort_default))) +
-                            turnOpts.efforts.map { SelectOption(it.id, it.label) }
-                    },
-                    effort = turnOpts.effectiveEffort.orEmpty(),
-                    onEffort = { vm.setTurnPick(turnOpts.effectiveModel, it) },
-                    enabled = composerEnabled,
-                )
-            }
             Composer(
                 value = st.composer,
                 onValueChange = vm::setComposer,
@@ -572,7 +545,46 @@ fun HarnessChatScreen(
                         onChange = {},
                         title = stringResource(R.string.node_picker),
                     )
-                    if (nativeModels.isEmpty()) {
+                    if (nativeModels.isNotEmpty()) {
+                        // Per-turn model/effort (#805), next to the node like the sheet pickers below.
+                        val sessionDefault = turnOpts.sessionDefaultLabel
+                        val turnModels = listOf(
+                            SelectOption(
+                                "",
+                                if (sessionDefault != null) {
+                                    stringResource(R.string.turn_model_session_default, sessionDefault)
+                                } else {
+                                    stringResource(R.string.turn_model_harness_default)
+                                },
+                            ),
+                        ) + nativeModels.map { SelectOption(it.id, it.label) }
+                        val turnModel = turnOpts.effectiveModel.orEmpty()
+                        ComposerPicker(
+                            icon = R.drawable.lucide_bot,
+                            label = turnModels.find { it.value == turnModel }?.label ?: turnModel,
+                            compact = compact,
+                            options = turnModels,
+                            value = turnModel,
+                            onChange = { vm.setTurnPick(it, turnOpts.effectiveEffort) },
+                            title = stringResource(R.string.harness_native_model),
+                            enabled = composerEnabled,
+                        )
+                        if (turnOpts.efforts.isNotEmpty()) {
+                            val turnEfforts = listOf(SelectOption("", stringResource(R.string.turn_effort_default))) +
+                                turnOpts.efforts.map { SelectOption(it.id, it.label) }
+                            val turnEffort = turnOpts.effectiveEffort.orEmpty()
+                            ComposerPicker(
+                                icon = R.drawable.lucide_lightbulb,
+                                label = turnEfforts.find { it.value == turnEffort }?.label ?: turnEffort,
+                                compact = compact,
+                                options = turnEfforts,
+                                value = turnEffort,
+                                onChange = { vm.setTurnPick(turnOpts.effectiveModel, it) },
+                                title = stringResource(R.string.harness_native_effort),
+                                enabled = composerEnabled,
+                            )
+                        }
+                    } else {
                         val models = st.sheet?.models.orEmpty()
                         if (models.isNotEmpty()) {
                             val modelLabel = models.find { it.id == st.model }?.label ?: st.model
