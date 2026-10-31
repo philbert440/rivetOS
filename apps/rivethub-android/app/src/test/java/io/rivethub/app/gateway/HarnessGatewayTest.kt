@@ -354,4 +354,24 @@ class HarnessGatewayTest {
             assertTrue(runCatching { odd.trashSessions() }.exceptionOrNull() is SessionDeleteUnsupported)
         }
     }
+
+    @Test fun `keepSession puts the encoded id with no body and types an older gateway`() = runBlocking {
+        withTimeout(2_000) {
+            val seen = CopyOnWriteArrayList<String>()
+            val gw = HarnessGateway(
+                client { req ->
+                    seen += "${req.method} ${req.url.encodedPath} ${req.body?.contentLength()}"
+                    Response.Builder().request(req).protocol(Protocol.HTTP_1_1).code(204).message("No Content")
+                        .body("".toResponseBody(null)).build()
+                },
+                base,
+            )
+            gw.keepSession(sid)
+            assertEquals("PUT /api/sessions/$enc/keep 0", seen.single())
+            val old = HarnessGateway(client { req -> json(req, 405, """{"error":"method not allowed"}""") }, base)
+            assertTrue(runCatching { old.keepSession(sid) }.exceptionOrNull() is SessionDeleteUnsupported)
+            val gone = HarnessGateway(client { req -> json(req, 404, """{"error":"not found"}""") }, base)
+            assertEquals(404, (runCatching { gone.keepSession(sid) }.exceptionOrNull() as GatewayException).status)
+        }
+    }
 }

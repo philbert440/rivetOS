@@ -201,7 +201,8 @@ internal fun SelectMark(selected: Boolean, enabled: Boolean = true) {
  * Clean up…: the node's junk candidates (GET /api/sessions/trash on every
  * online node), minus renamed sessions and the open one. Nothing is
  * preselected; Delete selected goes through the same confirm. Deleted rows
- * leave the list; failures stay selected with their reason.
+ * leave the list; failures stay selected with their reason. Keep on a row
+ * tells the node it is not trash (PUT .../keep) and drops it from the list.
  */
 @Composable
 internal fun CleanupSheet(
@@ -218,7 +219,10 @@ internal fun CleanupSheet(
     var gone by remember { mutableStateOf(setOf<String>()) }
     var confirming by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
+    var keeping by remember { mutableStateOf(setOf<String>()) }
     val notice = rememberDeleteNotice()
+    val keptNotice = stringResource(R.string.cleanup_kept)
+    val keepFailed = stringResource(R.string.cleanup_keep_failed)
     val untitled = stringResource(R.string.cleanup_untitled)
     LaunchedEffect(Unit) { vm.loadTrash { load = it } }
     val rows = load?.let { l ->
@@ -268,6 +272,21 @@ internal fun CleanupSheet(
                             failure = failures[c.session],
                             selected = on,
                             onToggle = { selected = if (on) selected - c.session else selected + c.session },
+                            keeping = c.session in keeping,
+                            onKeep = {
+                                keeping = keeping + c.session
+                                vm.keepSession(HubViewModel.DeleteTarget(c.session, row.nodeDenUrl)) { err ->
+                                    keeping = keeping - c.session
+                                    val label = labelOf(c.session)
+                                    if (err == null) {
+                                        gone = gone + c.session
+                                        selected = selected - c.session
+                                        onNotice(keptNotice.format(label))
+                                    } else {
+                                        onNotice(keepFailed.format(label, err))
+                                    }
+                                }
+                            },
                         )
                     }
                 }
@@ -326,6 +345,8 @@ private fun CandidateRow(
     failure: FailedDelete?,
     selected: Boolean,
     onToggle: () -> Unit,
+    keeping: Boolean,
+    onKeep: () -> Unit,
 ) {
     val colors = RivetTheme.colors
     Row(
@@ -354,6 +375,16 @@ private fun CandidateRow(
                 Text(why, color = colors.red, style = RivetType.mono10, maxLines = 2)
             }
         }
+        // Keep: not trash. The node leaves it out of the next review.
+        Text(
+            stringResource(R.string.cleanup_keep),
+            color = colors.inkDim,
+            style = RivetType.mono10,
+            modifier = Modifier
+                .clip(RoundedCornerShape(Radius.sm))
+                .clickable(enabled = !keeping, role = Role.Button, onClick = onKeep)
+                .padding(horizontal = 8.dp, vertical = 10.dp),
+        )
     }
 }
 

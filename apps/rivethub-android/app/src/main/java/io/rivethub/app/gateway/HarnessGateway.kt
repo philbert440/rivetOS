@@ -261,6 +261,27 @@ class HarnessGateway(
             }
         }
 
+    /**
+     * PUT /api/sessions/{enc}/keep (no body, 204): the user kept [session] when
+     * the clean-up review offered it, so the trash read leaves it out until it
+     * is used again. A gateway without the route throws [SessionDeleteUnsupported]
+     * on 405/501; a 404 is the session (or the route) not being there.
+     */
+    suspend fun keepSession(session: String): Unit =
+        withContext(Dispatchers.IO) {
+            val req = Request.Builder()
+                .url(url(listOf("api", "sessions", sessionKeyEnc(session), "keep")))
+                .put(ByteArray(0).toRequestBody(null))
+                .build()
+            withClients { c ->
+                c.newCall(req).execute().use { res ->
+                    val text = res.body.string()
+                    if (res.code == 405 || res.code == 501) throw SessionDeleteUnsupported(res.code)
+                    if (!res.isSuccessful) throw GatewayException(res.code, errorText(res, text))
+                }
+            }
+        }
+
     /** GET /api/sessions/trash — the node's clean-up candidates. [SessionDeleteUnsupported] on an older gateway. */
     suspend fun trashSessions(): List<SessionTrashCandidate> =
         withContext(Dispatchers.IO) {

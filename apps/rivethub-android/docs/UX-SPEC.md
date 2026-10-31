@@ -169,7 +169,9 @@ Top to bottom:
      cancel`. Clean up… opens a sheet of the online nodes' junk candidates (`GET /api/sessions/trash`:
      empty, or a one-word reply) with title, harness, age, reason, node and reply preview; renamed
      sessions and the open one are never offered, nothing is preselected, and Select all / none toggles.
-     Every delete goes through one confirm that names up to three sessions and says the conversation
+     Each row has **keep**: the node records it is not trash (`PUT /api/sessions/{session}/keep`) and
+     leaves it out of later reviews unless it is used again and still looks like trash; the row leaves
+     the sheet and a notice says so. Every delete goes through one confirm that names up to three sessions and says the conversation
      leaves memory and the list while the harness's transcript on disk is kept. Deletes go to each
      row's own node (`POST /api/sessions/delete`, 200 per call). Only what a node reports deleted is
      cleared locally (name, archive, pin, hide, view mode, turn pick, project, resume pointer, agent

@@ -493,6 +493,20 @@ class HubViewModel(private val c: AppContainer, inboxLabels: InboxLabels) : View
         rebuildItems()
     }
 
+    /** Keep [target] out of the clean-up review (it returns only if used again and still trash). Null error = kept. */
+    fun keepSession(target: DeleteTarget, onDone: (error: String?) -> Unit) {
+        viewModelScope.launch {
+            val error = try {
+                c.harness(target.nodeDenUrl).keepSession(target.session)
+                null
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                e.message ?: e.javaClass.simpleName
+            }
+            onDone(error)
+        }
+    }
+
     /** Read every online node's clean-up candidates. */
     fun loadTrash(onDone: (TrashLoad) -> Unit) {
         val nodes = _state.value.nodes.filter { it.online }

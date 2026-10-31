@@ -499,6 +499,9 @@
     <string name="cleanup_select_all">Select all</string>
     <string name="cleanup_select_none">Select none</string>
     <string name="cleanup_delete_selected">Delete selected (%1$d)</string>
+    <string name="cleanup_keep">keep</string>
+    <string name="cleanup_kept">Kept “%1$s”. It won\'t be offered again unless it\'s used and still looks like trash.</string>
+    <string name="cleanup_keep_failed">Couldn\'t keep “%1$s”: %2$s</string>
     <string name="cleanup_untitled">untitled session</string>
     <string name="cleanup_reason_empty">empty</string>
     <string name="cleanup_reason_one_word">one-word reply</string>
