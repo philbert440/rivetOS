@@ -205,10 +205,11 @@ class HarnessGateway(
         return sub
     }
 
-    /** Driver-level registry stream across every session. */
+    /** Driver-level registry stream across every session; [watcher] keeps it up in the background for alerts. */
     fun watchRegistry(harnessId: String? = null, onEvent: (HarnessEvent) -> Unit,
         onStatus: (WsStatus) -> Unit = {},
-    ): Closeable = WsSubscription(clients(), registryWatchUrl(harnessId), onStatus) { text ->
+        watcher: Boolean = false,
+    ): Closeable = WsSubscription(clients(), registryWatchUrl(harnessId), onStatus, watcher) { text ->
         parseHarnessEvent(text)?.let(onEvent)
     }
 

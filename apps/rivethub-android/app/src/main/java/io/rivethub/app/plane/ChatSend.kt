@@ -84,21 +84,35 @@ fun spawnStopError(conflict: SpawnConflict, denText: String?, status: Int): Stri
 }
 
 /**
+ * The den knew the agent but could not prepare its directory (HTTP 500
+ * `could not create agent directory: …`). Returns the den text, which ends
+ * the attempt list: an agent-less fallback would open the harness in the
+ * node's default directory, a session the user did not ask for. The explicit
+ * fallback is for dens that predate the agent registry (UX-SPEC §3).
+ */
+fun agentDirectoryFailure(status: Int, denText: String?): String? =
+    denText?.takeIf { status == 500 && it.startsWith(AGENT_DIRECTORY_FAILURE) }
+
+private const val AGENT_DIRECTORY_FAILURE = "could not create agent directory"
+
+/**
  * Strip text for a failed `agentId` attempt that does not stop the loop.
  * 404 stays silent so the explicit fallback can run. Any other continued
- * failure (400 harness or model/effort, 500 directory, a non-stopping 409)
- * is the den text, shown before the next attempt.
+ * failure (400 harness or model/effort, 503 registry, a non-stopping 409)
+ * is the den text, shown before the next attempt. A directory failure stops
+ * ([agentDirectoryFailure]) and is not a fallback.
  */
 fun agentAttemptFallbackError(status: Int, denText: String?): String? {
     val conflict = spawnConflict(status, denText)
     if (conflict != null && spawnConflictStops(conflict)) return null
+    if (agentDirectoryFailure(status, denText) != null) return null
     if (status == 404) return null
     return denText ?: "HTTP $status"
 }
 
 /**
  * Strip text after a spawn attempt succeeds. A non-stopping agentId failure
- * (503 registry, 500 directory, 409 [SpawnConflict.Other]) has already put
+ * (503 registry, 409 [SpawnConflict.Other]) has already put
  * the den text on the strip. The agentId-less fallback can still open a
  * session, in the den's default cwd, and that success must not clear the
  * text — [surfaced] is not a reason to erase [current]. The next send

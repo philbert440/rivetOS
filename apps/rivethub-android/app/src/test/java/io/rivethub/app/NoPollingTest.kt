@@ -36,20 +36,33 @@ class NoPollingTest {
         }
     }
 
+    /**
+     * The alert path is socket-driven: no poll loops anywhere on it. Since
+     * 2026-10-31 one foreground service is allowed, the background connection
+     * (notify/AlertService, UX-SPEC §6). It only keeps the process alive so
+     * the sockets stay up; it never fetches on a timer, and no other service
+     * or foreground-service type may join it.
+     */
     @Test
-    fun notifications_inbox_is_socket_driven_with_no_foreground_service() {
+    fun notifications_are_socket_driven_and_only_the_background_connection_is_a_service() {
         val loop = Regex("""while\s*\([^)]*\)\s*\{[^}]*delay\(""")
-        for (rel in listOf("ui/HubViewModel.kt", "plane/Inbox.kt", "plane/NotificationsWatch.kt", "plane/OpenTaskTap.kt", "notify/TaskNotifier.kt", "notify/AppVisibility.kt")) {
+        val timer = Regex("""\bdelay\(|\bTimer\(|\bticker\(|scheduleAtFixedRate|WorkManager|AlarmManager""")
+        for (rel in listOf("ui/HubViewModel.kt", "plane/Inbox.kt", "plane/NotificationsWatch.kt", "plane/OpenTaskTap.kt", "notify/TaskNotifier.kt", "notify/AppVisibility.kt", "notify/AlertService.kt", "plane/BackgroundWatch.kt")) {
             val s = src(rel)
             assertFalse("$rel: a while/delay poll loop", loop.containsMatchIn(s))
-            assertFalse("$rel: starts a foreground service", "startForeground" in s)
+            if (rel != "notify/AlertService.kt") assertFalse("$rel: starts a foreground service", "startForeground" in s)
         }
+        assertFalse("notify/AlertService.kt: a timer", timer.containsMatchIn(src("notify/AlertService.kt")))
         val manifest = File("src/main/AndroidManifest.xml")
         assertTrue("missing manifest", manifest.exists())
         val m = manifest.readText()
         assertTrue("POST_NOTIFICATIONS not declared", "android.permission.POST_NOTIFICATIONS" in m)
-        assertFalse("a foreground-service permission crept in", "FOREGROUND_SERVICE" in m)
-        assertFalse("a <service> crept in", "<service" in m)
+        assertTrue("one <service>, the background connection", Regex("<service").findAll(m).count() == 1 && ".notify.AlertService" in m)
+        val fgsPerms = Regex("""android\.permission\.FOREGROUND_SERVICE[A-Z_]*""").findAll(m).map { it.value }.toSet()
+        assertTrue(
+            "foreground-service permissions beyond remote messaging: $fgsPerms",
+            fgsPerms == setOf("android.permission.FOREGROUND_SERVICE", "android.permission.FOREGROUND_SERVICE_REMOTE_MESSAGING"),
+        )
     }
 
     /**
