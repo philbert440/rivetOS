@@ -351,6 +351,13 @@ class HarnessWireTest {
         assertTrue("cursor" in HARNESS_IDS)
     }
 
+    @Test fun `nativeIdOf accepts the rh 0_7 harnesses omp, dsh and cowork`() {
+        for (h in listOf("omp", "dsh", "cowork")) {
+            assertEquals("a1b2c3d4-1111-4222-8333-444455556666", nativeIdOf("$h:a1b2c3d4-1111-4222-8333-444455556666"))
+            assertTrue(h in HARNESS_IDS)
+        }
+    }
+
     @Test fun `isTurnInFlight matches only the typed 409`() {
         assertTrue(isTurnInFlight(TurnInFlight()))
         assertTrue(isTurnInFlightStatus(409, "turn_in_flight"))
