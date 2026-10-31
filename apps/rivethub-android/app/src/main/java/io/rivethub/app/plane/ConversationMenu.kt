@@ -1,13 +1,14 @@
 package io.rivethub.app.plane
 
 /** Long-press actions on a conversation row (UX-SPEC §2 item 2). */
-enum class ConversationAction { Pin, Unpin, Rename, MoveToProject, MoveToAgent, Archive, Unarchive, Hide, DiscardDraft }
+enum class ConversationAction { Pin, Unpin, Rename, MoveToProject, MoveToAgent, Archive, Unarchive, Hide, Delete, DiscardDraft }
 
 /**
  * Menu contents, top to bottom. A draft only offers Discard draft (it has no
  * session on the den yet). Everything else: Pin or Unpin, Rename, Move to
  * project when any project exists, Move to agent when there is more than one
- * agent to move between, Archive or Unarchive, Hide.
+ * agent to move between, Archive or Unarchive, Hide, then Delete when the
+ * row maps onto a session the node can delete (plane/SessionDelete.kt).
  */
 fun conversationActions(
     pinned: Boolean,
@@ -15,6 +16,7 @@ fun conversationActions(
     draft: Boolean,
     agentCount: Int,
     projectCount: Int = 0,
+    deletable: Boolean = false,
 ): List<ConversationAction> {
     if (draft) return listOf(ConversationAction.DiscardDraft)
     val out = ArrayList<ConversationAction>(5)
@@ -24,6 +26,7 @@ fun conversationActions(
     if (agentCount > 1) out += ConversationAction.MoveToAgent
     out += if (archived) ConversationAction.Unarchive else ConversationAction.Archive
     out += ConversationAction.Hide
+    if (deletable) out += ConversationAction.Delete
     return out
 }
 
