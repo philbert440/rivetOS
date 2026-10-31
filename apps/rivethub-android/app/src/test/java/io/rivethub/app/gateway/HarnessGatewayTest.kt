@@ -427,4 +427,38 @@ class HarnessGatewayTest {
             )
         }
     }
+
+    @Test fun `history marks read from either filing shape, and title and history use their routes`() = runBlocking {
+        withTimeout(2_000) {
+            assertEquals(1, historyMarksOf(wireJson.parseToJsonElement("""[{"sessionId":"$sid","markedAt":5}]""")).size)
+            assertEquals(5L, historyMarksOf(wireJson.parseToJsonElement("""{"sessions":[{"sessionId":"$sid","markedAt":5}]}""")).single().markedAt)
+            val seen = CopyOnWriteArrayList<String>()
+            val gw = HarnessGateway(
+                client { req ->
+                    val buf = okio.Buffer()
+                    req.body?.writeTo(buf)
+                    seen += "${req.method} ${req.url.encodedPath} ${buf.readUtf8()}"
+                    if (req.url.encodedPath.endsWith("/title")) {
+                        json(req, 200, """{"sessionId":"$sid","harnessId":"claude-code","title":"New name"}""")
+                    } else {
+                        json(req, 200, """{"sessionId":"$sid","markedAt":5}""")
+                    }
+                },
+                base,
+            )
+            assertEquals("New name", gw.retitle(sid, "New name").title)
+            gw.markHistory(sid)
+            gw.unmarkHistory(sid)
+            assertEquals(
+                listOf(
+                    """PUT /api/harness-sessions/$enc/title {"title":"New name"}""",
+                    "PUT /api/sessions/$enc/history ",
+                    "DELETE /api/sessions/$enc/history ",
+                ),
+                seen,
+            )
+            val old = HarnessGateway(client { req -> json(req, 404, """{"error":"not found"}""") }, base)
+            assertTrue(runCatching { old.retitle(sid, "x") }.exceptionOrNull() is TopicsUnsupported)
+        }
+    }
 }

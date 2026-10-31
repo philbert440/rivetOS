@@ -65,4 +65,19 @@ class TopicsTest {
         val placements = migratedPlacements(mapOf("k1" to "p1", "k2" to "p2", "k3" to "p3"), mapOf("p1" to "t1", "p2" to "t2"))
         assertEquals(mapOf("k1" to "t1", "k2" to "t2"), placements)
     }
+
+    @Test fun `a history mark archives until the session is active after it`() {
+        val marks = listOf(HistoryMark(sid, 100), HistoryMark("codex:z", 50))
+        val keys = historyArchivedKeys(marks) { mapOf(sid to 90L, "codex:z" to 60L)[it] }
+        assertEquals(setOf(sid, native), keys)
+        assertEquals(setOf(sid, native, "codex:z", "z"), historyArchivedKeys(marks) { null })
+    }
+
+    @Test fun `names and archives move for real sessions only, skipping blanks and what rh already has`() {
+        val canonical = mapOf("k1" to sid, "k2" to "codex:y")
+        val names = titlesToMove(mapOf("k1" to " Plan ", "k2" to " ", "draft" to "x")) { canonical[it] }
+        assertEquals(listOf(TitleMove("k1", sid, "Plan")), names)
+        val arch = archivesToMove(setOf("k1", "k2", "draft"), { canonical[it] }, marked = setOf("codex:y"))
+        assertEquals(mapOf("k1" to sid), arch)
+    }
 }

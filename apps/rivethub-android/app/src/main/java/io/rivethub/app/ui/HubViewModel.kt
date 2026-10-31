@@ -25,7 +25,12 @@ import io.rivethub.app.gateway.HubProject
 import io.rivethub.app.gateway.TopicSummary
 import io.rivethub.app.gateway.TopicsUnsupported
 import io.rivethub.app.gateway.nativeIdOf
+import io.rivethub.app.gateway.historyMarksOf
+import io.rivethub.app.plane.HistoryMark
+import io.rivethub.app.plane.archivesToMove
 import io.rivethub.app.plane.drawerTopics
+import io.rivethub.app.plane.historyArchivedKeys
+import io.rivethub.app.plane.titlesToMove
 import io.rivethub.app.plane.migratedPlacements
 import io.rivethub.app.plane.planPlacements
 import io.rivethub.app.plane.planProjectMigration
@@ -307,6 +312,7 @@ class HubViewModel(private val c: AppContainer, inboxLabels: InboxLabels) : View
                         filter = filter,
                     )
                 }
+                publishArchived() // rh's History marks on top of the phone's archive
             }
         }
         refresh()
@@ -367,6 +373,14 @@ class HubViewModel(private val c: AppContainer, inboxLabels: InboxLabels) : View
      * marks apart (contract note 36).
      */
     fun archive(key: String) {
+        val session = if (_state.value.topicsOn) canonicalForKey(key) else null
+        if (session != null) {
+            // rh's History mark, what desktop shows; shown archived at once.
+            historyMarks = historyMarks.filter { it.sessionId != session } + HistoryMark(session, System.currentTimeMillis())
+            publishArchived()
+            topicCall { it.markHistory(session) }
+            return
+        }
         viewModelScope.launch {
             c.settings.archive(key)
             if (!_state.value.topicsOn) c.settings.editProjects { placeIn(it, key, null) }
@@ -374,9 +388,26 @@ class HubViewModel(private val c: AppContainer, inboxLabels: InboxLabels) : View
     }
     fun unarchive(key: String) {
         viewModelScope.launch { c.settings.unarchive(key) }
+        val session = if (_state.value.topicsOn) canonicalForKey(key) else null
+        if (session != null && historyMarks.any { it.sessionId == session }) {
+            historyMarks = historyMarks.filter { it.sessionId != session }
+            publishArchived()
+            topicCall { it.unmarkHistory(session) }
+        }
     }
+    /**
+     * Rename on rh (the session's own node) so desktop shows it too; the
+     * phone keeps the name locally until rh takes it, and for drafts, older
+     * nodes and a cleared name.
+     */
     fun rename(key: String, title: String) {
-        viewModelScope.launch { c.settings.setTitleOverride(key, title) }
+        viewModelScope.launch {
+            c.settings.setTitleOverride(key, title)
+            val clean = title.trim()
+            val node = nodeOfKey(key) ?: return@launch
+            val session = canonicalForKey(key) ?: return@launch
+            if (clean.isNotEmpty() && retitleOnNode(node, session, clean)) c.settings.setTitleOverride(key, "")
+        }
     }
     fun pin(key: String) {
         viewModelScope.launch { c.settings.pin(key) }
@@ -429,19 +460,103 @@ class HubViewModel(private val c: AppContainer, inboxLabels: InboxLabels) : View
             AndroidLogger.warn("RivetHub", "topics read failed: ${e.message}", e)
             return
         }
-        val filing = try {
-            hg.topicFiling()
+        val whole = try {
+            hg.filing()
         } catch (e: Exception) {
             if (e is kotlinx.coroutines.CancellationException) throw e
             AndroidLogger.warn("RivetHub", "topic filing read failed: ${e.message}", e)
             return // keep the last membership rather than show everything unfiled
         }
+        val filing = whole.sessions
+        historyMarks = historyMarksOf(whole.history)
         rawTopics = topics
         val ids = topics.map { it.id }.toSet()
         placedNow = filing.filter { it.topicId in ids }.associate { it.sessionId to it.topicId }
         _state.update { it.copy(topicsOn = true, topics = drawerTopics(topics), topicMembership = topicMembership(filing, ids)) }
+        publishArchived()
         if (migrateProjects(hg, topics)) topicsAgain = true
         if (sendPendingPlacements(hg)) topicsAgain = true
+        if (moveArchives(hg)) topicsAgain = true
+        moveTitles()
+    }
+
+    /** rh history marks, from the last filing read. */
+    private var historyMarks: List<HistoryMark> = emptyList()
+
+    /**
+     * The drawer's archive: the phone's own (drafts, older nodes) plus rh's
+     * history marks that no activity has cleared (plane/Topics.kt).
+     */
+    private fun publishArchived() {
+        _state.update { st ->
+            val marked = if (st.topicsOn) {
+                val byId = st.items.associateBy({ it.item.sessionId ?: it.item.key }, { it.item.updatedAt.takeIf { t -> t > 0 } })
+                historyArchivedKeys(historyMarks) { byId[it] }
+            } else {
+                emptySet()
+            }
+            st.copy(archived = st.prefs.archived + marked)
+        }
+    }
+
+    /** Move phone-only archive marks to rh once (desktop's History). True when any moved. */
+    private suspend fun moveArchives(hg: HarnessGateway): Boolean {
+        val marked = historyMarks.map { it.sessionId }.toSet()
+        val moves = archivesToMove(c.settings.snapshot().archived, ::canonicalForKey, marked)
+        if (moves.isEmpty()) return false
+        var moved = false
+        for ((key, session) in moves) {
+            try {
+                hg.markHistory(session)
+                c.settings.unarchive(key)
+                moved = true
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                AndroidLogger.warn("RivetHub", "moving archive of $session to History failed: ${e.message}", e)
+            }
+        }
+        return moved
+    }
+
+    /** The node a drawer key's row lives on, if listed. */
+    private fun nodeOfKey(key: String): String? =
+        _state.value.items.firstOrNull { it.item.key == key || it.item.sessionId == key }?.nodeDenUrl
+
+    /**
+     * Move phone-only names to rh once, each on its session's node, so desktop
+     * shows them. A node without the title route keeps the name local.
+     */
+    private suspend fun moveTitles() {
+        val moves = titlesToMove(c.settings.snapshot().titleOverrides) { key ->
+            if (nodeOfKey(key) == null) null else canonicalForKey(key)
+        }
+        for (m in moves) {
+            val node = nodeOfKey(m.key) ?: continue
+            if (retitleOnNode(node, m.session, m.title)) c.settings.setTitleOverride(m.key, "")
+        }
+    }
+
+    /** PUT the title on [node]; true when rh took it. The cached row takes the new title at once. */
+    private suspend fun retitleOnNode(node: String, session: String, title: String): Boolean = try {
+        val renamed = c.harness(node).retitle(session, title)
+        replaceCachedSummary(node.trimEnd('/'), renamed)
+        true
+    } catch (e: TopicsUnsupported) {
+        false
+    } catch (e: Exception) {
+        if (e is kotlinx.coroutines.CancellationException) throw e
+        AndroidLogger.warn("RivetHub", "renaming $session failed: ${e.message}", e)
+        false
+    }
+
+    private fun replaceCachedSummary(node: String, summary: io.rivethub.app.gateway.HarnessSessionSummary) {
+        val rows = plane[node] ?: return
+        for (entry in rows.entries) {
+            val list = entry.value.getOrNull() ?: continue
+            if (list.none { it.sessionId == summary.sessionId }) continue
+            entry.setValue(Result.success(list.map { if (it.sessionId == summary.sessionId) summary else it }))
+        }
+        rebuildItems()
     }
 
     /**

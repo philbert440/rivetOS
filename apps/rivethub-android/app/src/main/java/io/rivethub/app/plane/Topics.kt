@@ -107,3 +107,40 @@ fun planProjectMigration(projects: List<HubProject>, topics: List<TopicSummary>)
 /** The migrated projects' sessions as pending placements: key → topic id, through [topicOf] (project id → topic id). */
 fun migratedPlacements(membership: Map<String, String>, topicOf: Map<String, String>): Map<String, String> =
     membership.mapNotNull { (key, project) -> topicOf[project]?.let { key to it } }.toMap()
+
+// -- History marks and titles (contract notes 36, 72): the archive and names on rh --
+
+/** One `GET /api/sessions/history` mark, epoch ms. */
+data class HistoryMark(val sessionId: String, val markedAt: Long)
+
+/**
+ * Keys the drawer shows as archived from rh's history marks: a marked
+ * session stays in History until it is active after its mark (note 36).
+ * [activityOf] is the session's last activity, null when unknown (still
+ * archived). Canonical and native keys both, as rows match either.
+ */
+fun historyArchivedKeys(marks: List<HistoryMark>, activityOf: (String) -> Long?): Set<String> {
+    val out = HashSet<String>()
+    for (m in marks) {
+        val active = activityOf(m.sessionId)
+        if (active != null && active > m.markedAt) continue
+        out += m.sessionId
+        nativeIdOf(m.sessionId)?.let { out += it }
+    }
+    return out
+}
+
+/** A phone-only name to move to rh: the local key it is stored under, the session and the title. */
+data class TitleMove(val key: String, val session: String, val title: String)
+
+/** Local names whose key names a session rh can retitle. Blank names and drafts stay local. */
+fun titlesToMove(overrides: Map<String, String>, canonicalOf: (String) -> String?): List<TitleMove> =
+    overrides.mapNotNull { (key, title) ->
+        val clean = title.trim()
+        if (clean.isEmpty()) return@mapNotNull null
+        canonicalOf(key)?.let { TitleMove(key, it, clean) }
+    }
+
+/** Locally archived keys to mark as history on rh: key → canonical id, skipping ones rh already marks. */
+fun archivesToMove(archived: Set<String>, canonicalOf: (String) -> String?, marked: Set<String>): Map<String, String> =
+    archived.mapNotNull { key -> canonicalOf(key)?.takeIf { it !in marked }?.let { key to it } }.toMap()

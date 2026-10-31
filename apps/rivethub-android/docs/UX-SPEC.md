@@ -169,6 +169,13 @@ Top to bottom:
      move over once: each joins the topic of the same name or becomes a new topic, its sessions are
      filed, and the projects leave hub state. A node without topics keeps the hub-state projects as
      before;
+   - on a node with topics, **Rename** sets the session's title on its own node (`PUT
+     /api/harness-sessions/{session}/title`), so desktop shows the same name; the phone shows the new
+     name at once and keeps it locally only until the node takes it (and for drafts, a cleared name or
+     a node without the route). **Archive** marks the session as history (`PUT /api/sessions/{session}/
+     history`, from the filing's `history`); Unarchive removes the mark. A marked session shows as
+     archived until it is active after its mark. Names and archive marks made on the phone before move
+     to rh once, like the projects; drafts and older nodes keep the local archive;
    - rows are single-line pills: title (or the draft placeholder), a small pulsing accent dot while that
      session has a turn in flight, a pin glyph on pinned rows; the current conversation is highlighted
      and scrolled into view when the drawer opens;

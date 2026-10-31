@@ -308,9 +308,7 @@ class HarnessGateway(
             .topics.filter { it.kind == "work" }
 
     /** GET /api/topics/filing — every filed session at once. */
-    suspend fun topicFiling(): List<TopicSession> =
-        topicsCall(Request.Builder().url(url(listOf("api", "topics", "filing"))).get().build(), TopicFiling.serializer(), unsupportedOn = true)!!
-            .sessions
+    suspend fun topicFiling(): List<TopicSession> = filing().sessions
 
     suspend fun createTopic(name: String, parent: String? = null): TopicSummary {
         val body = wireJson.encodeToString(TopicCreateRequest.serializer(), TopicCreateRequest(name, parent))
@@ -338,6 +336,33 @@ class HarnessGateway(
 
     suspend fun unplaceSession(session: String) {
         topicsCall<Unit>(Request.Builder().url(url(listOf("api", "sessions", sessionKeyEnc(session), "placement"))).delete().build(), null)
+    }
+
+    /** GET /api/topics/filing, whole: filed sessions and the history marks. */
+    suspend fun filing(): TopicFiling =
+        topicsCall(Request.Builder().url(url(listOf("api", "topics", "filing"))).get().build(), TopicFiling.serializer(), unsupportedOn = true)!!
+
+    /** Mark [session] as history (the archive desktop shows); a session used after the mark is active again. */
+    suspend fun markHistory(session: String) {
+        topicsCall<Unit>(Request.Builder().url(url(listOf("api", "sessions", sessionKeyEnc(session), "history"))).put(ByteArray(0).toRequestBody(null)).build(), null)
+    }
+
+    suspend fun unmarkHistory(session: String) {
+        topicsCall<Unit>(Request.Builder().url(url(listOf("api", "sessions", sessionKeyEnc(session), "history"))).delete().build(), null)
+    }
+
+    /**
+     * PUT /api/harness-sessions/{enc}/title on the session's own node: the
+     * name every client shows. A gateway without the route throws
+     * [TopicsUnsupported] (404/405/501), so the caller keeps the name local.
+     */
+    suspend fun retitle(session: String, title: String): HarnessSessionSummary {
+        val body = wireJson.encodeToString(SessionRetitle.serializer(), SessionRetitle(title))
+        return topicsCall(
+            Request.Builder().url(url(listOf("api", "harness-sessions", sessionKeyEnc(session), "title"))).put(jsonBody(body)).build(),
+            HarnessSessionSummary.serializer(),
+            unsupportedOn = true,
+        )!!
     }
 
     /** GET /api/sessions/trash — the node's clean-up candidates. [SessionDeleteUnsupported] on an older gateway. */

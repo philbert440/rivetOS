@@ -1,6 +1,12 @@
 package io.rivethub.app.gateway
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
 
 // Topics (rh contract notes 17, 36, 37, 40, 70; `wire::gateway::topics`).
 // A topic is a themed group of sessions kept on the memory database, so every
@@ -52,9 +58,32 @@ data class TopicSession(
     val node: String? = null,
 )
 
-/** `GET /api/topics/filing`: every filing in one read. */
+/**
+ * `GET /api/topics/filing`: every filing in one read. [history] is the
+ * history marks, an array on rh 0.7 and `{sessions: [...]}` in the contract
+ * text, so it is read loosely ([historyMarksOf]).
+ */
 @Serializable
-data class TopicFiling(val sessions: List<TopicSession> = emptyList())
+data class TopicFiling(val sessions: List<TopicSession> = emptyList(), val history: JsonElement? = null)
+
+/** `{sessionId, markedAt}` rows from either shape of the filing's history. */
+fun historyMarksOf(history: JsonElement?): List<io.rivethub.app.plane.HistoryMark> {
+    val rows = when (history) {
+        is JsonArray -> history
+        is JsonObject -> history["sessions"] as? JsonArray ?: return emptyList()
+        else -> return emptyList()
+    }
+    return rows.mapNotNull { row ->
+        val o = row as? JsonObject ?: return@mapNotNull null
+        val id = o["sessionId"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+        val at = o["markedAt"]?.jsonPrimitive?.longOrNull ?: return@mapNotNull null
+        io.rivethub.app.plane.HistoryMark(id, at)
+    }
+}
+
+/** `PUT /api/harness-sessions/{session}/title` body. */
+@Serializable
+data class SessionRetitle(val title: String)
 
 /** The gateway predates topics (404 / 405 / 501 on the list route). */
 class TopicsUnsupported(status: Int) : GatewayException(status, "topics not supported by this gateway")
