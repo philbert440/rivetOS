@@ -9,7 +9,7 @@
   <meta property="og:type" content="website">
   <link rel="icon" type="image/png" href="favicon.png">
   <link rel="stylesheet" href="home.css">
-<script type="application/ld+json">{"@context": "https://schema.org", "@graph": [{"@type": "WebSite", "@id": "https://rivethub.io/#website", "url": "https://rivethub.io/", "name": "RivetHub", "inLanguage": "en"}, {"@type": "SoftwareApplication", "@id": "https://rivethub.io/#software", "name": "RivetHub", "url": "https://rivethub.io/", "applicationCategory": "DeveloperApplication", "description": "Self-hosted hub for RivetOS: a personal runtime and memory plane for the coding agents you already use.", "operatingSystem": "Linux and macOS (local hub); Linux and Windows (desktop clients); Android (mobile client)", "featureList": ["Self-hosted hub on hardware you choose", "Local-first memory with full-text and fuzzy search", "Mesh of nodes you enroll", "MCP-exposed recall for tools you choose"], "isRelatedTo": {"@type": "SoftwareSourceCode", "name": "RivetOS", "codeRepository": "https://github.com/philbert440/rivetOS"}}]}</script>
+<script type="application/ld+json">{"@context": "https://schema.org", "@graph": [{"@type": "WebSite", "@id": "https://rivethub.io/#website", "url": "https://rivethub.io/", "name": "RivetHub", "inLanguage": "en"}, {"@type": "SoftwareApplication", "@id": "https://rivethub.io/#software", "name": "RivetHub", "url": "https://rivethub.io/", "applicationCategory": "DeveloperApplication", "description": "Self-hosted hub for RivetOS: a personal runtime and memory plane for the coding agents you already use.", "operatingSystem": "Linux and macOS (local hub); Linux and Windows (desktop clients); Android (mobile client)", "featureList": ["Self-hosted hub on hardware you choose", "Local-first memory with full-text and fuzzy search", "Mesh of nodes you enroll", "MCP-exposed recall for tools you choose"], "isRelatedTo": {"@type": "SoftwareSourceCode", "name": "RivetOS", "codeRepository": "https://github.com/philbert440/rivetOS"}}, {"@type": "VideoObject", "@id": "https://rivethub.io/#explainer", "name": "RivetHub explainer", "description": "Two minutes on what RivetHub does: one record of your agents' work, on hardware you control, shared across the tools you already use.", "thumbnailUrl": "https://rivethub.io/media/rivethub-explainer.jpg", "uploadDate": "2026-10-21", "duration": "PT2M8S", "contentUrl": "https://rivethub.io/media/rivethub-explainer.mp4", "embedUrl": "https://rivethub.io/#explainer", "inLanguage": "en"}]}</script>
 <link rel="canonical" href="https://rivethub.io/">
 <meta property="og:title" content="RivetHub — self-hosted memory you own for your AI agents">
 <meta property="og:description" content="Run RivetHub on your hardware. Shared memory across Claude Code, Codex, Grok Build, Kimi Code, and Hermes. No account. Apache 2.0.">
@@ -35,6 +35,7 @@
       <a href="#how-it-works">RivetOS</a>
       <a href="#paths">RivetHub</a>
       <a href="#cloud">Rivet Cloud</a>
+      <a href="#explainer">Watch</a>
       <a href="install-local.html">Quickstart</a>
       <a href="apps.html">Downloads</a>
       <a class="top-cta" href="#start">Set up</a>
@@ -55,6 +56,7 @@
       <div class="cta-row">
         <a class="btn btn-primary" href="llms.txt" data-ph-event="cta_setup_agent">Set up with your agent</a>
         <a class="btn" href="install-local.html" data-ph-event="cta_install_local">Install on your laptop</a>
+        <a class="text-link" href="#explainer">Watch the explainer</a>
       </div>
       <div class="prompt-line">
         <span class="prompt-label">paste to your agent</span>
@@ -74,6 +76,24 @@
     <a href="#how-it-works"><span class="trio-name">RivetOS</span><span class="trio-role">the runtime that captures and recalls</span></a>
     <a href="#paths"><span class="trio-name">RivetHub</span><span class="trio-role">the hub and apps you run it with</span></a>
     <a href="#cloud"><span class="trio-name">Rivet Cloud</span><span class="trio-role">hosted memory, if you'd rather not run a box</span></a>
+  </div>
+</section>
+
+<!-- ───────────── Explainer ───────────── -->
+<section class="explainer" id="explainer" aria-labelledby="explainer-title">
+  <div class="wrap">
+    <header class="explainer-head">
+      <p class="kicker">Two minutes</p>
+      <h2 id="explainer-title">Watch how RivetHub works.</h2>
+      <p>Every agent starts as a stranger. RivetHub keeps one record of the work, on hardware you control, so the next session already knows you.</p>
+    </header>
+    <figure class="explainer-frame">
+      <video controls playsinline preload="metadata" poster="media/rivethub-explainer.jpg" width="1920" height="1080">
+        <source src="media/rivethub-explainer.mp4" type="video/mp4">
+        <track kind="captions" src="media/rivethub-explainer.vtt" srclang="en" label="English" default>
+      </video>
+      <figcaption>Narrated, with English captions. The same story as the rest of this page, in one sitting.</figcaption>
+    </figure>
   </div>
 </section>
 

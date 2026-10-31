@@ -162,6 +162,18 @@ p { margin: 0; }
 .trio-name { font-weight: 700; font-size: 22px; letter-spacing: -.03em; transition: color .15s; }
 .trio-role { color: var(--soft); font-size: 15px; }
 
+/* ───── Explainer ───── */
+.explainer { padding-block: clamp(56px, 8vw, 96px); scroll-margin-top: 84px; }
+.explainer-head { max-width: 62ch; }
+.explainer h2 { margin-top: 14px; font-size: clamp(2.2rem, 4.6vw, 3.6rem); font-weight: 700; }
+.explainer-head p:not(.kicker) { margin-top: 16px; color: var(--soft); }
+.explainer-frame { margin: clamp(28px, 4vw, 40px) 0 0; }
+.explainer-frame video {
+  width: 100%; height: auto; aspect-ratio: 16 / 9; display: block;
+  background: #111c18; border-radius: 16px; border: 1px solid var(--rule); box-shadow: var(--shadow);
+}
+.explainer-frame figcaption { margin-top: 12px; font-size: 14px; color: var(--faint); max-width: 70ch; }
+
 /* ───── Problem ───── */
 .problem { background: var(--paper-2); border-block: 1px solid var(--rule); padding-block: clamp(64px, 9vw, 120px); }
 .problem-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: clamp(32px, 6vw, 80px); align-items: start; }
