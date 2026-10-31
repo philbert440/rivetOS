@@ -454,6 +454,7 @@ Env / config knobs:
 | `GROKBOT_CAPTURE_DIR` | this package directory | default parent for `spool-state.json` / `pull-state.json` |
 | `GROKBOT_AGENTS` / `--agents-dir` | `~/agent-data/agents` | roster (`profile.json` slugs) |
 | `RIVETOS_PG_URL` | (env or `~/.rivetos/.env`) | overlap SELECT; required for `--commit` |
+| `RIVETOS_RH_PRINCIPAL` | (unset) | session `rh.principal` for forced RLS on `rh_*` tables; no-op when unset |
 
 ### Re-spool as `-v4` (leaves `-v3` rows and state alone)
 
