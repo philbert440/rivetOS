@@ -1,10 +1,13 @@
-import { test, expect, gateway, enable } from '../fixtures.mjs'
+import { test, expect, gateway, enable, settings } from '../fixtures.mjs'
 
 test('build matches the requested main commit and desktop version', async ({ hub }) => {
   expect(
     process.env.E2E_EXPECT_SHA,
     'Set E2E_EXPECT_SHA to the main commit being tested',
   ).toBeTruthy()
+  // The build stamp sits on the Advanced tab since Settings became tabbed.
+  await hub.goto('app://bundle/settings/advanced')
+  await expect(hub.getByRole('heading', { name: 'Settings', exact: true })).toBeVisible()
   await expect(
     hub.getByText(new RegExp(`dist ${process.env.E2E_EXPECT_SHA?.slice(0, 8)}`)),
   ).toBeVisible()
@@ -15,6 +18,7 @@ test('build matches the requested main commit and desktop version', async ({ hub
 })
 
 test('connection probe succeeds through native mTLS', async ({ hub }) => {
+  await settings(hub, 'node')
   await hub.getByPlaceholder('https://node-host:5174').first().fill(gateway)
   await hub.getByRole('button', { name: 'Test connection', exact: true }).click()
   await expect(hub.getByText(/✓ node “.+” — \d+ agents?/)).toBeVisible()
@@ -26,6 +30,7 @@ for (const url of [
   'https://user:password@localhost:5174',
 ]) {
   test(`gateway rejects invalid origin: ${url}`, async ({ hub }) => {
+    await settings(hub, 'node')
     await hub.getByPlaceholder('https://node-host:5174').first().fill(url)
     await hub.getByRole('button', { name: 'Save', exact: true }).click()
     await expect(hub.getByText(/✗ invalid gateway URL/)).toBeVisible()
@@ -35,6 +40,7 @@ for (const url of [
 
 for (const theme of ['Light', 'Dark', 'System', 'Omarchy']) {
   test(`appearance: ${theme} persists across reload`, async ({ hub }) => {
+    await settings(hub, 'appearance')
     const button = hub
       .getByRole('group', { name: 'Theme', exact: true })
       .getByRole('button', { name: theme, exact: true })
@@ -62,6 +68,7 @@ for (const feature of ['Files', 'Tasks', 'Workflows']) {
 }
 
 test('datahub URL rejects paths and credentials', async ({ hub }) => {
+  await settings(hub, 'node')
   await hub
     .getByPlaceholder('https://datahub-host:5174')
     .fill('https://user:password@localhost:5174')
@@ -70,6 +77,7 @@ test('datahub URL rejects paths and credentials', async ({ hub }) => {
 })
 
 test('terminal font size is clamped and persisted', async ({ hub }) => {
+  await settings(hub, 'appearance')
   const size = hub.getByLabel('Font size (8–32)', { exact: true })
   await size.fill('100')
   await size.press('Tab')
@@ -81,6 +89,7 @@ test('terminal font size is clamped and persisted', async ({ hub }) => {
 })
 
 test('terminal palette selection persists', async ({ hub }) => {
+  await settings(hub, 'appearance')
   await hub.getByRole('button', { name: 'Color scheme', exact: true }).click()
   await hub.getByTitle('Terminal color scheme', { exact: true }).click()
   await hub.getByRole('button', { name: 'Dracula', exact: true }).click()
@@ -89,9 +98,26 @@ test('terminal palette selection persists', async ({ hub }) => {
 })
 
 test('installed emulator configurations can be imported', async ({ hub }) => {
-  await hub.getByRole('button', { name: /Omarchy —/ }).click()
-  await expect(hub.getByRole('button', { name: /Apply/ })).toBeVisible()
-  await hub.getByRole('button', { name: 'Apply', exact: true }).click()
+  await settings(hub, 'appearance')
+  // Detected configs are listed under "Import from…" as "Omarchy — <theme>"
+  // or "<Emulator> (<file>)" (terminal-section.tsx, EMULATOR_LABELS). Which
+  // ones exist depends on the desktop running the test, so take the first.
+  const sources = hub.getByRole('button', {
+    name: /^(Omarchy — |(Ghostty|Alacritty|kitty|Windows Terminal) \()/,
+  })
+  await expect(hub.getByText('Looking for terminal configs…')).toHaveCount(0)
+  test.skip(
+    (await sources.count()) === 0,
+    'no Omarchy, Ghostty, Alacritty, kitty or Windows Terminal config on this desktop',
+  )
+  await sources.first().click()
+  const apply = hub.getByRole('button', { name: 'Apply', exact: true })
+  await expect(apply).toBeVisible()
+  await expect(
+    apply,
+    'the detected config must contain an importable font or palette',
+  ).toBeEnabled()
+  await apply.click()
   await expect(hub.getByRole('button', { name: 'Imported', exact: true })).toHaveAttribute(
     'aria-pressed',
     'true',
@@ -104,6 +130,7 @@ test('installed emulator configurations can be imported', async ({ hub }) => {
 })
 
 test('saved node can be renamed and survives reload', async ({ hub }) => {
+  await settings(hub, 'node')
   await hub.getByRole('button', { name: `edit ${new URL(gateway).host}`, exact: true }).click()
   await hub.getByPlaceholder('Name', { exact: true }).fill('E2E local node')
   await hub.getByRole('button', { name: 'Save', exact: true }).last().click()
@@ -113,6 +140,7 @@ test('saved node can be renamed and survives reload', async ({ hub }) => {
 })
 
 test('update check finishes with a result or a specific feed error', async ({ hub }) => {
+  await settings(hub, 'advanced')
   const button = hub.getByRole('button', { name: 'Check for updates', exact: true })
   await button.click()
   await expect(button).toBeEnabled()
