@@ -52,6 +52,30 @@ editor's Tab focus trap. Auto-repeat is swallowed before the dialog check, so
 a held chord inside a dialog does nothing. The narrow rail (`#hub-rail`) is
 itself `role="dialog"` and is not treated as foreign.
 
+## Turn rail (2026-10-25)
+
+The ladder of marks on the chat transcript's right edge, one per user prompt
+(after the DeepSeek Harness chat's TurnNavigator). Hover or focus a mark to
+preview the prompt (one line) and the first reply (three lines); click to
+scroll the transcript to that turn; the active mark follows the reading line
+(35% down the viewport; at the floor the last turn wins). The ladder has a
+fixed 10px pitch and never compresses: past ~40 turns it scrolls inside its
+own 420px frame with fade-masked ends, and re-centers the active mark only
+while the pointer is off the rail.
+
+- `lib/turn-rail.ts` (pure, vitest): `turnRailItems(messages)` — one item per
+  user message with markdown-stripped previews; `activeTurnIndex(tops,
+  scrollTop, viewportHeight, scrollHeight)`; `previewText`.
+- `components/turn-navigator.tsx` — paints the marks and the preview card.
+  Placed absolutely inside Transcript's frame; `hidden @[900px]:block`, so a
+  transcript narrower than 900px (phones, a squeezed desktop split) has no rail.
+- `components/transcript.tsx` — user rows carry `data-turn=<index>`; the scroll
+  handler measures those rows rAF-coalesced into `activeTurn`; `jumpToTurn`
+  scrolls **instantly** (a smooth scroll's first frames are still inside the
+  120px near-bottom band, `onScroll` would re-pin, and the resize observer
+  would follow straight back to the floor) and re-lands one frame later after
+  offscreen `content-visibility:auto` rows size up.
+
 ## Status (2026-07-10)
 
 ### Sidebar pages (2026-07-10)
