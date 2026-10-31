@@ -25,6 +25,10 @@ val HARNESS_IDS: Set<String> = setOf(
     "pi",
     "qwen-code",
     "cursor",
+    // rh 0.7+: oh-my-pi, the DeepSeek harness and Cowork. pi and qwen-code stay for older nodes.
+    "omp",
+    "dsh",
+    "cowork",
 )
 
 /** HTTP 409 `turn_in_flight` — the driver is mid-turn; the caller queues and retries. */
