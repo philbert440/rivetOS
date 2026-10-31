@@ -156,6 +156,19 @@ Top to bottom:
      device's local time zone (with the year when not the current year); a conversation whose timestamp
      is missing or unparsable sorts under Today; archived conversations remain in their existing
      collapsible block at the end;
+   - **Topics** sit above the dated sections: rh's work topics (`GET /api/topics`, `GET /api/topics/filing`
+     on the entry node), the same ones RivetHub desktop files sessions under. Each open topic is a
+     foldable section of its sessions; a nested topic follows its parent, named by its path (`Parent ›
+     Child`); roots and siblings are newest activity first; a closed topic is hidden until one of its
+     sessions is active after it closed. **+ topic** creates one (`POST /api/topics`); a topic's menu
+     renames it (`PATCH`, its own name only) or deletes it (`DELETE`: its sessions return to the dated
+     list; a topic with subtopics is refused and the snackbar says so). **Move to topic…** files a session
+     (`PUT /api/sessions/{session}/placement`) or takes it out (`DELETE`); a draft, or "+" inside a topic
+     (which always asks for the agent), is filed once the node adopts it. Topics reload on refresh, after
+     each change and when a turn ends (rh sends no topic notice). On first load the hub-state projects
+     move over once: each joins the topic of the same name or becomes a new topic, its sessions are
+     filed, and the projects leave hub state. A node without topics keeps the hub-state projects as
+     before;
    - rows are single-line pills: title (or the draft placeholder), a small pulsing accent dot while that
      session has a turn in flight, a pin glyph on pinned rows; the current conversation is highlighted
      and scrolled into view when the drawer opens;

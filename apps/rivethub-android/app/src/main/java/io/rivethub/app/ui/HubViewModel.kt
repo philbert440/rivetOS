@@ -19,7 +19,17 @@ import io.rivethub.app.plane.AgentNodeHint
 import io.rivethub.app.plane.AgentOpen
 import io.rivethub.app.plane.AgentPointers
 import io.rivethub.app.plane.AgentRow
+import io.rivethub.app.gateway.GatewayException
+import io.rivethub.app.gateway.HarnessGateway
 import io.rivethub.app.gateway.HubProject
+import io.rivethub.app.gateway.TopicSummary
+import io.rivethub.app.gateway.TopicsUnsupported
+import io.rivethub.app.gateway.nativeIdOf
+import io.rivethub.app.plane.drawerTopics
+import io.rivethub.app.plane.migratedPlacements
+import io.rivethub.app.plane.planPlacements
+import io.rivethub.app.plane.planProjectMigration
+import io.rivethub.app.plane.topicMembership
 import io.rivethub.app.plane.addProject as addProjectTo
 import io.rivethub.app.plane.deleteProject as deleteProjectFrom
 import io.rivethub.app.plane.openInProject
@@ -102,7 +112,9 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
@@ -161,7 +173,24 @@ class HubViewModel(private val c: AppContainer, inboxLabels: InboxLabels) : View
         val entryAnswer: EntryAnswer? = null,
         /** Conversations waiting on you, oldest first (plane/NeedsYou.kt). */
         val needsYou: List<WaitingRow> = emptyList(),
-    )
+        /**
+         * The entry node answers rh topics (plane/Topics.kt): the drawer's
+         * sections are [topics] and [topicMembership], not the hub-state projects.
+         */
+        val topicsOn: Boolean = false,
+        val topics: List<HubProject> = emptyList(),
+        val topicMembership: Map<String, String> = emptyMap(),
+    ) {
+        /** What the drawer's project sections show: topics when the node has them. */
+        val drawerProjects: List<HubProject> get() = if (topicsOn) topics else prefs.projects
+        val drawerMembership: Map<String, String> get() = if (topicsOn) topicMembership else prefs.projectMembership
+    }
+
+    /** A topic change rh refused, for the drawer's snackbar. */
+    sealed interface TopicNotice {
+        data object HasSubtopics : TopicNotice
+        data class Failed(val detail: String) : TopicNotice
+    }
 
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state.asStateFlow()
@@ -332,11 +361,15 @@ class HubViewModel(private val c: AppContainer, inboxLabels: InboxLabels) : View
         }
     }
 
-    /** Archived sessions live in the archive, not in a project (desktop's rule too). */
+    /**
+     * Archived sessions live in the archive, not in a project (the old
+     * desktop's rule). A topic placement stays: rh keeps filing and done
+     * marks apart (contract note 36).
+     */
     fun archive(key: String) {
         viewModelScope.launch {
             c.settings.archive(key)
-            c.settings.editProjects { placeIn(it, key, null) }
+            if (!_state.value.topicsOn) c.settings.editProjects { placeIn(it, key, null) }
         }
     }
     fun unarchive(key: String) {
@@ -355,20 +388,172 @@ class HubViewModel(private val c: AppContainer, inboxLabels: InboxLabels) : View
         viewModelScope.launch { c.settings.hide(key) }
     }
 
-    // -- Projects (shared with desktop through hub state; plane/Projects.kt) --
+    // -- Topics (rh, plane/Topics.kt), else projects (hub state, plane/Projects.kt) --
+
+    private val _topicNotices = MutableSharedFlow<TopicNotice>(extraBufferCapacity = 4)
+    val topicNotices: SharedFlow<TopicNotice> = _topicNotices
+
+    /** Every work topic the entry answered, closed ones included (ids for placement checks). */
+    private var rawTopics: List<TopicSummary> = emptyList()
+    /** Canonical session id → topic id, as rh last answered. */
+    private var placedNow: Map<String, String> = emptyMap()
+    private var topicsJob: Job? = null
+    @Volatile private var topicsAgain = false
+
+    private fun entryHarness(): HarnessGateway? =
+        _state.value.prefs.entryUrl.trim().trimEnd('/').takeIf { it.isNotEmpty() }?.let { c.harness(it) }
+
+    /** Re-read topics and filings from the entry node. Coalesces: a call during a load runs once more after it. */
+    fun loadTopics() {
+        val hg = entryHarness() ?: return
+        if (topicsJob?.isActive == true) {
+            topicsAgain = true
+            return
+        }
+        topicsJob = viewModelScope.launch {
+            do {
+                topicsAgain = false
+                loadTopicsOnce(hg)
+            } while (topicsAgain)
+        }
+    }
+
+    private suspend fun loadTopicsOnce(hg: HarnessGateway) {
+        val topics = try {
+            hg.listTopics()
+        } catch (e: TopicsUnsupported) {
+            _state.update { it.copy(topicsOn = false, topics = emptyList(), topicMembership = emptyMap()) }
+            return
+        } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
+            AndroidLogger.warn("RivetHub", "topics read failed: ${e.message}", e)
+            return
+        }
+        val filing = try {
+            hg.topicFiling()
+        } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
+            AndroidLogger.warn("RivetHub", "topic filing read failed: ${e.message}", e)
+            return // keep the last membership rather than show everything unfiled
+        }
+        rawTopics = topics
+        val ids = topics.map { it.id }.toSet()
+        placedNow = filing.filter { it.topicId in ids }.associate { it.sessionId to it.topicId }
+        _state.update { it.copy(topicsOn = true, topics = drawerTopics(topics), topicMembership = topicMembership(filing, ids)) }
+        if (migrateProjects(hg, topics)) topicsAgain = true
+        if (sendPendingPlacements(hg)) topicsAgain = true
+    }
+
+    /**
+     * Move the hub-state projects to topics once: a project joins the topic of
+     * the same name, or becomes a new one, and its sessions are queued for
+     * placement. Then the projects leave hub state. True when anything moved.
+     * A failed create stops here; the next load retries and matches by name.
+     */
+    private suspend fun migrateProjects(hg: HarnessGateway, topics: List<TopicSummary>): Boolean {
+        val prefs = c.settings.snapshot()
+        if (prefs.projects.isEmpty()) return false
+        val plan = planProjectMigration(prefs.projects, topics)
+        val topicOf = HashMap(plan.reuse)
+        for (p in plan.create) {
+            topicOf[p.id] = try {
+                hg.createTopic(p.name).id
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                AndroidLogger.warn("RivetHub", "moving project \"${p.name}\" to a topic failed: ${e.message}", e)
+                return plan.create.first() != p
+            }
+        }
+        c.settings.finishProjectMigration(migratedPlacements(prefs.projectMembership, topicOf))
+        return true
+    }
+
+    /** The canonical session id a drawer key names, or null while it is a draft or unknown. */
+    private fun canonicalForKey(key: String): String? {
+        val row = _state.value.items.firstOrNull { it.item.key == key || it.item.sessionId == key }
+        if (row != null) return deleteTargetOf(row)?.session
+        // Not listed (archived away, another node offline): a canonical key can still be filed.
+        return key.takeIf { nativeIdOf(it) != null }
+    }
+
+    /** File what is waiting (plane/Topics.kt planPlacements). True when rh took any. */
+    private suspend fun sendPendingPlacements(hg: HarnessGateway): Boolean {
+        val pending = c.settings.snapshot().pendingPlacements
+        if (pending.isEmpty()) return false
+        val plan = planPlacements(pending, ::canonicalForKey, rawTopics.map { it.id }.toSet(), placedNow)
+        val done = HashSet(plan.drop)
+        var placed = false
+        for (w in plan.send) {
+            try {
+                hg.placeSession(w.session, w.topicId)
+                done += w.key
+                placed = true
+            } catch (e: GatewayException) {
+                // Refused for good (unknown session, a non-work topic): drop it. Anything else retries next load.
+                if (e.status in 400..499) done += w.key
+                AndroidLogger.warn("RivetHub", "filing ${w.session} failed: ${e.message}", e)
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                AndroidLogger.warn("RivetHub", "filing ${w.session} failed: ${e.message}", e)
+            }
+        }
+        if (done.isNotEmpty()) c.settings.dropPendingPlacements(done)
+        return placed
+    }
+
+    /** One topic call; failures go to the drawer's snackbar. Reloads after. */
+    private fun topicCall(block: suspend (HarnessGateway) -> Unit) {
+        val hg = entryHarness() ?: return
+        viewModelScope.launch {
+            try {
+                block(hg)
+            } catch (e: GatewayException) {
+                _topicNotices.tryEmit(if (e.status == 409) TopicNotice.HasSubtopics else TopicNotice.Failed(e.message.orEmpty()))
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                _topicNotices.tryEmit(TopicNotice.Failed(e.message ?: e.javaClass.simpleName))
+            }
+            loadTopics()
+        }
+    }
 
     fun addProject(name: String) {
+        val clean = name.trim().take(io.rivethub.app.plane.PROJECT_NAME_MAX).trim()
+        if (_state.value.topicsOn) {
+            if (clean.isNotEmpty()) topicCall { it.createTopic(clean) }
+            return
+        }
         val id = java.util.UUID.randomUUID().toString()
         viewModelScope.launch { c.settings.editProjects { addProjectTo(it, name, id, System.currentTimeMillis()) } }
     }
     fun renameProject(id: String, name: String) {
+        val clean = name.trim().take(io.rivethub.app.plane.PROJECT_NAME_MAX).trim()
+        if (_state.value.topicsOn) {
+            if (clean.isNotEmpty()) topicCall { it.renameTopic(id, clean) }
+            return
+        }
         viewModelScope.launch { c.settings.editProjects { renameProjectIn(it, id, name) } }
     }
     fun deleteProject(id: String) {
+        if (_state.value.topicsOn) {
+            topicCall { it.deleteTopic(id) }
+            return
+        }
         viewModelScope.launch { c.settings.editProjects { deleteProjectFrom(it, id) } }
     }
     /** Move a session into [projectId], or out of every project when null. Filing unarchives it. */
     fun placeInProject(key: String, projectId: String?) {
+        if (_state.value.topicsOn) {
+            viewModelScope.launch { if (projectId != null) c.settings.unarchive(key) }
+            val session = canonicalForKey(key)
+            if (session == null) {
+                // Still a draft: filed once the node adopts it.
+                viewModelScope.launch { c.settings.setPendingPlacement(key, projectId) }
+                return
+            }
+            topicCall { hg -> if (projectId == null) hg.unplaceSession(session) else hg.placeSession(session, projectId) }
+            return
+        }
         viewModelScope.launch {
             if (projectId != null) c.settings.unarchive(key)
             c.settings.editProjects { placeIn(it, key, projectId) }
@@ -379,12 +564,19 @@ class HubViewModel(private val c: AppContainer, inboxLabels: InboxLabels) : View
      * "+" inside a project: a new draft for [agent] (or the project's default
      * agent), started in the project's directory and filed under the
      * project. Null when the project names no usable agent and none was
-     * given: the caller asks which agent.
+     * given: the caller asks which agent. A topic names no agent, so it always
+     * asks; the draft is filed under the topic once the node adopts it.
      */
     fun startInProject(project: HubProject, agent: AgentRow? = null): AgentOpen? {
         val row = agent ?: projectAgent(project, _state.value.agents) ?: return null
         val open = openAgentAction(row, AgentAction.Plus) ?: return null
-        viewModelScope.launch { c.settings.editProjects { placeIn(it, open.sessionId, project.id) } }
+        viewModelScope.launch {
+            if (_state.value.topicsOn) {
+                c.settings.setPendingPlacement(open.sessionId, project.id)
+            } else {
+                c.settings.editProjects { placeIn(it, open.sessionId, project.id) }
+            }
+        }
         return openInProject(open, project)
     }
 
@@ -797,6 +989,7 @@ class HubViewModel(private val c: AppContainer, inboxLabels: InboxLabels) : View
             publishAgents()
             rebuildItems()
             startWatches(_state.value.nodes, identityGen)
+            loadTopics()
         } catch (e: Exception) {
             if (e is kotlinx.coroutines.CancellationException) throw e
             if (gen != refreshLatch.gen) return
@@ -1000,6 +1193,8 @@ class HubViewModel(private val c: AppContainer, inboxLabels: InboxLabels) : View
             is HarnessEvent.SessionUpdated -> {
                 if (finishedTurns.onStatus(event.sessionId, event.status, event.previousSessionId)) {
                     notifyAgentFinished(event.sessionId)
+                    // rh files a session after its first summary, and sends no notice for it.
+                    loadTopics()
                 }
                 val blocksMoved = statusBlocks[nodeUrl]
                     ?.onSessionUpdated(event.sessionId, event.status, event.previousSessionId) == true

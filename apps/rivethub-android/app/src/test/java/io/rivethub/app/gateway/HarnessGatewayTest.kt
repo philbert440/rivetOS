@@ -374,4 +374,57 @@ class HarnessGatewayTest {
             assertEquals(404, (runCatching { gone.keepSession(sid) }.exceptionOrNull() as GatewayException).status)
         }
     }
+
+    @Test fun `topics read work topics and filings, and a gateway without them is typed`() = runBlocking {
+        withTimeout(2_000) {
+            val gw = HarnessGateway(
+                client { req ->
+                    when (req.url.encodedPath) {
+                        "/api/topics" -> json(req, 200, """{"topics":[{"id":"t1","kind":"work","slug":"android","name":"Android","aliases":[],"createdAt":1,"updatedAt":2,"sessionCount":3,"lastActive":4},{"id":"ty","kind":"type","slug":"people","name":"People","aliases":[],"createdAt":1,"updatedAt":1,"sessionCount":0}]}""")
+                        "/api/topics/filing" -> json(req, 200, """{"sessions":[{"sessionId":"$sid","topicId":"t1","by":"you","at":5,"title":"x"}],"conversations":[],"history":{"sessions":[]}}""")
+                        else -> json(req, 500, "{}")
+                    }
+                },
+                base,
+            )
+            assertEquals(listOf("t1"), gw.listTopics().map { it.id })
+            assertEquals("t1", gw.topicFiling().single().topicId)
+            val old = HarnessGateway(client { req -> json(req, 404, """{"error":"not found"}""") }, base)
+            assertTrue(runCatching { old.listTopics() }.exceptionOrNull() is TopicsUnsupported)
+        }
+    }
+
+    @Test fun `topic changes use the contract's methods and bodies`() = runBlocking {
+        withTimeout(2_000) {
+            val seen = CopyOnWriteArrayList<String>()
+            val gw = HarnessGateway(
+                client { req ->
+                    val buf = okio.Buffer()
+                    req.body?.writeTo(buf)
+                    seen += "${req.method} ${req.url.encodedPath} ${buf.readUtf8()}"
+                    if (req.method == "POST") {
+                        json(req, 201, """{"id":"t9","kind":"work","slug":"new","name":"New","aliases":[],"createdAt":1,"updatedAt":1,"sessionCount":0}""")
+                    } else {
+                        json(req, 200, """{"placement":null}""")
+                    }
+                },
+                base,
+            )
+            assertEquals("t9", gw.createTopic("New").id)
+            gw.renameTopic("t9", "Renamed")
+            gw.placeSession(sid, "t9")
+            gw.unplaceSession(sid)
+            gw.deleteTopic("t9")
+            assertEquals(
+                listOf(
+                    """POST /api/topics {"name":"New"}""",
+                    """PATCH /api/topics/t9 {"name":"Renamed"}""",
+                    """PUT /api/sessions/$enc/placement {"topicId":"t9"}""",
+                    "DELETE /api/sessions/$enc/placement ",
+                    "DELETE /api/topics/t9 ",
+                ),
+                seen,
+            )
+        }
+    }
 }

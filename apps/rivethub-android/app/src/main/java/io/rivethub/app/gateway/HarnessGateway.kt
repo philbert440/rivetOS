@@ -282,6 +282,64 @@ class HarnessGateway(
             }
         }
 
+    // -- Topics (gateway/TopicsWire.kt). The entry node answers for the whole datahub. --
+
+    /** One JSON call; [ser] null = no body read. 404/405/501 on [unsupportedOn] routes throw [TopicsUnsupported]. */
+    private suspend fun <T> topicsCall(
+        req: Request,
+        ser: KSerializer<T>?,
+        unsupportedOn: Boolean = false,
+    ): T? = withContext(Dispatchers.IO) {
+        withClients { c ->
+            c.newCall(req).execute().use { res ->
+                val text = res.body.string()
+                if (unsupportedOn && res.code in UNSUPPORTED_ROUTE_STATUS) throw TopicsUnsupported(res.code)
+                if (!res.isSuccessful) throw GatewayException(res.code, errorText(res, text))
+                ser?.let { wireJson.decodeFromString(it, text) }
+            }
+        }
+    }
+
+    private fun jsonBody(text: String) = text.toRequestBody("application/json".toMediaType())
+
+    /** GET /api/topics — the work topics. [TopicsUnsupported] on a gateway without them. */
+    suspend fun listTopics(): List<TopicSummary> =
+        topicsCall(Request.Builder().url(url(listOf("api", "topics"))).get().build(), TopicList.serializer(), unsupportedOn = true)!!
+            .topics.filter { it.kind == "work" }
+
+    /** GET /api/topics/filing — every filed session at once. */
+    suspend fun topicFiling(): List<TopicSession> =
+        topicsCall(Request.Builder().url(url(listOf("api", "topics", "filing"))).get().build(), TopicFiling.serializer(), unsupportedOn = true)!!
+            .sessions
+
+    suspend fun createTopic(name: String, parent: String? = null): TopicSummary {
+        val body = wireJson.encodeToString(TopicCreateRequest.serializer(), TopicCreateRequest(name, parent))
+        return topicsCall(Request.Builder().url(url(listOf("api", "topics"))).post(jsonBody(body)).build(), TopicSummary.serializer())!!
+    }
+
+    suspend fun renameTopic(id: String, name: String) {
+        val body = wireJson.encodeToString(TopicRename.serializer(), TopicRename(name))
+        topicsCall<Unit>(Request.Builder().url(url(listOf("api", "topics", id))).patch(jsonBody(body)).build(), null)
+    }
+
+    /** 409 when the topic has subtopics; its sessions go back to unfiled. */
+    suspend fun deleteTopic(id: String) {
+        topicsCall<Unit>(Request.Builder().url(url(listOf("api", "topics", id))).delete().build(), null)
+    }
+
+    /** File [session] (canonical id) under [topicId]; replaces any earlier placement. */
+    suspend fun placeSession(session: String, topicId: String) {
+        val body = wireJson.encodeToString(PlacementRequest.serializer(), PlacementRequest(topicId))
+        topicsCall<Unit>(
+            Request.Builder().url(url(listOf("api", "sessions", sessionKeyEnc(session), "placement"))).put(jsonBody(body)).build(),
+            null,
+        )
+    }
+
+    suspend fun unplaceSession(session: String) {
+        topicsCall<Unit>(Request.Builder().url(url(listOf("api", "sessions", sessionKeyEnc(session), "placement"))).delete().build(), null)
+    }
+
     /** GET /api/sessions/trash — the node's clean-up candidates. [SessionDeleteUnsupported] on an older gateway. */
     suspend fun trashSessions(): List<SessionTrashCandidate> =
         withContext(Dispatchers.IO) {

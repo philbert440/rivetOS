@@ -147,8 +147,9 @@ fun ConversationsPane(
     )
     // Projects (hub state): rows filed under a project show in its block, not
     // in the dated sections below it.
-    val projects = st.prefs.projects
-    val membership = st.prefs.projectMembership
+    // rh topics when the entry node has them, else the hub-state projects (plane/Topics.kt).
+    val projects = st.drawerProjects
+    val membership = st.drawerMembership
     val projectSecs = remember(projects, membership, lists.live) { projectSections(projects, membership, lists.live) }
     val datedLive = remember(projects, membership, lists.live) { rowsOutsideProjects(lists.live, projects, membership) }
     var folded by remember { mutableStateOf(setOf<String>()) }
@@ -203,6 +204,18 @@ fun ConversationsPane(
     val deleteNotice = rememberDeleteNotice()
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
+    val topicSubtopics = stringResource(R.string.topic_has_subtopics)
+    val topicFailed = stringResource(R.string.topic_change_failed)
+    LaunchedEffect(vm) {
+        vm.topicNotices.collect { n ->
+            snackbar.showSnackbar(
+                when (n) {
+                    HubViewModel.TopicNotice.HasSubtopics -> topicSubtopics
+                    is HubViewModel.TopicNotice.Failed -> topicFailed.format(n.detail)
+                },
+            )
+        }
+    }
     val noAgentsHint = stringResource(R.string.no_agents_hint)
     val liveCount = lists.live.size
     val empty = conversationEmptyKind(
@@ -725,7 +738,8 @@ fun ConversationsPane(
         val creating = target.id.isBlank()
         ProjectNameSheet(
             title = stringResource(if (creating) R.string.project_new_title else R.string.project_rename_title),
-            initial = target.name,
+            // A nested topic shows its path; rename edits only its own name.
+            initial = if (st.topicsOn) target.name.substringAfterLast(io.rivethub.app.plane.TOPIC_PATH_SEP) else target.name,
             onSave = { name ->
                 if (creating) vm.addProject(name) else vm.renameProject(target.id, name)
                 projectNameTarget = null
