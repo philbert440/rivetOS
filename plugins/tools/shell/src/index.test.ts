@@ -5,6 +5,9 @@
 
 import { describe, it } from 'vitest'
 import * as assert from 'node:assert/strict'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { ShellTool, categorizeCommand, checkGitWarnings } from './index.js'
 
 // ---------------------------------------------------------------------------
@@ -250,12 +253,14 @@ describe('ShellTool session cwd', () => {
 
 describe('ShellTool git safety', () => {
   it('warns on force push', async () => {
-    const tool = new ShellTool()
-    // This will try to actually run git push --force, which will fail,
-    // but the warning should still be in the output
+    // Run in an empty directory so git has no repository and no remote: from the repo folder
+    // this force-pushed the checkout's local main to GitHub with the developer's saved login.
+    const cwd = await mkdtemp(join(tmpdir(), 'shell-git-safety-'))
+    const tool = new ShellTool({ cwd })
     const result = await tool.execute({
       command: 'echo "would force push" && git push --force origin main 2>&1 || true',
     })
+    await rm(cwd, { recursive: true, force: true })
     assert.ok(
       result.includes('⚠️') || result.includes('force'),
       `Expected git warning, got: ${result}`,
