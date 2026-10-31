@@ -20,7 +20,7 @@
     "@rivetos/wiki-core": "0.5.0",
     "graphile-worker": "^0.17.3",
     "pg": "^8.22.0",
-    "undici": "^8.10.2"
+    "undici": "^8.12.3"
   },
   "devDependencies": {
     "@types/pg": "^8.20.3"
