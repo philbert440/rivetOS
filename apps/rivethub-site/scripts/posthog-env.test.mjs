@@ -404,7 +404,7 @@ describe('own-your-data landing', () => {
     assert.match(html, /Your hardware/);
     assert.match(html, /Not a hosted black box/);
     assert.match(html, /Is this SaaS\?/);
-    assert.match(html, /Same repo as RivetOS\?/);
+    assert.match(html, /What happened to RivetOS\?/);
     assert.match(html, /data-sticky-cta/);
     assert.match(html, /Install on your laptop/);
     assert.doesNotMatch(html, /Install on your laptop\./);
