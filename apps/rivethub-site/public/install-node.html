@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Install an agent node — RivetHub</title>
-<meta name="description" content="Install a RivetHub agent node: the RivetOS runtime, mesh enrollment over SSH, and a systemd unit.">
+<title>Install a node — RivetHub</title>
+<meta name="description" content="Install a RivetHub node: the rh runtime under systemd against a shared Postgres memory, step-ca certificates, and mesh updates.">
 <meta name="theme-color" content="#090d0b">
 
 <meta property="og:type" content="website">
@@ -17,16 +17,16 @@
 <link rel="stylesheet" href="landing.css">
 
 <link rel="canonical" href="https://rivethub.io/install-node.html">
-<meta property="og:title" content="Install an agent node — RivetHub">
-<meta property="og:description" content="Install a RivetHub agent node: the RivetOS runtime, mesh enrollment over SSH, and a systemd unit.">
+<meta property="og:title" content="Install a node — RivetHub">
+<meta property="og:description" content="Install a RivetHub node: the rh runtime under systemd against a shared Postgres memory, step-ca certificates, and mesh updates.">
 <meta property="og:url" content="https://rivethub.io/install-node.html">
 <meta property="og:image" content="https://rivethub.io/social-preview.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta property="og:image:alt" content="RivetHub banner with the robot mark and wordmark, and the headline “Your agents. Your memory. Your hardware.”">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="Install an agent node — RivetHub">
-<meta name="twitter:description" content="Install a RivetHub agent node: the RivetOS runtime, mesh enrollment over SSH, and a systemd unit.">
+<meta name="twitter:title" content="Install a node — RivetHub">
+<meta name="twitter:description" content="Install a RivetHub node: the rh runtime under systemd against a shared Postgres memory, step-ca certificates, and mesh updates.">
 <meta name="twitter:image" content="https://rivethub.io/social-preview.png">
 <link rel="stylesheet" href="marketing.css">
 <script src="theme.js"></script>
@@ -35,172 +35,174 @@
 <a class="skip-link" href="#main">Skip to content</a>
 <header class="landing-header"><div class="landing-wrap header-inner">
   <a class="wordmark" href="index.html" aria-label="RivetHub home"><img class="brand-mark robot-logo" src="robot.png" width="35" height="40" alt=""> rivet<span>hub</span><span class="brand-dot" aria-hidden="true">.</span></a>
-  <nav aria-label="Main navigation"><a href="index.html">Home</a><a href="install-local.html">Quickstart</a><a href="server.html" aria-current="page">Server</a><a href="apps.html">Apps / Downloads</a><a href="support.html">Support</a></nav>
+  <nav aria-label="Main navigation"><a href="index.html">Home</a><a href="install-local.html">Quickstart</a><a href="server.html" aria-current="page">Server</a><a href="apps.html">Apps</a><a href="support.html">Support</a></nav>
 </div></header>
 <main id="main">
 <div class="wrap-wide">
 
   <div class="page-head guide-head">
-    <p class="kicker">install · agent node</p>
-    <h1>Install an agent node</h1><p><a href="server.html">← Server setup overview</a></p>
-    <p class="lede">An agent node runs the RivetOS runtime and enrolls
-    against your datahub over SSH. You need a working
-    <a href="install-datahub.html">datahub</a> first.</p>
+    <p class="kicker">install · node</p>
+    <h1>Install a node</h1><p><a href="server.html">← Server setup overview</a></p>
+    <p class="lede">A node runs <code>rh</code> under systemd against a shared Postgres memory: the gateway your apps
+    talk to, the task engine your agents run in, and MCP for the tools on that machine. Set up the
+    <a href="install-datahub.html">datahub</a> first; a single machine with no datahub is the
+    <a href="install-local.html">Quickstart</a>.</p>
   </div>
 
   <section class="block">
     <div class="req">
       <h2>Requirements</h2>
       <ul class="facts">
-        <li>Debian 12 or Ubuntu LTS, x86_64 or aarch64, with systemd.</li>
-        <li>Root (<code>sudo</code>) and about 512&nbsp;MiB free disk
-        (2&nbsp;GiB comfortable for <code>npm ci</code>).</li>
-        <li>An SSH login on the datahub that can run
-        <code>rivethub-hub</code> — this is your <code>--hub</code>
-        target.</li>
-        <li>The installer runs as root, so BatchMode SSH uses
-        <code>/root/.ssh</code> — copy your key there (or
-        <code>ssh-copy-id</code> as root) before a curl-pipe or
-        <code>sudo</code> run.</li>
-        <li><code>curl</code>, <code>python3</code>, <code>tar</code>,
-        <code>ssh</code>, <code>flock</code>, and <code>git</code>
-        (bare-metal) — missing ones are installed via <code>apt-get</code>
-        when run as root.</li>
-        <li><code>docker</code> in PATH only if you choose
-        <code>--docker</code>.</li>
+        <li>Linux on x86_64 or aarch64, glibc 2.35 or newer, with systemd.</li>
+        <li>A Postgres memory database that <code>rivethub-migrate postgres</code> has brought up to date, reachable
+        from this machine.</li>
+        <li>For each agent that drives a CLI harness, its ACP adapter on the node: for Claude Code,
+        <code>@agentclientprotocol/claude-agent-acp</code>. Without it the provider starts degraded and says so.</li>
       </ul>
     </div>
   </section>
 
   <section class="block">
-    <p class="kicker">the command</p>
-    <h2>Curl-pipe is supported</h2>
-    <div class="term">
-      <div class="term__bar"><i></i><i></i><i></i><span class="term__title">node installer — curl-pipe</span></div>
-      <pre tabindex="0" data-copy="curl -fsSL https://get.rivethub.io/node.sh | sudo bash -s -- --hub owner@192.0.2.10"><code><span class="ps">$ </span>curl -fsSL https://get.rivethub.io/node.sh | sudo bash -s -- --hub owner@192.0.2.10</code></pre>
-    </div>
-    <p>Or from the <code>distro/</code> directory of a RivetOS checkout:</p>
-    <div class="term">
-      <div class="term__bar"><i></i><i></i><i></i><span class="term__title">node installer — checkout</span></div>
-      <pre tabindex="0" data-copy="sudo bash install/node.sh --hub owner@192.0.2.10 --name node-a --advertise-host 192.0.2.11"><code><span class="ps">$ </span>sudo bash install/node.sh --hub owner@192.0.2.10 --name node-a --advertise-host 192.0.2.11</code></pre>
-    </div>
-    <p>Re-running is safe. Re-run without <code>--hub</code> and the
-    installer resumes <code>HUB_TARGET</code> / <code>NODE_NAME</code> from
-    <code>$RIVETHUB_ROOT/node.env</code>.</p>
+    <p class="kicker">install</p>
+    <h2>Install the binaries</h2>
+    <p>Install <code>rh</code> and <code>rivethub-migrate</code> into <code>~/.local/bin</code> as the
+    <a href="install-local.html#install">Quickstart</a> shows, as the user the node will run as.</p>
   </section>
 
   <section class="block">
-    <p class="kicker">the prompts</p>
-    <h2>What the installer asks</h2>
-    <p>On a TTY, unset fields are prompted, then a SUMMARY, then an
-    explicit <code>yes</code>. <code>--yes</code> skips the confirm; on
-    non-TTY it also accepts documented defaults (name = hostname,
-    advertise-host = <code>hostname -f</code>). <code>--hub</code> has no
-    default — missing answers are listed together with their env names
-    (<code>RIVETHUB_HUB</code>).</p>
-    <ul class="facts">
-      <li><strong>Datahub SSH target</strong> — the <code>user@host</code>
-      for <code>--hub</code>. Required when stdin is not a TTY and no
-      <code>node.env</code> has one recorded.</li>
-      <li><strong>Mesh node name</strong> — the certificate CN
-      (<code>[a-z0-9-]</code>, max 63). Default: the hostname,
-      sanitized.</li>
-      <li><strong>Advertise host</strong> — the address other nodes use to
-      reach <em>this</em> node. Default: <code>hostname -f</code>.</li>
-    </ul>
-    <p>Enrollment happens over SSH: the installer runs
-    <code>rivethub-hub enroll &lt;node-name&gt; &lt;advertise-host&gt;</code>
-    on the datahub, and stdout is only a base64 tarball (leaf cert + key,
-    <code>ca-chain.pem</code>, current <code>mesh.json</code>, node config
-    snippet), unpacked into the local shared dir. On an existing RivetOS
-    install, <code>rivetos mesh enroll</code> drives the same contract
-    from the CLI.</p>
+    <p class="kicker">configure</p>
+    <h2>Write the configuration</h2>
+    <p>The node reads <code>~/.rivethub/config.yaml</code>. A node needs <code>runtime</code>, <code>agents</code> and
+    <code>providers</code>, and the memory database. Keep the connection string out of the file:
+    <code>${RIVETHUB_PG_URL}</code> is read from the environment, and the service reads
+    <code>~/.rivethub/.env</code> (mode 0600).</p>
+    <div class="term">
+<div class="term__bar"><i></i><i></i><i></i><span class="term__title">~/.rivethub/config.yaml</span>
+</div><pre tabindex="0" data-copy="runtime:&#10;  workspace: /home/user/work&#10;  default_agent: claude&#10;agents:&#10;  claude:&#10;    provider: claude-cli&#10;providers:&#10;  claude-cli:&#10;    model: sonnet&#10;memory:&#10;  postgres:&#10;    connection_string: ${RIVETHUB_PG_URL}&#10;gateway:&#10;  host: 127.0.0.1&#10;  port: 5174"><code>runtime:
+  workspace: /home/user/work
+  default_agent: claude
+agents:
+  claude:
+    provider: claude-cli
+providers:
+  claude-cli:
+    model: sonnet
+memory:
+  postgres:
+    connection_string: ${RIVETHUB_PG_URL}
+gateway:
+  host: 127.0.0.1
+  port: 5174</code></pre>
+</div>
+    <div class="term">
+<div class="term__bar"><i></i><i></i><i></i><span class="term__title">~/.rivethub/.env</span>
+</div><pre tabindex="0" data-copy="RIVETHUB_PG_URL=postgres://rivethub:&lt;password&gt;@&lt;datahub&gt;:5432/rivethub"><code>RIVETHUB_PG_URL=postgres://rivethub:&lt;password&gt;@&lt;datahub&gt;:5432/rivethub</code></pre>
+</div>
+    <p>Then check it without starting anything:</p>
+    <div class="term">
+<div class="term__bar"><i></i><i></i><i></i><span class="term__title">on the node</span>
+</div><pre tabindex="0" data-copy="rh config validate&#10;rh gateway --check&#10;rh doctor"><code><span class="ps">$ </span>rh config validate
+<span class="ps">$ </span>rh gateway --check
+<span class="ps">$ </span>rh doctor</code></pre>
+</div>
+    <p><code>rh doctor</code> checks the config, the state directory, disk space and the memory schema, and never
+    migrates. Every key, including the <code>terminal</code> and <code>allowed_origins</code> gateway settings, is in
+    the <a href="https://github.com/philbert440/rivethub-runtime/blob/main/docs/CLI.md">CLI reference</a>.</p>
   </section>
 
   <section class="block">
-    <p class="kicker">layout</p>
-    <h2>What gets installed where</h2>
-    <dl class="what">
-      <div>
-        <dt><code>/opt/rivetos</code></dt>
-        <dd>RivetOS checkout at the <code>pins/stable.json</code>
-        <code>rivetos_tag</code> (bare-metal; Node 22+ from NodeSource)</dd>
-      </div>
-      <div>
-        <dt><code>/var/lib/rivethub/shared</code></dt>
-        <dd>local <code>mesh.json</code> + <code>rivet-ca</code>
-        (<code>RIVETOS_SHARED_DIR</code>)</dd>
-      </div>
-      <div>
-        <dt><code>/rivet-shared</code></dt>
-        <dd>symlink to the shared dir, so hardcoded RivetOS TLS paths
-        work</dd>
-      </div>
-      <div>
-        <dt><code>/home/rivet/.rivetos</code></dt>
-        <dd><code>config.yaml</code> + <code>.env</code> (mode 0600) for the
-        <code>rivet</code> user (uid 2000 if free)</dd>
-      </div>
-      <div>
-        <dt><code>/var/lib/rivethub/node.env</code></dt>
-        <dd>recorded identity (node name, hub target) — no secrets</dd>
-      </div>
-      <div>
-        <dt><code>/etc/systemd/system/rivetos-agent.service</code></dt>
-        <dd>the agent unit (enabled + started)</dd>
-      </div>
-    </dl>
-    <p>Bare-metal (systemd) is the default. <code>--docker</code> runs the
-    pinned GHCR image under systemd with host networking on mesh port
-    3000.</p>
-    <div class="warn">
-      <strong>Installer versions.</strong> The installer uses the runtime tag and container image in <code>pins/stable.json</code>. Check <a href="releases.html">Releases</a> for the distinction between installer pins, runtime releases, and desktop downloads.
-    </div>
+    <p class="kicker">run</p>
+    <h2>Run it under systemd</h2>
+    <div class="term">
+<div class="term__bar"><i></i><i></i><i></i><span class="term__title">on the node</span>
+</div><pre tabindex="0" data-copy="rh service init&#10;rh service start&#10;rh service status&#10;rh status"><code><span class="ps">$ </span>rh service init
+<span class="ps">$ </span>rh service start
+<span class="ps">$ </span>rh service status
+<span class="ps">$ </span>rh status</code></pre>
+</div>
+    <p><code>rh service init</code> writes <code>rivethub.service</code>: a system unit when run as root, a user unit
+    otherwise (it tells you whether lingering is on). The unit runs <code>rh start</code>, which supervises the
+    gateway, the task engine and, when <code>transports.mcp</code> names a host or socket, the MCP server.
+    <code>rh logs</code> follows its journal and <code>rh stop</code> stops it.</p>
   </section>
 
   <section class="block">
-    <p class="kicker">verify</p>
-    <h2>Verify</h2>
+    <p class="kicker">tools</p>
+    <h2>Connect the tools on this node</h2>
+    <p>Recall on a Postgres node can use the stdio MCP server, <code>rh mcp</code>, with the node’s environment. For
+    Claude Code:</p>
     <div class="term">
-      <div class="term__bar"><i></i><i></i><i></i><span class="term__title">on the node</span></div>
-      <pre tabindex="0" data-copy="systemctl status rivetos-agent.service&#10;journalctl -u rivetos-agent.service -n 50&#10;sudo -u rivet -H rivetos status&#10;sudo -u rivet -H rivetos doctor"><code><span class="ps">$ </span>systemctl status rivetos-agent.service
-<span class="ps">$ </span>journalctl -u rivetos-agent.service -n 50
-<span class="ps">$ </span>sudo -u rivet -H rivetos status
-<span class="ps">$ </span>sudo -u rivet -H rivetos doctor</code></pre>
-    </div>
-    <p>The systemd unit is <code>rivetos-agent.service</code> (not
-    <code>rivetos.service</code>). The mesh certificate lives at
-    <code>/var/lib/rivethub/shared/rivet-ca/issued/&lt;node-name&gt;.crt</code>.</p>
-    <p>Day-2 mesh sync / renew run as the <code>rivet</code> user (the
-    installer generated <code>/home/rivet/.ssh/id_ed25519</code> and
-    installed the pubkey on <code>--hub</code> via the root hop):</p>
+<div class="term__bar"><i></i><i></i><i></i><span class="term__title">on the node</span>
+</div><pre tabindex="0" data-copy="claude mcp add --scope user rivethub -- bash -c &#x27;set -a; . &quot;$HOME/.rivethub/.env&quot;; set +a; exec &quot;$HOME/.local/bin/rh&quot; mcp&#x27;"><code><span class="ps">$ </span>claude mcp add --scope user rivethub -- bash -c &#x27;set -a; . &quot;$HOME/.rivethub/.env&quot;; set +a; exec &quot;$HOME/.local/bin/rh&quot; mcp&#x27;</code></pre>
+</div>
+    <p>Capture uses the same <code>rh capture hook</code> commands as the
+    <a href="install-local.html#harnesses">Quickstart</a>; the hook finds this node’s gateway from its config.</p>
+  </section>
+
+  <section class="block" id="tls">
+    <p class="kicker">mesh</p>
+    <h2>Certificates and the mesh</h2>
+    <p>A gateway that serves other machines needs TLS: <code>gateway.tls_cert</code> and <code>gateway.tls_key</code>
+    (or <code>RIVETHUB_TLS_CERT</code> and <code>RIVETHUB_TLS_KEY</code>), plus <code>gateway.tls_ca</code> to require
+    client certificates. Certificates come from <a href="https://smallstep.com/docs/step-ca/">step-ca</a>, which you
+    run outside RivetHub (see the <a href="install-datahub.html#ca">datahub guide</a>). Nodes and agents hold 7-day
+    certificates and renew them themselves; keys are generated on the holder and never leave it.</p>
+    <p>On the CA host, mint a one-time token for the node from your roster. On the node, enroll with that token, then
+    keep the certificate renewed:</p>
     <div class="term">
-      <div class="term__bar"><i></i><i></i><i></i><span class="term__title">as rivet</span></div>
-      <pre tabindex="0" data-copy="sudo -u rivet -H rivetos mesh sync&#10;sudo -u rivet -H rivetos mesh renew"><code><span class="ps">$ </span>sudo -u rivet -H rivetos mesh sync
-<span class="ps">$ </span>sudo -u rivet -H rivetos mesh renew</code></pre>
-    </div>
+<div class="term__bar"><i></i><i></i><i></i><span class="term__title">on the CA host</span>
+</div><pre tabindex="0" data-copy="rh ca token node node-a --ca-url https://ca.example:9000 --root root.pem --provisioner-password-file provisioner.pass --roster roster.txt"><code><span class="ps">$ </span>rh ca token node node-a --ca-url https://ca.example:9000 --root root.pem --provisioner-password-file provisioner.pass --roster roster.txt</code></pre>
+</div>
+    <div class="term">
+<div class="term__bar"><i></i><i></i><i></i><span class="term__title">on the node</span>
+</div><pre tabindex="0" data-copy="rh cert renew --principal spiffe://rivet.mesh/node/node-a --ca-url https://ca.example:9000 --trust-root root.pem --token-file token --once&#10;rh cert renew --principal spiffe://rivet.mesh/node/node-a --ca-url https://ca.example:9000 --trust-root root.pem"><code><span class="ps">$ </span>rh cert renew --principal spiffe://rivet.mesh/node/node-a --ca-url https://ca.example:9000 --trust-root root.pem --token-file token --once
+<span class="ps">$ </span>rh cert renew --principal spiffe://rivet.mesh/node/node-a --ca-url https://ca.example:9000 --trust-root root.pem</code></pre>
+</div>
+    <p>The key and certificate land in <code>~/.rivethub/tls/</code>. Without <code>--once</code> the command stays
+    running and renews at two thirds of each certificate’s life, so it belongs in its own systemd unit.
+    <code>rh mesh enroll</code> does the token and the first certificate in one step and records the node; the roster
+    format and every flag are in the <a href="https://github.com/philbert440/rivethub-runtime/blob/main/crates/cli/README.md">certificate commands</a> and
+    <a href="https://github.com/philbert440/rivethub-runtime/blob/main/docs/PKI.md">PKI</a> docs.</p>
+    <div class="term">
+<div class="term__bar"><i></i><i></i><i></i><span class="term__title">mesh</span>
+</div><pre tabindex="0" data-copy="rh mesh list&#10;rh mesh ping&#10;rh mesh status"><code><span class="ps">$ </span>rh mesh list
+<span class="ps">$ </span>rh mesh ping
+<span class="ps">$ </span>rh mesh status</code></pre>
+</div>
   </section>
 
   <section class="block">
-    <p class="kicker">next</p>
-    <h2>Add the next node</h2>
-    <p>Run the same command on another host, with a fresh name and
-    address:</p>
+    <p class="kicker">update</p>
+    <h2>Update one node, or all of them</h2>
     <div class="term">
-      <div class="term__bar"><i></i><i></i><i></i><span class="term__title">second node</span></div>
-      <pre tabindex="0" data-copy="curl -fsSL https://get.rivethub.io/node.sh | sudo bash -s -- --hub owner@192.0.2.10 --name node-b --advertise-host 192.0.2.11"><code><span class="ps">$ </span>curl -fsSL https://get.rivethub.io/node.sh | sudo bash -s -- --hub owner@192.0.2.10 --name node-b --advertise-host 192.0.2.11</code></pre>
-    </div>
+<div class="term__bar"><i></i><i></i><i></i><span class="term__title">on any node</span>
+</div><pre tabindex="0" data-copy="rh update --channel beta&#10;rh update --channel beta --mesh"><code><span class="ps">$ </span>rh update --channel beta
+<span class="ps">$ </span>rh update --channel beta --mesh</code></pre>
+</div>
+    <p>An update checks the release archive against <code>SHA256SUMS</code>, runs the new
+    <code>rivethub-migrate</code> against the configured database, swaps both binaries (keeping
+    <code>*.previous</code> copies) and restarts the unit. <code>--mesh</code> then runs the same update over SSH on
+    every node in <code>mesh.json</code>, pinned to the release installed here. Use the beta channel for now: stable
+    still resolves v0.1.4. <a href="releases.html">Releases →</a></p>
+  </section>
 
-    <h2 class="spaced">Renew certificates</h2>
-    <p>Renewal is driven from the datahub:
-    <code>rivethub-hub renew &lt;node-name&gt;</code> re-issues the node’s
-    leaf certificate and emits the same tarball as enrollment. To change a
-    node’s address, re-enroll it instead of renewing.</p>
+  <section class="block">
+    <p class="kicker">from rivetos</p>
+    <h2>Moving a RivetOS node</h2>
+    <p>A node running the TypeScript RivetOS runtime moves with <code>rivetos migrate-to-rivethub</code>: it installs
+    <code>rh</code>, moves <code>~/.rivetos</code> to <code>~/.rivethub</code>, brings memory over and swaps
+    <code>rivetos.service</code> for <code>rivethub.service</code>, with <code>--rollback</code> to go back. It
+    downloads the newest release itself and checks it against <code>SHA256SUMS</code>; <code>--binary</code> installs a
+    build of your own instead. Run <code>rivetos update</code> first so the CLI has the current download. The whole
+    procedure is in <a href="https://github.com/philbert440/rivetOS/blob/main/docs/migrating-to-rivethub.md">Migrating to RivetHub</a>.</p>
+    <div class="note"><strong>Retired.</strong> The <code>node.sh</code> installer, the <code>rivethub-hub</code>
+    helper and <code>rivet-ca.sh</code> belong to the TypeScript runtime. <code>rh</code> enrolls through step-ca
+    instead.</div>
   </section>
 
 </div>
 </main>
-<footer class="landing-footer"><div class="landing-wrap"><div><a class="wordmark" href="index.html"><img class="brand-mark robot-logo" src="robot.png" width="35" height="40" alt="">rivet<span>hub</span>.</a><p>Self-hosted memory for your AI agents.<br>Built on the open-source RivetOS runtime.</p></div><nav aria-label="Footer navigation"><a href="index.html">Home</a><a href="install-local.html">Quickstart</a><a href="llms.txt">Set up with your agent</a><a href="server.html">Server</a><a href="apps.html">Apps / Downloads</a><a href="support.html">Support</a><a href="omarchy.html">Omarchy</a><a href="releases.html">Releases</a><a href="privacy.html">Privacy</a><a href="https://rivetos.dev">Documentation</a></nav></div><div class="landing-wrap theme-footer"><label hidden data-theme-control>Appearance <select aria-label="Site appearance" data-theme-select><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label></div></footer>
+<footer class="landing-footer"><div class="landing-wrap"><div><a class="wordmark" href="index.html"><img class="brand-mark robot-logo" src="robot.png" width="35" height="40" alt="">rivet<span>hub</span>.</a><p>Self-hosted memory for your AI agents.<br>Built on the open-source RivetHub runtime.</p></div><nav aria-label="Footer navigation"><a href="index.html">Home</a><a href="install-local.html">Quickstart</a><a href="llms.txt">Set up with your agent</a><a href="server.html">Server</a><a href="apps.html">Apps</a><a href="support.html">Support</a><a href="omarchy.html">Omarchy</a><a href="releases.html">Releases</a><a href="privacy.html">Privacy</a><a href="https://github.com/philbert440/rivethub-runtime/tree/main/docs">Documentation</a><a href="https://github.com/philbert440/rivethub-runtime">GitHub</a></nav></div><div class="landing-wrap theme-footer"><label hidden data-theme-control>Appearance <select aria-label="Site appearance" data-theme-select><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label></div></footer>
 <script src="site.js"></script>
 <script src="posthog-config.js"></script>
 <script src="posthog.js"></script>

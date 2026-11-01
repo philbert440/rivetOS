@@ -1,5 +1,11 @@
 # Deployment guide
 
+> **The runtime has moved to [rivethub-runtime](https://github.com/philbert440/rivethub-runtime).** RivetHub's runtime is now `rh`, written in
+> Rust, with the [desktop app](https://github.com/philbert440/rivethub-desktop) and [plug-ins](https://github.com/philbert440/rivethub-plugins) in their own repositories; the
+> [Android app](https://github.com/philbert440/rivetOS/tree/main/apps/rivethub-android) stays in this one. This page documents the TypeScript RivetOS
+> runtime that `rh` supersedes. To install RivetHub, start at [rivethub.io](https://rivethub.io/install-local.html); to move an
+> existing node, see [Migrating to RivetHub](https://github.com/philbert440/rivetOS/blob/main/docs/migrating-to-rivethub.md).
+
 RivetOS supports three deployment targets: **Docker** (recommended for most users), **Proxmox** (homelab), and **bare-metal** (manual). This guide covers each approach, multi-agent setups, networking, and backup/restore.
 
 > The unified Compose stack lives at `infra/docker/rivetos/docker-compose.yml`. Throughout this guide, `docker compose ...` examples assume you've either passed `-f infra/docker/rivetos/docker-compose.yml` or exported `COMPOSE_FILE=infra/docker/rivetos/docker-compose.yml` from the repo root.

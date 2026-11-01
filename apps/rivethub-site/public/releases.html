@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Releases — RivetHub</title>
-<meta name="description" content="How RivetHub stable releases work: pinned tags, digests, checksums, latest.json, and changelog.">
+<meta name="description" content="How RivetHub releases work: rh archives and SHA256SUMS on GitHub, beta on every merge, promotion to stable, and rh update.">
 <meta name="theme-color" content="#090d0b">
 
 <meta property="og:type" content="website">
@@ -18,7 +18,7 @@
 
 <link rel="canonical" href="https://rivethub.io/releases.html">
 <meta property="og:title" content="Releases — RivetHub">
-<meta property="og:description" content="How RivetHub stable releases work: pinned tags, digests, checksums, latest.json, and changelog.">
+<meta property="og:description" content="How RivetHub releases work: rh archives and SHA256SUMS on GitHub, beta on every merge, promotion to stable, and rh update.">
 <meta property="og:url" content="https://rivethub.io/releases.html">
 <meta property="og:image" content="https://rivethub.io/social-preview.png">
 <meta property="og:image:width" content="1200">
@@ -26,7 +26,7 @@
 <meta property="og:image:alt" content="RivetHub banner with the robot mark and wordmark, and the headline “Your agents. Your memory. Your hardware.”">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Releases — RivetHub">
-<meta name="twitter:description" content="How RivetHub stable releases work: pinned tags, digests, checksums, latest.json, and changelog.">
+<meta name="twitter:description" content="How RivetHub releases work: rh archives and SHA256SUMS on GitHub, beta on every merge, promotion to stable, and rh update.">
 <meta name="twitter:image" content="https://rivethub.io/social-preview.png">
 <link rel="stylesheet" href="marketing.css">
 <script src="theme.js"></script>
@@ -35,74 +35,105 @@
 <a class="skip-link" href="#main">Skip to content</a>
 <header class="landing-header"><div class="landing-wrap header-inner">
   <a class="wordmark" href="index.html" aria-label="RivetHub home"><img class="brand-mark robot-logo" src="robot.png" width="35" height="40" alt=""> rivet<span>hub</span><span class="brand-dot" aria-hidden="true">.</span></a>
-  <nav aria-label="Main navigation"><a href="index.html">Home</a><a href="install-local.html">Quickstart</a><a href="server.html">Server</a><a href="apps.html" aria-current="page">Apps / Downloads</a><a href="support.html">Support</a></nav>
+  <nav aria-label="Main navigation"><a href="index.html">Home</a><a href="install-local.html">Quickstart</a><a href="server.html">Server</a><a href="apps.html" aria-current="page">Apps</a><a href="support.html">Support</a></nav>
 </div></header>
 <main id="main">
 <div class="wrap">
 
   <div class="page-head">
     <p class="kicker">releases</p>
-    <h1>Stable means pinned</h1>
-    <p class="lede">A RivetHub stable release is a set of exact tags,
-    digests, and checksums — not a floating <code>latest</code>.</p>
+    <h1>Tagged, checksummed, never rebuilt</h1>
+    <p class="lede">The RivetHub runtime is released on GitHub from
+    <a href="https://github.com/philbert440/rivethub-runtime">philbert440/rivethub-runtime</a>. Every tag publishes one archive per platform and a
+    <code>SHA256SUMS</code> file, and a published archive is never replaced, so a pinned URL and checksum stay
+    valid.</p>
   </div>
 
   <section class="block">
-    <p class="kicker">the pin file</p>
-    <h2>What "stable" means here</h2>
-    <p>Every fetch the installers make from RivetOS goes through one pin
-    file, <code>distro/pins/stable.json</code> in the RivetOS repository:</p>
+    <p class="kicker">archives</p>
+    <h2>What a release contains</h2>
+    <p>Tag <code>v&lt;version&gt;</code> publishes, at
+    <code>https://github.com/philbert440/rivethub-runtime/releases/download/v&lt;version&gt;/</code>:</p>
     <dl class="what">
       <div>
-        <dt><code>rivetos_tag</code></dt>
-        <dd>the exact RivetOS tag bare-metal node installs clone</dd>
+        <dt><code>rh-&lt;version&gt;-x86_64-unknown-linux-gnu.tar.gz</code></dt>
+        <dd>Linux x86_64, built on Ubuntu 22.04 (glibc 2.35 or newer)</dd>
       </div>
       <div>
-        <dt><code>image</code></dt>
-        <dd>the GHCR agent image for <code>--docker</code>, preferred in
-        digest form (<code>@sha256:…</code>)</dd>
+        <dt><code>rh-&lt;version&gt;-aarch64-unknown-linux-gnu.tar.gz</code></dt>
+        <dd>Linux aarch64, built on Ubuntu 22.04 (glibc 2.35 or newer)</dd>
       </div>
       <div>
-        <dt><code>pgvector_image</code></dt>
-        <dd>the Postgres 16 + pgvector image for <code>--docker</code>
-        datahub installs</dd>
+        <dt><code>rh-&lt;version&gt;-universal-apple-darwin.tar.gz</code></dt>
+        <dd>macOS, Apple Silicon and Intel in one binary</dd>
       </div>
       <div>
-        <dt><code>rivet_ca_sha256</code></dt>
-        <dd>checksum of the pinned CA library</dd>
-      </div>
-      <div>
-        <dt><code>hub_helper_version</code></dt>
-        <dd>version of the <code>rivethub-hub</code> helper (currently
-        <code>0.1.0</code>)</dd>
+        <dt><code>SHA256SUMS</code></dt>
+        <dd>the SHA-256 of each archive</dd>
       </div>
     </dl>
-    <p>When you install from the stable channel, you get exactly those
-    artifacts. A new release is a new pin file, reviewed and tagged.</p>
+    <p>Each archive holds <code>rh</code>, <code>rivethub-migrate</code> and <code>LICENSE</code>. Windows users run the
+    Linux archive under WSL. Before upload, every build unpacks its archive and checks that <code>rh version</code>
+    names the release, that <code>rh db migrate</code> creates a fresh store, and that <code>rh doctor</code> passes on
+    it. The <a href="install-local.html#install">Quickstart</a> has the download-and-verify commands.</p>
   </section>
 
   <section class="block">
-    <p class="kicker">current channel state</p>
-    <h2>Current channel state</h2>
-    <div class="note"><strong>Apps and the runtime release separately.</strong> The app downloads have their own versions and checksums; the runtime the installers fetch is pinned independently, and the current feed pins a release candidate. In other words: a stable app download doesn’t imply a final stable runtime — consult the feed below if that distinction matters to you.</div>
-    <p>The machine-readable channel file is served at
-    <a href="releases/latest.json"><code>releases/latest.json</code></a>.
-    It includes the runtime channel, installer checksums, and an <code>apps</code> object for Linux, Windows and Android. Each app entry has <code>version</code>, <code>file</code>, <code>sha256</code> and <code>sizeMB</code> (rounded decimal MB). Downloads use <code>https://rivethub.io/releases/&lt;file&gt;</code>; the local guide and <a href="apps.html">Apps page</a> read this feed.</p>
-    <dl class="what"><div><dt><code>local.sh</code></dt><dd>The full laptop setup: hub, agent runtime, and local UI. Published at <code>https://get.rivethub.io/local.sh</code>; SHA256 in <code>local_sh_sha256</code>.</dd></div><div><dt><code>datahub.sh</code></dt><dd>Dedicated datahub. Published at <code>https://get.rivethub.io/datahub.sh</code>; SHA256 in <code>datahub_sh_sha256</code>. The helpers it fetches are pinned by their own <code>*_sha256</code> fields in <code>pins/stable.json</code>, as the <a href="install-datahub.html">datahub guide</a> explains.</dd></div><div><dt><code>node.sh</code></dt><dd>Enroll an agent node. Checksum in <code>node_sh_sha256</code>.</dd></div></dl>
+    <p class="kicker">channels</p>
+    <h2>Beta and stable</h2>
+    <p>Every merge to <code>main</code> tags the next patch version and publishes it as a <strong>beta</strong>
+    (a GitHub prerelease). A beta becomes <strong>stable</strong> when it is promoted, without being rebuilt.
+    <code>rh update</code> follows a channel:</p>
+    <div class="term">
+<div class="term__bar"><i></i><i></i><i></i><span class="term__title">terminal</span>
+</div><pre tabindex="0" data-copy="rh update --channel beta&#10;rh update --channel stable&#10;rh update --channel beta --version v0.7.0"><code><span class="ps">$ </span>rh update --channel beta
+<span class="ps">$ </span>rh update --channel stable
+<span class="ps">$ </span>rh update --channel beta --version v0.7.0</code></pre>
+</div>
+    <p>Beta installs the highest version published, prereleases included; stable installs the latest promoted release
+    and refuses prereleases; <code>--version</code> pins an exact tag (a beta tag with <code>--channel beta</code>). The updater checks the archive against
+    <code>SHA256SUMS</code>, migrates the configured memory with the new <code>rivethub-migrate</code>, swaps both
+    binaries (keeping <code>*.previous</code> copies) and restarts the systemd unit unless you pass
+    <code>--no-restart</code>. <code>--mesh</code> updates every node in the mesh to the release installed locally.</p>
+    <div class="warn"><strong>Use beta for now.</strong> The newest releases are betas, and the stable channel still
+    resolves v0.1.4, which refuses the current memory schema. Install and update with <code>--channel beta</code>
+    until a 0.7 release is promoted.</div>
+  </section>
+
+  <section class="block">
+    <p class="kicker">the rest</p>
+    <h2>Desktop, plug-ins and Android</h2>
+    <ul class="facts">
+      <li><strong>Desktop:</strong> <a href="https://github.com/philbert440/rivethub-desktop">rivethub-desktop</a> has no binary releases yet; build it from
+      <code>main</code> with <code>packaging/linux/install.sh</code>.</li>
+      <li><strong>Plug-ins:</strong> <a href="https://github.com/philbert440/rivethub-plugins">rivethub-plugins</a> holds the SDKs, templates and plug-ins as
+      source; each pins the runtime contract it was built against.</li>
+      <li><strong>Android:</strong> <a href="https://github.com/philbert440/rivetOS/tree/main/apps/rivethub-android"><code>apps/rivethub-android</code></a> in the rivetOS
+      repository, built from source.</li>
+    </ul>
   </section>
 
   <section class="block">
     <p class="kicker">changelog</p>
     <h2>Changelog</h2>
-    <p>Release notes and the changelog live with the source: the distro
-    repository (<code>pins/README.md</code> documents each pin field) and
-    the RivetOS runtime repository, documented at
-    <a href="https://rivetos.dev">rivetos.dev</a>. Consult the current release feed and source release notes for the exact versions available.</p>
+    <p>Each release’s notes are on its <a href="https://github.com/philbert440/rivethub-runtime/releases">GitHub release page</a>, and the merged pull requests
+    behind it are in <a href="https://github.com/philbert440/rivethub-runtime/pulls?q=is%3Apr+is%3Amerged">the runtime’s history</a>.</p>
+  </section>
+
+  <section class="block">
+    <p class="kicker">earlier releases</p>
+    <h2>The TypeScript RivetOS feed</h2>
+    <p>Before <code>rh</code>, RivetHub shipped the TypeScript RivetOS runtime through the <code>get.rivethub.io</code>
+    installers (<code>local.sh</code>, <code>datahub.sh</code>, <code>node.sh</code>), pinned by
+    <code>pins/stable.json</code>, with the 0.5 desktop and Android downloads listed in
+    <a href="releases/latest.json"><code>releases/latest.json</code></a>. Those still install that runtime, which
+    <code>rh</code> supersedes; existing installs move with
+    <a href="https://github.com/philbert440/rivetOS/blob/main/docs/migrating-to-rivethub.md">Migrating to RivetHub</a>.</p>
   </section>
 
 </div>
 </main>
-<footer class="landing-footer"><div class="landing-wrap"><div><a class="wordmark" href="index.html"><img class="brand-mark robot-logo" src="robot.png" width="35" height="40" alt="">rivet<span>hub</span>.</a><p>Self-hosted memory for your AI agents.<br>Built on the open-source RivetOS runtime.</p></div><nav aria-label="Footer navigation"><a href="index.html">Home</a><a href="install-local.html">Quickstart</a><a href="llms.txt">Set up with your agent</a><a href="server.html">Server</a><a href="apps.html">Apps / Downloads</a><a href="support.html">Support</a><a href="omarchy.html">Omarchy</a><a href="releases.html">Releases</a><a href="privacy.html">Privacy</a><a href="https://rivetos.dev">Documentation</a></nav></div><div class="landing-wrap theme-footer"><label hidden data-theme-control>Appearance <select aria-label="Site appearance" data-theme-select><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label></div></footer>
+<footer class="landing-footer"><div class="landing-wrap"><div><a class="wordmark" href="index.html"><img class="brand-mark robot-logo" src="robot.png" width="35" height="40" alt="">rivet<span>hub</span>.</a><p>Self-hosted memory for your AI agents.<br>Built on the open-source RivetHub runtime.</p></div><nav aria-label="Footer navigation"><a href="index.html">Home</a><a href="install-local.html">Quickstart</a><a href="llms.txt">Set up with your agent</a><a href="server.html">Server</a><a href="apps.html">Apps</a><a href="support.html">Support</a><a href="omarchy.html">Omarchy</a><a href="releases.html">Releases</a><a href="privacy.html">Privacy</a><a href="https://github.com/philbert440/rivethub-runtime/tree/main/docs">Documentation</a><a href="https://github.com/philbert440/rivethub-runtime">GitHub</a></nav></div><div class="landing-wrap theme-footer"><label hidden data-theme-control>Appearance <select aria-label="Site appearance" data-theme-select><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label></div></footer>
 <script src="site.js"></script>
 <script src="posthog-config.js"></script>
 <script src="posthog.js"></script>

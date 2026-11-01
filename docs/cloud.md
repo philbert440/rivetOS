@@ -1,7 +1,14 @@
 # Rivet Cloud — connect, export, import
 
-> **Note:** The `rivetos cloud` commands ship in the next RivetHub release and
-> are not in the current installer yet.
+> **The runtime has moved to [rivethub-runtime](https://github.com/philbert440/rivethub-runtime).** RivetHub's runtime is now `rh`, written in
+> Rust, with the [desktop app](https://github.com/philbert440/rivethub-desktop) and [plug-ins](https://github.com/philbert440/rivethub-plugins) in their own repositories; the
+> [Android app](https://github.com/philbert440/rivetOS/tree/main/apps/rivethub-android) stays in this one. This page documents the TypeScript RivetOS
+> runtime that `rh` supersedes. To install RivetHub, start at [rivethub.io](https://rivethub.io/install-local.html); to move an
+> existing node, see [Migrating to RivetHub](https://github.com/philbert440/rivetOS/blob/main/docs/migrating-to-rivethub.md).
+
+> **Note:** The `rivetos cloud` commands are in the TypeScript CLI on `main` but in
+> no tagged release: `get.rivethub.io/local.sh` pins `v0.6.0-rc.2`, which predates
+> them. The RivetHub runtime (`rh`) has no `cloud` command.
 
 Rivet Cloud is hosted memory (`rivetos.cloud`) that any coding harness already
 on your laptop can capture into and search. This page covers the public CLI:

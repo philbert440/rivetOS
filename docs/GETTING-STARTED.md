@@ -1,5 +1,11 @@
 # Getting started
 
+> **The runtime has moved to [rivethub-runtime](https://github.com/philbert440/rivethub-runtime).** RivetHub's runtime is now `rh`, written in
+> Rust, with the [desktop app](https://github.com/philbert440/rivethub-desktop) and [plug-ins](https://github.com/philbert440/rivethub-plugins) in their own repositories; the
+> [Android app](https://github.com/philbert440/rivetOS/tree/main/apps/rivethub-android) stays in this one. This page documents the TypeScript RivetOS
+> runtime that `rh` supersedes. To install RivetHub, start at [rivethub.io](https://rivethub.io/install-local.html); to move an
+> existing node, see [Migrating to RivetHub](https://github.com/philbert440/rivetOS/blob/main/docs/migrating-to-rivethub.md).
+
 **First success is three steps.** Everything else on this page is a branch — take it only after the node answers and one session is recorded.
 
 1. Have a supported coding tool installed (Claude Code is the reference).

@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Apps — RivetHub</title>
-<meta name="description" content="Download the RivetHub desktop and Android apps, and connect them to your hub from your laptop or phone.">
+<meta name="description" content="The RivetHub desktop app, Android app and plug-ins, how to build and connect them, and the earlier 0.5 downloads.">
 <meta name="theme-color" content="#090d0b">
 
 <meta property="og:type" content="website">
@@ -18,7 +18,7 @@
 
 <link rel="canonical" href="https://rivethub.io/apps.html">
 <meta property="og:title" content="Apps — RivetHub">
-<meta property="og:description" content="Download the RivetHub desktop and Android apps, and connect them to your hub from your laptop or phone.">
+<meta property="og:description" content="The RivetHub desktop app, Android app and plug-ins, how to build and connect them, and the earlier 0.5 downloads.">
 <meta property="og:url" content="https://rivethub.io/apps.html">
 <meta property="og:image" content="https://rivethub.io/social-preview.png">
 <meta property="og:image:width" content="1200">
@@ -26,7 +26,7 @@
 <meta property="og:image:alt" content="RivetHub banner with the robot mark and wordmark, and the headline “Your agents. Your memory. Your hardware.”">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Apps — RivetHub">
-<meta name="twitter:description" content="Download the RivetHub desktop and Android apps, and connect them to your hub from your laptop or phone.">
+<meta name="twitter:description" content="The RivetHub desktop app, Android app and plug-ins, how to build and connect them, and the earlier 0.5 downloads.">
 <meta name="twitter:image" content="https://rivethub.io/social-preview.png">
 <link rel="stylesheet" href="marketing.css">
 <script src="theme.js"></script>
@@ -35,25 +35,82 @@
 <a class="skip-link" href="#main">Skip to content</a>
 <header class="landing-header"><div class="landing-wrap header-inner">
   <a class="wordmark" href="index.html" aria-label="RivetHub home"><img class="brand-mark robot-logo" src="robot.png" width="35" height="40" alt=""> rivet<span>hub</span><span class="brand-dot" aria-hidden="true">.</span></a>
-  <nav aria-label="Main navigation"><a href="index.html">Home</a><a href="install-local.html">Quickstart</a><a href="server.html">Server</a><a href="apps.html" aria-current="page">Apps / Downloads</a><a href="support.html">Support</a></nav>
+  <nav aria-label="Main navigation"><a href="index.html">Home</a><a href="install-local.html">Quickstart</a><a href="server.html">Server</a><a href="apps.html" aria-current="page">Apps</a><a href="support.html">Support</a></nav>
 </div></header>
 <main id="main">
 <div class="wrap-wide">
 <div class="page-head guide-head">
-<p class="kicker">Downloads</p>
+<p class="kicker">Apps</p>
 <h1>The RivetHub apps.</h1>
-<p class="lede">The apps are how you browse and work with your hub. On Linux the desktop app finds a local node by itself; everything else pairs in a couple of steps.</p><a class="more" href="install-local.html">Don’t have a hub yet? Start with the Quickstart →</a>
+<p class="lede">The apps are how you see and steer your nodes: sessions, topics, terminals and memory. They talk to an <code>rh</code> node over its gateway; the agents keep running on your machines.</p><a class="more" href="install-local.html">Don’t have a node yet? Start with the Quickstart →</a>
 </div>
 <section class="block">
 <p class="kicker">Desktop</p>
 <h2>On your computer.</h2>
 <div class="app-grid">
-<article class="card app-card" id="linux" data-platform="linux">
-<div class="app-top"><span class="platform-symbol" aria-hidden="true">▣</span><span class="badge">AppImage</span>
+<article class="card app-card" id="linux-desktop">
+<div class="app-top"><span class="platform-symbol" aria-hidden="true">▣</span><span class="badge">Build from source</span>
 </div>
 <h3>Linux</h3>
-<p>Installs alongside the local node and connects to it automatically — open it and you’re looking at your hub.</p><dl class="app-meta">
-<div><dt>Latest stable</dt><dd data-field="version">v0.5.28</dd>
+<p>The native RivetHub desktop, written in Rust: your workspace and topics, sessions with their terminals, memory, delegated tasks and plug-in panels, across every node you can reach. One script builds and installs it into <code>~/.local</code>.</p>
+<a class="btn" href="install-local.html#desktop">Build and install <span aria-hidden="true">→</span></a>
+<a class="more" href="https://github.com/philbert440/rivethub-desktop">philbert440/rivethub-desktop ↗</a>
+</article>
+<article class="card app-card coming">
+<div class="app-top"><span class="platform-symbol" aria-hidden="true">▣</span><span class="badge badge--quiet">Not yet</span>
+</div>
+<h3>macOS</h3>
+<p>There’s no macOS desktop app yet. The runtime itself runs on macOS: <code>rh</code> ships a universal build.</p>
+<a class="more" href="install-local.html#install">Install rh on macOS →</a>
+</article>
+<article class="card app-card coming">
+<div class="app-top"><span class="platform-symbol" aria-hidden="true">▣</span><span class="badge badge--quiet">Not yet</span>
+</div>
+<h3>Windows</h3>
+<p>There’s no Windows desktop app yet. Run <code>rh</code> under WSL with the Linux build.</p>
+<a class="more" href="releases.html">Release archives →</a>
+</article>
+</div>
+<aside class="card omarchy-desktop" aria-labelledby="omarchy-desktop-title">
+  <div><p class="kicker">At home on Omarchy</p><h3 id="omarchy-desktop-title">It wears your theme.</h3><p>On Omarchy, RivetHub can follow your desktop’s palette and switch when you switch themes. See the earlier app captured in all 22 themes.</p><a class="btn" href="omarchy.html">RivetHub on Omarchy <span aria-hidden="true">↗</span></a></div>
+  <a class="product-shot" href="omarchy.html" aria-label="See the Omarchy setup guide and theme gallery"><img src="images/omarchy/osaka-jade-chat-expanded.png" width="1280" height="800" loading="lazy" alt="The earlier RivetHub desktop app on the Omarchy desktop in Osaka Jade, with conversations and memory recall open"></a>
+</aside>
+</section>
+<section class="block">
+<p class="kicker">Mobile</p>
+<h2>On your phone.</h2>
+<div class="pair-grid">
+<article class="card app-card" id="android-app">
+<div class="app-top"><span class="platform-symbol" aria-hidden="true">▯</span><span class="badge">Build from source</span>
+</div>
+<h3>Android</h3>
+<p>RivetHub for Android lives in the rivetOS repository as <code>apps/rivethub-android</code>; build it with Gradle (JDK 21 and the Android SDK). Pair it from the desktop app’s <strong>Settings → Devices → Pair a phone</strong>, then <strong>Scan pairing QR</strong> on the phone. Pairing needs a node with a certificate authority. Off your home network, connect over Tailscale.</p>
+<a class="more" href="https://github.com/philbert440/rivetOS/tree/main/apps/rivethub-android">apps/rivethub-android ↗</a>
+</article>
+<article class="card app-card coming">
+<div class="app-top"><span class="platform-symbol" aria-hidden="true">▯</span><span class="badge badge--quiet">Not yet</span>
+</div>
+<h3>iPhone</h3>
+<p>There is no iPhone app yet.</p><a class="more" href="install-local.html#phone">Phone pairing →</a>
+</article>
+</div>
+</section>
+<section class="block">
+<p class="kicker">Plug-ins</p>
+<h2>Add to your nodes.</h2>
+<p class="section-lede">A plug-in is its own program on a node: <code>rh</code> starts it, shows its views in the apps, sends it events and offers its tools to your agents. <a href="https://github.com/philbert440/rivethub-plugins">rivethub-plugins</a> has the TypeScript and Rust SDKs, templates to start from, and the voice, files and Workflows plug-ins. An agent can also write one for you with the plug-in creator tools that <code>rh</code> serves over MCP. The desktop lists each node’s plug-ins under <strong>Settings → Plug-ins</strong>.</p>
+</section>
+<section class="block">
+<p class="kicker">Earlier apps</p>
+<h2>For the TypeScript RivetOS runtime.</h2>
+<p class="section-lede">These are the 0.5 Electron desktop and Android builds made for the TypeScript RivetOS runtime that <code>rh</code> replaces. They stay here for installs that haven’t moved yet; new setups should use the apps above. <a href="https://github.com/philbert440/rivetOS/blob/main/docs/migrating-to-rivethub.md">Moving a RivetOS node →</a></p>
+<div class="app-grid">
+<article class="card app-card" id="linux" data-platform="linux">
+<div class="app-top"><span class="platform-symbol" aria-hidden="true">▣</span><span class="badge badge--quiet">AppImage</span>
+</div>
+<h3>Linux (Electron)</h3>
+<dl class="app-meta">
+<div><dt>Version</dt><dd data-field="version">v0.5.28</dd>
 </div>
 <div><dt>Download size</dt><dd data-field="size">124.1 MB</dd>
 </div></dl>
@@ -61,62 +118,36 @@
 </details><a class="btn" data-field="download" href="https://rivethub.io/releases/RivetHub-0.5.28.AppImage" download>Download AppImage <span aria-hidden="true">↓</span></a>
 </article>
 <article class="card app-card" id="win32" data-platform="win32">
-<div class="app-top"><span class="platform-symbol" aria-hidden="true">▣</span><span class="badge">Windows installer</span>
+<div class="app-top"><span class="platform-symbol" aria-hidden="true">▣</span><span class="badge badge--quiet">Windows installer</span>
 </div>
-<h3>Windows</h3>
-<p>There’s no Windows hub installer yet, so this app connects to a hub you already run — on a server, or another machine on the network.</p><dl class="app-meta">
-<div><dt>Latest stable</dt><dd data-field="version">v0.5.28</dd>
+<h3>Windows (Electron)</h3>
+<dl class="app-meta">
+<div><dt>Version</dt><dd data-field="version">v0.5.28</dd>
 </div>
 <div><dt>Download size</dt><dd data-field="size">100.1 MB</dd>
 </div></dl>
 <details class="checksum"><summary>SHA256</summary><code data-field="sha256">728d2d5b81d84678fbdc7aec4b2e6f91835dd4cc496213765fbb0385f2620fd3</code>
 </details><a class="btn" data-field="download" href="https://rivethub.io/releases/RivetHub-Setup-0.5.28.exe" download>Download Windows installer <span aria-hidden="true">↓</span></a>
 </article>
-<article class="card app-card coming">
-<div class="app-top"><span class="platform-symbol" aria-hidden="true">▣</span><span class="badge badge--quiet">Not yet</span>
-</div>
-<h3>macOS</h3>
-<p>The macOS desktop app is on the way. Until it ships, your hub works fully in the browser — the local installer already supports macOS.</p>
-<a class="more" href="https://localhost:5174">Open localhost:5174 →</a>
-</article>
-</div>
-<aside class="card omarchy-desktop" aria-labelledby="omarchy-desktop-title">
-  <div><p class="kicker">At home on Omarchy</p><h3 id="omarchy-desktop-title">It wears your theme.</h3><p>On Omarchy, RivetHub reads your desktop’s palette — chat and terminal included. See all 22 themes, captured on a real desktop.</p><a class="btn" href="omarchy.html">RivetHub on Omarchy <span aria-hidden="true">↗</span></a></div>
-  <a class="product-shot" href="omarchy.html" aria-label="See the Omarchy setup guide and theme gallery"><img src="images/omarchy/osaka-jade-chat-expanded.png" width="1280" height="800" loading="lazy" alt="RivetHub on the Omarchy desktop in Osaka Jade, with conversations and memory recall open"></a>
-</aside>
-</section>
-<section class="block">
-<p class="kicker">Mobile</p>
-<h2>On your phone.</h2>
-<div class="pair-grid">
 <article class="card app-card" id="android" data-platform="android">
-<div class="app-top"><span class="platform-symbol" aria-hidden="true">▯</span><span class="badge">APK</span>
+<div class="app-top"><span class="platform-symbol" aria-hidden="true">▯</span><span class="badge badge--quiet">APK</span>
 </div>
 <h3>Android</h3>
-<p>On the desktop or web app, mint an enrollment in Settings → Devices — a QR code is shown. Scan it in the Android app under Settings → Node &amp; Mesh → Scan from desktop. Off your home network, connect over Tailscale.</p><dl class="app-meta">
-<div><dt>Latest stable</dt><dd data-field="version">v0.5.25</dd>
+<dl class="app-meta">
+<div><dt>Version</dt><dd data-field="version">v0.5.25</dd>
 </div>
 <div><dt>Download size</dt><dd data-field="size">2.8 MB</dd>
 </div></dl>
 <details class="checksum"><summary>SHA256</summary><code data-field="sha256">c19dbc7461a303cf07b2615c86f8d0ba2c65b8211d8fd1bb3efabe8cedef9d58</code>
 </details><a class="btn" data-field="download" href="https://rivethub.io/releases/RivetHub-0.5.25.apk" download>Download APK <span aria-hidden="true">↓</span></a>
 </article>
-<article class="card app-card coming">
-<div class="app-top"><span class="platform-symbol" aria-hidden="true">▯</span><span class="badge badge--quiet">Not yet</span>
 </div>
-<h3>iPhone</h3>
-<p>There is no iPhone app yet. The QR from Settings → Devices is for the Android app; iOS is not shipped.</p><a class="more" href="install-local.html#phone">Phone pairing →</a>
-</article>
+<div class="note"><strong>Release details.</strong> These versions, sizes and checksums come from <a href="releases/latest.json">releases/latest.json</a>. <span id="feed-status" role="status">Showing the bundled release snapshot.</span>
 </div>
-</section>
-<section class="block">
-<div class="note"><strong>Release details.</strong> Versions, sizes, SHA256 checksums and download paths come from <a href="releases/latest.json">releases/latest.json</a>. <span id="feed-status" role="status">Showing the bundled release snapshot.</span>
-</div>
-<p class="section-lede">Every app is a client for a RivetHub hub — the <a href="install-local.html">Quickstart</a> is the fastest way to get one.</p>
 </section>
 </div>
 </main>
-<footer class="landing-footer"><div class="landing-wrap"><div><a class="wordmark" href="index.html"><img class="brand-mark robot-logo" src="robot.png" width="35" height="40" alt="">rivet<span>hub</span>.</a><p>Self-hosted memory for your AI agents.<br>Built on the open-source RivetOS runtime.</p></div><nav aria-label="Footer navigation"><a href="index.html">Home</a><a href="install-local.html">Quickstart</a><a href="llms.txt">Set up with your agent</a><a href="server.html">Server</a><a href="apps.html">Apps / Downloads</a><a href="support.html">Support</a><a href="omarchy.html">Omarchy</a><a href="releases.html">Releases</a><a href="privacy.html">Privacy</a><a href="https://rivetos.dev">Documentation</a></nav></div><div class="landing-wrap theme-footer"><label hidden data-theme-control>Appearance <select aria-label="Site appearance" data-theme-select><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label></div></footer>
+<footer class="landing-footer"><div class="landing-wrap"><div><a class="wordmark" href="index.html"><img class="brand-mark robot-logo" src="robot.png" width="35" height="40" alt="">rivet<span>hub</span>.</a><p>Self-hosted memory for your AI agents.<br>Built on the open-source RivetHub runtime.</p></div><nav aria-label="Footer navigation"><a href="index.html">Home</a><a href="install-local.html">Quickstart</a><a href="llms.txt">Set up with your agent</a><a href="server.html">Server</a><a href="apps.html">Apps</a><a href="support.html">Support</a><a href="omarchy.html">Omarchy</a><a href="releases.html">Releases</a><a href="privacy.html">Privacy</a><a href="https://github.com/philbert440/rivethub-runtime/tree/main/docs">Documentation</a><a href="https://github.com/philbert440/rivethub-runtime">GitHub</a></nav></div><div class="landing-wrap theme-footer"><label hidden data-theme-control>Appearance <select aria-label="Site appearance" data-theme-select><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label></div></footer>
 <script src="site.js"></script>
 <script src="posthog-config.js"></script>
 <script src="posthog.js"></script>

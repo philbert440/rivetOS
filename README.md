@@ -1,5 +1,12 @@
 # RivetOS
 
+> **The runtime has moved to [rivethub-runtime](https://github.com/philbert440/rivethub-runtime).** RivetHub's runtime is now `rh`, written in
+> Rust, with the [desktop app](https://github.com/philbert440/rivethub-desktop) and [plug-ins](https://github.com/philbert440/rivethub-plugins) in their own repositories; the
+> [Android app](apps/rivethub-android) and the harness integration kits stay in this one. The rest of
+> this README documents the TypeScript RivetOS runtime that `rh` supersedes. To install RivetHub,
+> start at [rivethub.io](https://rivethub.io/install-local.html); to move an existing node, see
+> [Migrating to RivetHub](docs/migrating-to-rivethub.md).
+
 **Lightweight, stable agent runtime. Apache 2.0 licensed.**
 
 > Zero bloat. Zero lock-in. Just the loop.
@@ -31,7 +38,7 @@ RivetOS is a personal AI agent runtime built for reliability. A tiny, stable cor
 - **Persistent memory**: PostgreSQL + pgvector. Hybrid FTS + vector search. Summary DAG. Learning loop.
 - **rivet-den**: harness event contract (`den-protocol`) + den-server intake for session linkage and chat indicators. [Protocol](docs/DEN.md).
 - **Structured observability**: JSON logging, runtime metrics, health endpoints, `rivetos doctor`.
-- **Laptop install**: `curl -fsSL https://get.rivethub.io/local.sh | bash` (stable on rivethub.io / get.rivethub.io). GitHub tags are source pins, not the app update feed.
+- **Laptop install**: `curl -fsSL https://get.rivethub.io/local.sh | bash` installs this TypeScript runtime (pinned by get.rivethub.io). rivethub.io now points new installs at `rh`. GitHub tags are source pins, not the app update feed.
 - **Apache 2.0**: no CLA, no dual-licensing, no surprises. Patent grant included.
 
 ## Quick start
@@ -47,7 +54,7 @@ curl -fsSL https://get.rivethub.io/local.sh | bash
 
 3. Start a **new session** in that tool so MCP recall loads (restart the tool, or on Grok run `/mcps reload`). Open RivetHub: the Linux AppImage the installer launched, or `https://localhost:5174`. First win is that this new-session turn appears in Hub **and** a `memory_search` from the tool returns it. An already-open session will not see the new MCP server.
 
-Desktop / Windows / Android first downloads: [rivethub.io](https://rivethub.io/). Phone pairing and mesh are day-2 — [Getting Started](docs/GETTING-STARTED.md).
+The 0.5 desktop, Windows and Android downloads for this runtime are under Earlier apps on [rivethub.io/apps.html](https://rivethub.io/apps.html). Phone pairing and mesh are day-2 — [Getting Started](docs/GETTING-STARTED.md).
 
 **Developers** (this repo): `npm install` then `npx rivetos local` (Node ≥ 22). Do **not** start with `npx rivetos init` — that wizard is Node ≥ 24 and targets Docker / mesh / datahub.
 

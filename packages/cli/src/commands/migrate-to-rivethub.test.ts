@@ -12,6 +12,7 @@ import { parseMigrateArgs } from './migrate-to-rivethub/options.js'
 import { planMigration, planRollback, stampOf } from './migrate-to-rivethub/plan.js'
 import { probeNode } from './migrate-to-rivethub/probe.js'
 import { renderHubUnit } from './migrate-to-rivethub/unit.js'
+import { packTarGz } from '../lib/mesh-enroll.js'
 import { sha256Hex } from './migrate-to-rivethub/release.js'
 
 interface Scenario {
@@ -359,7 +360,8 @@ describe('preflight refusals', () => {
   })
 
   it('refuses a release download on an unsupported architecture', () => {
-    expect(refusalsFor({ arch: 'arm64' }).join('\n')).toMatch(/--binary/)
+    expect(refusalsFor({ arch: 's390x' }).join('\n')).toMatch(/--binary/)
+    expect(refusalsFor({ arch: 'arm64' }).join('\n')).not.toMatch(/--binary/)
   })
 
   it('refuses --binary without rivethub-migrate next to it', () => {
@@ -461,8 +463,9 @@ describe('dry run', () => {
       'mv /home/rivet/.rivetos /home/rivet/.rivethub && ln -s /home/rivet/.rivethub /home/rivet/.rivetos',
     )
     expect(out).not.toMatch(/Wait for RivetHub/)
-    expect(out).toContain('api.github.com/repos/philbert440/rivethub-runtime/releases/latest')
-    expect(out).toContain('releases/download/<tag>/rh')
+    expect(out).toContain('api.github.com/repos/philbert440/rivethub-runtime/releases?per_page=100')
+    expect(out).toContain('releases/download/<tag>/rh-<tag>-x86_64-unknown-linux-gnu.tar.gz')
+    expect(out).toContain('releases/download/<tag>/SHA256SUMS')
     expect(out).toContain('nothing was changed')
     expect(out).not.toContain('s3cret')
     expect(host.writes).toEqual([])
@@ -479,7 +482,7 @@ describe('dry run', () => {
     expect(out).toMatch(
       /rivethub-migrate sqlite --path \/home\/rivet\/\.rivetos\/memory\.sqlite --import-pg-dump/,
     )
-    expect(out).toContain('releases/download/v0.2.0/rh')
+    expect(out).toContain('releases/download/v0.2.0/rh-0.2.0-x86_64-unknown-linux-gnu.tar.gz')
     expect(out).not.toContain('api.github.com')
     expect(out).not.toContain('status postgres')
   })
@@ -560,17 +563,23 @@ describe('migration run', () => {
     expect(host.calls.join('\n')).not.toContain('s3cret')
   })
 
-  it('resolves the latest tag once and downloads both binaries from it', async () => {
+  it('resolves the newest tag once and unpacks both binaries from its checked archive', async () => {
     const host = fakeHost({})
-    const rh = new TextEncoder().encode('rh-bytes')
-    const mig = new TextEncoder().encode('migrate-bytes')
+    const archive = packTarGz({ rh: 'rh-bytes', 'rivethub-migrate': 'migrate-bytes', LICENSE: 'x' })
+    const name = 'rh-0.7.0-x86_64-unknown-linux-gnu.tar.gz'
     const urls: string[] = []
+    const releases = [
+      { tag_name: 'v0.1.4', prerelease: false },
+      { tag_name: 'v0.7.0', prerelease: true },
+      { tag_name: 'v0.10.0-rc.1', prerelease: true },
+      { tag_name: 'v0.6.9', prerelease: true },
+    ]
     const files: Record<string, Uint8Array> = {
-      'releases/latest': new TextEncoder().encode('{"tag_name":"v0.3.1"}'),
-      '/rh': rh,
-      '/rh.sha256': new TextEncoder().encode(`${sha256Hex(rh)}  rh\n`),
-      '/rivethub-migrate': mig,
-      '/rivethub-migrate.sha256': new TextEncoder().encode(sha256Hex(mig)),
+      'releases?per_page=100': new TextEncoder().encode(JSON.stringify(releases)),
+      [`/v0.7.0/${name}`]: archive,
+      '/v0.7.0/SHA256SUMS': new TextEncoder().encode(
+        `${'0'.repeat(64)}  rh-0.7.0-aarch64-unknown-linux-gnu.tar.gz\n${sha256Hex(archive)}  ${name}\n`,
+      ),
     }
     host.download = (url) => {
       urls.push(url)
@@ -578,13 +587,36 @@ describe('migration run', () => {
       return key ? Promise.resolve(files[key]) : Promise.reject(new Error(url))
     }
     expect(await migrateToRivethub([], host)).toBe(0)
-    expect(urls[0]).toMatch(/api\.github\.com\/.*\/releases\/latest$/)
-    expect(urls.slice(1)).toEqual(
-      ['rh', 'rh.sha256', 'rivethub-migrate', 'rivethub-migrate.sha256'].map(
-        (a) => `https://github.com/philbert440/rivethub-runtime/releases/download/v0.3.1/${a}`,
-      ),
+    expect(urls).toEqual([
+      'https://api.github.com/repos/philbert440/rivethub-runtime/releases?per_page=100',
+      `https://github.com/philbert440/rivethub-runtime/releases/download/v0.7.0/${name}`,
+      'https://github.com/philbert440/rivethub-runtime/releases/download/v0.7.0/SHA256SUMS',
+    ])
+    expect(host.readText('/home/rivet/.local/bin/rh.download')).toBe('rh-bytes')
+    expect(host.readText('/home/rivet/.local/bin/rivethub-migrate.download')).toBe('migrate-bytes')
+    expect(host.writes).toContain(
+      'rename /home/rivet/.local/bin/rh.download /home/rivet/.local/bin/rh',
     )
-    expect(host.output()).toContain('v0.3.1: checksums verified')
+    expect(host.writes).toContain(
+      'rename /home/rivet/.local/bin/rivethub-migrate.download /home/rivet/.local/bin/rivethub-migrate',
+    )
+    expect(host.output()).toContain(`v0.7.0: ${name} checksum verified`)
+  })
+
+  it('installs nothing when the archive does not match SHA256SUMS', async () => {
+    const host = fakeHost({})
+    const archive = packTarGz({ rh: 'rh-bytes', 'rivethub-migrate': 'migrate-bytes' })
+    const name = 'rh-0.7.0-x86_64-unknown-linux-gnu.tar.gz'
+    host.download = (url) =>
+      Promise.resolve(
+        url.endsWith('SHA256SUMS')
+          ? new TextEncoder().encode(`${'f'.repeat(64)}  ${name}\n`)
+          : archive,
+      )
+    expect(await migrateToRivethub(['--version', 'v0.7.0'], host)).toBe(1)
+    expect(host.errors.join('\n')).toMatch(/does not match the release/)
+    expect(host.writes.some((w) => w.includes('.local/bin/rh'))).toBe(false)
+    expect(host.calls.some((c) => c.includes('disable --now'))).toBe(false)
   })
 
   it('stages a PGlite dump and imports it before starting RivetHub', async () => {

@@ -1,5 +1,11 @@
 # Local mode — one laptop, one node
 
+> **The runtime has moved to [rivethub-runtime](https://github.com/philbert440/rivethub-runtime).** RivetHub's runtime is now `rh`, written in
+> Rust, with the [desktop app](https://github.com/philbert440/rivethub-desktop) and [plug-ins](https://github.com/philbert440/rivethub-plugins) in their own repositories; the
+> [Android app](https://github.com/philbert440/rivetOS/tree/main/apps/rivethub-android) stays in this one. This page documents the TypeScript RivetOS
+> runtime that `rh` supersedes. To install RivetHub, start at [rivethub.io](https://rivethub.io/install-local.html); to move an
+> existing node, see [Migrating to RivetHub](https://github.com/philbert440/rivetOS/blob/main/docs/migrating-to-rivethub.md).
+
 The supported install is the published one-liner (stable channel on the
 production server):
 
@@ -191,6 +197,6 @@ Re-running `init` rewrites `.env` so `--pg-port` / `--api-key` cannot
 split-brain against `config.yaml`. Linux `up` uses `systemctl --user restart`
 so renewed certs and config apply.
 
-Apps: [https://rivethub.io/apps](https://rivethub.io/apps). While the node is
+Apps: [https://rivethub.io/apps.html](https://rivethub.io/apps.html) (the 0.5 builds for this runtime are under Earlier apps). While the node is
 up, `claude` / `grok` (and any other detected harness) capture into the local
 memory store.
