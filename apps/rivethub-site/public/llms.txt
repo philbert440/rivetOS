@@ -61,7 +61,8 @@ If a human pasted "Read https://rivethub.io/llms.txt and set up RivetHub on this
 - [CLI reference](https://github.com/philbert440/rivethub-runtime/blob/main/docs/CLI.md): every `rh` command, `rh local`, `rh update`, `rh capture hook` and the release archives.
 - [Contract](https://github.com/philbert440/rivethub-runtime/blob/main/docs/CONTRACT.md): the HTTP, WebSocket, MCP and capture boundaries, with numbered notes on behavior such as visibility and row-level security.
 - [Architecture](https://github.com/philbert440/rivethub-runtime/blob/main/docs/ARCHITECTURE.md): crates, ports and process shape.
-- [Operating on Postgres](https://github.com/philbert440/rivethub-runtime/blob/main/docs/OPERATIONS.md): the datahub database, migrations, backups, worker units and standalone-node notes.
+<!-- OPERATIONS.md reaches rivethub-runtime main with its next release; switch this link to blob/main then. -->
+- [Operating on Postgres](https://github.com/philbert440/rivethub-runtime/blob/integration/next/docs/OPERATIONS.md): the datahub database, migrations, backups, worker units and standalone-node notes.
 - [PKI](https://github.com/philbert440/rivethub-runtime/blob/main/docs/PKI.md): step-ca, SPIFFE identities and certificate renewal.
 - [Releases](https://github.com/philbert440/rivethub-runtime/releases): `rh-<version>-<target>.tar.gz` archives and `SHA256SUMS` for every tag.
 
