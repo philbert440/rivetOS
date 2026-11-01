@@ -43,7 +43,7 @@ function describe(facts: NodeFacts): string[] {
   const binary =
     facts.binary.source === 'local'
       ? `local ${facts.binary.rh}`
-      : `release ${facts.binary.tag ?? 'latest'}`
+      : `release ${facts.binary.tag ?? '(newest)'}`
   return [
     `   User: ${facts.user} (uid ${String(facts.uid)})   Home: ${facts.home}`,
     `   rivetos.service: ${facts.tsUnit}${facts.tsActive ? ' (active)' : ''}   rivethub.service: ${facts.hubUnit}`,

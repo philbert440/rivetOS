@@ -191,10 +191,10 @@ gateway:
     <h2>Moving a RivetOS node</h2>
     <p>A node running the TypeScript RivetOS runtime moves with <code>rivetos migrate-to-rivethub</code>: it installs
     <code>rh</code>, moves <code>~/.rivetos</code> to <code>~/.rivethub</code>, brings memory over and swaps
-    <code>rivetos.service</code> for <code>rivethub.service</code>, with <code>--rollback</code> to go back. Its built-in
-    download expects an older release layout, so extract a release archive first and pass
-    <code>--binary</code> with the path to its <code>rh</code> (with <code>rivethub-migrate</code> beside it). The
-    whole procedure is in <a href="https://github.com/philbert440/rivetOS/blob/main/docs/migrating-to-rivethub.md">Migrating to RivetHub</a>.</p>
+    <code>rivetos.service</code> for <code>rivethub.service</code>, with <code>--rollback</code> to go back. It
+    downloads the newest release itself and checks it against <code>SHA256SUMS</code>; <code>--binary</code> installs a
+    build of your own instead. Run <code>rivetos update</code> first so the CLI has the current download. The whole
+    procedure is in <a href="https://github.com/philbert440/rivetOS/blob/main/docs/migrating-to-rivethub.md">Migrating to RivetHub</a>.</p>
     <div class="note"><strong>Retired.</strong> The <code>node.sh</code> installer, the <code>rivethub-hub</code>
     helper and <code>rivet-ca.sh</code> belong to the TypeScript runtime. <code>rh</code> enrolls through step-ca
     instead.</div>

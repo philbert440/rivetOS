@@ -20,14 +20,9 @@ TypeScript packages are removed in a later release.
   CLI that has the command. On a mesh, every node needs it before `--mesh` can
   reach that node.
 - **Linux with systemd.** RivetHub runs as `rivethub.service`, in the same
-  scope (system or user unit) as the `rivetos.service` it replaces.
-- **Pass `--binary`.** The command's own download looks for bare `rh` and
-  `rivethub-migrate` assets, each with a `.sha256`, in the latest stable
-  release. rivethub-runtime releases ship `rh-<version>-<target>.tar.gz`
-  archives (Linux x86_64 and aarch64, macOS) with one `SHA256SUMS`, and the
-  latest stable release is still v0.1.4, so download the newest beta archive
-  from [the releases page](https://github.com/philbert440/rivethub-runtime/releases),
-  check it against `SHA256SUMS`, unpack it, and pass `--binary <dir>/rh`.
+  scope (system or user unit) as the `rivetos.service` it replaces. Release
+  archives are published for Linux x86_64 and aarch64; anything else needs
+  `--binary <path>` to a build of your own.
 - **Run it as the install owner, from a shell.** That is the user that owns
   `~/.rivetos` and that `rivetos.service` runs as. A system unit needs root or
   passwordless `sudo` for `systemctl`. Do not run the command from an agent
@@ -53,7 +48,7 @@ rivetos migrate-to-rivethub --rollback    # go back to rivetos.service
 | `--rollback`        | Reverse the migration (or a half-finished one) on this node.                                      |
 | `--mesh`            | Walk the agent nodes in `mesh.json` one at a time over SSH, then this node.                       |
 | `--binary <path>`   | Install this local `rh` instead of downloading a release; `rivethub-migrate` must sit next to it. |
-| `--version <tag>`   | Release tag to download (default: the latest release).                                            |
+| `--version <tag>`   | Release tag to download (default: the newest release, prereleases included).                      |
 | `--ssh-user <user>` | SSH user for remote nodes (default `rivet`; a node's `sshUser` in `mesh.json` wins).              |
 
 Exit codes: `0` migrated (or already migrated, or nothing to roll back), `1` a
@@ -75,10 +70,11 @@ is taken over). Nothing has changed at that point.
 
 Then, in order:
 
-1. Install `rh` and `rivethub-migrate` into `~/.local/bin`, from the GitHub
-   release of `philbert440/rivethub-runtime` (each asset checked against its
-   `.sha256`; without `--version` the latest tag is resolved once, so both
-   come from the same release) or from `--binary`.
+1. Install `rh` and `rivethub-migrate` into `~/.local/bin`, from the
+   `rh-<version>-<target>.tar.gz` archive of a `philbert440/rivethub-runtime`
+   release, checked against that release's `SHA256SUMS` (without `--version`
+   the newest release, prereleases included, is resolved once, so both come
+   from the same archive), or from `--binary`.
 2. `rh config validate` against `~/.rivetos/config.yaml`; for Postgres nodes,
    `rivethub-migrate status postgres`.
 3. Stop and disable `rivetos.service`.
