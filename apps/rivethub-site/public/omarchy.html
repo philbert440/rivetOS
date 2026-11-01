@@ -260,19 +260,28 @@
 
 <figure data-workspace="terminal" data-variant="collapsed"><a href="images/omarchy/white-terminal-collapsed.png?v=desktop-3" target="_blank" rel="noopener"><img src="images/omarchy/white-terminal-collapsed.png?v=desktop-3" width="1280" height="800" loading="lazy" alt="RivetHub in White: terminal, collapsed view, showing a saved memory-recall conversation. Open full-size screenshot."></a><figcaption>White / Terminal / Collapsed<a href="images/omarchy/white-terminal-collapsed.png?v=desktop-3" target="_blank" rel="noopener">Open full size ↗</a></figcaption></figure>
 </section>
-</div><div class="harness-strip"><p>Works with your agent tools</p><ul aria-label="Supported harnesses"><li>Claude Code</li><li>Codex</li><li>Grok Build</li><li>Kimi Code</li><li>Hermes</li></ul><a href="install-local.html#harnesses">How each one connects →</a></div><p class="gallery-provenance">All 88 captures were taken on a real Omarchy desktop, one theme at a time. Chat shows a saved Claude Code memory-recall exchange; Terminal replays it. The agent names in the demo roster are the owner’s — yours are customizable.</p></section>
+</div><div class="harness-strip"><p>Works with your agent tools</p><ul aria-label="Supported harnesses"><li>Claude Code</li><li>Codex</li><li>Grok Build</li><li>Kimi Code</li><li>Hermes</li></ul><a href="install-local.html#harnesses">How each one connects →</a></div><p class="gallery-provenance">All 88 captures were taken on a real Omarchy desktop, one theme at a time, with the earlier RivetHub 0.5 desktop app. Chat shows a saved Claude Code memory-recall exchange; Terminal replays it. The agent names in the demo roster are the owner’s — yours are customizable.</p></section>
 <section class="block guide-section" id="setup">
-<div><p class="kicker">Step 01 · Install</p><h2>One command, as usual.</h2></div>
-<div><p>Open a terminal on your Omarchy desktop and run the Linux local installer. It sets up the runtime, memory storage, and the desktop app, then wires capture and recall into the supported agent tools it finds on your machine.</p>
-<div class="term"><div class="term__bar"><i></i><i></i><i></i><span class="term__title">your Omarchy terminal</span></div><pre tabindex="0" data-copy="curl -fsSL https://get.rivethub.io/local.sh | bash"><code><span class="ps">$ </span>curl -fsSL https://get.rivethub.io/local.sh | bash</code></pre></div>
-<p><a href="https://get.rivethub.io/local.sh">Read the installer</a> · <a href="install-local.html">Full local setup guide</a></p>
-<ol class="setup-list"><li><strong>Follow the setup output.</strong> Review the detected tools and connection instructions.</li><li><strong>Open RivetHub.</strong> The Linux desktop app should find your local node. If it opens without a connection, go to Settings, set the Gateway URL to <code>https://localhost:5174</code>, and save. You can also use <a href="https://localhost:5174">the local browser interface</a>.</li><li><strong>Check your node.</strong> Run <code>rivetos local status</code> if setup or connection needs checking.</li></ol>
-<p class="note">Already running a hub? <a href="apps.html">Get the Linux desktop app</a> and connect to that hub instead of installing another one.</p></div>
+<div><p class="kicker">Step 01 · Install</p><h2>A node, then the app.</h2></div>
+<div><p>Open a terminal on your Omarchy desktop and follow the <a href="install-local.html">Quickstart</a>: install <code>rh</code> from a GitHub release, start a standalone node, and connect capture and recall in your agent tools.</p>
+<div class="term">
+<div class="term__bar"><i></i><i></i><i></i><span class="term__title">your Omarchy terminal</span>
+</div><pre tabindex="0" data-copy="rh local --no-lan --ensure --wait 30"><code><span class="ps">$ </span>rh local --no-lan --ensure --wait 30</code></pre>
+</div>
+<p>Then build the desktop app. On Omarchy, WebKitGTK comes from <code>pacman -S webkit2gtk-4.1</code>:</p>
+<div class="term">
+<div class="term__bar"><i></i><i></i><i></i><span class="term__title">your Omarchy terminal</span>
+</div><pre tabindex="0" data-copy="git clone https://github.com/philbert440/rivethub-desktop&#10;cd rivethub-desktop&#10;packaging/linux/install.sh"><code><span class="ps">$ </span>git clone https://github.com/philbert440/rivethub-desktop
+<span class="ps">$ </span>cd rivethub-desktop
+<span class="ps">$ </span>packaging/linux/install.sh</code></pre>
+</div>
+<ol class="setup-list"><li><strong>Open RivetHub.</strong> It connects to <code>https://127.0.0.1:5174</code>. For the plain-HTTP standalone node, start it with <code>RIVETHUB_URL=http://127.0.0.1:5174 RIVETHUB_CA=/etc/ssl/certs/ca-certificates.crt rivethub-desktop</code>.</li><li><strong>Check your node.</strong> <code>curl -s http://127.0.0.1:5174/healthz</code> answers when it’s up.</li></ol>
+<p class="note">Already running a node elsewhere? Point the app at it with <code>RIVETHUB_URL</code> instead of starting another one. <a href="install-local.html#desktop">Desktop details →</a></p></div>
 </section>
 <section class="block guide-section" id="appearance">
 <div><p class="kicker">Step 02 · Theme</p><h2>Make it follow your theme.</h2></div>
-<div><ol class="setup-list"><li><strong>Choose a theme in Omarchy.</strong> Open the Omarchy Menu with <kbd>Super</kbd> + <kbd>Alt</kbd> + <kbd>Space</kbd>, then choose <strong>Style → Theme</strong>.</li><li><strong>Open RivetHub desktop Settings → Appearance.</strong> Select <strong>Omarchy</strong> to use the detected desktop palette. The selected theme’s name appears there.</li><li><strong>Match the terminal.</strong> In terminal settings, set <strong>Color palette → App theme</strong> so the terminal follows the app’s Omarchy colors too.</li><li><strong>Switch whenever you like.</strong> After changing your Omarchy theme, bring RivetHub back into focus to refresh its colors.</li></ol>
-<p class="note"><strong>System and Omarchy are different choices.</strong> System follows light or dark mode. Omarchy reads the active theme’s palette. An imported terminal palette is a saved selection; choose App theme to keep following desktop changes.</p>
+<div><ol class="setup-list"><li><strong>Choose a theme in Omarchy.</strong> Open the Omarchy Menu with <kbd>Super</kbd> + <kbd>Alt</kbd> + <kbd>Space</kbd>, then choose <strong>Style → Theme</strong>.</li><li><strong>Open RivetHub Settings → Appearance.</strong> Under <strong>Colours</strong>, choose <strong>Omarchy</strong> to use the active theme’s palette. The theme’s name appears there. The option shows when an Omarchy theme is set up.</li><li><strong>Switch whenever you like.</strong> Change your Omarchy theme and RivetHub follows.</li></ol>
+<p class="note"><strong>System and Omarchy are different choices.</strong> System follows light or dark mode. Omarchy reads the active theme’s palette. Dark and Light are the app’s own Material themes.</p>
 <p>Theme switching shortcuts and community themes are covered in the <a href="https://learn.omacom.io/2/the-omarchy-manual/52/themes">official Omarchy theme guide</a>.</p></div>
 </section>
 <section class="block guide-section" id="first-memory">
@@ -282,9 +291,8 @@
 <p>Your record lives locally. Agent providers still process the prompts you send them; optional embedding and compaction services process the content sent to them.</p></div>
 </section>
 <section class="block guide-section" id="questions"><div><p class="kicker">Questions</p><h2>Good to know.</h2></div><div>
-<details><summary>Why is the Omarchy appearance option unavailable?</summary><p>Theme detection requires the desktop app running on the Omarchy machine and a readable active Omarchy theme. The browser cannot read your desktop theme files. Check that Omarchy has an active theme, then refocus the desktop app.</p></details>
-<details><summary>Why does my terminal keep its old colors?</summary><p>Check terminal settings: Color palette should be set to App theme. A selected color scheme or imported palette can keep the terminal on its own colors.</p></details>
-<details><summary>Do I need to configure embeddings before I start?</summary><p>No. Begin with local capture, full-text search, and fuzzy search. Semantic search requires an optional embedding service. Desktop controls for choosing embedding and compaction models are planned.</p></details>
+<details><summary>Why is the Omarchy appearance option unavailable?</summary><p>The app offers it when it finds an active Omarchy theme on the machine it runs on. Check that Omarchy has a theme set; without one, a saved Omarchy choice shows the dark theme.</p></details>
+<details><summary>Do I need to configure embeddings before I start?</summary><p>No. Begin with local capture, full-text search, and fuzzy search. Semantic search requires an optional embedding service. Embedding and summary models are set in the node’s config.</p></details>
 <details><summary>Can I use community Omarchy themes?</summary><p>RivetHub reads the active Omarchy theme’s color configuration rather than offering a fixed list of bundled themes. A community theme needs a compatible color configuration to be detected and applied.</p></details>
 </div></section>
 </div></main>
@@ -295,13 +303,13 @@
         <img class="mark robot-logo" src="robot.png" width="32" height="36" alt="">
         Rivet<span>Hub</span>
       </a>
-      <p>The stable distribution of RivetOS. Static site, self-hosted fonts,
-      no build step — works fine without JavaScript.</p>
+      <p>Self-hosted memory for your AI agents, built on the open-source
+      RivetHub runtime. Static site, self-hosted fonts — works fine without JavaScript.</p>
     </div>
     <nav class="foot-links" aria-label="Footer">
-      <a href="https://rivetos.dev">rivetos.dev</a>
+      <a href="https://github.com/philbert440/rivethub-runtime/tree/main/docs">Docs</a>
       <a href="privacy.html">Privacy</a>
-      <a href="https://github.com/philbert440/rivetOS">GitHub</a>
+      <a href="https://github.com/philbert440/rivethub-runtime">GitHub</a>
       <a href="releases.html">Releases</a>
     </nav>
   </div>

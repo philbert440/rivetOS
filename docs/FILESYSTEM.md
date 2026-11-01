@@ -1,5 +1,11 @@
 # RivetOS filesystem layout: canonical reference
 
+> **The runtime has moved to [rivethub-runtime](https://github.com/philbert440/rivethub-runtime).** RivetHub's runtime is now `rh`, written in
+> Rust, with the [desktop app](https://github.com/philbert440/rivethub-desktop) and [plug-ins](https://github.com/philbert440/rivethub-plugins) in their own repositories; the
+> [Android app](https://github.com/philbert440/rivetOS/tree/main/apps/rivethub-android) stays in this one. This page documents the TypeScript RivetOS
+> runtime that `rh` supersedes. To install RivetHub, start at [rivethub.io](https://rivethub.io/install-local.html); to move an
+> existing node, see [Migrating to RivetHub](https://github.com/philbert440/rivetOS/blob/main/docs/migrating-to-rivethub.md).
+
 > **This document is the source of truth for where things live in RivetOS.**
 > It should be read by every agent before any file, directory, or path operation.
 > `workspace-templates/WORKSPACE.md` links here; the init wizard copies a reference into each instance's workspace.

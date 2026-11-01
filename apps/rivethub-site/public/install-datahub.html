@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Install a datahub — RivetHub</title>
-<meta name="description" content="Install a RivetHub datahub: Postgres 16 + pgvector, the memory schema, and the mesh CA.">
+<title>Run a datahub — RivetHub</title>
+<meta name="description" content="Run a RivetHub datahub: Postgres with pgvector, rivethub-migrate, the one-time superuser steps, memory workers, step-ca and backups.">
 <meta name="theme-color" content="#090d0b">
 
 <meta property="og:type" content="website">
@@ -17,16 +17,16 @@
 <link rel="stylesheet" href="landing.css">
 
 <link rel="canonical" href="https://rivethub.io/install-datahub.html">
-<meta property="og:title" content="Install a datahub — RivetHub">
-<meta property="og:description" content="Install a RivetHub datahub: Postgres 16 + pgvector, the memory schema, and the mesh CA.">
+<meta property="og:title" content="Run a datahub — RivetHub">
+<meta property="og:description" content="Run a RivetHub datahub: Postgres with pgvector, rivethub-migrate, the one-time superuser steps, memory workers, step-ca and backups.">
 <meta property="og:url" content="https://rivethub.io/install-datahub.html">
 <meta property="og:image" content="https://rivethub.io/social-preview.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta property="og:image:alt" content="RivetHub banner with the robot mark and wordmark, and the headline “Your agents. Your memory. Your hardware.”">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="Install a datahub — RivetHub">
-<meta name="twitter:description" content="Install a RivetHub datahub: Postgres 16 + pgvector, the memory schema, and the mesh CA.">
+<meta name="twitter:title" content="Run a datahub — RivetHub">
+<meta name="twitter:description" content="Run a RivetHub datahub: Postgres with pgvector, rivethub-migrate, the one-time superuser steps, memory workers, step-ca and backups.">
 <meta name="twitter:image" content="https://rivethub.io/social-preview.png">
 <link rel="stylesheet" href="marketing.css">
 <script src="theme.js"></script>
@@ -35,169 +35,170 @@
 <a class="skip-link" href="#main">Skip to content</a>
 <header class="landing-header"><div class="landing-wrap header-inner">
   <a class="wordmark" href="index.html" aria-label="RivetHub home"><img class="brand-mark robot-logo" src="robot.png" width="35" height="40" alt=""> rivet<span>hub</span><span class="brand-dot" aria-hidden="true">.</span></a>
-  <nav aria-label="Main navigation"><a href="index.html">Home</a><a href="install-local.html">Quickstart</a><a href="server.html" aria-current="page">Server</a><a href="apps.html">Apps / Downloads</a><a href="support.html">Support</a></nav>
+  <nav aria-label="Main navigation"><a href="index.html">Home</a><a href="install-local.html">Quickstart</a><a href="server.html" aria-current="page">Server</a><a href="apps.html">Apps</a><a href="support.html">Support</a></nav>
 </div></header>
 <main id="main">
 <div class="wrap-wide">
 
   <div class="page-head guide-head">
     <p class="kicker">install · datahub</p>
-    <h1>Install a datahub</h1><p><a href="server.html">← Server setup overview</a></p>
-    <p class="lede">The datahub is the center of the mesh: Postgres&nbsp;16 +
-    pgvector, the memory schema, <code>users.json</code>, and the certificate
-    authority. No agent runs here.</p>
+    <h1>Run a datahub</h1><p><a href="server.html">← Server setup overview</a></p>
+    <p class="lede">The datahub holds the shared memory: Postgres with pgvector, the memory schema that
+    <code>rivethub-migrate</code> keeps current, and the memory workers that embed, summarize, categorize and build
+    the wiki. Nodes connect to it; the certificate authority usually lives beside it.</p>
   </div>
 
   <section class="block">
     <div class="req">
       <h2>Requirements</h2>
       <ul class="facts">
-        <li>Debian 12 or Ubuntu LTS, x86_64 or aarch64, with systemd.</li>
-        <li>Root (<code>sudo</code>) and about 512&nbsp;MiB free disk
-        (2&nbsp;GiB comfortable).</li>
-        <li>Port 5432 (or your <code>--pg-port</code>) free on
-        <code>127.0.0.1</code>.</li>
-        <li><code>curl</code>, <code>openssl</code>, <code>flock</code>,
-        <code>python3</code> — the installer installs missing ones via
-        <code>apt-get</code> when run as root.</li>
-        <li><code>docker</code> in PATH only if you choose
-        <code>--docker</code>.</li>
+        <li>Postgres 16 with the <code>vector</code> (pgvector) and <code>pg_trgm</code> extensions. On Debian or
+        Ubuntu, <code>postgresql-16</code> and <code>postgresql-16-pgvector</code> from the PGDG repository.</li>
+        <li>Linux on x86_64 or aarch64 (glibc 2.35 or newer) with systemd for the workers.</li>
+        <li>Superuser access to the database once, for the steps below, and Node.js once, to install the job queue with <code>npx</code>.</li>
+        <li>For semantic search and summaries, an OpenAI-compatible embedding endpoint and a model for the summarizer.</li>
       </ul>
     </div>
   </section>
 
   <section class="block">
-    <p class="kicker">the command</p>
-    <h2>One command, as root</h2>
-    <p>On the host that will be your hub:</p>
+    <p class="kicker">database</p>
+    <h2>Create the database</h2>
+    <p>As a superuser, create a role and a database it owns, and the two extensions:</p>
     <div class="term">
-      <div class="term__bar"><i></i><i></i><i></i><span class="term__title">datahub installer</span></div>
-      <pre tabindex="0" data-copy="curl -fsSL https://get.rivethub.io/datahub.sh | sudo bash"><code><span class="ps">$ </span>curl -fsSL https://get.rivethub.io/datahub.sh | sudo bash</code></pre>
-    </div>
-    <p>Piped in, the script has no helper files beside it, so preflight
-    fetches <code>bin/rivethub-hub</code>, <code>lib/rivet-ca.sh</code> and
-    the two worker units from <code>get.rivethub.io</code> and checks each
-    against its SHA256 in <code>pins/stable.json</code>. A missing pin or a
-    mismatch is <strong>refused before the installer writes anything</strong>.
-    The pins come from the same server as the files, so this catches a broken
-    or half-published release, not a compromised server. To read it first,
-    download it and run the file:</p>
+<div class="term__bar"><i></i><i></i><i></i><span class="term__title">psql, as a superuser</span>
+</div><pre tabindex="0" data-copy="CREATE ROLE rivethub LOGIN PASSWORD &#x27;&lt;password&gt;&#x27;;&#10;CREATE DATABASE rivethub OWNER rivethub;&#10;\c rivethub&#10;CREATE EXTENSION IF NOT EXISTS vector;&#10;CREATE EXTENSION IF NOT EXISTS pg_trgm;"><code>CREATE ROLE rivethub LOGIN PASSWORD &#x27;&lt;password&gt;&#x27;;
+CREATE DATABASE rivethub OWNER rivethub;
+\c rivethub
+CREATE EXTENSION IF NOT EXISTS vector;
+CREATE EXTENSION IF NOT EXISTS pg_trgm;</code></pre>
+</div>
+  </section>
+
+  <section class="block" id="superuser">
+    <p class="kicker">once per database</p>
+    <h2>The one-time superuser steps</h2>
+    <p>From rh 0.7.1, every memory table enforces row-level security, including for its owner, so each person sees
+    only what is theirs or shared with them. Postgres lets search and capture keep using their indexes under those
+    policies only when the operators they filter with are marked <code>LEAKPROOF</code>, and only a superuser can mark
+    them. Run this once in the memory database:</p>
     <div class="term">
-      <div class="term__bar"><i></i><i></i><i></i><span class="term__title">read, then run</span></div>
-      <pre tabindex="0" data-copy="curl -fsSLO https://get.rivethub.io/datahub.sh &amp;&amp; less datahub.sh &amp;&amp; sudo bash datahub.sh"><code><span class="ps">$ </span>curl -fsSLO https://get.rivethub.io/datahub.sh &amp;&amp; less datahub.sh &amp;&amp; sudo bash datahub.sh</code></pre>
-    </div>
+<div class="term__bar"><i></i><i></i><i></i><span class="term__title">psql rivethub, as a superuser</span>
+</div><pre tabindex="0" data-copy="ALTER FUNCTION ts_match_vq(tsvector, tsquery) LEAKPROOF;&#10;ALTER FUNCTION textlike(text, text) LEAKPROOF;&#10;ALTER FUNCTION texticlike(text, text) LEAKPROOF;&#10;ALTER FUNCTION textregexeq(text, text) LEAKPROOF;&#10;ALTER FUNCTION texticregexeq(text, text) LEAKPROOF;&#10;ALTER FUNCTION jsonb_object_field_text(jsonb, text) LEAKPROOF;"><code>ALTER FUNCTION ts_match_vq(tsvector, tsquery) LEAKPROOF;
+ALTER FUNCTION textlike(text, text) LEAKPROOF;
+ALTER FUNCTION texticlike(text, text) LEAKPROOF;
+ALTER FUNCTION textregexeq(text, text) LEAKPROOF;
+ALTER FUNCTION texticregexeq(text, text) LEAKPROOF;
+ALTER FUNCTION jsonb_object_field_text(jsonb, text) LEAKPROOF;</code></pre>
+</div>
+    <p>Migrations 0044 and 0051 mark these themselves when they run as a superuser. Run as the owner instead, they stop
+    until the operators are marked; <code>rivethub-migrate</code> reports only that applying the migrations failed,
+    and the Postgres log has the statement.</p>
+    <p><strong>Large stores:</strong> migration 0051 adds an index over every message’s capture event id. To keep
+    writes flowing, build it ahead of the upgrade without a lock; the migration then leaves it as it is:</p>
+    <div class="term">
+<div class="term__bar"><i></i><i></i><i></i><span class="term__title">psql rivethub</span>
+</div><pre tabindex="0" data-copy="CREATE INDEX CONCURRENTLY IF NOT EXISTS rh_messages_event_id&#10;    ON rh_messages (conversation_id, (metadata -&gt;&gt; &#x27;event_id&#x27;))&#10;    WHERE (metadata -&gt;&gt; &#x27;event_id&#x27;) IS NOT NULL;"><code>CREATE INDEX CONCURRENTLY IF NOT EXISTS rh_messages_event_id
+    ON rh_messages (conversation_id, (metadata -&gt;&gt; &#x27;event_id&#x27;))
+    WHERE (metadata -&gt;&gt; &#x27;event_id&#x27;) IS NOT NULL;</code></pre>
+</div>
   </section>
 
   <section class="block">
-    <p class="kicker">the wizard</p>
-    <h2>What the wizard asks</h2>
-    <p>On a terminal, unset fields are prompted (defaults shown), then a
-    SUMMARY, then an explicit <code>yes</code> before anything is written.
-    Flags and <code>RIVETHUB_*</code> env vars skip their own prompt;
-    <code>--yes</code> skips the final confirm. With no terminal to ask
-    on (plain ssh without <code>-t</code>, cron) nothing is prompted and
-    there is no confirm, with or without <code>--yes</code>: flags, env vars
-    and each prompt's documented default apply, and the install proceeds.
-    Fields with no default are listed together in one
-    error with their env names
-    (<code>RIVETOS_EMBED_URL</code> / <code>RIVETOS_COMPACTOR_URL</code> /
-    <code>RIVETOS_COMPACTOR_MODEL</code> for <code>--memory full</code>).</p>
-    <ul class="facts">
-      <li><strong>Owner user id</strong> — seeds <code>users.json</code>
-      (default <code>owner</code>; honored on first run only).</li>
-      <li><strong>Memory mode</strong> — <code>lite</code> (workers off, the
-      default) or <code>full</code>. Full also asks for OpenAI-compatible
-      embed and compaction endpoints and models, and installs
-      <code>rivet-embedder.service</code> /
-      <code>rivet-compactor.service</code> (not started until a RivetOS
-      runtime is present).</li>
-      <li><strong>Install mode</strong> — bare-metal Postgres from PGDG
-      packages (the default) or <code>--docker</code> for the pgvector
-      image under systemd.</li>
-      <li><strong>Re-run</strong> — an existing install is detected and the
-      wizard offers resume / reconfigure-safe-bits / abort. CA re-init and
-      the postgres password rotation never happen silently — pass
-      <code>--force</code>.</li>
-    </ul>
+    <p class="kicker">job queue</p>
+    <h2>Install the job queue</h2>
+    <p>The workers and tasks share graphile-worker’s <code>graphile_worker</code> schema, which <code>rh</code> does not
+    create. Install it once, as the owner role; without it every worker exits with “the graphile_worker schema is absent
+    on this database”:</p>
+    <div class="term">
+<div class="term__bar"><i></i><i></i><i></i><span class="term__title">as the owner role</span>
+</div><pre tabindex="0" data-copy="npx graphile-worker@0.17 --schema-only -c &quot;$RIVETHUB_PG_URL&quot;"><code><span class="ps">$ </span>npx graphile-worker@0.17 --schema-only -c &quot;$RIVETHUB_PG_URL&quot;</code></pre>
+</div>
   </section>
 
   <section class="block">
-    <p class="kicker">layout</p>
-    <h2>What gets installed where</h2>
-    <dl class="what">
-      <div>
-        <dt><code>/var/lib/rivethub/shared/</code></dt>
-        <dd><code>mesh.json</code>, <code>rivet-ca</code> (exportable)</dd>
-      </div>
-      <div>
-        <dt><code>/var/lib/rivethub/shared/rivetos/users.json</code></dt>
-        <dd>tenancy registry (mode 0600, not clobbered on re-run)</dd>
-      </div>
-      <div>
-        <dt><code>/var/lib/rivethub/ca-root/</code></dt>
-        <dd>root CA key — mode 0700, never exported, never packed into an
-        enroll tarball</dd>
-      </div>
-      <div>
-        <dt><code>/var/lib/rivethub/datahub.env</code></dt>
-        <dd>postgres conninfo + worker env (mode 0600; the password is never
-        printed)</dd>
-      </div>
-      <div>
-        <dt><code>/usr/local/bin/rivethub-hub</code></dt>
-        <dd>datahub helper (ca-init, enroll, renew, mesh-export, status)</dd>
-      </div>
-      <div>
-        <dt><code>/usr/local/lib/rivethub/rivet-ca.sh</code></dt>
-        <dd>pinned CA library</dd>
-      </div>
-    </dl>
-    <p>Bare-metal also installs <code>postgresql-16</code> +
-    <code>postgresql-16-pgvector</code> from PGDG. <code>--docker</code>
-    instead writes <code>rivethub-postgres.service</code> running the pinned
-    pgvector image, publishing <code>127.0.0.1:PORT:5432</code>.</p>
-    <p><code>--data-root DIR</code> (or <code>RIVETHUB_ROOT</code>) moves the
-    <code>/var/lib/rivethub</code> tree.</p>
+    <p class="kicker">migrate</p>
+    <h2>Migrate before anything starts</h2>
+    <p>Gateways and workers never migrate the schema themselves. Run <code>rivethub-migrate postgres</code> on a fresh
+    database and after every upgrade, <em>before</em> starting or restarting any gateway or worker against it. With
+    the connection string in <code>RIVETHUB_PG_URL</code> (or a config whose <code>memory.postgres</code> names it):</p>
+    <div class="term">
+<div class="term__bar"><i></i><i></i><i></i><span class="term__title">on the datahub</span>
+</div><pre tabindex="0" data-copy="rivethub-migrate postgres --config ~/.rivethub/config.yaml&#10;rivethub-migrate status postgres --config ~/.rivethub/config.yaml"><code><span class="ps">$ </span>rivethub-migrate postgres --config ~/.rivethub/config.yaml
+<span class="ps">$ </span>rivethub-migrate status postgres --config ~/.rivethub/config.yaml</code></pre>
+</div>
+    <p><code>--url</code> takes the connection string directly, and <code>rh db migrate</code> and
+    <code>rh db status</code> do the same from <code>rh</code>. A database that the TypeScript RivetOS runtime used is
+    adopted in place: its tables are renamed to <code>rh_*</code>, with <code>ros_*</code> views left behind so the old
+    workers keep running while you switch. Take a <code>pg_dump</code> first. If that database holds conversations from
+    more than one owner, migration 0042 asks which person owns the older, unowned rows: add
+    <code>?options=-c%20rh.store_owner%3D&lt;user&gt;</code> to the connection URL for that run.</p>
   </section>
 
   <section class="block">
-    <p class="kicker">verify</p>
-    <h2>Verify</h2>
+    <p class="kicker">workers</p>
+    <h2>Run the memory workers</h2>
+    <p>Each role is one process: <code>embedder</code>, <code>summarizer</code>, <code>categorizer</code> and
+    <code>wiki-builder</code>, or <code>all</code> in one. The workers read the node config (the summarizer and
+    categorizer use the default agent’s provider) plus an embedding endpoint:</p>
     <div class="term">
-      <div class="term__bar"><i></i><i></i><i></i><span class="term__title">on the datahub</span></div>
-      <pre tabindex="0" data-copy="rivethub-hub status"><code><span class="ps">$ </span>rivethub-hub status</code></pre>
-    </div>
-    <p>The CA is initialized once on the datahub (the installer runs
-    <code>rivethub-hub ca-init</code> for you; <code>ca-init --force</code>
-    re-inits). The closing banner prints the hub root, the postgres DSN, and
-    the path to the password file — never the password itself.</p>
+<div class="term__bar"><i></i><i></i><i></i><span class="term__title">worker config, memory section</span>
+</div><pre tabindex="0" data-copy="memory:&#10;  postgres:&#10;    connection_string: ${RIVETHUB_PG_URL}&#10;    embed_endpoint: http://127.0.0.1:8080/v1&#10;    embed_model: &lt;embedding model&gt;"><code>memory:
+  postgres:
+    connection_string: ${RIVETHUB_PG_URL}
+    embed_endpoint: http://127.0.0.1:8080/v1
+    embed_model: &lt;embedding model&gt;</code></pre>
+</div>
+    <div class="term">
+<div class="term__bar"><i></i><i></i><i></i><span class="term__title">on the datahub</span>
+</div><pre tabindex="0" data-copy="rh worker --role embedder --check&#10;rh worker --role embedder"><code><span class="ps">$ </span>rh worker --role embedder --check
+<span class="ps">$ </span>rh worker --role embedder</code></pre>
+</div>
+    <p>Run one systemd unit per role, each with <code>ExecStart=… rh worker --role &lt;role&gt;</code> and
+    <code>EnvironmentFile</code> pointing at the file that holds <code>RIVETHUB_PG_URL</code>; <code>rh start</code>
+    does not start Postgres workers for you. The wiki builder also needs
+    <code>RIVETHUB_WIKI_EXTRACTION=1</code>, and <code>RIVETHUB_WORKER_CONCURRENCY</code> sets how many jobs each worker
+    takes at once (four by default). <code>rh memory queue-status</code> shows the queue. A complete unit file and wiki housekeeping are in
+    <a href="https://github.com/philbert440/rivethub-runtime/blob/main/docs/OPERATIONS.md">Operating RivetHub on Postgres</a>.</p>
+  </section>
+
+  <section class="block" id="ca">
+    <p class="kicker">certificate authority</p>
+    <h2>The certificate authority</h2>
+    <p>Mesh, device and agent certificates come from <a href="https://smallstep.com/docs/step-ca/">step-ca</a>, which
+    you bootstrap and run yourself; <code>rh</code> is its client and never holds the CA key. With the
+    <code>step</code> CLI installed, <code>rh ca</code> mints one-time tokens for the names in your operator roster,
+    revokes certificates and publishes the revocation list:</p>
+    <div class="term">
+<div class="term__bar"><i></i><i></i><i></i><span class="term__title">on the CA host</span>
+</div><pre tabindex="0" data-copy="rh ca status --ca-url https://ca.example:9000 --root root.pem&#10;rh ca token node node-a --ca-url https://ca.example:9000 --root root.pem --provisioner-password-file provisioner.pass --roster roster.txt&#10;rh ca crl --ca-url https://ca.example:9000 --root root.pem --crl-out crl.pem"><code><span class="ps">$ </span>rh ca status --ca-url https://ca.example:9000 --root root.pem
+<span class="ps">$ </span>rh ca token node node-a --ca-url https://ca.example:9000 --root root.pem --provisioner-password-file provisioner.pass --roster roster.txt
+<span class="ps">$ </span>rh ca crl --ca-url https://ca.example:9000 --root root.pem --crl-out crl.pem</code></pre>
+</div>
+    <p>Enrolling a node is in the <a href="install-node.html#tls">node guide</a>; the design is in
+    <a href="https://github.com/philbert440/rivethub-runtime/blob/main/docs/PKI.md">PKI</a>.</p>
   </section>
 
   <section class="block">
-    <p class="kicker">next</p>
-    <h2>Add the first node</h2>
+    <p class="kicker">backups</p>
+    <h2>Back it up as a superuser</h2>
     <div class="term">
-      <div class="term__bar"><i></i><i></i><i></i><span class="term__title">on the node host</span></div>
-      <pre tabindex="0" data-copy="curl -fsSL https://get.rivethub.io/node.sh | sudo bash -s -- --hub owner@192.0.2.10"><code><span class="ps">$ </span>curl -fsSL https://get.rivethub.io/node.sh | sudo bash -s -- --hub owner@192.0.2.10</code></pre>
-    </div>
-    <p>Replace <code>owner@192.0.2.10</code> with an SSH login that can run
-    <code>rivethub-hub</code> on this host. Details in the
-    <a href="install-node.html">node guide</a>.</p>
-
-    <h2 class="spaced">Renew node certificates</h2>
-    <p>On the datahub:</p>
-    <div class="term">
-      <div class="term__bar"><i></i><i></i><i></i><span class="term__title">on the datahub</span></div>
-      <pre tabindex="0" data-copy="rivethub-hub renew &lt;node-name&gt;"><code><span class="ps">$ </span>rivethub-hub renew &lt;node-name&gt;</code></pre>
-    </div>
-    <p>Renew re-issues the node's leaf certificate using the host stored in
-    <code>mesh.json</code> and emits the same base64 tarball contract as
-    enroll. To change a node's address, re-enroll it instead.</p>
+<div class="term__bar"><i></i><i></i><i></i><span class="term__title">on the datahub</span>
+</div><pre tabindex="0" data-copy="sudo -u postgres pg_dump -Fc -d rivethub -f rivethub.dump"><code><span class="ps">$ </span>sudo -u postgres pg_dump -Fc -d rivethub -f rivethub.dump</code></pre>
+</div>
+    <p>Because the tables force row-level security, <code>pg_dump</code> run as the owner stops with
+    <code>query would be affected by row-level security policy</code>. Run it as a superuser. Restore as a superuser
+    too, into a database owned by the same role, then run the six <code>ALTER FUNCTION</code> statements on it before
+    starting anything: the <code>LEAKPROOF</code> marks belong to each database and don’t travel in a dump.</p>
+    <div class="note"><strong>Retired.</strong> The <code>datahub.sh</code> installer, the <code>rivethub-hub</code>
+    helper and <code>rivet-ca.sh</code> set up the TypeScript RivetOS datahub. A datahub they built keeps its
+    Postgres: adopt it with <code>rivethub-migrate postgres</code> as above and follow
+    <a href="https://github.com/philbert440/rivetOS/blob/main/docs/migrating-to-rivethub.md#memory-worker-nodes">moving the memory workers</a>.</div>
   </section>
 
 </div>
 </main>
-<footer class="landing-footer"><div class="landing-wrap"><div><a class="wordmark" href="index.html"><img class="brand-mark robot-logo" src="robot.png" width="35" height="40" alt="">rivet<span>hub</span>.</a><p>Self-hosted memory for your AI agents.<br>Built on the open-source RivetOS runtime.</p></div><nav aria-label="Footer navigation"><a href="index.html">Home</a><a href="install-local.html">Quickstart</a><a href="llms.txt">Set up with your agent</a><a href="server.html">Server</a><a href="apps.html">Apps / Downloads</a><a href="support.html">Support</a><a href="omarchy.html">Omarchy</a><a href="releases.html">Releases</a><a href="privacy.html">Privacy</a><a href="https://rivetos.dev">Documentation</a></nav></div><div class="landing-wrap theme-footer"><label hidden data-theme-control>Appearance <select aria-label="Site appearance" data-theme-select><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label></div></footer>
+<footer class="landing-footer"><div class="landing-wrap"><div><a class="wordmark" href="index.html"><img class="brand-mark robot-logo" src="robot.png" width="35" height="40" alt="">rivet<span>hub</span>.</a><p>Self-hosted memory for your AI agents.<br>Built on the open-source RivetHub runtime.</p></div><nav aria-label="Footer navigation"><a href="index.html">Home</a><a href="install-local.html">Quickstart</a><a href="llms.txt">Set up with your agent</a><a href="server.html">Server</a><a href="apps.html">Apps</a><a href="support.html">Support</a><a href="omarchy.html">Omarchy</a><a href="releases.html">Releases</a><a href="privacy.html">Privacy</a><a href="https://github.com/philbert440/rivethub-runtime/tree/main/docs">Documentation</a><a href="https://github.com/philbert440/rivethub-runtime">GitHub</a></nav></div><div class="landing-wrap theme-footer"><label hidden data-theme-control>Appearance <select aria-label="Site appearance" data-theme-select><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label></div></footer>
 <script src="site.js"></script>
 <script src="posthog-config.js"></script>
 <script src="posthog.js"></script>

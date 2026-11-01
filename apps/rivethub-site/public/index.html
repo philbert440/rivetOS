@@ -9,7 +9,7 @@
   <meta property="og:type" content="website">
   <link rel="icon" type="image/png" href="favicon.png">
   <link rel="stylesheet" href="home.css">
-<script type="application/ld+json">{"@context": "https://schema.org", "@graph": [{"@type": "WebSite", "@id": "https://rivethub.io/#website", "url": "https://rivethub.io/", "name": "RivetHub", "inLanguage": "en"}, {"@type": "SoftwareApplication", "@id": "https://rivethub.io/#software", "name": "RivetHub", "url": "https://rivethub.io/", "applicationCategory": "DeveloperApplication", "description": "Self-hosted hub for RivetOS: a personal runtime and memory plane for the coding agents you already use.", "operatingSystem": "Linux and macOS (local hub); Linux and Windows (desktop clients); Android (mobile client)", "featureList": ["Self-hosted hub on hardware you choose", "Local-first memory with full-text and fuzzy search", "Mesh of nodes you enroll", "MCP-exposed recall for tools you choose"], "isRelatedTo": {"@type": "SoftwareSourceCode", "name": "RivetOS", "codeRepository": "https://github.com/philbert440/rivetOS"}}]}</script>
+<script type="application/ld+json">{"@context": "https://schema.org", "@graph": [{"@type": "WebSite", "@id": "https://rivethub.io/#website", "url": "https://rivethub.io/", "name": "RivetHub", "inLanguage": "en"}, {"@type": "SoftwareApplication", "@id": "https://rivethub.io/#software", "name": "RivetHub", "url": "https://rivethub.io/", "applicationCategory": "DeveloperApplication", "description": "Self-hosted runtime, memory and desktop workspace for the coding agents you already use.", "operatingSystem": "Linux and macOS (runtime); Linux (desktop app); Android (mobile client)", "featureList": ["Self-hosted hub on hardware you choose", "Local-first memory with full-text and fuzzy search", "Mesh of nodes you enroll", "MCP-exposed recall for tools you choose"], "isRelatedTo": [{"@type": "SoftwareSourceCode", "name": "RivetHub runtime", "codeRepository": "https://github.com/philbert440/rivethub-runtime"}, {"@type": "SoftwareSourceCode", "name": "RivetHub desktop", "codeRepository": "https://github.com/philbert440/rivethub-desktop"}, {"@type": "SoftwareSourceCode", "name": "RivetHub plug-ins", "codeRepository": "https://github.com/philbert440/rivethub-plugins"}]}]}</script>
 <link rel="canonical" href="https://rivethub.io/">
 <meta property="og:title" content="RivetHub — self-hosted memory you own for your AI agents">
 <meta property="og:description" content="Run RivetHub on your hardware. Shared memory across Claude Code, Codex, Grok Build, Kimi Code, and Hermes. No account. Apache 2.0.">
@@ -32,11 +32,11 @@
   <div class="wrap top-inner">
     <a class="wordmark" href="index.html" aria-label="RivetHub home"><img class="robot" src="robot.png" width="28" height="32" alt="">rivet<span>hub</span></a>
     <nav class="top-nav" aria-label="Main navigation">
-      <a href="#how-it-works">RivetOS</a>
-      <a href="#paths">RivetHub</a>
+      <a href="#how-it-works">Runtime</a>
+      <a href="#paths">Run it</a>
       <a href="#cloud">Rivet Cloud</a>
       <a href="install-local.html">Quickstart</a>
-      <a href="apps.html">Downloads</a>
+      <a href="apps.html">Apps</a>
       <a class="top-cta" href="#start">Set up</a>
     </nav>
   </div>
@@ -51,7 +51,7 @@
     <div class="hero-copy">
       <p class="kicker"><span class="live" aria-hidden="true"></span>Self-hosted · Apache 2.0 · No account</p>
       <h1 id="hero-title"><span>Your agents.</span> <span>Your memory.</span> <em>Your hardware.</em></h1>
-      <p class="lede">Claude Code, Codex, Grok Build, Kimi Code and Hermes each start every session from zero. RivetOS keeps one record of what they all did — prompts, tool calls, results — on a machine you control, so the next session, in any of them, picks up where the last one stopped.</p>
+      <p class="lede">Claude Code, Codex, Grok Build, Kimi Code and Hermes each start every session from zero. RivetHub keeps one record of what they all did — prompts, tool calls, results — on a machine you control, so the next session, in any of them, picks up where the last one stopped.</p>
       <div class="cta-row">
         <a class="btn btn-primary" href="llms.txt" data-ph-event="cta_setup_agent">Set up with your agent</a>
         <a class="btn" href="install-local.html" data-ph-event="cta_install_local">Install on your laptop</a>
@@ -71,8 +71,8 @@
     </figure>
   </div>
   <div class="wrap trio" aria-label="The three parts">
-    <a href="#how-it-works"><span class="trio-name">RivetOS</span><span class="trio-role">the runtime that captures and recalls</span></a>
-    <a href="#paths"><span class="trio-name">RivetHub</span><span class="trio-role">the hub and apps you run it with</span></a>
+    <a href="#how-it-works"><span class="trio-name">rh</span><span class="trio-role">the runtime that captures and recalls</span></a>
+    <a href="#paths"><span class="trio-name">RivetHub</span><span class="trio-role">the node, desktop app and plug-ins you run</span></a>
     <a href="#cloud"><span class="trio-name">Rivet Cloud</span><span class="trio-role">hosted memory, if you'd rather not run a box</span></a>
   </div>
 </section>
@@ -101,14 +101,14 @@
 <div class="story" data-story>
   <div class="spine" aria-hidden="true"><i data-spine-fill></i></div>
 
-  <!-- ───────────── Chapter I: RivetOS ───────────── -->
+  <!-- ───────────── Chapter I: Runtime ───────────── -->
   <section class="chapter" id="how-it-works" aria-labelledby="os-title">
     <div class="wrap">
       <header class="chapter-head">
         <span class="stud" aria-hidden="true"></span>
-        <p class="chapter-no">I · RivetOS</p>
+        <p class="chapter-no">I · The runtime</p>
         <h2 id="os-title">The runtime that remembers for every tool.</h2>
-        <p class="chapter-lede">RivetOS is the engine underneath: a personal agent runtime and memory plane. It plugs into the tools already on your PATH over MCP and quietly does three things.</p>
+        <p class="chapter-lede"><code>rh</code> is the engine underneath: one Rust binary that runs the gateway, memory, workers, tasks and plug-ins on your machine. It plugs into the tools already on your PATH through their hooks and MCP, and quietly does three things.</p>
       </header>
 
       <div class="scrolly">
@@ -116,12 +116,12 @@
           <li class="step is-active" data-step="0">
             <p class="step-tag">capture</p>
             <h3>Sessions save themselves.</h3>
-            <p>As you work, each session lands in a Postgres-backed store on your hub: prompts, tool calls, results — from whichever supported tool you are in. Nothing to remember to write down.</p>
+            <p>As you work, each session lands in your node’s memory: prompts, tool calls, results — from whichever supported tool you are in. SQLite on one machine, Postgres when you share it. Nothing to remember to write down.</p>
           </li>
           <li class="step" data-step="1">
             <p class="step-tag">recall</p>
             <h3>The next session knows.</h3>
-            <p>Connected tools search the hub before they answer. Brand-new session, different tool, no recap paste. Full-text and fuzzy search work from the first session; semantic search is an optional embedding endpoint you point it at.</p>
+            <p>Connected tools search your node before they answer. Brand-new session, different tool, no recap paste. Full-text and fuzzy search work from the first session; semantic search is an optional embedding endpoint you point it at.</p>
           </li>
           <li class="step" data-step="2">
             <p class="step-tag">source</p>
@@ -144,30 +144,30 @@
               <figcaption>Replaying the saved exchange behind an answer.</figcaption>
             </figure>
           </div>
-          <p class="stage-note">Real captures from RivetHub 0.5.21 on an Omarchy desktop.</p>
+          <p class="stage-note">Real captures from the earlier RivetHub 0.5.21 desktop app on an Omarchy desktop.</p>
         </div>
       </div>
 
       <div class="proof" id="proof" aria-labelledby="proof-title">
         <h3 id="proof-title" class="proof-title">What you actually get</h3>
         <dl class="proof-list">
-          <div><dt>Self-hosted</dt><dd>One installer for Linux or macOS. Runs on hardware you choose. No account required to start.</dd></div>
-          <div><dt>Local-first memory</dt><dd>Postgres on your hub. Search works out of the box; embeddings are optional and yours to pick, local or cloud.</dd></div>
-          <div><dt>A mesh you enroll</dt><dd>Add machines when one isn't enough. You enroll what joins; nothing phones home for "the fleet."</dd></div>
+          <div><dt>Self-hosted</dt><dd>One binary for Linux or macOS. Runs on hardware you choose. No account required to start.</dd></div>
+          <div><dt>Local-first memory</dt><dd>SQLite on a laptop, Postgres on a datahub. Search works out of the box; embeddings are optional and yours to pick, local or cloud.</dd></div>
+          <div><dt>A mesh you enroll</dt><dd>Add machines when one isn't enough. Certificates come from your own step-ca; nothing phones home for "the fleet."</dd></div>
           <div><dt>MCP-exposed</dt><dd>Recall is a tool call away for any MCP-speaking agent: <code>memory_search</code>, <code>memory_browse</code>, <code>memory_stats</code>.</dd></div>
         </dl>
       </div>
     </div>
   </section>
 
-  <!-- ───────────── Chapter II: RivetHub ───────────── -->
+  <!-- ───────────── Chapter II: Run it ───────────── -->
   <section class="chapter" id="paths" aria-labelledby="paths-title">
     <div class="wrap">
       <header class="chapter-head">
         <span class="stud" aria-hidden="true"></span>
-        <p class="chapter-no">II · RivetHub</p>
-        <h2 id="paths-title">The hub you run it on.</h2>
-        <p class="chapter-lede">RivetHub is how RivetOS gets onto your machines: the installers, the desktop and Android apps, and a UI for browsing everything your agents have done. Same repo, one product. Two ways to run it.</p>
+        <p class="chapter-no">II · Run it</p>
+        <h2 id="paths-title">The node you run it on.</h2>
+        <p class="chapter-lede">RivetHub is three open-source repos: the <a href="https://github.com/philbert440/rivethub-runtime">runtime</a>, the <a href="https://github.com/philbert440/rivethub-desktop">desktop app</a> for browsing and steering everything your agents have done, and the <a href="https://github.com/philbert440/rivethub-plugins">plug-ins</a>. Two ways to run it.</p>
       </header>
 
       <figure class="gallery">
@@ -175,7 +175,7 @@
           <img data-gallery-img src="images/omarchy/osaka-jade-chat-expanded.png" width="1280" height="800" alt="The RivetHub desktop app with saved conversations and a completed memory search" loading="lazy">
         </div>
         <figcaption>
-          <span>The RivetHub desktop app on Omarchy. It follows your desktop theme:</span>
+          <span>The earlier RivetHub desktop app on Omarchy, following the desktop theme:</span>
           <span class="swatches" role="group" aria-label="Show the app in another desktop theme">
             <button type="button" data-theme-shot="osaka-jade" aria-pressed="true" style="--sw:#111c18">Osaka Jade</button>
             <button type="button" data-theme-shot="everforest" aria-pressed="false" style="--sw:#2d353b">Everforest</button>
@@ -191,26 +191,26 @@
         <article class="path" id="path-local">
           <p class="path-tag">Path A · start here</p>
           <h3>Local only</h3>
-          <p>One machine runs the hub and your agents. The installer sets up the hub, wires capture and recall into the supported tools it finds, and leaves you at <code>https://localhost:5174</code>.</p>
+          <p>One machine runs the node and your agents, with memory in a SQLite file. Install <code>rh</code> from a GitHub release, start a standalone node, then point your tools’ capture hooks and MCP at it.</p>
           <div class="term">
-            <div class="term-bar"><span>on your laptop</span></div>
-            <pre tabindex="0" data-copy="curl -fsSL https://get.rivethub.io/local.sh | bash"><code><span class="ps">$ </span>curl -fsSL https://get.rivethub.io/local.sh | bash</code></pre>
+            <div class="term-bar"><span>on your laptop, once rh is installed</span></div>
+            <pre tabindex="0" data-copy="rh local --no-lan --ensure --wait 30"><code><span class="ps">$ </span>rh local --no-lan --ensure --wait 30</code></pre>
           </div>
           <a class="text-link" href="install-local.html" data-ph-event="path_local">Local install guide →</a>
         </article>
         <article class="path" id="path-datahub">
           <p class="path-tag">Path B · always on</p>
           <h3>Dedicated data hub</h3>
-          <p>Put the hub on a Debian or Ubuntu server, then enroll agent nodes over SSH. Every machine writes to — and recalls from — the same memory.</p>
+          <p>Put the memory on a Postgres datahub, then run an <code>rh</code> node on each machine against it. Every machine writes to — and recalls from — the same memory.</p>
           <div class="term">
-            <div class="term-bar"><span>on the node, once the datahub is up</span></div>
-            <pre tabindex="0" data-copy="curl -fsSL https://get.rivethub.io/node.sh | sudo bash -s -- --hub owner@192.0.2.10"><code><span class="ps">$ </span>curl -fsSL https://get.rivethub.io/node.sh | sudo bash -s -- --hub owner@192.0.2.10</code></pre>
+            <div class="term-bar"><span>on the datahub, before anything connects</span></div>
+            <pre tabindex="0" data-copy="rivethub-migrate postgres --config ~/.rivethub/config.yaml"><code><span class="ps">$ </span>rivethub-migrate postgres --config ~/.rivethub/config.yaml</code></pre>
           </div>
           <a class="text-link" href="server.html" data-ph-event="path_datahub">Server setup guide →</a>
         </article>
       </div>
 
-      <p class="clients">Also: desktop apps for Linux and Windows, Android pairing from Settings → Devices, and <code>rivetos local</code> for the terminal. <a href="apps.html">Downloads →</a></p>
+      <p class="clients">Also: the native desktop app for Linux, Android pairing from the desktop’s Settings → Devices, and plug-ins for your nodes. <a href="apps.html">Apps →</a></p>
     </div>
   </section>
 
@@ -227,8 +227,8 @@
       <div class="cloud-grid">
         <ul class="cloud-points">
           <li><strong>Nothing to operate.</strong> No Postgres to tune, no embedding model to host, nightly backups kept for 14 days.</li>
-          <li><strong>Same RivetOS on your side.</strong> Install from RivetHub, then paste the connect command from your dashboard. The <code>rivetos cloud</code> commands ship in the next RivetHub release and are not in the current installer yet.</li>
-          <li><strong>Export any time.</strong> A portable Rivet archive you can import into cloud or self-hosted RivetOS.</li>
+          <li><strong>Your agents stay on your side.</strong> Rivet Cloud is a separate service; your dashboard at rivetos.cloud shows how to connect.</li>
+          <li><strong>Export any time.</strong> A portable archive you can import into cloud or your own RivetHub node with <code>rh memory import</code>.</li>
         </ul>
         <div class="plans" role="list">
           <article class="plan" role="listitem">
@@ -256,19 +256,19 @@
         <span class="stud" aria-hidden="true"></span>
         <p class="chapter-no">One record</p>
         <h2 id="grow-title">Grow when you need to. Move whenever you want.</h2>
-        <p class="chapter-lede">Same RivetOS bits in every topology. Start on a laptop, move the hub to a server when you want it always on, or hand it to Rivet Cloud. The record comes with you.</p>
+        <p class="chapter-lede">The same <code>rh</code> in every topology. Start on a laptop, move the memory to a server when you want it always on, or hand it to Rivet Cloud. The record comes with you.</p>
       </header>
       <ol class="route" aria-label="Where your memory can live">
         <li class="route-stop">
           <span class="route-dot" aria-hidden="true"></span>
           <p class="route-where">Laptop</p>
-          <p class="route-what">Hub and agents on one machine. Back up with <code>rivetos local backup</code>.</p>
-          <a class="text-link" href="install-local.html#mesh">Add a node →</a>
+          <p class="route-what">Node and agents on one machine. Back up with <code>rh memory export</code>.</p>
+          <a class="text-link" href="install-local.html#mesh">Grow into a mesh →</a>
         </li>
         <li class="route-stop">
           <span class="route-dot" aria-hidden="true"></span>
           <p class="route-where">Data hub</p>
-          <p class="route-what">A server you own; nodes enroll over SSH. Your Postgres, your backups.</p>
+          <p class="route-what">A server you own; nodes share its Postgres. Your database, your backups.</p>
           <a class="text-link" href="server.html" data-ph-event="cta_install_server">Move to a datahub →</a>
         </li>
         <li class="route-stop route-cloud">
@@ -278,7 +278,7 @@
           <a class="text-link" href="https://rivetos.cloud" data-ph-event="cta_cloud">rivetos.cloud →</a>
         </li>
       </ol>
-      <p class="route-foot">Releases are pinned to tags and checksums. <a href="https://rivetos.dev/guides/mesh/">Mesh reference →</a></p>
+      <p class="route-foot">Releases are tagged archives with checksums. <a href="https://github.com/philbert440/rivethub-runtime/blob/main/docs/PKI.md">Mesh certificates →</a></p>
     </div>
   </section>
 </div>
@@ -298,10 +298,10 @@
         <pre tabindex="0" data-copy="Read https://rivethub.io/llms.txt and set up RivetHub on this machine."><code>Read https://rivethub.io/llms.txt and set up RivetHub on this machine.</code></pre>
       </div>
       <div class="term">
-        <div class="term-bar"><span>or run the laptop installer yourself</span></div>
-        <pre tabindex="0" data-copy="curl -fsSL https://get.rivethub.io/local.sh | bash"><code><span class="ps">$ </span>curl -fsSL https://get.rivethub.io/local.sh | bash</code></pre>
+        <div class="term-bar"><span>or, with rh installed, start a node yourself</span></div>
+        <pre tabindex="0" data-copy="rh local --no-lan --ensure --wait 30"><code><span class="ps">$ </span>rh local --no-lan --ensure --wait 30</code></pre>
       </div>
-      <p class="small">Linux and macOS. Installs Node.js 22+ if you don't have it. Works with <a href="install-local.html#harnesses">Claude Code, Codex, Grok Build, Kimi Code, and Hermes</a>.</p>
+      <p class="small">Linux and macOS; Windows through WSL. <a href="install-local.html#install">Install rh</a> first. Works with <a href="install-local.html#harnesses">Claude Code, Codex, Grok Build, Kimi Code, and Hermes</a>.</p>
     </div>
   </div>
 </section>
@@ -313,11 +313,11 @@
     <div class="faq-list">
       <details open id="what-is-rivethub">
         <summary>What is RivetHub?</summary>
-        <p>The self-hosted hub and human UI for the <a href="https://rivetos.dev">RivetOS</a> runtime: a personal AI agent runtime and memory plane. It records sessions, tool calls, and outputs from connected tools, and makes that history searchable by you and by those tools over MCP.</p>
+        <p>A self-hosted runtime, <a href="https://github.com/philbert440/rivethub-runtime"><code>rh</code></a>, with a native desktop app and plug-ins: a personal AI agent runtime and memory plane. It records sessions, tool calls, and outputs from connected tools, and makes that history searchable by you and by those tools over MCP.</p>
       </details>
       <details id="same-repo">
-        <summary>Same repo as RivetOS?</summary>
-        <p>Yes. RivetHub is the distro and front door for <a href="https://github.com/philbert440/rivetOS">philbert440/rivetOS</a>. Docs live at <a href="https://rivetos.dev">rivetos.dev</a>; this site gets a hub running.</p>
+        <summary>What happened to RivetOS?</summary>
+        <p>The TypeScript <a href="https://github.com/philbert440/rivetOS">RivetOS</a> runtime is superseded by <a href="https://github.com/philbert440/rivethub-runtime">rivethub-runtime</a>, a Rust rewrite that keeps its gateway, capture and memory boundaries. RivetOS nodes move with <a href="https://github.com/philbert440/rivetOS/blob/main/docs/migrating-to-rivethub.md"><code>rivetos migrate-to-rivethub</code></a>. The rivetOS repository still holds the Android app and the harness integration kits.</p>
       </details>
       <details id="is-saas">
         <summary>Is this SaaS?</summary>
@@ -325,15 +325,15 @@
       </details>
       <details id="local-data">
         <summary>Where does data go?</summary>
-        <p>On your hub. Providers still process the prompts you send them. Cloud embedding or compaction only happens if you configure it, or if you choose Rivet Cloud.</p>
+        <p>On your node. Providers still process the prompts you send them. Cloud embedding or compaction only happens if you configure it, or if you choose Rivet Cloud.</p>
       </details>
       <details id="embedding-required">
         <summary>Do I need an embedding model to start?</summary>
-        <p>No. Search works out of the box. Semantic search is an optional upgrade that uses an embedding endpoint you choose and configure on the hub.</p>
+        <p>No. Search works out of the box. Semantic search is an optional upgrade that uses an embedding endpoint you choose and configure on your node.</p>
       </details>
       <details id="windows-support">
-        <summary>Can I run the hub on Windows?</summary>
-        <p>The hub installer supports Linux and macOS. On Windows, the desktop app connects to a hub running elsewhere — your Linux server or another machine on the network.</p>
+        <summary>Can I run it on Windows?</summary>
+        <p><code>rh</code> ships for Linux and macOS; on Windows, run the Linux build under WSL. The desktop app is Linux-only for now.</p>
       </details>
     </div>
   </div>
@@ -355,16 +355,16 @@
   <div class="wrap foot-inner">
     <div>
       <a class="wordmark" href="index.html"><img class="robot" src="robot.png" width="28" height="32" alt="">rivet<span>hub</span></a>
-      <p>Self-hosted memory you own for your AI agents.<br>Same repo as RivetOS.</p>
+      <p>Self-hosted memory you own for your AI agents.<br>Built on the open-source RivetHub runtime.</p>
     </div>
     <nav aria-label="Footer navigation">
       <a href="install-local.html">Quickstart</a>
       <a href="server.html">Server</a>
-      <a href="apps.html">Apps / Downloads</a>
+      <a href="apps.html">Apps</a>
       <a href="releases.html">Releases</a>
-      <a href="https://rivetos.dev">Docs</a>
+      <a href="https://github.com/philbert440/rivethub-runtime/tree/main/docs">Docs</a>
       <a href="https://rivetos.cloud">Rivet Cloud</a>
-      <a href="https://github.com/philbert440/rivetOS">GitHub</a>
+      <a href="https://github.com/philbert440/rivethub-runtime">GitHub</a>
       <a href="support.html">Support</a>
       <a href="privacy.html">Privacy</a>
     </nav>

@@ -1,5 +1,9 @@
 # Migrating to RivetHub
 
+> **Where RivetHub lives now:** the runtime in [rivethub-runtime](https://github.com/philbert440/rivethub-runtime) (releases and `rh` docs), the
+> [desktop app](https://github.com/philbert440/rivethub-desktop), the [plug-ins](https://github.com/philbert440/rivethub-plugins), and the [Android app](https://github.com/philbert440/rivetOS/tree/main/apps/rivethub-android) in this
+> repository. A fresh install starts at [rivethub.io](https://rivethub.io/install-local.html).
+
 RivetHub is the successor to the RivetOS TypeScript runtime: the same node
 (gateway, agents, memory, mesh, harness integrations) as a single native
 binary, `rh`. This page covers moving an existing RivetOS node onto it with
@@ -16,9 +20,14 @@ TypeScript packages are removed in a later release.
   CLI that has the command. On a mesh, every node needs it before `--mesh` can
   reach that node.
 - **Linux with systemd.** RivetHub runs as `rivethub.service`, in the same
-  scope (system or user unit) as the `rivetos.service` it replaces. Release
-  binaries are published for linux x86_64; anything else needs
-  `--binary <path>` to a build of your own.
+  scope (system or user unit) as the `rivetos.service` it replaces.
+- **Pass `--binary`.** The command's own download looks for bare `rh` and
+  `rivethub-migrate` assets, each with a `.sha256`, in the latest stable
+  release. rivethub-runtime releases ship `rh-<version>-<target>.tar.gz`
+  archives (Linux x86_64 and aarch64, macOS) with one `SHA256SUMS`, and the
+  latest stable release is still v0.1.4, so download the newest beta archive
+  from [the releases page](https://github.com/philbert440/rivethub-runtime/releases),
+  check it against `SHA256SUMS`, unpack it, and pass `--binary <dir>/rh`.
 - **Run it as the install owner, from a shell.** That is the user that owns
   `~/.rivetos` and that `rivetos.service` runs as. A system unit needs root or
   passwordless `sudo` for `systemctl`. Do not run the command from an agent

@@ -1,46 +1,88 @@
 # RivetHub
 
-> RivetHub is a self-hosted hub that records sessions, tool calls, and outputs from AI coding tools, and makes that history searchable by you and by the tools themselves. It is a distribution of the open-source RivetOS runtime.
+> RivetHub is self-hosted memory and a workspace for AI coding agents. Its runtime, `rh`, is one Rust binary (gateway, memory, workers, tasks, plug-in host and MCP server) that records sessions from tools such as Claude Code, Codex and Grok Build on a machine you control, and lets those tools search that history over MCP. A native desktop app, plug-ins and an Android client work on top of it. Apache-2.0, no account, nothing phones home.
 
-If a human asked you to set up RivetHub, follow these steps. The prompt they may have pasted is:
+If a human pasted "Read https://rivethub.io/llms.txt and set up RivetHub on this machine.", follow the steps below. These steps were run end to end against release v0.7.0. Do not invent version numbers, flags or config keys; when in doubt, run `rh <command> --help`.
 
-Read https://rivethub.io/llms.txt and set up RivetHub on this machine.
+## Set up a standalone node on this machine
 
-## Set up on this machine
+1. Check the platform. `rh` ships for Linux x86_64 and aarch64 (glibc 2.35 or newer) and macOS (one universal build). On Windows, use the Linux build under WSL.
+2. Install `rh` and `rivethub-migrate` from the newest GitHub release into `~/.local/bin` (make sure it is on `PATH`). Set `TARGET` to `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu` or `universal-apple-darwin`; on macOS check the sum with `shasum -a 256 -c -` instead of `sha256sum -c -`:
 
-1. Confirm the host is Linux or macOS. Windows cannot run the hub installer. A Windows desktop client talks to a hub running elsewhere.
-2. Fetch and run the laptop installer:
+   ```sh
+   REPO=https://github.com/philbert440/rivethub-runtime
+   TAG=$(curl -fsSL "https://api.github.com/repos/philbert440/rivethub-runtime/releases?per_page=1" | grep '"tag_name"' | cut -d'"' -f4)
+   TARGET=x86_64-unknown-linux-gnu
+   ARCHIVE="rh-${TAG#v}-$TARGET.tar.gz"
+   curl -fsSLO "$REPO/releases/download/$TAG/$ARCHIVE"
+   curl -fsSLO "$REPO/releases/download/$TAG/SHA256SUMS"
+   grep " $ARCHIVE\$" SHA256SUMS | sha256sum -c -
+   tar -xzf "$ARCHIVE" rh rivethub-migrate
+   install -d ~/.local/bin && install -m 0755 rh rivethub-migrate ~/.local/bin/
+   rh version
+   ```
 
-   `curl -fsSL https://get.rivethub.io/local.sh | bash`
+3. Start the node in the background: `rh local --no-lan --ensure --wait 30`. The first run writes `~/.rivethub/config.yaml` and a SQLite store at `~/.rivethub/memory.sqlite`, then serves plain HTTP on `127.0.0.1:5174`. Pass `--no-lan` on that first run: without it the config records `0.0.0.0`, and the node refuses an off-loopback bind until gateway TLS is configured. Check it with `curl -s http://127.0.0.1:5174/healthz` (answers `{"ok":true,...}`) and `rh db status`. Its log is `~/.rivethub/logs/local.log`.
+4. Turn on recall. Append an MCP endpoint to `~/.rivethub/config.yaml` (the token is required; make one with `openssl rand -hex 32`), then restart the node with `rh stop`, a few seconds' wait, and `rh local --ensure --wait 30`:
 
-   The installer can install Node.js 22+ if it is missing.
-3. Verify the node with `rivetos local status`. The node answers at https://localhost:5174. On Linux the desktop app installs and finds localhost. On macOS the browser is the app for now. A desktop app is planned.
-4. The installer wires capture and recall for supported tools it finds. If a tool is installed later, re-run the installer.
-5. Confirm capture and recall from the installer output, then open the node.
+   ```yaml
+   transports:
+     mcp:
+       host: 127.0.0.1
+       port: 5700
+       auth_token: <token>
+   ```
 
-Detail pages: [laptop quickstart](https://rivethub.io/install-local.html), [Omarchy](https://rivethub.io/omarchy.html), [server](https://rivethub.io/server.html).
+   Register it with each tool, for example Claude Code: `claude mcp add --transport http --scope user rivethub http://127.0.0.1:5700/mcp --header "Authorization: Bearer <token>"`. The tools include `memory_search`, `memory_browse`, `memory_stats`, `memory_get_full`, `memory_tags`, `wiki_search` and `wiki_read`. On a standalone node use this HTTP endpoint: the stdio form, `rh mcp`, needs a Postgres-backed node.
+5. Turn on capture. Each tool's hooks run `rh capture hook`, which reads the hook payload on stdin, posts it to the local node and never fails the tool. For Claude Code, add `$HOME/.local/bin/rh capture hook` as a command hook for the `UserPromptSubmit`, `Stop`, `SubagentStop` and `SessionEnd` events in `~/.claude/settings.json`. Grok Build uses `rh capture hook --harness grok-build` on `Stop`, `PreCompact` and `SessionEnd`. Codex uses `rh capture hook --harness codex` on `Stop` and `SessionEnd`. opencode and DeepSeek Harness call `--harness opencode` or `--harness dsh` from a plug-in in that tool, passing `{session_id, hook_event_name, cwd}` on stdin; no ready-made plug-in is published for them yet. `--harness codex`, `opencode` and `dsh` need a release newer than v0.7.0; `rh capture hook --help` lists what the installed build supports.
+6. Prove it: start a new session in a connected tool (an open session does not load new MCP servers), ask it something with a distinctive word, end the session, then ask a tool to `memory_search` for that word.
+7. Keep it current with `rh update --channel beta --no-restart`, then restart the node as in step 4. Use the beta channel: until a 0.7 release is promoted, the stable channel resolves v0.1.4, which refuses the current schema.
 
 ## Availability and data boundaries
 
-The local hub installer supports Linux and macOS. Windows has a client, not a native local-hub installer. There is an Android app. There is no iPhone app. Enrollment QR codes are for Android. The macOS desktop app is planned. Use the browser on macOS.
+- Supported capture today: Claude Code, Grok Build, and (after v0.7.0) Codex, opencode and DeepSeek Harness, through `rh capture hook`. Kimi Code and Hermes capture through the integration kits in the rivetOS repository (`integrations/`), which post to the same node.
+- Full-text and fuzzy search work with no embedding endpoint. Semantic search needs an OpenAI-compatible embedding endpoint you configure; that endpoint, and any model providers you configure, process what is sent to them.
+- The desktop app is built from source on Linux today; there is no desktop download for macOS or Windows. There is no iPhone app. The Android app is built from source, and phone pairing needs a node with a certificate authority.
+- A standalone node has no browser UI at `http://127.0.0.1:5174/`; use the desktop app or the HTTP API.
+- The old `get.rivethub.io` installers (`local.sh`, `node.sh`, `datahub.sh`) and the 0.5 AppImage, Windows installer and APK install the deprecated TypeScript RivetOS runtime. Do not use them for a new install.
 
-Shipped tools: Claude Code, Codex, Grok Build, Kimi Code, and Hermes.
+## Install guides
 
-Full-text and fuzzy search work without an embedding endpoint. Semantic search needs an optional embedding service. Collection is local, but configured agent, embedding, and compaction providers process the inputs sent to them. Do not infer that all processing is offline or that every integration is connected merely because it is supported.
+- [Quickstart](https://rivethub.io/install-local.html): one machine: install `rh`, run a standalone node, connect capture and recall, add the desktop app.
+- [Server setup](https://rivethub.io/server.html): the always-on layout: a Postgres datahub, workers, and nodes that share it.
+- [Datahub](https://rivethub.io/install-datahub.html): Postgres with pgvector, the one-time superuser steps, the graphile-worker job queue, `rivethub-migrate postgres`, workers and backups.
+- [Node](https://rivethub.io/install-node.html): a Postgres-backed `rh` node under systemd, mesh certificates through step-ca, updates across the mesh.
+- [Apps](https://rivethub.io/apps.html): the desktop app, Android and plug-ins, and where the earlier downloads went.
+- [Releases](https://rivethub.io/releases.html): archive names, checksums, beta and stable channels, `rh update`.
 
-Embedding and compaction endpoints and models can be configured on the server today. Choosing or changing those options from Desktop Settings → Memory is planned. Guided dataset curation and one-click SFT are planned and not shipped. Do not describe those desktop controls or export workflows as shipped features.
+## Runtime: rivethub-runtime
 
-## Releases, support, and further reading
+- [README](https://github.com/philbert440/rivethub-runtime#readme): what the runtime is and how the repository is laid out.
+- [CLI reference](https://github.com/philbert440/rivethub-runtime/blob/main/docs/CLI.md): every `rh` command, `rh local`, `rh update`, `rh capture hook` and the release archives.
+- [Contract](https://github.com/philbert440/rivethub-runtime/blob/main/docs/CONTRACT.md): the HTTP, WebSocket, MCP and capture boundaries, with numbered notes on behavior such as visibility and row-level security.
+- [Architecture](https://github.com/philbert440/rivethub-runtime/blob/main/docs/ARCHITECTURE.md): crates, ports and process shape.
+- [Operating on Postgres](https://github.com/philbert440/rivethub-runtime/blob/main/docs/OPERATIONS.md): the datahub database, migrations, backups, worker units and standalone-node notes.
+- [PKI](https://github.com/philbert440/rivethub-runtime/blob/main/docs/PKI.md): step-ca, SPIFFE identities and certificate renewal.
+- [Releases](https://github.com/philbert440/rivethub-runtime/releases): `rh-<version>-<target>.tar.gz` archives and `SHA256SUMS` for every tag.
 
-- [Current release manifest](https://rivethub.io/releases/latest.json): consult this for current versions, checksums, and app download filenames. Do not invent version numbers.
-- [Release explanation](https://rivethub.io/releases.html)
-- [Product and examples](https://rivethub.io/)
-- [Applications](https://rivethub.io/apps.html)
-- [Common questions](https://rivethub.io/#questions)
-- [Server setup](https://rivethub.io/server.html)
-- [Datahub setup](https://rivethub.io/install-datahub.html)
-- [Add a node](https://rivethub.io/install-node.html)
+## Desktop: rivethub-desktop
+
+- [README](https://github.com/philbert440/rivethub-desktop#readme): the native Rust (GPUI) desktop: workspace, topics, sessions, terminals, memory and plug-in panels.
+- [Linux install script](https://github.com/philbert440/rivethub-desktop/blob/main/packaging/linux/install.sh): builds a release and installs `rivethub-desktop` into `~/.local`; needs WebKitGTK 4.1 for plug-in web panels.
+
+## Plug-ins: rivethub-plugins
+
+- [README](https://github.com/philbert440/rivethub-plugins#readme): the TypeScript and Rust plug-in SDKs, templates, and the voice, files and Workflows plug-ins.
+
+## Android and RivetOS
+
+- [RivetHub for Android](https://github.com/philbert440/rivetOS/tree/main/apps/rivethub-android): source and build steps (`apps/rivethub-android` in the rivetOS repository).
+- [Migrating to RivetHub](https://github.com/philbert440/rivetOS/blob/main/docs/migrating-to-rivethub.md): move an existing TypeScript RivetOS node to `rh` with `rivetos migrate-to-rivethub`, and back.
+- [rivetOS](https://github.com/philbert440/rivetOS): the earlier TypeScript runtime, superseded by rivethub-runtime; still home to the Android app and the harness integration kits.
+
+## Optional
+
 - [Support](https://rivethub.io/support.html): GitHub issues, email rivetphilbot@gmail.com, or @rivetphilbot on X.
-- [Privacy](https://rivethub.io/privacy.html): rivethub.io may record anonymous marketing-site pageviews. Self-hosted RivetHub / RivetOS do not phone home.
-- [Runtime documentation](https://rivetos.dev/)
-- [Runtime source](https://github.com/philbert440/rivetOS)
+- [Privacy](https://rivethub.io/privacy.html): rivethub.io may record anonymous pageviews; self-hosted RivetHub does not phone home.
+- [Rivet Cloud](https://rivetos.cloud): optional hosted memory, a separate service.
+- [Common questions](https://rivethub.io/#questions)

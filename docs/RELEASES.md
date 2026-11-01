@@ -1,5 +1,11 @@
 # Releases
 
+> **The runtime has moved to [rivethub-runtime](https://github.com/philbert440/rivethub-runtime).** RivetHub's runtime is now `rh`, written in
+> Rust, with the [desktop app](https://github.com/philbert440/rivethub-desktop) and [plug-ins](https://github.com/philbert440/rivethub-plugins) in their own repositories; the
+> [Android app](https://github.com/philbert440/rivetOS/tree/main/apps/rivethub-android) stays in this one. This page documents the TypeScript RivetOS
+> runtime that `rh` supersedes. To install RivetHub, start at [rivethub.io](https://rivethub.io/install-local.html); to move an
+> existing node, see [Migrating to RivetHub](https://github.com/philbert440/rivetOS/blob/main/docs/migrating-to-rivethub.md).
+
 How RivetOS is versioned and what “stable” means for RivetHub.
 
 There is no LTS track and no backport promise: a fix ships in the next tag. This document supersedes leftover LTS / `lts/X.Y` language in README.md and ARCHITECTURE.md pending #589.
@@ -8,7 +14,7 @@ There is no LTS track and no backport promise: a fix ships in the next tag. This
 
 | Channel | Where | What it is for |
 |---|---|---|
-| **Stable** | Production server: [rivethub.io](https://rivethub.io/) and [get.rivethub.io](https://get.rivethub.io/) (`local.sh`, `pins/stable.json`, `releases/latest.json`, AppImage / exe / apk) | First-install. |
+| **Stable** | Production server: [get.rivethub.io](https://get.rivethub.io/) (`local.sh`, `pins/stable.json`) and [rivethub.io](https://rivethub.io/) (`releases/latest.json`, AppImage / exe / apk) | First-install of this TypeScript runtime. The rivethub.io pages now install `rh` from [rivethub-runtime releases](https://github.com/philbert440/rivethub-runtime/releases). |
 
 The laptop one-liner:
 
@@ -88,7 +94,5 @@ Public pages name the tools the pinned installer wires. When `local_ref` moves t
 - `docs/HUB-SETUP.md` (pin sentence; then run the docs sync for the site copy)
 - `apps/site/src/content/docs/guides/introduction.md` (harness examples)
 - `apps/site/src/pages/index.astro` (provider chips, source-checkout lines)
-- `apps/rivethub-site/public/index.html` (hero, "Here today", FAQ)
-- `apps/rivethub-site/public/install-local.html` (supported-tools table, including each row's "how it records" text)
-- `apps/rivethub-site/public/llms.txt` (shipped tools line)
-- `apps/rivethub-site/public/omarchy.html` (harness strip)
+
+The rivethub.io pages (`apps/rivethub-site/public/`) describe `rh` and no longer follow this pin.

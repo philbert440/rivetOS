@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Server setup — RivetHub</title>
-<meta name="description" content="Run RivetHub on a dedicated Linux server, VM, or container: install the datahub, enroll agent nodes over SSH, and connect your apps.">
+<meta name="description" content="Run RivetHub on a dedicated Linux server, VM, or container: a Postgres datahub, rh nodes under systemd, and the apps.">
 <meta name="theme-color" content="#090d0b">
 
 <meta property="og:type" content="website">
@@ -18,7 +18,7 @@
 
 <link rel="canonical" href="https://rivethub.io/server.html">
 <meta property="og:title" content="Server setup — RivetHub">
-<meta property="og:description" content="Run RivetHub on a dedicated Linux server, VM, or container: install the datahub, enroll agent nodes over SSH, and connect your apps.">
+<meta property="og:description" content="Run RivetHub on a dedicated Linux server, VM, or container: a Postgres datahub, rh nodes under systemd, and the apps.">
 <meta property="og:url" content="https://rivethub.io/server.html">
 <meta property="og:image" content="https://rivethub.io/social-preview.png">
 <meta property="og:image:width" content="1200">
@@ -26,7 +26,7 @@
 <meta property="og:image:alt" content="RivetHub banner with the robot mark and wordmark, and the headline “Your agents. Your memory. Your hardware.”">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Server setup — RivetHub">
-<meta name="twitter:description" content="Run RivetHub on a dedicated Linux server, VM, or container: install the datahub, enroll agent nodes over SSH, and connect your apps.">
+<meta name="twitter:description" content="Run RivetHub on a dedicated Linux server, VM, or container: a Postgres datahub, rh nodes under systemd, and the apps.">
 <meta name="twitter:image" content="https://rivethub.io/social-preview.png">
 <link rel="stylesheet" href="marketing.css">
 <script src="theme.js"></script>
@@ -35,16 +35,26 @@
 <a class="skip-link" href="#main">Skip to content</a>
 <header class="landing-header"><div class="landing-wrap header-inner">
   <a class="wordmark" href="index.html" aria-label="RivetHub home"><img class="brand-mark robot-logo" src="robot.png" width="35" height="40" alt=""> rivet<span>hub</span><span class="brand-dot" aria-hidden="true">.</span></a>
-  <nav aria-label="Main navigation"><a href="index.html">Home</a><a href="install-local.html">Quickstart</a><a href="server.html" aria-current="page">Server</a><a href="apps.html">Apps / Downloads</a><a href="support.html">Support</a></nav>
+  <nav aria-label="Main navigation"><a href="index.html">Home</a><a href="install-local.html">Quickstart</a><a href="server.html" aria-current="page">Server</a><a href="apps.html">Apps</a><a href="support.html">Support</a></nav>
 </div></header>
-<main id="main"><div class="wrap-wide">
-<div class="page-head guide-head"><p class="kicker">Server setup</p><h1>A hub that’s always on.</h1><p class="lede">Put RivetHub on a server, VM, or Linux container so your memory is always on and shared by every machine you work on. Two installers do the work: the datahub first, then one node per machine.</p><p>Setting up your own laptop? The <a href="install-local.html">Quickstart</a> is the shorter path.</p><nav class="jump-links" aria-label="On this page"><a href="#host">The host</a><a href="#datahub">The datahub</a><a href="#node">Agent nodes</a><a href="#connect">Verify</a></nav></div>
-<section class="block" id="host"><p class="kicker">Step 01 · the host</p><h2>Any Linux box with systemd.</h2><div class="app-grid"><article class="card"><h3>Dedicated server</h3><p>A Debian 12 or Ubuntu LTS machine with systemd and sudo access, on an address your nodes can reach.</p></article><article class="card"><h3>Virtual machine</h3><p>The same distributions inside a VM. Give it a stable address; the nodes will enroll into it over SSH.</p></article><article class="card"><h3>Container</h3><p>A Linux system container with systemd. On a Docker host, the installers’ <code>--docker</code> option runs services in containers managed by the host’s systemd.</p></article></div><p>Disk, networking, and dependency details are in the <a href="install-datahub.html">datahub guide</a> and <a href="install-node.html">node guide</a>.</p></section>
-<section class="block guide-section" id="datahub"><div><p class="kicker">Step 02 · the datahub</p><h2>Install the datahub.</h2></div><div><p>The datahub is the center of your setup: Postgres with pgvector, the memory schema, and the certificate authority your nodes trust. No agents run here. Run its installer as root on that host:</p><div class="term"><pre tabindex="0" data-copy="curl -fsSL https://get.rivethub.io/datahub.sh | sudo bash"><code><span class="ps">$ </span>curl -fsSL https://get.rivethub.io/datahub.sh | sudo bash</code></pre></div><p>The wizard asks who owns the hub, which memory mode (<code>lite</code> needs no inference services; <code>full</code> adds embedding and compaction endpoints you choose), and bare-metal or Docker Postgres.</p><a class="btn" href="install-datahub.html">Datahub guide →</a></div></section>
-<section class="block guide-section" id="node"><div><p class="kicker">Step 03 · agent nodes</p><h2>Enroll your first node.</h2></div><div><p>The node runs the RivetOS runtime — this is where your agents live. It enrolls into the datahub over SSH and receives its certificates in one pass. On the node host:</p><div class="term"><pre tabindex="0" data-copy="curl -fsSL https://get.rivethub.io/node.sh | sudo bash -s -- --hub owner@192.0.2.10"><code><span class="ps">$ </span>curl -fsSL https://get.rivethub.io/node.sh | sudo bash -s -- --hub owner@192.0.2.10</code></pre></div><p>Replace <code>owner@192.0.2.10</code> with an SSH login on the datahub that can run <code>rivethub-hub</code>. Repeat on each machine you want agents on.</p><a class="btn" href="install-node.html">Node guide →</a></div></section>
-<section class="block guide-section" id="connect"><div><p class="kicker">Step 04 · verify</p><h2>Check it, then get to work.</h2></div><div><ol class="setup-list"><li>On the datahub: <code>rivethub-hub status</code>.</li><li>On the node: <code>systemctl status rivetos-agent.service</code>, then <code>sudo -u rivet -H rivetos doctor</code>.</li><li>Connect an app, run a small task in a connected tool, and watch the session appear in your hub.</li></ol><div class="actions"><a class="btn" href="apps.html">Get the apps →</a><a href="support.html">Something stuck? Support →</a></div></div></section>
-</div></main>
-<footer class="landing-footer"><div class="landing-wrap"><div><a class="wordmark" href="index.html"><img class="brand-mark robot-logo" src="robot.png" width="35" height="40" alt="">rivet<span>hub</span>.</a><p>Self-hosted memory for your AI agents.<br>Built on the open-source RivetOS runtime.</p></div><nav aria-label="Footer navigation"><a href="index.html">Home</a><a href="install-local.html">Quickstart</a><a href="llms.txt">Set up with your agent</a><a href="server.html">Server</a><a href="apps.html">Apps / Downloads</a><a href="support.html">Support</a><a href="omarchy.html">Omarchy</a><a href="releases.html">Releases</a><a href="privacy.html">Privacy</a><a href="https://rivetos.dev">Documentation</a></nav></div><div class="landing-wrap theme-footer"><label hidden data-theme-control>Appearance <select aria-label="Site appearance" data-theme-select><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label></div></footer>
+<main id="main">
+<div class="wrap-wide">
+<div class="page-head guide-head"><p class="kicker">Server setup</p><h1>A hub that’s always on.</h1><p class="lede">Put RivetHub on a server, VM, or Linux container so your memory is always on and shared by every machine you work on: a Postgres datahub holds the memory, and every machine runs an <code>rh</code> node against it.</p><p>Setting up your own laptop? The <a href="install-local.html">Quickstart</a> is the shorter path.</p><nav class="jump-links" aria-label="On this page"><a href="#host">The host</a><a href="#datahub">The datahub</a><a href="#node">Nodes</a><a href="#connect">Verify</a></nav></div>
+<section class="block" id="host"><p class="kicker">Step 01 · the host</p><h2>Any Linux box with systemd.</h2><div class="app-grid"><article class="card"><h3>Dedicated server</h3><p>Linux on x86_64 or aarch64 with glibc 2.35 or newer and systemd, on an address your nodes can reach.</p></article><article class="card"><h3>Virtual machine</h3><p>The same, inside a VM. Give it a stable address for the database and the certificate authority.</p></article><article class="card"><h3>Container</h3><p>A Linux system container with systemd works the same way: <code>rh</code> is a single binary with nothing else to install.</p></article></div></section>
+<section class="block guide-section" id="datahub"><div><p class="kicker">Step 02 · the datahub</p><h2>Set up the datahub.</h2></div><div><p>Postgres 16 with pgvector holds the memory. Create the database, run the one-time superuser steps, install the job queue, then bring the schema up to date before anything connects:</p><div class="term">
+<div class="term__bar"><i></i><i></i><i></i><span class="term__title">on the datahub</span>
+</div><pre tabindex="0" data-copy="rivethub-migrate postgres --config ~/.rivethub/config.yaml"><code><span class="ps">$ </span>rivethub-migrate postgres --config ~/.rivethub/config.yaml</code></pre>
+</div><p>Then start the memory workers (<code>rh worker --role …</code>) and, for a mesh, step-ca.</p><a class="btn" href="install-datahub.html">Datahub guide →</a></div></section>
+<section class="block guide-section" id="node"><div><p class="kicker">Step 03 · nodes</p><h2>Run a node on each machine.</h2></div><div><p>A node is where your agents and their tools live. Install <code>rh</code>, point its config at the datahub, and run it under systemd:</p><div class="term">
+<div class="term__bar"><i></i><i></i><i></i><span class="term__title">on each node</span>
+</div><pre tabindex="0" data-copy="rh config validate&#10;rh service init&#10;rh service start"><code><span class="ps">$ </span>rh config validate
+<span class="ps">$ </span>rh service init
+<span class="ps">$ </span>rh service start</code></pre>
+</div><p>Nodes that serve other machines take certificates from step-ca and join the mesh.</p><a class="btn" href="install-node.html">Node guide →</a></div></section>
+<section class="block guide-section" id="connect"><div><p class="kicker">Step 04 · verify</p><h2>Check it, then get to work.</h2></div><div><ol class="setup-list"><li>On the datahub: <code>rivethub-migrate status postgres --config ~/.rivethub/config.yaml</code> shows nothing pending, and <code>rh memory queue-status</code> shows the workers taking jobs.</li><li>On each node: <code>rh doctor</code>, then <code>rh status</code>.</li><li>Connect a tool, run a small task, and find it with <code>memory_search</code> from another tool, or in the desktop app.</li></ol><div class="actions"><a class="btn" href="apps.html">Get the apps →</a><a href="support.html">Something stuck? Support →</a></div></div></section>
+</div>
+</main>
+<footer class="landing-footer"><div class="landing-wrap"><div><a class="wordmark" href="index.html"><img class="brand-mark robot-logo" src="robot.png" width="35" height="40" alt="">rivet<span>hub</span>.</a><p>Self-hosted memory for your AI agents.<br>Built on the open-source RivetHub runtime.</p></div><nav aria-label="Footer navigation"><a href="index.html">Home</a><a href="install-local.html">Quickstart</a><a href="llms.txt">Set up with your agent</a><a href="server.html">Server</a><a href="apps.html">Apps</a><a href="support.html">Support</a><a href="omarchy.html">Omarchy</a><a href="releases.html">Releases</a><a href="privacy.html">Privacy</a><a href="https://github.com/philbert440/rivethub-runtime/tree/main/docs">Documentation</a><a href="https://github.com/philbert440/rivethub-runtime">GitHub</a></nav></div><div class="landing-wrap theme-footer"><label hidden data-theme-control>Appearance <select aria-label="Site appearance" data-theme-select><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label></div></footer>
 <script src="site.js"></script>
 <script src="posthog-config.js"></script>
 <script src="posthog.js"></script>
