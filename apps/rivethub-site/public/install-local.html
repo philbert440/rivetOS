@@ -152,7 +152,7 @@
 <tr><th scope="row">Kimi Code, Hermes</th><td colspan="3">The integration kits in <a href="https://github.com/philbert440/rivetOS/tree/main/integrations">rivetOS <code>integrations/</code></a>.</td></tr>
 </tbody></table>
 </div>
-<p class="small-note">The Codex, opencode and dsh options arrive in the release after v0.7.0; <code>rh capture hook --help</code> lists what your build supports. No ready-made opencode or dsh plug-in is published yet: yours runs the hook with <code>{session_id, hook_event_name, cwd}</code> on stdin. If the node is down when a hook runs, the batch waits in <code>~/.rivethub/capture-spool</code> and goes out with the next capture. Each tool logs its captures in <code>~/.rivethub</code>, for example <code>claude-capture.log</code>. Full details: <a href="https://github.com/philbert440/rivethub-runtime/blob/main/docs/CLI.md">the CLI reference</a>.</p>
+<p class="small-note">The Codex, opencode and dsh options need v0.7.1 or newer; <code>rh capture hook --help</code> lists what your build supports. No ready-made opencode or dsh plug-in is published yet: yours runs the hook with <code>{session_id, hook_event_name, cwd}</code> on stdin. If the node is down when a hook runs, the batch waits in <code>~/.rivethub/capture-spool</code> and goes out with the next capture. Each tool logs its captures in <code>~/.rivethub</code>, for example <code>claude-capture.log</code>. Full details: <a href="https://github.com/philbert440/rivethub-runtime/blob/main/docs/CLI.md">the CLI reference</a>.</p>
 </section>
 <section class="block guide-section" id="desktop">
 <div>
