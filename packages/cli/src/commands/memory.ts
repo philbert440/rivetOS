@@ -39,6 +39,10 @@
  *       Apply that same project: rule to conversations already stored.
  *       Idempotent. A rejected rule tag stays rejected.
  *
+ *   rivetos memory relocate-source-positions --plan <file> [--apply --backup <file>]
+ *       Relocate capture source-position metadata on existing rows. Default
+ *       is a dry-run. --apply writes only after a backup file is persisted.
+ *
  * Environment:
  *   RIVETOS_PG_URL  Required.
  */
@@ -84,6 +88,9 @@ export default async function memory(): Promise<void> {
     case 'tags':
       await memoryTags(args.slice(1))
       break
+    case 'relocate-source-positions':
+      await relocateSourcePositionsCmd(args.slice(1))
+      break
     default:
       printHelp()
   }
@@ -100,7 +107,8 @@ function printHelp(): void {
     requeue               Revive dead jobs via reschedule_jobs (operators' default)
     export                Write a gzip NDJSON v1 dump (stdout or --out)
     import                Load a gzip NDJSON v1 dump (ON CONFLICT DO NOTHING)
-    tags backfill-rule    Apply the project: rule to conversations that have a cwd
+    tags backfill-rule             Apply the project: rule to conversations that have a cwd
+    relocate-source-positions     Relocate capture source-position metadata (dry-run default)
 
   Run "rivetos memory <command> --help" for command-specific options.
 `)
@@ -978,6 +986,45 @@ export function parseImportFlags(args: string[]): MemoryImportFlags {
   return flags
 }
 
+export interface RelocateSourcePositionFlags {
+  planPath: string
+  apply: boolean
+  backupPath?: string
+}
+
+export function parseRelocateSourcePositionFlags(args: string[]): RelocateSourcePositionFlags {
+  const flags: RelocateSourcePositionFlags = { planPath: '', apply: false }
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]
+    if (arg === '--plan') {
+      const value = args[++i]
+      if (!value || value.startsWith('-')) throw new Error('--plan requires a file path')
+      flags.planPath = value
+      continue
+    }
+    if (arg === '--apply') {
+      flags.apply = true
+      continue
+    }
+    if (arg === '--backup') {
+      const value = args[++i]
+      if (!value || value.startsWith('-')) throw new Error('--backup requires a file path')
+      flags.backupPath = value
+      continue
+    }
+    if (arg === '--dry-run') continue
+    throw new Error(`Unknown option: ${arg}`)
+  }
+  if (!flags.planPath) throw new Error('relocate-source-positions requires --plan <file>')
+  if (flags.apply && !flags.backupPath) {
+    throw new Error('--apply requires --backup <file>')
+  }
+  if (!flags.apply && flags.backupPath) {
+    throw new Error('--backup is only valid with --apply')
+  }
+  return flags
+}
+
 /** Gzip on a TTY is unreadable; require a redirect or --out. */
 export function shouldRefuseGzipToTty(
   out: string | undefined,
@@ -1275,6 +1322,91 @@ async function memoryImport(args: string[]): Promise<void> {
   try {
     const summary = await importMemory(pool, input, { dryRun: flags.dryRun })
     console.log(JSON.stringify(summary, null, 2))
+  } finally {
+    await pool.end()
+  }
+}
+
+async function relocateSourcePositionsCmd(args: string[]): Promise<void> {
+  if (args.includes('--help') || args.includes('-h')) {
+    console.log(`
+  rivetos memory relocate-source-positions --plan <file>
+
+  Relocate capture source-position metadata on existing message rows in one
+  conversation. Default is a dry-run that writes nothing. --apply updates
+  metadata only after a before-state backup file is persisted.
+
+  The plan names exact message UUIDs. The command does not pick rows by
+  content hash or tool-call id. It does not change created_at. Browse order
+  stays created_at order. A metadata relocation is not a date repair.
+
+  Options:
+    --plan <file>     Reviewed repair plan (JSON)
+    --apply           Write the relocation (off by default)
+    --backup <file>   Before-state JSON, required with --apply, created with wx
+`)
+    return
+  }
+
+  let flags: RelocateSourcePositionFlags
+  try {
+    flags = parseRelocateSourcePositionFlags(args)
+  } catch (err) {
+    console.error(`Error: ${(err as Error).message}`)
+    process.exit(1)
+    return
+  }
+
+  const pgUrl = requirePgUrl()
+  if (isRivetCloudPgUrl(pgUrl)) {
+    console.error(CLOUD_IMPORT_HINT)
+    process.exit(2)
+    return
+  }
+
+  let planJson: unknown
+  try {
+    planJson = JSON.parse(readFileSync(flags.planPath, 'utf8'))
+  } catch (err) {
+    console.error(`Error: ${(err as Error).message}`)
+    process.exit(1)
+    return
+  }
+
+  const { default: pg } = await import('pg')
+  const { isRelocateRejection, parseSourcePositionRepairPlan, relocateSourcePositions } =
+    await import('@rivetos/memory-postgres')
+  let plan
+  try {
+    plan = parseSourcePositionRepairPlan(planJson)
+  } catch (err) {
+    if (isRelocateRejection(err)) {
+      console.error(JSON.stringify({ kind: 'rejected', code: err.code, message: err.message }))
+      process.exit(2)
+      return
+    }
+    console.error(`Error: ${(err as Error).message}`)
+    process.exit(1)
+    return
+  }
+
+  const pool = new pg.Pool({ connectionString: pgUrl, max: 2 })
+  try {
+    const outcome = await relocateSourcePositions(
+      pool,
+      plan,
+      flags.apply && flags.backupPath
+        ? { kind: 'apply', backupPath: flags.backupPath }
+        : { kind: 'dry-run' },
+    )
+    console.log(JSON.stringify(outcome, null, 2))
+  } catch (err) {
+    if (isRelocateRejection(err)) {
+      console.error(JSON.stringify({ kind: 'rejected', code: err.code, message: err.message }))
+      process.exit(2)
+      return
+    }
+    throw err
   } finally {
     await pool.end()
   }
