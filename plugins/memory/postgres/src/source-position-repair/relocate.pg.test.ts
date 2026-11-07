@@ -112,6 +112,8 @@ describe.skipIf(PG_URL === '')('source position relocate (real Postgres)', () =>
     sourceId?: string
     accessCount?: number
     eventId?: string
+    jsonlPath?: string
+    jsonlLine?: number
   }) => {
     const sub = opts.sub ?? 0
     const ordinal = sourceOrdinal(opts.position, sub)
@@ -134,6 +136,9 @@ describe.skipIf(PG_URL === '')('source position relocate (real Postgres)', () =>
           ordinal,
           event_id: eid,
           ...(opts.sourceId ? { source_id: opts.sourceId } : {}),
+          ...(opts.jsonlPath
+            ? { session_jsonl_path: opts.jsonlPath, session_jsonl_line: opts.jsonlLine }
+            : {}),
         }),
         opts.createdAt,
         opts.accessCount ?? 0,
@@ -257,6 +262,8 @@ describe.skipIf(PG_URL === '')('source position relocate (real Postgres)', () =>
       createdAt: '2026-01-01T00:00:02.000Z',
       accessCount: 7,
       sourceId: 'readtranscript:slug:4:0',
+      jsonlPath: 'synth/updates.jsonl',
+      jsonlLine: 4,
     })
     await insertMessage({
       id: MSG_B,
@@ -285,6 +292,8 @@ describe.skipIf(PG_URL === '')('source position relocate (real Postgres)', () =>
       ordinal: sourceOrdinal(2, 0),
       event_id: eventId('alpha', sourceOrdinal(2, 0)),
       source_id: 'readtranscript:slug:2:0',
+      session_jsonl_path: 'synth/updates.jsonl',
+      session_jsonl_line: 4,
     })
     const tsvAfter = await pool.query<{ content_tsv: string }>(
       `SELECT content_tsv::text AS content_tsv FROM ${SCHEMA}.ros_messages WHERE id = $1`,

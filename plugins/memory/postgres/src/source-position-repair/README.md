@@ -22,7 +22,7 @@ Default mode is a dry-run. Apply writes a before-state backup first and aborts i
 - Destination timestamps (`timestamp_unproven`). v1 does not repair dates. Timestamps from the old position are not destination proof
 - Summary source lists whose ordinals would run backward against destination positions or `created_at`
 
-`memory_browse` orders by `created_at`, not source ordinal. A successful metadata relocation is not a claim that canonical visible order was repaired. Reports always set `datesRepaired: false`. Keeping a message UUID is not proof that a contextual summary still covers the right sequence.
+`memory_browse` orders by `created_at`, not source ordinal. A successful metadata relocation is not a claim that canonical visible order was repaired. Reports always set `datesRepaired: false`. Keeping a message UUID is not proof that a contextual summary still covers the right sequence. Truncation pointers (`session_jsonl_path`, `session_jsonl_line`) are file offsets, not source position, and are left unchanged so `memory_get_full` still reads the original line.
 
 ## CLI
 
