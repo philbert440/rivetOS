@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import pg from 'pg'
@@ -759,6 +759,51 @@ describe.skipIf(PG_URL === '')('source position relocate (real Postgres)', () =>
     expect((await loadRows()).find((item) => item.id === MSG_A)?.metadata.position).toBe(4)
   })
 
+  it('restores source metadata from the apply backup without changing uuid or content', async () => {
+    await insertMessage({
+      id: MSG_A,
+      content: 'alpha',
+      position: 4,
+      createdAt: '2026-01-01T00:00:02.000Z',
+      accessCount: 7,
+      sourceId: 'readtranscript:slug:4:0',
+      jsonlPath: 'synth/updates.jsonl',
+      jsonlLine: 4,
+    })
+    await insertMessage({
+      id: MSG_B,
+      content: 'beta',
+      position: 9,
+      createdAt: '2026-01-01T00:00:09.000Z',
+    })
+    const before = await loadRows()
+    const plan = await planFor([relocation(MSG_A, 4, 2, 'alpha')])
+    const backupPath = join(tmp, 'restore.json')
+    await relocateSourcePositions(repairPool(), plan, { kind: 'apply', backupPath })
+    expect((await loadRows()).find((item) => item.id === MSG_A)?.metadata.position).toBe(2)
+    const backup = JSON.parse(readFileSync(backupPath, 'utf8')) as {
+      before: Array<{ id: string; metadata: Record<string, unknown>; created_at: string }>
+    }
+    expect(backup.before.map((row) => row.id)).toEqual([MSG_A])
+    for (const row of backup.before) {
+      await pool.query(`UPDATE ${SCHEMA}.ros_messages SET metadata = $2::jsonb WHERE id = $1`, [
+        row.id,
+        JSON.stringify(row.metadata),
+      ])
+    }
+    const restored = await loadRows()
+    const beforeA = before.find((item) => item.id === MSG_A)
+    const restoredA = restored.find((item) => item.id === MSG_A)
+    expect(restoredA?.id).toBe(MSG_A)
+    expect(restoredA?.content).toBe('alpha')
+    expect(restoredA?.access_count).toBe(7)
+    expect(restoredA?.created_at.toISOString()).toBe(beforeA?.created_at.toISOString())
+    expect(restoredA?.metadata).toEqual(beforeA?.metadata)
+    expect(restored.find((item) => item.id === MSG_B)?.metadata).toEqual(
+      before.find((item) => item.id === MSG_B)?.metadata,
+    )
+  })
+
   it('blocks a competing capture-style insert behind the session advisory lock', async () => {
     await insertMessage({
       id: MSG_A,
@@ -798,7 +843,7 @@ describe.skipIf(PG_URL === '')('source position relocate (real Postgres)', () =>
     expect(outcome.kind).toBe('applied')
   })
 
-  it('blocks a competing INSERT while apply holds SHARE ROW EXCLUSIVE', async () => {
+  it('aborts apply against an ordinary INSERT, then applies all-or-none and reapplies idempotently', async () => {
     await insertMessage({
       id: MSG_A,
       content: 'alpha',
@@ -811,28 +856,273 @@ describe.skipIf(PG_URL === '')('source position relocate (real Postgres)', () =>
       position: 9,
       createdAt: '2026-01-01T00:00:09.000Z',
     })
-    const relocator = await pool.connect()
+    const plan = await planFor([relocation(MSG_A, 4, 2, 'alpha')])
+    const backupPath = join(tmp, 'race.json')
     const writer = await pool.connect()
+    const timedPool = (): pg.Pool =>
+      ({
+        connect: async () => {
+          const client = await pool.connect()
+          await client.query(`SET search_path = ${SCHEMA}`)
+          await client.query(`SET lock_timeout = '500ms'`)
+          return client
+        },
+      }) as unknown as pg.Pool
     try {
-      await relocator.query(`SET search_path = ${SCHEMA}`)
-      await relocator.query('BEGIN')
-      await relocator.query('SELECT pg_advisory_xact_lock(hashtext($1))', [SESSION])
-      await relocator.query('LOCK TABLE ros_messages IN SHARE ROW EXCLUSIVE MODE')
       await writer.query(`SET search_path = ${SCHEMA}`)
-      await writer.query(`SET lock_timeout = '500ms'`)
+      await writer.query('BEGIN')
+      await writer.query(
+        `INSERT INTO ros_messages (id, conversation_id, agent, channel, role, content, metadata, created_at)
+         VALUES ($1,$2,$3,'synth','user','sneak','{}','2026-01-01T00:00:03.000Z')`,
+        [MSG_D, CONV, AGENT],
+      )
       await expect(
-        writer.query(
-          `INSERT INTO ros_messages (id, conversation_id, agent, channel, role, content, metadata, created_at)
-           VALUES ($1,$2,$3,'synth','user','sneak','{}','2026-01-01T00:00:03.000Z')`,
-          [MSG_D, CONV, AGENT],
-        ),
-      ).rejects.toMatchObject({ code: '55P03' })
-      await relocator.query('ROLLBACK')
+        relocateSourcePositions(timedPool(), plan, { kind: 'apply', backupPath }),
+      ).rejects.toMatchObject({ code: 'concurrent_insert' })
+      expect((await loadRows()).find((item) => item.id === MSG_A)?.metadata.position).toBe(4)
+      expect(existsSync(backupPath)).toBe(false)
+      await writer.query('ROLLBACK')
     } finally {
-      relocator.release()
       writer.release()
     }
+    const applied = await relocateSourcePositions(repairPool(), plan, {
+      kind: 'apply',
+      backupPath: join(tmp, 'race-apply.json'),
+    })
+    expect(applied.kind).toBe('applied')
+    expect((await loadRows()).find((item) => item.id === MSG_A)?.metadata.position).toBe(2)
+    const again = await relocateSourcePositions(repairPool(), plan, {
+      kind: 'apply',
+      backupPath: join(tmp, 'race-reapply.json'),
+    })
+    expect(again.kind).toBe('already-applied')
     expect((await loadRows()).map((row) => row.id).sort()).toEqual([MSG_A, MSG_B].sort())
+  })
+})
+
+describe.skipIf(PG_URL === '')('source position relocate (ros_* views over rh_* tables)', () => {
+  const ADOPT = `src_pos_adopt_${String(process.pid)}`
+  let pool: pg.Pool
+  let tmp: string
+
+  beforeAll(async () => {
+    pool = new pg.Pool({ connectionString: PG_URL, max: 4 })
+    tmp = mkdtempSync(join(tmpdir(), 'src-pos-adopt-'))
+    const client = await pool.connect()
+    try {
+      await client.query(`DROP SCHEMA IF EXISTS ${ADOPT} CASCADE`)
+      await client.query(`CREATE SCHEMA ${ADOPT}`)
+      await client.query(`SET search_path = ${ADOPT}`)
+      await client.query(`
+        CREATE TABLE rh_conversations (
+          id UUID PRIMARY KEY,
+          session_key TEXT NOT NULL,
+          agent TEXT NOT NULL,
+          channel TEXT NOT NULL DEFAULT 'unknown',
+          created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+        CREATE TABLE rh_messages (
+          id UUID PRIMARY KEY,
+          conversation_id UUID NOT NULL REFERENCES rh_conversations(id) ON DELETE CASCADE,
+          agent TEXT NOT NULL,
+          channel TEXT NOT NULL DEFAULT 'unknown',
+          role TEXT NOT NULL,
+          content TEXT NOT NULL DEFAULT '',
+          tool_name TEXT,
+          tool_args JSONB,
+          tool_result TEXT,
+          metadata JSONB DEFAULT '{}'::jsonb,
+          access_count INTEGER DEFAULT 0,
+          last_accessed_at TIMESTAMPTZ,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+          content_tsv tsvector GENERATED ALWAYS AS (
+            to_tsvector('english', left(coalesce(content, ''), 300000) || ' ' || left(coalesce(tool_result, ''), 32768))
+          ) STORED
+        );
+        CREATE TABLE rh_message_chunks (
+          id UUID PRIMARY KEY,
+          message_id UUID NOT NULL REFERENCES rh_messages(id) ON DELETE CASCADE,
+          idx INT NOT NULL,
+          char_start INT NOT NULL,
+          char_end INT NOT NULL,
+          content TEXT NOT NULL
+        );
+        CREATE TABLE rh_summaries (
+          id UUID PRIMARY KEY,
+          conversation_id UUID REFERENCES rh_conversations(id),
+          content TEXT NOT NULL
+        );
+        CREATE TABLE rh_summary_sources (
+          summary_id UUID NOT NULL REFERENCES rh_summaries(id) ON DELETE CASCADE,
+          message_id UUID NOT NULL REFERENCES rh_messages(id) ON DELETE RESTRICT,
+          ordinal INTEGER NOT NULL DEFAULT 0,
+          PRIMARY KEY (summary_id, message_id)
+        );
+        CREATE TABLE rh_embed_log (op TEXT NOT NULL, id UUID NOT NULL);
+        CREATE FUNCTION rh_log_embed() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN
+          INSERT INTO rh_embed_log VALUES (TG_OP, NEW.id);
+          RETURN NEW;
+        END $$;
+        CREATE TRIGGER trg_embed_message AFTER INSERT ON rh_messages
+          FOR EACH ROW EXECUTE FUNCTION rh_log_embed();
+        CREATE VIEW ros_conversations AS SELECT * FROM rh_conversations;
+        CREATE VIEW ros_messages AS SELECT * FROM rh_messages;
+        CREATE VIEW ros_message_chunks AS SELECT * FROM rh_message_chunks;
+        CREATE VIEW ros_summaries AS SELECT * FROM rh_summaries;
+        CREATE VIEW ros_summary_sources AS SELECT * FROM rh_summary_sources;
+      `)
+    } finally {
+      client.release()
+    }
+  }, 60_000)
+
+  afterAll(async () => {
+    await pool.query(`DROP SCHEMA IF EXISTS ${ADOPT} CASCADE`)
+    await pool.end()
+    rmSync(tmp, { recursive: true, force: true })
+  }, 60_000)
+
+  it('updates through auto-updatable views without firing INSERT triggers or dropping chunk FKs', async () => {
+    const client = await pool.connect()
+    try {
+      await client.query(`SET search_path = ${ADOPT}`)
+      await client.query(
+        `INSERT INTO ros_conversations (id, session_key, agent, channel) VALUES ($1,$2,$3,'synth')`,
+        [CONV, SESSION, AGENT],
+      )
+      const ordinal = sourceOrdinal(4, 0)
+      const eid = derivedCaptureEventId({
+        sessionKey: SESSION,
+        role: 'user',
+        content: 'alpha',
+        ordinal,
+      })
+      await client.query(
+        `INSERT INTO ros_messages
+          (id, conversation_id, agent, channel, role, content, metadata, created_at, access_count)
+         VALUES ($1,$2,$3,'synth','user','alpha',$4::jsonb,'2026-01-01T00:00:02.000Z',3)`,
+        [
+          MSG_A,
+          CONV,
+          AGENT,
+          JSON.stringify({
+            capture_source: 'synth-capture',
+            position: 4,
+            ordinal,
+            event_id: eid,
+          }),
+        ],
+      )
+      await client.query(
+        `INSERT INTO ros_messages
+          (id, conversation_id, agent, channel, role, content, metadata, created_at)
+         VALUES ($1,$2,$3,'synth','user','beta',$4::jsonb,'2026-01-01T00:00:09.000Z')`,
+        [
+          MSG_B,
+          CONV,
+          AGENT,
+          JSON.stringify({
+            capture_source: 'synth-capture',
+            position: 9,
+            ordinal: sourceOrdinal(9, 0),
+            event_id: derivedCaptureEventId({
+              sessionKey: SESSION,
+              role: 'user',
+              content: 'beta',
+              ordinal: sourceOrdinal(9, 0),
+            }),
+          }),
+        ],
+      )
+      await client.query(
+        `INSERT INTO ros_message_chunks (id, message_id, idx, char_start, char_end, content)
+         VALUES ('cccccccc-cccc-4ccc-8ccc-ccccccccccc1', $1, 0, 0, 5, 'alpha-chunk')`,
+        [MSG_A],
+      )
+    } finally {
+      client.release()
+    }
+    const rows = (
+      await pool.query(
+        `SELECT id, conversation_id, role, content, tool_name, tool_args, tool_result,
+                created_at, access_count, metadata
+           FROM ${ADOPT}.ros_messages ORDER BY id`,
+      )
+    ).rows.map((row) => ({ ...row, metadata: row.metadata as Record<string, unknown> }))
+    const plan: SourcePositionRepairPlan = {
+      schemaVersion: 1,
+      conversationId: CONV,
+      sessionKey: SESSION,
+      agent: AGENT,
+      provenanceRef: 'synth-evidence-ref',
+      expectedStateHash: conversationStateHash(rows),
+      relocations: [
+        {
+          messageId: MSG_A,
+          from: {
+            position: 4,
+            ordinal: sourceOrdinal(4, 0),
+            eventId: derivedCaptureEventId({
+              sessionKey: SESSION,
+              role: 'user',
+              content: 'alpha',
+              ordinal: sourceOrdinal(4, 0),
+            }),
+            captureSource: 'synth-capture',
+          },
+          to: { position: 2 },
+        },
+      ],
+    }
+    const adoptPool = (): pg.Pool =>
+      ({
+        connect: async () => {
+          const c = await pool.connect()
+          await c.query(`SET search_path = ${ADOPT}`)
+          return c
+        },
+      }) as unknown as pg.Pool
+    const tsvBefore = await pool.query<{ content_tsv: string }>(
+      `SELECT content_tsv::text AS content_tsv FROM ${ADOPT}.rh_messages WHERE id = $1`,
+      [MSG_A],
+    )
+    await relocateSourcePositions(adoptPool(), plan, {
+      kind: 'apply',
+      backupPath: join(tmp, 'adopt.json'),
+    })
+    const base = await pool.query(
+      `SELECT id, content, access_count, metadata FROM ${ADOPT}.rh_messages WHERE id = $1`,
+      [MSG_A],
+    )
+    expect(base.rows[0].content).toBe('alpha')
+    expect(base.rows[0].access_count).toBe(3)
+    expect(base.rows[0].metadata).toMatchObject({
+      position: 2,
+      ordinal: sourceOrdinal(2, 0),
+      event_id: derivedCaptureEventId({
+        sessionKey: SESSION,
+        role: 'user',
+        content: 'alpha',
+        ordinal: sourceOrdinal(2, 0),
+      }),
+    })
+    const log = await pool.query(`SELECT op FROM ${ADOPT}.rh_embed_log ORDER BY op`)
+    expect(log.rows.map((row) => row.op)).toEqual(['INSERT', 'INSERT'])
+    const tsvAfter = await pool.query<{ content_tsv: string }>(
+      `SELECT content_tsv::text AS content_tsv FROM ${ADOPT}.rh_messages WHERE id = $1`,
+      [MSG_A],
+    )
+    expect(tsvAfter.rows[0].content_tsv).toBe(tsvBefore.rows[0].content_tsv)
+    const chunk = await pool.query(
+      `SELECT id, content FROM ${ADOPT}.rh_message_chunks WHERE message_id = $1`,
+      [MSG_A],
+    )
+    expect(chunk.rows[0]).toEqual({
+      id: 'cccccccc-cccc-4ccc-8ccc-ccccccccccc1',
+      content: 'alpha-chunk',
+    })
   })
 })
 

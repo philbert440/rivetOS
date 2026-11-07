@@ -2,7 +2,7 @@
 
 ## Why
 
-Philip's goal is one most-complete canonical source conversation, with every distinct verified message kept. Capture ingest is insert-only, so a wrong `metadata.position` stays on the row. This operation relocates source-position metadata on existing rows in that conversation. It does not invent sessions or merge distinct occurrences.
+Operators need one most-complete canonical source conversation, with every distinct verified message kept. Capture ingest is insert-only, so a wrong `metadata.position` stays on the row. This operation relocates source-position metadata on existing rows in that conversation. It does not invent sessions or merge distinct occurrences.
 
 ## What it does
 
@@ -23,6 +23,8 @@ Default mode is a dry-run. Apply writes a before-state backup first and aborts i
 - Summary source lists whose ordinals would run backward against destination positions or `created_at`
 
 `memory_browse` orders by `created_at`, not source ordinal. A successful metadata relocation is not a claim that canonical visible order was repaired. Reports always set `datesRepaired: false`. Keeping a message UUID is not proof that a contextual summary still covers the right sequence. Truncation pointers (`session_jsonl_path`, `session_jsonl_line`) are file offsets, not source position, and are left unchanged so `memory_get_full` still reads the original line.
+
+Adopted `ros_*` views are proven only as `CREATE VIEW ros_* AS SELECT * FROM rh_*` with INSERT-only triggers on the base table. RivetHub adopt DDL is not in this repo; `INSTEAD OF` or join views are unproven. The apply backup is the restore artifact (full pre-apply `metadata` plus `created_at`); v1 has no restore CLI. Hook-native `event_id`s are kept as-is when they are not capture/ingest hashes.
 
 ## CLI
 
