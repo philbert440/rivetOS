@@ -122,6 +122,9 @@ rivetOS/
 │   ├── rivethub-electron/ # RivetHub Electron desktop shell (own lockfile; not an npm workspace member)
 │   ├── rivethub-android/  # RivetHub Android client (thin gateway client, Apache-2.0)
 │   ├── rivethub-site/     # rivethub.io marketing / install pages (Nx only; not an npm workspace member)
+│   ├── rivethub-org/      # rivethub.org community index (Nx only; not an npm workspace member)
+│   ├── rivethub-dev/      # rivethub.dev contributor / plugin docs (Nx only; not an npm workspace member)
+│   ├── public-sites/      # shared family registry and chrome for the three RivetHub static sites
 │   └── site/              # rivetos.dev Astro docs (synced from docs/ via apps/site/scripts/sync-docs.mjs)
 ├── infra/              # Container Dockerfiles, Compose files, provisioning scripts
 └── docs/               # Full documentation (incl. example configs under docs/examples/)

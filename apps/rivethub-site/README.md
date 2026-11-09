@@ -1,6 +1,8 @@
 # RivetHub website
 
-Source for rivethub.io. The RivetOS documentation website remains in `apps/site`.
+Source for rivethub.io. Canonical origin https://rivethub.io/.
+
+The RivetOS documentation website remains in `apps/site` (https://rivetos.dev/). Contributor and plugin docs are a separate build in `apps/rivethub-dev` (https://rivethub.dev/). The community index is `apps/rivethub-org` (https://rivethub.org/). The product build injects the family site bar from `apps/public-sites/` into `dist/` HTML. It does not retarget `apps/site`.
 
 The site is plain HTML, CSS, and JavaScript with self-hosted fonts. Edit `public/` directly. The Omarchy page owns its theme independently; shared marketing appearance and the system/light/dark control are loaded only on the other pages.
 

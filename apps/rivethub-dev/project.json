@@ -1,0 +1,27 @@
+{
+  "name": "rivethub-dev",
+  "root": "apps/rivethub-dev",
+  "sourceRoot": "apps/rivethub-dev",
+  "projectType": "application",
+  "tags": ["scope:app", "type:app"],
+  "targets": {
+    "build": {
+      "command": "node apps/rivethub-dev/scripts/build.mjs",
+      "inputs": [
+        "{projectRoot}/scripts/**/*",
+        "{workspaceRoot}/apps/public-sites/**/*",
+        "{workspaceRoot}/apps/rivethub-site/public/robot.png",
+        "{workspaceRoot}/apps/rivethub-site/public/favicon.png",
+        "{workspaceRoot}/apps/rivethub-site/public/social-preview.png",
+        "{workspaceRoot}/apps/rivethub-site/public/theme.js",
+        "{workspaceRoot}/apps/rivethub-site/public/fonts/**/*",
+        "{workspaceRoot}/plugins/**/package.json",
+        "{workspaceRoot}/docs/examples/**/*",
+        "{workspaceRoot}/integrations/**/README.md",
+        "{workspaceRoot}/CONTRIBUTING.md",
+        "{workspaceRoot}/docs/PLUGINS.md"
+      ],
+      "outputs": ["{projectRoot}/dist"]
+    }
+  }
+}

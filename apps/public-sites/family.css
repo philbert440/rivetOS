@@ -1,0 +1,49 @@
+.family-bar {
+  --family-ink: #edf0e6;
+  --family-muted: #a7b8ad;
+  --family-green: #8bd6af;
+  --family-bg: #16221c;
+  --family-rule: #25362c;
+  background: var(--family-bg);
+  color: var(--family-ink);
+  font-family: "DM Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 13px;
+  border-bottom: 1px solid var(--family-rule);
+}
+.family-bar-inner {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 8px clamp(16px, 4vw, 40px);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 24px;
+  align-items: center;
+}
+.family-bar-kicker {
+  margin: 0;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--family-muted);
+}
+.family-bar ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+}
+.family-bar a {
+  color: var(--family-ink);
+  text-decoration: none;
+  font-weight: 500;
+}
+.family-bar a:hover { text-decoration: underline; }
+.family-bar a[aria-current="page"] { color: var(--family-green); }
+.family-bar-domain {
+  color: var(--family-muted);
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 11px;
+}

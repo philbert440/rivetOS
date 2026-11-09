@@ -1,0 +1,31 @@
+{
+  "name": "public-sites",
+  "root": "apps/public-sites",
+  "sourceRoot": "apps/public-sites",
+  "projectType": "library",
+  "tags": ["scope:app", "type:util"],
+  "targets": {
+    "test": {
+      "command": "node --test apps/public-sites/*.test.mjs",
+      "inputs": [
+        "{projectRoot}/**/*",
+        "{workspaceRoot}/apps/rivethub-site/**/*",
+        "{workspaceRoot}/apps/rivethub-org/**/*",
+        "{workspaceRoot}/apps/rivethub-dev/**/*",
+        "{workspaceRoot}/apps/site/astro.config.mjs",
+        "{workspaceRoot}/plugins/**/package.json",
+        "{workspaceRoot}/docs/examples/**/*",
+        "{workspaceRoot}/integrations/**/README.md",
+        "{workspaceRoot}/CONTRIBUTING.md"
+      ]
+    },
+    "build-family": {
+      "command": "node apps/public-sites/build-family.mjs",
+      "outputs": [
+        "{workspaceRoot}/apps/rivethub-site/dist",
+        "{workspaceRoot}/apps/rivethub-org/dist",
+        "{workspaceRoot}/apps/rivethub-dev/dist"
+      ]
+    }
+  }
+}
