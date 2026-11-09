@@ -123,7 +123,8 @@ export const HELP_TEXT = `
     --mesh             Migrate every agent node in mesh.json over SSH, then this node
     --binary <path>    Install this local rh binary (rivethub-migrate must sit next
                        to it) instead of downloading a release
-    --version <tag>    RivetHub release tag to download (default: latest)
+    --version <tag>    RivetHub release tag to download (default: the newest,
+                       prereleases included)
     --ssh-user <user>  SSH user for remote nodes (default: rivet)
 
   What it does (see docs/migrating-to-rivethub.md):

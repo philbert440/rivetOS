@@ -14,13 +14,16 @@ import type { Host } from './host.js'
 import type { MigrateOptions } from './options.js'
 import { sqliteBackupPath, SQLITE_TARGET, type NodeFacts } from './probe.js'
 import {
-  latestReleaseApiUrl,
-  parseChecksum,
-  parseReleaseTag,
+  checksumFor,
+  newestReleaseTag,
+  releaseArchive,
   releaseAssetUrl,
+  releasesApiUrl,
   releaseSupportsHost,
+  releaseTarget,
   RIVETHUB_RELEASE,
   sha256Hex,
+  unpackBinaries,
 } from './release.js'
 import {
   asRoot,
@@ -142,7 +145,7 @@ export function migrationRefusals(facts: NodeFacts): string[] {
   if (facts.binary.source === 'release') {
     if (!releaseSupportsHost(facts.platform, facts.arch)) {
       r.push(
-        `RivetHub releases ship ${RIVETHUB_RELEASE.platform}/${RIVETHUB_RELEASE.arch} binaries only (this host: ${facts.platform}/${facts.arch}). Build rh and pass --binary <path>.`,
+        `RivetHub releases ship Linux ${Object.keys(RIVETHUB_RELEASE.linuxTargets).join(' and ')} archives only (this host: ${facts.platform}/${facts.arch}). Build rh and pass --binary <path>.`,
       )
     }
   } else {
@@ -247,10 +250,6 @@ export function diskRefusals(facts: NodeFacts): string[] {
 
 function installBinariesStep(facts: NodeFacts): Step {
   const binDir = join(facts.home, '.local', 'bin')
-  const targets = [
-    { asset: RIVETHUB_RELEASE.assets.rh, dest: facts.installedRh },
-    { asset: RIVETHUB_RELEASE.assets.migrate, dest: facts.installedMigrate },
-  ]
   if (facts.binary.source === 'local') {
     const local = facts.binary
     const pairs = [
@@ -272,43 +271,48 @@ function installBinariesStep(facts: NodeFacts): Step {
     }
   }
   const pinned = facts.binary.tag
-  // Without --version the latest tag is resolved once, so rh and
-  // rivethub-migrate always come from the same release.
+  const target = releaseTarget(facts.platform, facts.arch) ?? '<target>'
+  const targets = [
+    { name: 'rh' as const, dest: facts.installedRh },
+    { name: 'migrate' as const, dest: facts.installedMigrate },
+  ]
+  // Without --version the newest tag is resolved once, and rh and
+  // rivethub-migrate come out of that one release's archive.
   return {
     id: 'install-binaries',
-    title: `Download RivetHub ${pinned ?? '(latest release)'} into ~/.local/bin`,
+    title: `Download RivetHub ${pinned ?? '(newest release)'} into ~/.local/bin`,
     phase: 'prepare',
     commands: [
-      ...(pinned ? [] : [`resolve the latest release tag (${latestReleaseApiUrl()})`]),
-      ...targets.map(
-        (t) =>
-          `download ${releaseAssetUrl(t.asset, pinned ?? '<tag>')} → ${t.dest} (sha256 from ${RIVETHUB_RELEASE.checksumAsset(t.asset)})`,
-      ),
+      ...(pinned ? [] : [`resolve the newest release tag (${releasesApiUrl()})`]),
+      `download ${releaseAssetUrl(releaseArchive(pinned ?? '<tag>', target), pinned ?? '<tag>')}`,
+      `check its sha256 against ${releaseAssetUrl(RIVETHUB_RELEASE.checksums, pinned ?? '<tag>')}`,
+      ...targets.map((t) => `unpack ${RIVETHUB_RELEASE.binaries[t.name]} → ${t.dest}`),
     ],
     run: async (host) => {
       let tag = pinned
       if (!tag) {
-        const json = new TextDecoder().decode(await host.download(latestReleaseApiUrl()))
-        tag = parseReleaseTag(json)
-        if (!tag) throw new Error(`${latestReleaseApiUrl()} did not name a release tag`)
+        const json = new TextDecoder().decode(await host.download(releasesApiUrl()))
+        tag = newestReleaseTag(json)
+        if (!tag) throw new Error(`${releasesApiUrl()} lists no vX.Y.Z release`)
       }
+      const archive = releaseArchive(tag, target)
+      const bytes = await host.download(releaseAssetUrl(archive, tag))
+      const sums = await host.download(releaseAssetUrl(RIVETHUB_RELEASE.checksums, tag))
+      const expected = checksumFor(new TextDecoder().decode(sums), archive)
+      if (!expected)
+        throw new Error(`${RIVETHUB_RELEASE.checksums} of ${tag} does not list ${archive}`)
+      const actual = sha256Hex(bytes)
+      if (actual !== expected) {
+        throw new Error(`${archive}: sha256 ${actual} does not match the release (${expected})`)
+      }
+      const binaries = unpackBinaries(archive, bytes)
       host.mkdirp(binDir)
       for (const t of targets) {
-        const bytes = await host.download(releaseAssetUrl(t.asset, tag))
-        const sums = await host.download(
-          releaseAssetUrl(RIVETHUB_RELEASE.checksumAsset(t.asset), tag),
-        )
-        const expected = parseChecksum(new TextDecoder().decode(sums))
-        if (!expected) throw new Error(`${RIVETHUB_RELEASE.checksumAsset(t.asset)} is not a sha256`)
-        const actual = sha256Hex(bytes)
-        if (actual !== expected) {
-          throw new Error(`${t.asset}: sha256 ${actual} does not match the release (${expected})`)
-        }
         const tmp = `${t.dest}.download`
-        host.writeFile(tmp, bytes, 0o755)
+        host.writeFile(tmp, binaries[t.name], 0o755)
         host.rename(tmp, t.dest)
       }
-      return `${tag}: checksums verified`
+      return `${tag}: ${archive} checksum verified`
     },
   }
 }
