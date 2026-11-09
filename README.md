@@ -1,3 +1,6 @@
+Thank you all for joining me on this adventure we're moving onward and upward, to a dedicated github org so we can manage and organize things a little better:
+https://github.com/Rivethub
+
 # RivetOS
 
 > **The runtime has moved to [rivethub-runtime](https://github.com/philbert440/rivethub-runtime).** RivetHub's runtime is now `rh`, written in
