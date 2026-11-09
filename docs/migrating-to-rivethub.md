@@ -1,7 +1,7 @@
 # Migrating to RivetHub
 
-> **Where RivetHub lives now:** the runtime in [rivethub-runtime](https://github.com/philbert440/rivethub-runtime) (releases and `rh` docs), the
-> [desktop app](https://github.com/philbert440/rivethub-desktop), the [plug-ins](https://github.com/philbert440/rivethub-plugins), and the [Android app](https://github.com/philbert440/rivetOS/tree/main/apps/rivethub-android) in this
+> **Where RivetHub lives now:** the runtime in [rivethub-runtime](https://github.com/Rivethub/rivethub-runtime) (releases and `rh` docs), the
+> [desktop app](https://github.com/Rivethub/rivethub-desktop), the [plug-ins](https://github.com/Rivethub/rivethub-plugins), and the [Android app](https://github.com/philbert440/rivetOS/tree/main/apps/rivethub-android) in this
 > repository. A fresh install starts at [rivethub.io](https://rivethub.io/install-local.html).
 
 RivetHub is the successor to the RivetOS TypeScript runtime: the same node
@@ -71,7 +71,7 @@ is taken over). Nothing has changed at that point.
 Then, in order:
 
 1. Install `rh` and `rivethub-migrate` into `~/.local/bin`, from the
-   `rh-<version>-<target>.tar.gz` archive of a `philbert440/rivethub-runtime`
+   `rh-<version>-<target>.tar.gz` archive of a `Rivethub/rivethub-runtime`
    release, checked against that release's `SHA256SUMS` (without `--version`
    the newest release, prereleases included, is resolved once, so both come
    from the same archive), or from `--binary`.

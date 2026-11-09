@@ -3,8 +3,8 @@ https://github.com/Rivethub
 
 # RivetOS
 
-> **The runtime has moved to [rivethub-runtime](https://github.com/philbert440/rivethub-runtime).** RivetHub's runtime is now `rh`, written in
-> Rust, with the [desktop app](https://github.com/philbert440/rivethub-desktop) and [plug-ins](https://github.com/philbert440/rivethub-plugins) in their own repositories; the
+> **The runtime has moved to [rivethub-runtime](https://github.com/Rivethub/rivethub-runtime).** RivetHub's runtime is now `rh`, written in
+> Rust, with the [desktop app](https://github.com/Rivethub/rivethub-desktop) and [plug-ins](https://github.com/Rivethub/rivethub-plugins) in their own repositories; the
 > [Android app](apps/rivethub-android) and the harness integration kits stay in this one. The rest of
 > this README documents the TypeScript RivetOS runtime that `rh` supersedes. To install RivetHub,
 > start at [rivethub.io](https://rivethub.io/install-local.html); to move an existing node, see

@@ -10,8 +10,8 @@ If a human pasted "Read https://rivethub.io/llms.txt and set up RivetHub on this
 2. Install `rh` and `rivethub-migrate` from the newest GitHub release into `~/.local/bin` (make sure it is on `PATH`). Set `TARGET` to `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu` or `universal-apple-darwin`; on macOS check the sum with `shasum -a 256 -c -` instead of `sha256sum -c -`:
 
    ```sh
-   REPO=https://github.com/philbert440/rivethub-runtime
-   TAG=$(curl -fsSL "https://api.github.com/repos/philbert440/rivethub-runtime/releases?per_page=1" | grep '"tag_name"' | cut -d'"' -f4)
+   REPO=https://github.com/Rivethub/rivethub-runtime
+   TAG=$(curl -fsSL "https://api.github.com/repos/Rivethub/rivethub-runtime/releases?per_page=1" | grep '"tag_name"' | cut -d'"' -f4)
    TARGET=x86_64-unknown-linux-gnu
    ARCHIVE="rh-${TAG#v}-$TARGET.tar.gz"
    curl -fsSLO "$REPO/releases/download/$TAG/$ARCHIVE"
@@ -57,23 +57,23 @@ If a human pasted "Read https://rivethub.io/llms.txt and set up RivetHub on this
 
 ## Runtime: rivethub-runtime
 
-- [README](https://github.com/philbert440/rivethub-runtime#readme): what the runtime is and how the repository is laid out.
-- [CLI reference](https://github.com/philbert440/rivethub-runtime/blob/main/docs/CLI.md): every `rh` command, `rh local`, `rh update`, `rh capture hook` and the release archives.
-- [Contract](https://github.com/philbert440/rivethub-runtime/blob/main/docs/CONTRACT.md): the HTTP, WebSocket, MCP and capture boundaries, with numbered notes on behavior such as visibility and row-level security.
-- [Architecture](https://github.com/philbert440/rivethub-runtime/blob/main/docs/ARCHITECTURE.md): crates, ports and process shape.
+- [README](https://github.com/Rivethub/rivethub-runtime#readme): what the runtime is and how the repository is laid out.
+- [CLI reference](https://github.com/Rivethub/rivethub-runtime/blob/main/docs/CLI.md): every `rh` command, `rh local`, `rh update`, `rh capture hook` and the release archives.
+- [Contract](https://github.com/Rivethub/rivethub-runtime/blob/main/docs/CONTRACT.md): the HTTP, WebSocket, MCP and capture boundaries, with numbered notes on behavior such as visibility and row-level security.
+- [Architecture](https://github.com/Rivethub/rivethub-runtime/blob/main/docs/ARCHITECTURE.md): crates, ports and process shape.
 <!-- OPERATIONS.md reaches rivethub-runtime main with its next release; switch this link to blob/main then. -->
-- [Operating on Postgres](https://github.com/philbert440/rivethub-runtime/blob/integration/next/docs/OPERATIONS.md): the datahub database, migrations, backups, worker units and standalone-node notes.
-- [PKI](https://github.com/philbert440/rivethub-runtime/blob/main/docs/PKI.md): step-ca, SPIFFE identities and certificate renewal.
-- [Releases](https://github.com/philbert440/rivethub-runtime/releases): `rh-<version>-<target>.tar.gz` archives and `SHA256SUMS` for every tag.
+- [Operating on Postgres](https://github.com/Rivethub/rivethub-runtime/blob/integration/next/docs/OPERATIONS.md): the datahub database, migrations, backups, worker units and standalone-node notes.
+- [PKI](https://github.com/Rivethub/rivethub-runtime/blob/main/docs/PKI.md): step-ca, SPIFFE identities and certificate renewal.
+- [Releases](https://github.com/Rivethub/rivethub-runtime/releases): `rh-<version>-<target>.tar.gz` archives and `SHA256SUMS` for every tag.
 
 ## Desktop: rivethub-desktop
 
-- [README](https://github.com/philbert440/rivethub-desktop#readme): the native Rust (GPUI) desktop: workspace, topics, sessions, terminals, memory and plug-in panels.
-- [Linux install script](https://github.com/philbert440/rivethub-desktop/blob/main/packaging/linux/install.sh): builds a release and installs `rivethub-desktop` into `~/.local`; needs WebKitGTK 4.1 for plug-in web panels.
+- [README](https://github.com/Rivethub/rivethub-desktop#readme): the native Rust (GPUI) desktop: workspace, topics, sessions, terminals, memory and plug-in panels.
+- [Linux install script](https://github.com/Rivethub/rivethub-desktop/blob/main/packaging/linux/install.sh): builds a release and installs `rivethub-desktop` into `~/.local`; needs WebKitGTK 4.1 for plug-in web panels.
 
 ## Plug-ins: rivethub-plugins
 
-- [README](https://github.com/philbert440/rivethub-plugins#readme): the TypeScript and Rust plug-in SDKs, templates, and the voice, files and Workflows plug-ins.
+- [README](https://github.com/Rivethub/rivethub-plugins#readme): the TypeScript and Rust plug-in SDKs, templates, and the voice, files and Workflows plug-ins.
 
 ## Android and RivetOS
 

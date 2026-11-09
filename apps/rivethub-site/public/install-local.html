@@ -54,7 +54,7 @@
 </div>
 <div>
 <ol class="setup-list">
-<li><strong>One runtime binary.</strong> <code>rh</code> is the gateway, memory, workers, tasks, plug-in host and MCP server in one Rust program, with <code>rivethub-migrate</code> beside it for schema migrations. Both come from <a href="https://github.com/philbert440/rivethub-runtime/releases">GitHub releases</a>, checked against <code>SHA256SUMS</code>.</li>
+<li><strong>One runtime binary.</strong> <code>rh</code> is the gateway, memory, workers, tasks, plug-in host and MCP server in one Rust program, with <code>rivethub-migrate</code> beside it for schema migrations. Both come from <a href="https://github.com/Rivethub/rivethub-runtime/releases">GitHub releases</a>, checked against <code>SHA256SUMS</code>.</li>
 <li><strong>Memory in a SQLite file.</strong> <code>rh local</code> creates and migrates <code>~/.rivethub/memory.sqlite</code>. There is no separate database to run.</li>
 <li><strong>Local by default.</strong> With <code>--no-lan</code> the node serves plain HTTP on <code>127.0.0.1:5174</code>. Serving other machines takes gateway TLS, covered in the <a href="install-node.html#tls">node guide</a>.</li>
 <li><strong>Capture and recall.</strong> <code>rh capture hook</code> records each session from your tool’s hooks; an MCP endpoint lets those tools search what was recorded.</li>
@@ -75,8 +75,8 @@
 <p>Download the newest release for your platform, check it against the release’s <code>SHA256SUMS</code>, and put both binaries in <code>~/.local/bin</code>, which needs to be on your <code>PATH</code>:</p>
 <div class="term">
 <div class="term__bar"><i></i><i></i><i></i><span class="term__title">on your laptop</span>
-</div><pre tabindex="0" data-copy="REPO=https://github.com/philbert440/rivethub-runtime&#10;TAG=$(curl -fsSL &quot;https://api.github.com/repos/philbert440/rivethub-runtime/releases?per_page=1&quot; | grep &#x27;&quot;tag_name&quot;&#x27; | cut -d&#x27;&quot;&#x27; -f4)&#10;TARGET=x86_64-unknown-linux-gnu&#10;ARCHIVE=&quot;rh-${TAG#v}-$TARGET.tar.gz&quot;&#10;curl -fsSLO &quot;$REPO/releases/download/$TAG/$ARCHIVE&quot;&#10;curl -fsSLO &quot;$REPO/releases/download/$TAG/SHA256SUMS&quot;&#10;grep &quot; $ARCHIVE\$&quot; SHA256SUMS | sha256sum -c -&#10;tar -xzf &quot;$ARCHIVE&quot; rh rivethub-migrate&#10;install -d ~/.local/bin &amp;&amp; install -m 0755 rh rivethub-migrate ~/.local/bin/&#10;rh version"><code><span class="ps">$ </span>REPO=https://github.com/philbert440/rivethub-runtime
-<span class="ps">$ </span>TAG=$(curl -fsSL &quot;https://api.github.com/repos/philbert440/rivethub-runtime/releases?per_page=1&quot; | grep &#x27;&quot;tag_name&quot;&#x27; | cut -d&#x27;&quot;&#x27; -f4)
+</div><pre tabindex="0" data-copy="REPO=https://github.com/Rivethub/rivethub-runtime&#10;TAG=$(curl -fsSL &quot;https://api.github.com/repos/Rivethub/rivethub-runtime/releases?per_page=1&quot; | grep &#x27;&quot;tag_name&quot;&#x27; | cut -d&#x27;&quot;&#x27; -f4)&#10;TARGET=x86_64-unknown-linux-gnu&#10;ARCHIVE=&quot;rh-${TAG#v}-$TARGET.tar.gz&quot;&#10;curl -fsSLO &quot;$REPO/releases/download/$TAG/$ARCHIVE&quot;&#10;curl -fsSLO &quot;$REPO/releases/download/$TAG/SHA256SUMS&quot;&#10;grep &quot; $ARCHIVE\$&quot; SHA256SUMS | sha256sum -c -&#10;tar -xzf &quot;$ARCHIVE&quot; rh rivethub-migrate&#10;install -d ~/.local/bin &amp;&amp; install -m 0755 rh rivethub-migrate ~/.local/bin/&#10;rh version"><code><span class="ps">$ </span>REPO=https://github.com/Rivethub/rivethub-runtime
+<span class="ps">$ </span>TAG=$(curl -fsSL &quot;https://api.github.com/repos/Rivethub/rivethub-runtime/releases?per_page=1&quot; | grep &#x27;&quot;tag_name&quot;&#x27; | cut -d&#x27;&quot;&#x27; -f4)
 <span class="ps">$ </span>TARGET=x86_64-unknown-linux-gnu
 <span class="ps">$ </span>ARCHIVE=&quot;rh-${TAG#v}-$TARGET.tar.gz&quot;
 <span class="ps">$ </span>curl -fsSLO &quot;$REPO/releases/download/$TAG/$ARCHIVE&quot;
@@ -152,7 +152,7 @@
 <tr><th scope="row">Kimi Code, Hermes</th><td colspan="3">The integration kits in <a href="https://github.com/philbert440/rivetOS/tree/main/integrations">rivetOS <code>integrations/</code></a>.</td></tr>
 </tbody></table>
 </div>
-<p class="small-note">The Codex, opencode and dsh options need v0.7.1 or newer; <code>rh capture hook --help</code> lists what your build supports. No ready-made opencode or dsh plug-in is published yet: yours runs the hook with <code>{session_id, hook_event_name, cwd}</code> on stdin. If the node is down when a hook runs, the batch waits in <code>~/.rivethub/capture-spool</code> and goes out with the next capture. Each tool logs its captures in <code>~/.rivethub</code>, for example <code>claude-capture.log</code>. Full details: <a href="https://github.com/philbert440/rivethub-runtime/blob/main/docs/CLI.md">the CLI reference</a>.</p>
+<p class="small-note">The Codex, opencode and dsh options need v0.7.1 or newer; <code>rh capture hook --help</code> lists what your build supports. No ready-made opencode or dsh plug-in is published yet: yours runs the hook with <code>{session_id, hook_event_name, cwd}</code> on stdin. If the node is down when a hook runs, the batch waits in <code>~/.rivethub/capture-spool</code> and goes out with the next capture. Each tool logs its captures in <code>~/.rivethub</code>, for example <code>claude-capture.log</code>. Full details: <a href="https://github.com/Rivethub/rivethub-runtime/blob/main/docs/CLI.md">the CLI reference</a>.</p>
 </section>
 <section class="block guide-section" id="desktop">
 <div>
@@ -160,7 +160,7 @@
 <h2>Build the desktop app.</h2>
 </div>
 <div>
-<p>The <a href="https://github.com/philbert440/rivethub-desktop">RivetHub desktop app</a> is native Rust, built from source on Linux. You need Rust through <a href="https://rustup.rs">rustup</a> (the repository pins its toolchain) and the development packages for Wayland/X11, Vulkan, fonts and WebKitGTK 4.1, which plug-ins’ web panels run in. On Debian or Ubuntu:</p>
+<p>The <a href="https://github.com/Rivethub/rivethub-desktop">RivetHub desktop app</a> is native Rust, built from source on Linux. You need Rust through <a href="https://rustup.rs">rustup</a> (the repository pins its toolchain) and the development packages for Wayland/X11, Vulkan, fonts and WebKitGTK 4.1, which plug-ins’ web panels run in. On Debian or Ubuntu:</p>
 <div class="term">
 <div class="term__bar"><i></i><i></i><i></i><span class="term__title">Debian / Ubuntu</span>
 </div><pre tabindex="0" data-copy="sudo apt install clang libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan-dev libfontconfig-dev libfreetype-dev libxcb1-dev libasound2-dev libssl-dev libwebkit2gtk-4.1-dev pkg-config"><code><span class="ps">$ </span>sudo apt install clang libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan-dev libfontconfig-dev libfreetype-dev libxcb1-dev libasound2-dev libssl-dev libwebkit2gtk-4.1-dev pkg-config</code></pre>
@@ -168,11 +168,11 @@
 <p>With pacman, the WebKitGTK package is <code>webkit2gtk-4.1</code>. Then build and install it into <code>~/.local</code>, with a menu entry:</p>
 <div class="term">
 <div class="term__bar"><i></i><i></i><i></i><span class="term__title">terminal</span>
-</div><pre tabindex="0" data-copy="git clone https://github.com/philbert440/rivethub-desktop&#10;cd rivethub-desktop&#10;packaging/linux/install.sh"><code><span class="ps">$ </span>git clone https://github.com/philbert440/rivethub-desktop
+</div><pre tabindex="0" data-copy="git clone https://github.com/Rivethub/rivethub-desktop&#10;cd rivethub-desktop&#10;packaging/linux/install.sh"><code><span class="ps">$ </span>git clone https://github.com/Rivethub/rivethub-desktop
 <span class="ps">$ </span>cd rivethub-desktop
 <span class="ps">$ </span>packaging/linux/install.sh</code></pre>
 </div>
-<p>The app connects to <code>https://127.0.0.1:5174</code> and trusts the CA in <code>~/.rivethub/step-root.crt</code>. <code>RIVETHUB_URL</code> and <code>RIVETHUB_CA</code> point it elsewhere. The app reads a CA file even for a plain-HTTP node, so for the standalone node above, start it with <code>RIVETHUB_URL=http://127.0.0.1:5174 RIVETHUB_CA=/etc/ssl/certs/ca-certificates.crt rivethub-desktop</code>. A device certificate in <code>~/.config/RivetHub/mtls/</code> (<code>RIVETHUB_DEVICE_DIR</code>) identifies it to nodes that ask for one. Starting chats and terminals from the app also needs <code>gateway.terminal.enabled: true</code> in the node’s config; the app tells you when it’s off. More in the <a href="https://github.com/philbert440/rivethub-desktop#readme">desktop README</a>.</p>
+<p>The app connects to <code>https://127.0.0.1:5174</code> and trusts the CA in <code>~/.rivethub/step-root.crt</code>. <code>RIVETHUB_URL</code> and <code>RIVETHUB_CA</code> point it elsewhere. The app reads a CA file even for a plain-HTTP node, so for the standalone node above, start it with <code>RIVETHUB_URL=http://127.0.0.1:5174 RIVETHUB_CA=/etc/ssl/certs/ca-certificates.crt rivethub-desktop</code>. A device certificate in <code>~/.config/RivetHub/mtls/</code> (<code>RIVETHUB_DEVICE_DIR</code>) identifies it to nodes that ask for one. Starting chats and terminals from the app also needs <code>gateway.terminal.enabled: true</code> in the node’s config; the app tells you when it’s off. More in the <a href="https://github.com/Rivethub/rivethub-desktop#readme">desktop README</a>.</p>
 <p>There’s no desktop app for macOS or Windows yet. On Omarchy, the app can follow your theme: <a href="omarchy.html">RivetHub on Omarchy →</a></p>
 </div>
 </section>
@@ -263,7 +263,7 @@
 </section>
 </div>
 </main>
-<footer class="landing-footer"><div class="landing-wrap"><div><a class="wordmark" href="index.html"><img class="brand-mark robot-logo" src="robot.png" width="35" height="40" alt="">rivet<span>hub</span>.</a><p>Self-hosted memory for your AI agents.<br>Built on the open-source RivetHub runtime.</p></div><nav aria-label="Footer navigation"><a href="index.html">Home</a><a href="install-local.html">Quickstart</a><a href="llms.txt">Set up with your agent</a><a href="server.html">Server</a><a href="apps.html">Apps</a><a href="support.html">Support</a><a href="omarchy.html">Omarchy</a><a href="releases.html">Releases</a><a href="privacy.html">Privacy</a><a href="https://github.com/philbert440/rivethub-runtime/tree/main/docs">Documentation</a><a href="https://github.com/philbert440/rivethub-runtime">GitHub</a></nav></div><div class="landing-wrap theme-footer"><label hidden data-theme-control>Appearance <select aria-label="Site appearance" data-theme-select><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label></div></footer>
+<footer class="landing-footer"><div class="landing-wrap"><div><a class="wordmark" href="index.html"><img class="brand-mark robot-logo" src="robot.png" width="35" height="40" alt="">rivet<span>hub</span>.</a><p>Self-hosted memory for your AI agents.<br>Built on the open-source RivetHub runtime.</p></div><nav aria-label="Footer navigation"><a href="index.html">Home</a><a href="install-local.html">Quickstart</a><a href="llms.txt">Set up with your agent</a><a href="server.html">Server</a><a href="apps.html">Apps</a><a href="support.html">Support</a><a href="omarchy.html">Omarchy</a><a href="releases.html">Releases</a><a href="privacy.html">Privacy</a><a href="https://github.com/Rivethub/rivethub-runtime/tree/main/docs">Documentation</a><a href="https://github.com/Rivethub/rivethub-runtime">GitHub</a></nav></div><div class="landing-wrap theme-footer"><label hidden data-theme-control>Appearance <select aria-label="Site appearance" data-theme-select><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label></div></footer>
 <script src="site.js"></script>
 <script src="posthog-config.js"></script>
 <script src="posthog.js"></script>
