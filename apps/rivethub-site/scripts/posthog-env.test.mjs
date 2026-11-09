@@ -155,8 +155,22 @@ describe('sanitizeAnalyticsProperties', () => {
 
 describe('parseEnvFile', () => {
   it('reads export KEY=value the way Node --env-file does', () => {
-    assert.deepEqual(parseEnvFile('export PUBLIC_POSTHOG_KEY=phc_a\n'), {
+    const parsed = parseEnvFile('export PUBLIC_POSTHOG_KEY=phc_a\n');
+    assert.equal(Object.getPrototypeOf(parsed), null);
+    assert.equal(parsed.constructor, undefined);
+    assert.deepEqual(parsed, {
+      __proto__: null,
       PUBLIC_POSTHOG_KEY: 'phc_a',
+    });
+  });
+
+  it('keeps constructor as an env key, not Object.prototype.constructor', () => {
+    const parsed = parseEnvFile('constructor=not-a-function\n');
+    assert.equal(Object.getPrototypeOf(parsed), null);
+    assert.equal(parsed.constructor, 'not-a-function');
+    assert.deepEqual(parsed, {
+      __proto__: null,
+      constructor: 'not-a-function',
     });
   });
 });

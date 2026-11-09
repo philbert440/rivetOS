@@ -55,7 +55,10 @@ export function renderPosthogConfig({ key, host }) {
 }
 
 export function parseEnvFile(text) {
-  return parseEnv(text);
+  // Node 22 util.parseEnv returns a plain object. Node 25+ (nodejs#60038)
+  // returns a null-prototype object so env keys cannot pollute Object.prototype.
+  // This helper is a KEY=value map; copy onto Object.create(null) on every Node.
+  return Object.assign(Object.create(null), parseEnv(text));
 }
 
 export function resolveProjectPosthogEnv(root, env = process.env, files = HUB_ENV_FILES) {
