@@ -2,7 +2,7 @@
  * Where `rivetos migrate-to-rivethub` gets the RivetHub binaries.
  *
  * RIVETHUB_RELEASE is the single place that knows the release layout of
- * philbert440/rivethub-runtime: every tag `v<version>` publishes one
+ * Rivethub/rivethub-runtime: every tag `v<version>` publishes one
  * `rh-<version>-<target>.tar.gz` per platform, each holding `rh`,
  * `rivethub-migrate` and `LICENSE` at its top level, plus one `SHA256SUMS`
  * covering the archives. Published archives are never replaced. If the
@@ -15,7 +15,7 @@ import { extractTarGz } from '../../lib/mesh-enroll.js'
 
 export const RIVETHUB_RELEASE = {
   /** GitHub `owner/repo` that publishes the releases. */
-  repo: 'philbert440/rivethub-runtime',
+  repo: 'Rivethub/rivethub-runtime',
   /** The executables each archive carries at its top level. */
   binaries: { rh: 'rh', migrate: 'rivethub-migrate' },
   /** One `sha256sum`-format file per release, listing every archive. */

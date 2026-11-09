@@ -463,7 +463,7 @@ describe('dry run', () => {
       'mv /home/rivet/.rivetos /home/rivet/.rivethub && ln -s /home/rivet/.rivethub /home/rivet/.rivetos',
     )
     expect(out).not.toMatch(/Wait for RivetHub/)
-    expect(out).toContain('api.github.com/repos/philbert440/rivethub-runtime/releases?per_page=100')
+    expect(out).toContain('api.github.com/repos/Rivethub/rivethub-runtime/releases?per_page=100')
     expect(out).toContain('releases/download/<tag>/rh-<tag>-x86_64-unknown-linux-gnu.tar.gz')
     expect(out).toContain('releases/download/<tag>/SHA256SUMS')
     expect(out).toContain('nothing was changed')
@@ -588,9 +588,9 @@ describe('migration run', () => {
     }
     expect(await migrateToRivethub([], host)).toBe(0)
     expect(urls).toEqual([
-      'https://api.github.com/repos/philbert440/rivethub-runtime/releases?per_page=100',
-      `https://github.com/philbert440/rivethub-runtime/releases/download/v0.7.0/${name}`,
-      'https://github.com/philbert440/rivethub-runtime/releases/download/v0.7.0/SHA256SUMS',
+      'https://api.github.com/repos/Rivethub/rivethub-runtime/releases?per_page=100',
+      `https://github.com/Rivethub/rivethub-runtime/releases/download/v0.7.0/${name}`,
+      'https://github.com/Rivethub/rivethub-runtime/releases/download/v0.7.0/SHA256SUMS',
     ])
     expect(host.readText('/home/rivet/.local/bin/rh.download')).toBe('rh-bytes')
     expect(host.readText('/home/rivet/.local/bin/rivethub-migrate.download')).toBe('migrate-bytes')
