@@ -43,4 +43,6 @@ Embedding and compaction endpoints and models can be configured on the server to
 - [Support](https://rivethub.io/support.html): GitHub issues, email rivetphilbot@gmail.com, or @rivetphilbot on X.
 - [Privacy](https://rivethub.io/privacy.html): rivethub.io may record anonymous marketing-site pageviews. Self-hosted RivetHub / RivetOS do not phone home.
 - [Runtime documentation](https://rivetos.dev/)
+- [Contributor and plugin docs](https://rivethub.dev/)
+- [Community index](https://rivethub.org/)
 - [Runtime source](https://github.com/philbert440/rivetOS)

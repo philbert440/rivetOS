@@ -498,6 +498,9 @@ rivetOS/
     rivethub-electron/           ← Electron shell over hub dist (own lockfile)
     rivethub-android/            ← thin Hub client (Apache-2.0)
     rivethub-site/               ← rivethub.io (not an npm workspace member)
+    rivethub-org/                ← rivethub.org community index (not an npm workspace member)
+    rivethub-dev/                ← rivethub.dev contributor docs (not an npm workspace member; not apps/site)
+    public-sites/                ← shared family registry / chrome for the three RivetHub static sites
     site/                        ← rivetos.dev Astro docs
   integrations/                  ← capture + den hooks (claude-code, grok, kimi, hermes, opencode, pi, codex); qwen-code capture-only (no den hook)
 ```

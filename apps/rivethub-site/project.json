@@ -10,6 +10,10 @@
       "inputs": [
         "{projectRoot}/public/**/*",
         "{projectRoot}/scripts/**/*",
+        "{workspaceRoot}/apps/public-sites/family.mjs",
+        "{workspaceRoot}/apps/public-sites/chrome.mjs",
+        "{workspaceRoot}/apps/public-sites/html.mjs",
+        "{workspaceRoot}/apps/public-sites/family.css",
         "{projectRoot}/.env*",
         { "env": "PUBLIC_POSTHOG_KEY" },
         { "env": "PUBLIC_POSTHOG_HOST" },
@@ -26,6 +30,7 @@
       "inputs": [
         "{projectRoot}/scripts/**/*",
         "{projectRoot}/public/**/*",
+        "{workspaceRoot}/apps/public-sites/**/*",
         "{workspaceRoot}/apps/site/src/components/PostHog.astro"
       ]
     }
