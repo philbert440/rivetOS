@@ -63,7 +63,7 @@ Say that sanitizing is best effort and ask the user to confirm they read the rep
 
 Print the commands. Do not run them.
 
-- Team server. The loaded config's `memory.capture.gateway` (`url`, `ca`, `cert`, `key`) must point at the `rivet-team` gateway:
+- Team server. The loaded config's `memory.capture.gateway` (`url`, `ca`, `token`) must point at the `rivet-team` gateway:
 
   ```bash
   RIVETHUB_CONFIG=<config whose memory.capture.gateway is rivet-team> rh memory ingest-bundle <sanitized bundle path>
