@@ -6,7 +6,7 @@ otherwise. Nothing here is a publish or listing promise.
 
 | Harness | Status | Date | Notes |
 |---|---|---|---|
-| Claude Code | tested | 2026-09-20 | Standalone `rivet-memory` kit: `userConfig`, checkout-or-npx MCP, capture fail-loud, `rivetos-onboard` / `rivetos-status`. Kit unit tests; not a fresh-container stranger proof. |
+| Claude Code | tested | 2026-09-20 | Standalone `rivet-memory` kit: `userConfig`, checkout-or-npx MCP, capture fail-loud. Skills moved to Rivethub/rstack. Kit unit tests; not a fresh-container stranger proof. |
 | GitHub Copilot CLI | vendor-claimed, untested | — | Reads `.claude-plugin/marketplace.json`. |
 | VS Code agent plugins | vendor-claimed, untested | — | Reads Claude-format plugins. |
 | OpenAI Codex CLI | vendor-claimed, untested | — | Agent Plugins 1.0 + legacy Claude marketplace. |

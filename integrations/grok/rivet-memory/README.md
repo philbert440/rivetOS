@@ -11,13 +11,15 @@ This integration gives Grok Build sessions first-class access to the same persis
 - Provide automatic capture of turns, tool calls, and pre-compaction context (when hooks are enabled).
 - Keep the integration lightweight and idiomatic to Grok's MCP + skills model.
 
+## Skills moved to Rivethub/rstack
+
+The recall skills (`memory-recall`, `memory-today`, `memory-yesterday`, `memory-stats`) and the `memory-researcher` agent moved to [Rivethub/rstack](https://github.com/Rivethub/rstack). Install them with `npx skills add Rivethub/rstack`. This kit keeps the MCP server and the capture hooks.
+
 ## Current Status
 
 | Component              | Status     | Notes |
 |------------------------|------------|-------|
 | Memory discipline skill| ✅ Excellent | Strongest version across all three integrations |
-| Helper skills          | ✅ Good    | memory-today, memory-yesterday, memory-stats |
-| Subagent               | ✅ Good    | memory-researcher |
 | MCP tools              | ✅ Good    | Via existing RivetOS MCP server |
 | Capture                | ✅ Solid   | Full background worker implementation + launcher |
 | Packaging & Install    | 🚧 Good    | Manual setup works well; one-command plugin install in progress |
@@ -27,9 +29,6 @@ This integration gives Grok Build sessions first-class access to the same persis
 
 | Component                    | Location                                              | Purpose |
 |-----------------------------|-------------------------------------------------------|---------|
-| Core discipline skill       | `skills/memory-recall/SKILL.md`                       | The heart of the integration. Encodes optimal `memory_browse` first + multi-angle search + trigram fallback. |
-| Quick commands              | `skills/memory-today/`, `memory-yesterday/`, `memory-stats/` + `commands/` | High-frequency shortcuts. |
-| Memory researcher subagent  | `agents/memory-researcher.md`                         | Delegate heavy or multi-step recall work. |
 | Capture system              | `capture/` (workspace `@rivetos/grok-rivet-memory-capture`) + `bin/grok-memory-hook.sh` | Non-blocking capture of turns, tool calls, and pre-compaction messages. Built via root `npm run build`. |
 | MCP launcher                | `bin/rivet-memory-mcp.sh`                             | Clean, consistent way to expose RivetOS memory tools to Grok. |
 | Project reflex              | `GROK.md`                                             | Always-on memory discipline rules (install into your rules). |
@@ -77,23 +76,11 @@ args = ["--stdio"]
 
 Restart Grok or run `/mcps reload` and verify the `memory_*` tools appear.
 
-### 3. Install the Skills
-
-**Recommended (project scope):**
-```bash
-cp -r integrations/grok/rivet-memory/skills/* .grok/skills/
-```
-
-**Global (user scope):**
-```bash
-cp -r integrations/grok/rivet-memory/skills/* ~/.grok/skills/
-```
-
-### 4. (Strongly Recommended) Install the Reflex
+### 3. (Strongly Recommended) Install the Reflex
 
 Copy `GROK.md` into your project rules or global configuration so the memory discipline is active in every session.
 
-### 5. (Optional) Enable Automatic Capture
+### 4. (Optional) Enable Automatic Capture
 
 See the **Capture** section below.
 
@@ -153,7 +140,7 @@ This integration adopts the proven **JSONL-ingest** pattern from
   full structured tool I/O. Idempotency comes from slice-by-count over a
   deterministic parser of an append-only file. See
   [`capture/README.md`](./capture/README.md#architecture-jsonl-ingestion).
-- **Discipline** — The strongest version of the memory-recall rules, with explicit `window=` awareness and pre-compaction sensitivity
+- **Discipline** — The memory-recall rules (now in Rivethub/rstack), with explicit `window=` awareness and pre-compaction sensitivity
 
 This makes Grok sessions first-class citizens in the shared RivetOS memory store.
 
@@ -165,7 +152,6 @@ This makes Grok sessions first-class citizens in the shared RivetOS memory store
 | Capture richness          | Very good               | Excellent (pre-compaction + more) | Good + improving        |
 | Discipline                | Strong                  | Strongest               | Strongest (shared)         |
 | Always-on reflex          | `CLAUDE.md`             | System prompt injection | `GROK.md`                  |
-| Quick commands            | `commands/`             | Tools                   | Skills + `commands/`       |
 | Packaging                 | `.claude-plugin/`       | Python package          | Grok plugin + marketplace  |
 
 ## Installation on a Specific Host
@@ -177,7 +163,7 @@ When setting this up on a specific RivetOS node:
    ```bash
    $RIVETOS_ROOT/integrations/grok/rivet-memory/bin/setup-grok-rivet-memory.sh
    ```
-3. Follow the printed instructions for MCP, skills, `GROK.md`, and capture hooks.
+3. Follow the printed instructions for MCP, `GROK.md`, and capture hooks.
 4. If you want the bin scripts in PATH:
    ```bash
    $RIVETOS_ROOT/integrations/grok/rivet-memory/bin/setup-grok-rivet-memory.sh --link
@@ -200,7 +186,6 @@ This makes the full rivet-memory experience (including capture) available for an
 - Hermes sibling: `../hermes/rivet-memory/`
 - Grok Bot sibling (Cursor agents, `source=grokbot`): `../grok-bot/rivet-memory/`
 - Core memory design: `/docs/MEMORY-DESIGN.md`
-- See the memory-recall skill's made-up morning-window example for why browse-first exists.
 
 ---
 

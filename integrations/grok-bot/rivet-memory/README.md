@@ -21,9 +21,13 @@ There is no bot list and no override file. Only generic env settings
 are configurable. Print the resolved roster with `discover --json` before
 ingesting. Full mesh mTLS join is out of scope.
 
+## Skills moved to Rivethub/rstack
+
+The recall skills (`memory-recall`, `memory-today`, `memory-yesterday`, `memory-stats`) and the `memory-researcher` agent moved to [Rivethub/rstack](https://github.com/Rivethub/rstack). Install them with `npx skills add Rivethub/rstack`. This kit keeps the MCP server and the capture hooks.
+
 ## Install
 
-**Version:** 0.3.0 (Grok Bot capture fidelity: wrapper strip, real timestamps, per-bot tags, system turns, v3 re-clean)
+**Version:** 0.4.0 (Grok Bot capture fidelity: wrapper strip, real timestamps, per-bot tags, system turns, v3 re-clean)
 
 **Strangers** should install the member kit **`rivethub-grokbot`** and run
 `rivetos-onboard` (cloud vs local). This package is the MCP sibling that kit
@@ -31,8 +35,7 @@ launches.
 
 Preferred (house / power user): as a Grok Bot plugin. Add the marketplace `philbert440/rivetOS` in Grok Bot
 (it reads `.cursor-plugin/marketplace.json`) and install `rivet-memory-grokbot`. The plugin
-carries the MCP server (`.mcp.json` via `${CURSOR_PLUGIN_ROOT}`), the memory-recall skill,
-and the reflex rule (`rules/memory-reflex.md`) in one shot. The host still needs a built
+carries the MCP server (`.mcp.json` via `${CURSOR_PLUGIN_ROOT}`) and the reflex rule (`rules/memory-reflex.md`) in one shot. The host still needs a built
 RivetOS checkout (default `/opt/rivetos`, override `RIVETOS_ROOT`).
 
 Launcher read order: **plugin variables first** (`RIVETOS_MODE`, `RIVETOS_DATAHUB_URL`,

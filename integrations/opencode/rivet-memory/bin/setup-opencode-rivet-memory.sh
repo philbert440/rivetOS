@@ -15,7 +15,7 @@
 #             with PLUGIN_PATH rewritten; merge MCP into opencode.json; stop
 #             and remove the old watcher unit/plist if present.
 #   --remove  Delete the copied plugin file.
-#   --force   With --apply, overwrite existing MCP / AGENTS.md / skills.
+#   --force   With --apply, overwrite existing MCP / AGENTS.md.
 #
 set -euo pipefail
 
@@ -178,16 +178,7 @@ cat <<EOF
 EOF
 
 echo
-echo "=== 2. Skills Installation ==="
-cat <<EOF
-
-# Copy skills into the OpenCode config home:
-mkdir -p $OPENCODE_CONFIG_HOME/skills
-cp -r $PLUGIN_PATH/skills/* $OPENCODE_CONFIG_HOME/skills/
-EOF
-
-echo
-echo "=== 3. Memory Discipline Reflex (OPENCODE.md) ==="
+echo "=== 2. Memory Discipline Reflex (OPENCODE.md) ==="
 cat <<EOF
 
 cp $PLUGIN_PATH/OPENCODE.md $OPENCODE_CONFIG_HOME/AGENTS.md
@@ -195,7 +186,7 @@ cp $PLUGIN_PATH/OPENCODE.md $OPENCODE_CONFIG_HOME/AGENTS.md
 EOF
 
 echo
-echo "=== 4. Automatic Capture (OpenCode plugin) ==="
+echo "=== 3. Automatic Capture (OpenCode plugin) ==="
 echo "Copy plugin/rivet-memory.ts into $OPENCODE_CONFIG_HOME/plugins/"
 echo "with PLUGIN_PATH rewritten to $PLUGIN_PATH."
 echo "On session.idle (debounced 1.5s) / compacted / deleted / error the plugin"
@@ -260,14 +251,6 @@ JS
   else
     echo "⚠️  $AGENTS_DEST exists (use --force to overwrite)"
   fi
-
-  mkdir -p "$OPENCODE_CONFIG_HOME/skills"
-  if [ -z "$(ls -A "$OPENCODE_CONFIG_HOME/skills" 2>/dev/null || true)" ] || [ "$DO_FORCE" -eq 1 ]; then
-    cp -r "$PLUGIN_DIR/skills/." "$OPENCODE_CONFIG_HOME/skills/"
-    echo "✅ Copied skills to $OPENCODE_CONFIG_HOME/skills/"
-  else
-    echo "⚠️  $OPENCODE_CONFIG_HOME/skills/ not empty"
-  fi
 fi
 
 if [ "$DO_LINK" -eq 1 ]; then
@@ -281,11 +264,10 @@ fi
 echo
 echo "=== Next Steps ==="
 echo "1. Configure the MCP server ($OPENCODE_CONFIG_HOME/opencode.json)"
-echo "2. Install skills"
-echo "3. Add OPENCODE.md / AGENTS.md reflex"
-echo "4. Confirm $PLUGIN_DEST is present (or re-run with --apply)"
-echo "5. Optional one-shot: opencode-memory-capture.sh --backfill --days 14"
-echo "6. Test with a memory-stats or time-bounded recall question"
+echo "2. Add OPENCODE.md / AGENTS.md reflex"
+echo "3. Confirm $PLUGIN_DEST is present (or re-run with --apply)"
+echo "4. Optional one-shot: opencode-memory-capture.sh --backfill --days 14"
+echo "5. Test with a time-bounded recall question"
 echo
 if [ "${MIGRATION_INCOMPLETE:-0}" -eq 1 ]; then
   echo "⚠️  Setup finished with an INCOMPLETE migration step (see ⚠️ above); the legacy unit was kept for a retry."

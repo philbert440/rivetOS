@@ -6,6 +6,8 @@ description: >-
 ---
 # RivetHub memory (Grok Bot)
 
+Deprecated: RivetHub memory skills now live in Rivethub/rstack.
+
 Same Postgres store every Rivet mesh agent shares.
 
 ## Recall

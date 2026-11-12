@@ -6,22 +6,18 @@ trap 'rm -rf -- "$TMP"' EXIT
 export CURSOR_HOME="$TMP/cursor"
 export KIT TMP
 SETUP="$KIT/bin/setup-cursor-rivet-memory.sh"
-mkdir -p "$CURSOR_HOME/plugins/local" "$CURSOR_HOME/skills" "$TMP/foreign"
+mkdir -p "$CURSOR_HOME/plugins/local" "$TMP/foreign"
 printf 'user edited agent\n' > "$CURSOR_HOME/AGENT.md"
 printf 'user edited memory\n' > "$CURSOR_HOME/MEMORY.md"
 ln -s "$TMP/foreign" "$CURSOR_HOME/plugins/local/rivet-memory-cursor"
-mkdir "$CURSOR_HOME/skills/memory-stats"
-printf keep > "$CURSOR_HOME/skills/memory-stats/SKILL.md"
 python3 - <<'PY'
 import json, os
 from pathlib import Path
 home, kit, tmp = map(Path, (os.environ['CURSOR_HOME'], os.environ['KIT'], os.environ['TMP']))
 old = tmp / 'old checkout/integrations/cursor/rivet-memory'
 (old / 'bin').mkdir(parents=True)
-(old / 'skills/memory-recall').mkdir(parents=True)
 for name in ['rivet-memory-hook.sh', 'rivet-memory-mcp.sh']:
     (old / 'bin' / name).touch()
-(home / 'skills/memory-recall').symlink_to(old / 'skills/memory-recall')
 (tmp / 'hook alias').symlink_to(kit / 'bin/rivet-memory-hook.sh')
 (tmp / 'mcp alias').symlink_to(kit / 'bin/rivet-memory-mcp.sh')
 hooks = [
@@ -63,7 +59,7 @@ grep -q 'Leaving foreign plugin symlink alone' "$TMP/dry.log"
 cmp "$CURSOR_HOME/hooks.json" "$TMP/hooks.before"
 cmp "$CURSOR_HOME/mcp.json" "$TMP/mcp.before"
 [ "$(cat "$CURSOR_HOME/AGENT.md")" = 'user edited agent' ]
-[ ! -e "$CURSOR_HOME/agents" ]
+[ ! -e "$CURSOR_HOME/skills" ] && [ ! -e "$CURSOR_HOME/agents" ]
 
 bash "$SETUP" --apply > "$TMP/apply.log" 2>&1
 python3 - <<'PY'
@@ -95,11 +91,6 @@ for name in ['hooks.json', 'mcp.json']:
     backups = list(home.glob(name + '.bak-*'))
     assert len(backups) == 1 and backups[0].read_bytes() == Path(os.environ['TMP'], name.split('.')[0] + '.before').read_bytes()
     assert stat.S_IMODE(backups[0].stat().st_mode) == 0o640
-assert (home / 'skills/memory-recall').resolve() == kit / 'skills/memory-recall'
-assert (home / 'skills/memory-today').resolve() == kit / 'skills/memory-today'
-assert not (home / 'skills/memory-stats').is_symlink()
-assert (home / 'skills/memory-stats/SKILL.md').read_text() == 'keep'
-assert (home / 'agents/memory-researcher.md').resolve() == kit / 'agents/memory-researcher.md'
 for name, content in [('AGENT.md', 'user edited agent\n'), ('MEMORY.md', 'user edited memory\n')]:
     backups = list(home.glob(name + '.bak-*'))
     assert len(backups) == 1 and backups[0].read_text() == content

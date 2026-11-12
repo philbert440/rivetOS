@@ -65,7 +65,7 @@ if [ "$kind" = npx ] && ! command -v npx >/dev/null 2>&1; then
   exit 127
 fi
 if [ -z "${RIVET_DEN_URL:-}" ] && [ -z "${RIVETOS_PG_URL:-}" ] && [ -z "${RIVETOS_DATAHUB_URL:-}" ] && [ -z "${RIVETOS_CLOUD_TOKEN:-}" ]; then
-  echo "rivet-memory-mcp: no den URL and no DataHub/PG URL — run rivetos-onboard or add ~/.rivetos/.env" >&2
+  echo "rivet-memory-mcp: no den URL and no DataHub/PG URL — run rh doctor or add ~/.rivetos/.env" >&2
 fi
 
 if rivetos_embed_model_missing; then

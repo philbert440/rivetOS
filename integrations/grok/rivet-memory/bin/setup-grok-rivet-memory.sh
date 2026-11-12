@@ -11,7 +11,7 @@
 #
 # It will:
 #   1. Verify RivetOS is built (and that the capture workspace is built)
-#   2. Print exact config snippets for MCP, skills, capture hooks, and GROK.md
+#   2. Print exact config snippets for MCP, capture hooks, and GROK.md
 #   3. Optionally create symlinks for the bin scripts into /usr/local/bin (if run with --link;
 #      this step calls `sudo` and will prompt for your password).
 #
@@ -61,22 +61,9 @@ EOF
 echo
 echo "Then restart Grok or run: /mcps reload"
 
-# 3. Skills
-echo
-echo "=== 2. Skills Installation ==="
-echo "Copy the skills into your Grok skills directory:"
-cat <<EOF
-
-# Project scope (recommended)
-cp -r $PLUGIN_PATH/skills/* .grok/skills/
-
-# Or global
-cp -r $PLUGIN_PATH/skills/* ~/.grok/skills/
-EOF
-
 # 4. Reflex
 echo
-echo "=== 3. Memory Discipline Reflex (GROK.md) ==="
+echo "=== 2. Memory Discipline Reflex (GROK.md) ==="
 echo "Copy GROK.md into your rules so the discipline is always active."
 echo "Grok Build reads ~/.grok/AGENTS.md as the always-on rules file (per the"
 echo "vendor-neutral AGENTS.md convention), so we copy GROK.md to that path:"
@@ -88,7 +75,7 @@ EOF
 
 # 5. Capture (optional but recommended)
 echo
-echo "=== 4. Automatic Capture (Optional but High Value) ==="
+echo "=== 3. Automatic Capture (Optional but High Value) ==="
 echo "To automatically save Grok turns, tool calls, and pre-compaction into memory,"
 echo "drop the example hook file into Grok's hooks directory (~/.grok/hooks/, NOT"
 echo "~/.grok/config.toml — hooks are loaded from JSON files in the hooks dir):"
@@ -108,12 +95,6 @@ echo "remove events you don't want before copying."
 echo
 echo "The capture writes under agent='rivet-grok' and is best-effort (never blocks Grok)."
 
-# 6. Commands (slash commands)
-echo
-echo "=== 5. Quick Commands ==="
-echo "The commands/ directory provides /memory-recall, /memory-today, etc."
-echo "These are available as skills. You can also reference them explicitly."
-
 # 7. Optional symlinks
 if [[ "${1:-}" == "--link" ]]; then
   echo
@@ -127,9 +108,8 @@ fi
 echo
 echo "=== Next Steps ==="
 echo "1. Configure the MCP server in your Grok config"
-echo "2. Copy the skills"
-echo "3. Add GROK.md to your rules"
-echo "4. (Recommended) Wire up the capture hooks"
-echo "5. Test with: /memory-stats or a time-bounded recall question"
+echo "2. Add GROK.md to your rules"
+echo "3. (Recommended) Wire up the capture hooks"
+echo "4. Test with a time-bounded recall question"
 echo
 echo "Done. Memory should now feel dramatically better in Grok sessions."

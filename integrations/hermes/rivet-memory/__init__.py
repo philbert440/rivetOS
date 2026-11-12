@@ -275,7 +275,7 @@ DEFAULT_EMBED_MODEL = "nemotron"
 # Phrases that pin a time window. FTS-on-the-query for these returns
 # relevance-ranked (not chronological) hits and is almost always stale noise
 # — better to skip prefetch entirely and let the agent's own browse handle
-# the window (the system_prompt_block + memory-recall skill point it there).
+# the window (the system_prompt_block points it there).
 # Match as whole-word, case-insensitive.
 _TIME_BOUNDED_PATTERN = re.compile(
     r"(?:^|\W)("
@@ -568,8 +568,7 @@ class RivetMemoryProvider(MemoryProvider):
             "  - `rivet_memory_get_full` — recover the full payload of a row "
             "marked \"⚠ truncated at capture\" in browse output (pass the id "
             "from the hint).\n"
-            "Full discipline lives in the `memory-recall` skill; auto-loads on "
-            "recall cues. Hits may carry any Rivet agent's tag — treat them as "
+            "Hits may carry any Rivet agent's tag — treat them as "
             "first-class unless the user explicitly means \"this Hermes session.\""
         )
 

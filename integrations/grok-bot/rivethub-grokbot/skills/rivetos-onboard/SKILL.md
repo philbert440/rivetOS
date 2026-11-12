@@ -10,6 +10,8 @@ version: 0.1.0
 
 # RivetOS onboard (Grok Bot)
 
+Deprecated: RivetHub memory skills now live in Rivethub/rstack.
+
 Same plugin either way. Mode chooses **where** memory/mesh traffic goes.
 
 ## Before you start

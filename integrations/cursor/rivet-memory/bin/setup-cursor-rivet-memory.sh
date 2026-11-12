@@ -5,8 +5,7 @@
 # Install RivetOS memory into ~/.cursor for Cursor IDE/CLI.
 #
 # Writes global wiring with absolute paths into this kit: hook entries in
-# hooks.json, the rivetos server in mcp.json, skill links in skills/, and the
-# memory-researcher agent link in agents/. Copies AGENT.md/MEMORY.md.
+# hooks.json and the rivetos server in mcp.json. Copies AGENT.md/MEMORY.md.
 # Removes a kit symlink under plugins/local/: Cursor auto-discovers a plugin's
 # hooks and MCP server, so a linked plugin would run them a second time.
 #
@@ -63,13 +62,13 @@ if [ "$DO_APPLY" -ne 1 ]; then
 Dry run (pass --apply to install).
 Will copy AGENT.md/MEMORY.md (backing up user edits), write kit hook entries
 to $CURSOR_HOME/hooks.json and the rivetos server to $CURSOR_HOME/mcp.json,
-link skills and the memory-researcher agent, and unlink a kit plugin symlink.
+and unlink a kit plugin symlink.
 EOF
   exit 0
 fi
 
 umask 077
-mkdir -p "$CURSOR_HOME" "$CURSOR_HOME/skills" "$CURSOR_HOME/agents"
+mkdir -p "$CURSOR_HOME"
 
 for name in AGENT.md MEMORY.md; do
   dest="$CURSOR_HOME/$name"
@@ -90,31 +89,6 @@ if [ -n "$previous_kit" ]; then
   rm -- "$local_plugin"
   echo "Unlinked $local_plugin (global wiring replaces it)"
 fi
-
-# Replace only links that point into a rivet-memory kit; never touch real files.
-link_owned() {
-  local src="$1" dest="$2"
-  if [ -L "$dest" ]; then
-    if ! is_kit_path "$(readlink -f -- "$dest" || true)"; then
-      echo "Skip $dest (foreign symlink)"
-      return
-    fi
-    rm -- "$dest"
-  elif [ -e "$dest" ]; then
-    echo "Skip $dest (exists and is not a kit symlink)"
-    return
-  fi
-  ln -s -- "$src" "$dest"
-  echo "Linked $dest -> $src"
-}
-
-for skill in "$PLUGIN_DIR"/skills/*/; do
-  skill="${skill%/}"
-  link_owned "$skill" "$CURSOR_HOME/skills/$(basename "$skill")"
-done
-for agent in "$PLUGIN_DIR"/agents/*.md; do
-  link_owned "$agent" "$CURSOR_HOME/agents/$(basename "$agent")"
-done
 
 python3 - "$CURSOR_HOME/hooks.json" "$CURSOR_HOME/mcp.json" "$PLUGIN_DIR" <<'PYTHON'
 import json, os, shlex, shutil, sys, tempfile, time

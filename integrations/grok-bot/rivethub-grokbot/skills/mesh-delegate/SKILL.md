@@ -6,6 +6,8 @@ description: >-
 ---
 # RivetHub mesh delegation (Grok Bot)
 
+Deprecated: RivetHub memory skills now live in Rivethub/rstack.
+
 The plugin MCP (`rivetos-memory`) already registers `list_agents` and
 `delegate_task`. Those tools talk to the den task API. There is no other
 handoff path in this kit.

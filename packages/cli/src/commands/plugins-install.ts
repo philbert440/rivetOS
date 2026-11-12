@@ -300,7 +300,7 @@ function stepsFor(h: DetectedHarness, root: string): string[] {
       return [`run ${SETUP_SCRIPTS.codex} --apply`, 'register Codex hooks (hooks.json)']
     case 'hermes':
       return [
-        'sync hermes plugin + memory-recall skill + den hooks',
+        'sync hermes plugin + den hooks',
         h.venv
           ? `pip install -r integrations/hermes/rivet-memory/requirements.txt into ${h.venv}`
           : 'skip pip (no ~/.hermes/hermes-agent/venv)',

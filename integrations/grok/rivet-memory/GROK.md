@@ -17,7 +17,7 @@ This memory contains every meaningful interaction across all Rivet agents (`rive
 0. **Status / "how's things" / "what's in flight"?** → Workboard first.
    - `memory_browse(window="last_24h")` across agents; lead with user/assistant closers.
    - Do **not** lead with `memory_stats`, host uptime, or `workspace/memory/*.md` (those go stale).
-   - Full protocol lives in the `memory-recall` skill (rule 0).
+   - Full protocol lives in the `memory-recall` skill from Rivethub/rstack (rule 0).
 
 1. **Time-bounded question?** → Use `memory_browse` with a `window=` (or explicit date range) **first**.
    - "What did we do this morning / yesterday / today / last week?"
@@ -45,7 +45,7 @@ For most recall tasks:
 4. Otherwise → run 2–3 `memory_search` calls from different angles.
 5. If results are weak → immediately retry with `mode="trigram"`.
 
-The `memory-recall` skill encodes this discipline in detail. Let it activate on past **or** current-status questions.
+The `memory-recall` skill from Rivethub/rstack encodes this discipline in detail. Let it activate on past **or** current-status questions.
 
 ## Cross-Agent Awareness
 

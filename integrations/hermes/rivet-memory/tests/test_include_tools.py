@@ -1,8 +1,8 @@
 """include_tools default for rivet_memory_browse (postgres #546 parity).
 
 Hermes browse previously returned every role=tool row, so a limit=50
-window of a tool-heavy session was unreadable. The memory-recall skill
-already documented the MCP default; the in-process tool did not implement it.
+window of a tool-heavy session was unreadable. The MCP server
+already applied that default; the in-process tool did not implement it.
 """
 
 from __future__ import annotations

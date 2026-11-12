@@ -15,7 +15,7 @@ capture correctness beats everything else.
 Capture is triggered by native Qwen hooks (`UserPromptSubmit`, `Stop`,
 `SessionEnd`) which ingest `~/.qwen/projects/<cwd>/chats/<uuid>.jsonl` from a
 persisted cursor. The default install path is a **qwen extension** (hooks +
-MCP + skills in one unit). `--mode settings` merges the same three hook groups
+MCP in one unit). `--mode settings` merges the same three hook groups
 into `~/.qwen/settings.json` if a node refuses extensions.
 
 ## Goals
@@ -25,12 +25,14 @@ into `~/.qwen/settings.json` if a node refuses extensions.
 - Provide automatic capture of user, assistant, and tool turns from session jsonl.
 - Keep the integration lightweight and idiomatic to Qwen's extension + hooks + MCP model.
 
+## Skills moved to Rivethub/rstack
+
+The recall skills (`memory-recall`, `memory-today`, `memory-yesterday`, `memory-stats`) and the `memory-researcher` agent moved to [Rivethub/rstack](https://github.com/Rivethub/rstack). Install them with `npx skills add Rivethub/rstack`. This kit keeps the MCP server and the capture hooks.
+
 ## What It Ships
 
 | Component             | Location                                                                              | Purpose                                                                |
 | --------------------- | ------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
-| Core discipline skill | `extension/skills/memory-recall/SKILL.md`                                             | Optimal `memory_browse` first + multi-angle search + trigram fallback. |
-| Quick skills          | `extension/skills/memory-today/`, `memory-yesterday/`, `memory-stats/`                | High-frequency shortcuts (slash commands).                             |
 | Capture system        | `capture/` (`@rivetos/qwen-code-rivet-memory-capture`) + `bin/qwen-memory-capture.sh` | Hook ingest under `agent = "rivet-qwen"`.                              |
 | Extension manifest    | `extension/qwen-extension.json` + `extension/hooks/hooks.json`                        | MCP + UserPromptSubmit / Stop / SessionEnd → `--hook`.                 |
 | MCP launcher          | `bin/rivet-memory-mcp.sh`                                                             | Expose RivetOS memory tools to Qwen Code.                              |

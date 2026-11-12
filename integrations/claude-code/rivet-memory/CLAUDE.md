@@ -63,7 +63,7 @@ server). When you lack context, **query memory first** — it is faster than ask
 yesterday", "have we touched this recently"), use `memory_browse` with a date range
 FIRST, not `memory_search` — search is keyword-relevance ranked and can return empty
 across a whole conversation whose vocabulary doesn't match your query. The
-`memory-recall` skill has the full discipline; this is just the reflex.
+`memory-recall` skill from Rivethub/rstack has the full discipline; this is just the reflex.
 
 ## Project Continuity — `AGENT.md`
 

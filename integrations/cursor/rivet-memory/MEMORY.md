@@ -42,4 +42,4 @@ for proof something never happened.
 
 `memory_append` / `memory_ingest_session` are write tools (enabled when the
 Cursor launcher sets `RIVETOS_MCP_ENABLE_MEMORY_WRITE=1`). Full discipline:
-`memory-recall` skill.
+`memory-recall` skill from Rivethub/rstack.

@@ -7,7 +7,7 @@
 2. **Delegation** — landed (`list_agents` + `delegate_task` on the kit MCP)  
 3. **Den** (live session stream for RivetHub / native apps) — parked  
 **Owner (draft):** rivethub-grokbot maintainers · **Requester:** RivetOS
-**Current kit:** `integrations/grok-bot/rivethub-grokbot` **0.2.0** (local prove PASS 2026-09-05)
+**Current kit:** `integrations/grok-bot/rivethub-grokbot` **0.3.0** (local prove PASS 2026-09-05)
 
 ---
 

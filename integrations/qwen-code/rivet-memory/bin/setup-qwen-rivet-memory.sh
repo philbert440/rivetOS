@@ -168,7 +168,7 @@ fi
 echo
 echo "=== Automatic Capture ==="
 echo "Events: UserPromptSubmit, Stop, SessionEnd → $PLUGIN_BIN/$HOOK_MARKER --hook"
-echo "Default: qwen extension at $EXT_INSTALLED (hooks + MCP + skills)."
+echo "Default: qwen extension at $EXT_INSTALLED (hooks + MCP)."
 echo "Fallback: --mode settings merges the same three hook groups into $USER_SETTINGS."
 echo "One-shot history: $PLUGIN_BIN/qwen-memory-capture.sh --backfill [--days N]"
 echo "Status:           $PLUGIN_BIN/qwen-memory-capture.sh --status"
@@ -237,10 +237,9 @@ bash "$PLUGIN_BIN/qwen-memory-capture.sh" --stamp-installed 2>/dev/null | tail -
 
 echo
 echo "=== Next Steps ==="
-echo "1. Skills ship inside the extension (slash commands /memory-recall etc.)"
-echo "2. MCP server is declared in extension/qwen-extension.json"
-echo "3. Optional: $PLUGIN_BIN/qwen-memory-capture.sh --backfill"
-echo "4. Optional: $0 --disable-auto-memory"
-echo "5. Test with a memory-stats or time-bounded recall question"
+echo "1. MCP server is declared in extension/qwen-extension.json"
+echo "2. Optional: $PLUGIN_BIN/qwen-memory-capture.sh --backfill"
+echo "3. Optional: $0 --disable-auto-memory"
+echo "4. Test with a time-bounded recall question"
 echo
 echo "Done. Memory should now feel dramatically better in Qwen Code sessions."

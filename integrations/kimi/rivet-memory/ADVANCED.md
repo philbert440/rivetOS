@@ -14,7 +14,7 @@ When available on the MCP server, prefer the `window=` parameter on `memory_brow
 
 This is significantly better than manually calculating `since`/`before` because it correctly handles local timezone boundaries.
 
-The `memory-recall` skill is written to take advantage of this when the server supports it.
+The `memory-recall` skill (Rivethub/rstack) is written to take advantage of this when the server supports it.
 
 ## Pre-Compaction Capture
 
@@ -39,4 +39,4 @@ While the primary use is recall, you can (and should) write important context in
 memory when the user corrects you or when you discover durable facts through external
 tools. Good memory entries survive model changes and long gaps between sessions.
 
-See the `memory-recall` skill for patterns around synonym-bridging entries.
+See the `memory-recall` skill (Rivethub/rstack) for patterns around synonym-bridging entries.
