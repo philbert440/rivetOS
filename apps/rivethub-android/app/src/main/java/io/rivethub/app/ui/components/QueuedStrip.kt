@@ -67,3 +67,44 @@ fun QueuedStrip(
         }
     }
 }
+
+/**
+ * Who holds the session, when it is the terminal (plane/SessionDriver.kt,
+ * rh contract note 79), and the chat messages rh holds for it. Read-only:
+ * rh runs them when the terminal's turn ends.
+ */
+@Composable
+fun DriverStripView(driver: io.rivethub.app.plane.DriverState?, modifier: Modifier = Modifier) {
+    val strip = io.rivethub.app.plane.driverStrip(driver)
+    val waiting = driver?.queued.orEmpty()
+    if (strip == null && waiting.isEmpty()) return
+    val colors = RivetTheme.colors
+    Column(
+        modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 4.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        if (strip != null) {
+            Text(
+                stringResource(
+                    when (strip) {
+                        io.rivethub.app.plane.DriverStrip.TerminalWorking -> R.string.driver_terminal_working
+                        io.rivethub.app.plane.DriverStrip.TerminalIdle -> R.string.driver_terminal_idle
+                    },
+                ),
+                color = colors.inkDim,
+                style = RivetType.xs,
+            )
+        }
+        waiting.forEach { text ->
+            Text(
+                stringResource(R.string.driver_waiting, text),
+                color = colors.inkDim,
+                style = RivetType.xs,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}

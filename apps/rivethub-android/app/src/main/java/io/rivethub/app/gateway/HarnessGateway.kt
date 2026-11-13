@@ -239,6 +239,149 @@ class HarnessGateway(
             }
         }
 
+    /**
+     * POST /api/sessions/delete with up to [SESSION_DELETE_BATCH_MAX] canonical
+     * ids. A per-session failure (live, not found) comes back in its result,
+     * never as a thrown error. A gateway without the route throws
+     * [SessionDeleteUnsupported].
+     */
+    suspend fun deleteSessions(ids: List<String>): SessionsDeleteResponse =
+        withContext(Dispatchers.IO) {
+            require(ids.size in 1..SESSION_DELETE_BATCH_MAX) { "1..$SESSION_DELETE_BATCH_MAX ids per request" }
+            val body = wireJson.encodeToString(SessionsDeleteRequest.serializer(), SessionsDeleteRequest(ids))
+                .toRequestBody("application/json".toMediaType())
+            val req = Request.Builder().url(url(listOf("api", "sessions", "delete"))).post(body).build()
+            withClients { c ->
+                c.newCall(req).execute().use { res ->
+                    val text = res.body.string()
+                    if (res.code in UNSUPPORTED_ROUTE_STATUS) throw SessionDeleteUnsupported(res.code)
+                    if (!res.isSuccessful) throw GatewayException(res.code, errorText(res, text))
+                    wireJson.decodeFromString(SessionsDeleteResponse.serializer(), text)
+                }
+            }
+        }
+
+    /**
+     * PUT /api/sessions/{enc}/keep (no body, 204): the user kept [session] when
+     * the clean-up review offered it, so the trash read leaves it out until it
+     * is used again. A gateway without the route throws [SessionDeleteUnsupported]
+     * on 405/501; a 404 is the session (or the route) not being there.
+     */
+    suspend fun keepSession(session: String): Unit =
+        withContext(Dispatchers.IO) {
+            val req = Request.Builder()
+                .url(url(listOf("api", "sessions", sessionKeyEnc(session), "keep")))
+                .put(ByteArray(0).toRequestBody(null))
+                .build()
+            withClients { c ->
+                c.newCall(req).execute().use { res ->
+                    val text = res.body.string()
+                    if (res.code == 405 || res.code == 501) throw SessionDeleteUnsupported(res.code)
+                    if (!res.isSuccessful) throw GatewayException(res.code, errorText(res, text))
+                }
+            }
+        }
+
+    // -- Topics (gateway/TopicsWire.kt). The entry node answers for the whole datahub. --
+
+    /** One JSON call; [ser] null = no body read. 404/405/501 on [unsupportedOn] routes throw [TopicsUnsupported]. */
+    private suspend fun <T> topicsCall(
+        req: Request,
+        ser: KSerializer<T>?,
+        unsupportedOn: Boolean = false,
+    ): T? = withContext(Dispatchers.IO) {
+        withClients { c ->
+            c.newCall(req).execute().use { res ->
+                val text = res.body.string()
+                if (unsupportedOn && res.code in UNSUPPORTED_ROUTE_STATUS) throw TopicsUnsupported(res.code)
+                if (!res.isSuccessful) throw GatewayException(res.code, errorText(res, text))
+                ser?.let { wireJson.decodeFromString(it, text) }
+            }
+        }
+    }
+
+    private fun jsonBody(text: String) = text.toRequestBody("application/json".toMediaType())
+
+    /** GET /api/topics — the work topics. [TopicsUnsupported] on a gateway without them. */
+    suspend fun listTopics(): List<TopicSummary> =
+        topicsCall(Request.Builder().url(url(listOf("api", "topics"))).get().build(), TopicList.serializer(), unsupportedOn = true)!!
+            .topics.filter { it.kind == "work" }
+
+    /** GET /api/topics/filing — every filed session at once. */
+    suspend fun topicFiling(): List<TopicSession> = filing().sessions
+
+    suspend fun createTopic(name: String, parent: String? = null): TopicSummary {
+        val body = wireJson.encodeToString(TopicCreateRequest.serializer(), TopicCreateRequest(name, parent))
+        return topicsCall(Request.Builder().url(url(listOf("api", "topics"))).post(jsonBody(body)).build(), TopicSummary.serializer())!!
+    }
+
+    suspend fun renameTopic(id: String, name: String) {
+        val body = wireJson.encodeToString(TopicRename.serializer(), TopicRename(name))
+        topicsCall<Unit>(Request.Builder().url(url(listOf("api", "topics", id))).patch(jsonBody(body)).build(), null)
+    }
+
+    /** 409 when the topic has subtopics; its sessions go back to unfiled. */
+    suspend fun deleteTopic(id: String) {
+        topicsCall<Unit>(Request.Builder().url(url(listOf("api", "topics", id))).delete().build(), null)
+    }
+
+    /** File [session] (canonical id) under [topicId]; replaces any earlier placement. */
+    suspend fun placeSession(session: String, topicId: String) {
+        val body = wireJson.encodeToString(PlacementRequest.serializer(), PlacementRequest(topicId))
+        topicsCall<Unit>(
+            Request.Builder().url(url(listOf("api", "sessions", sessionKeyEnc(session), "placement"))).put(jsonBody(body)).build(),
+            null,
+        )
+    }
+
+    suspend fun unplaceSession(session: String) {
+        topicsCall<Unit>(Request.Builder().url(url(listOf("api", "sessions", sessionKeyEnc(session), "placement"))).delete().build(), null)
+    }
+
+    /** GET /api/topics/filing, whole: filed sessions and the history marks. */
+    suspend fun filing(): TopicFiling =
+        topicsCall(Request.Builder().url(url(listOf("api", "topics", "filing"))).get().build(), TopicFiling.serializer(), unsupportedOn = true)!!
+
+    /** Mark [session] as history (the archive desktop shows); a session used after the mark is active again. */
+    suspend fun markHistory(session: String) {
+        topicsCall<Unit>(Request.Builder().url(url(listOf("api", "sessions", sessionKeyEnc(session), "history"))).put(ByteArray(0).toRequestBody(null)).build(), null)
+    }
+
+    suspend fun unmarkHistory(session: String) {
+        topicsCall<Unit>(Request.Builder().url(url(listOf("api", "sessions", sessionKeyEnc(session), "history"))).delete().build(), null)
+    }
+
+    /**
+     * PUT /api/harness-sessions/{enc}/title on the session's own node: the
+     * name every client shows. A gateway without the route throws
+     * [TopicsUnsupported] (404/405/501), so the caller keeps the name local.
+     */
+    suspend fun retitle(session: String, title: String): HarnessSessionSummary {
+        val body = wireJson.encodeToString(SessionRetitle.serializer(), SessionRetitle(title))
+        return topicsCall(
+            Request.Builder().url(url(listOf("api", "harness-sessions", sessionKeyEnc(session), "title"))).put(jsonBody(body)).build(),
+            HarnessSessionSummary.serializer(),
+            unsupportedOn = true,
+        )!!
+    }
+
+    /** GET /api/sessions/trash — the node's clean-up candidates. [SessionDeleteUnsupported] on an older gateway. */
+    suspend fun trashSessions(): List<SessionTrashCandidate> =
+        withContext(Dispatchers.IO) {
+            val req = Request.Builder().url(url(listOf("api", "sessions", "trash"))).get().build()
+            withClients { c ->
+                c.newCall(req).execute().use { res ->
+                    val text = res.body.string()
+                    if (res.code in UNSUPPORTED_ROUTE_STATUS) throw SessionDeleteUnsupported(res.code)
+                    if (!res.isSuccessful) throw GatewayException(res.code, errorText(res, text))
+                    // An older router may answer this path with some other 200 body.
+                    runCatching { wireJson.decodeFromString(SessionTrashResponse.serializer(), text) }
+                        .getOrNull()?.candidates
+                        ?: throw SessionDeleteUnsupported(res.code)
+                }
+            }
+        }
+
     /** POST /api/harness-sessions/{enc}/prompts/{promptId} — answer an AskUser prompt. */
     suspend fun answerPrompt(enc: String, promptId: String, answers: List<HarnessPromptAnswer>): HarnessTurnAccepted =
         withContext(Dispatchers.IO) {

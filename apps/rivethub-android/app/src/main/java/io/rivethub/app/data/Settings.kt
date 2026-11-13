@@ -89,6 +89,12 @@ data class Prefs(
     /** Session key → project id. */
     val projectMembership: Map<String, String> = emptyMap(),
     val defaultProjectId: String = "",
+    /**
+     * Topic placements waiting to reach rh (plane/Topics.kt planPlacements):
+     * session key → topic id, for a draft started in a topic or a migrated
+     * project's session. Phone-only: hub state never carries it.
+     */
+    val pendingPlacements: Map<String, String> = emptyMap(),
 )
 
 class Settings(context: Context) {
@@ -138,6 +144,7 @@ class Settings(context: Context) {
             projects = decodeProjects(p[PROJECTS]),
             projectMembership = decodeMap(p[MEMBERSHIP]),
             defaultProjectId = p[DEFAULT_PROJECT] ?: "",
+            pendingPlacements = decodeMap(p[PENDING_PLACEMENTS]),
         )
     }
 
@@ -237,11 +244,51 @@ class Settings(context: Context) {
         val (nextPinned, nextHidden) = migrateLocalPrefs(pinned, hidden, from, to)
         if (nextPinned != pinned) it[PINNED] = nextPinned
         if (nextHidden != hidden) it[HIDDEN] = nextHidden
+        // A draft started in a topic is filed once the den adopts it.
+        val pending = decodeMap(it[PENDING_PLACEMENTS])
+        val topic = pending[from]
+        if (topic != null && from != to && to.isNotBlank()) {
+            it[PENDING_PLACEMENTS] = encodeMap(pending - from + (to to topic))
+        }
         // A draft started inside a project stays in it once the den adopts it.
         val membership = decodeMap(it[MEMBERSHIP])
         val project = membership[from]
         if (project != null && from != to && to.isNotBlank()) {
             it[MEMBERSHIP] = encodeMap(if (membership[to] != null) membership - from else membership - from + (to to project))
+        }
+    }
+
+    /**
+     * The node deleted these sessions: drop every local trace under each of
+     * [keys] (canonical and native ids alike) in ONE edit — name, archive,
+     * pin, hide, view mode, turn pick, project placement and the resume
+     * pointer — so nothing brings the row back. Hub state then syncs the
+     * removals to desktop.
+     */
+    suspend fun forgetSessions(keys: Set<String>) = ds.edit {
+        if (keys.isEmpty()) return@edit
+        fun dropKeys(k: Preferences.Key<String>) {
+            val cur = decodeMap(it[k])
+            val next = cur - keys
+            if (next.size != cur.size) it[k] = encodeMap(next)
+        }
+        fun dropFrom(k: Preferences.Key<Set<String>>) {
+            val cur = it[k] ?: return
+            val next = cur - keys
+            if (next.size != cur.size) it[k] = next
+        }
+        dropKeys(TITLES)
+        dropKeys(SESSION_MODES)
+        dropKeys(TURN_PICKS)
+        dropKeys(MEMBERSHIP)
+        dropKeys(PENDING_PLACEMENTS)
+        dropFrom(ARCHIVED)
+        dropFrom(PINNED)
+        dropFrom(HIDDEN)
+        if (it[LAST_SESSION_KEY] in keys) {
+            it.remove(LAST_SESSION_KEY)
+            it.remove(LAST_SESSION_NODE)
+            it.remove(LAST_SESSION_AT)
         }
     }
 
@@ -253,6 +300,31 @@ class Settings(context: Context) {
         it[PROJECTS] = encodeProjects(next.projects)
         it[MEMBERSHIP] = encodeMap(next.membership)
         it[DEFAULT_PROJECT] = next.defaultProjectId
+    }
+
+    /** File [key] under [topicId] once it is a session ([topicId] null forgets it). */
+    suspend fun setPendingPlacement(key: String, topicId: String?) = ds.edit {
+        val cur = decodeMap(it[PENDING_PLACEMENTS])
+        val next = if (topicId == null) cur - key else cur + (key to topicId)
+        if (next != cur) it[PENDING_PLACEMENTS] = encodeMap(next)
+    }
+
+    suspend fun dropPendingPlacements(keys: Set<String>) = ds.edit {
+        val cur = decodeMap(it[PENDING_PLACEMENTS])
+        val next = cur - keys
+        if (next.size != cur.size) it[PENDING_PLACEMENTS] = encodeMap(next)
+    }
+
+    /**
+     * Projects moved to topics: in ONE edit, clear the hub-state projects and
+     * membership (hub state then drops them for every device) and queue their
+     * sessions' placements.
+     */
+    suspend fun finishProjectMigration(placements: Map<String, String>) = ds.edit {
+        it[PROJECTS] = encodeProjects(emptyList())
+        it[MEMBERSHIP] = encodeMap(emptyMap())
+        it[DEFAULT_PROJECT] = ""
+        it[PENDING_PLACEMENTS] = encodeMap(decodeMap(it[PENDING_PLACEMENTS]) + placements)
     }
 
     suspend fun setTitleOverride(key: String, title: String) = ds.edit {
@@ -356,6 +428,7 @@ class Settings(context: Context) {
         private val PROJECTS = stringPreferencesKey("projects")
         private val MEMBERSHIP = stringPreferencesKey("projectMembership")
         private val DEFAULT_PROJECT = stringPreferencesKey("defaultProjectId")
+        private val PENDING_PLACEMENTS = stringPreferencesKey("pendingTopicPlacements")
 
         private val mapSer = MapSerializer(String.serializer(), String.serializer())
         private val longMapSer = MapSerializer(String.serializer(), Long.serializer())

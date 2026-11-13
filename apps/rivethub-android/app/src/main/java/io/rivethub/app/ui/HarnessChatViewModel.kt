@@ -235,6 +235,8 @@ class HarnessChatViewModel(
         val askError: String? = null,
         val approval: PendingApproval? = null,
         val queued: List<OutboundItem> = emptyList(),
+        /** Who holds the session and what rh queues (plane/SessionDriver.kt); null until rh says. */
+        val driver: io.rivethub.app.plane.DriverState? = null,
         val agentStatusText: String? = null,
         val composer: String = "",
         val attachments: List<PendingAttachment> = emptyList(),
@@ -1476,6 +1478,17 @@ class HarnessChatViewModel(
                             is HarnessEvent.ApprovalResolved -> {
                                 if (_state.value.approval?.requestId == e.requestId) {
                                     _state.update { it.copy(approval = null) }
+                                }
+                            }
+                            is HarnessEvent.Driver -> {
+                                val prev = _state.value.driver
+                                val next = io.rivethub.app.plane.DriverState(e.holder, e.busy, e.queued)
+                                _state.update { it.copy(driver = next) }
+                                if (io.rivethub.app.plane.driverEndsTurn(prev, next, machine.inFlight)) {
+                                    // rh says the turn ended; its end frame never reached us.
+                                    machineAttach.onFrame(HarnessEvent.TurnComplete(e.sessionId, null, "driver"))
+                                    updateLedger { it.fileSpan(clock()) }
+                                    runCatching { pump.onTurnComplete() }
                                 }
                             }
                             is HarnessEvent.TurnComplete -> {

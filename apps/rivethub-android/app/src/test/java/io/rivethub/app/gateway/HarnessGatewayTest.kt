@@ -304,4 +304,161 @@ class HarnessGatewayTest {
         val gw = HarnessGateway(client { error("no") }, base)
         assertTrue(gw.sessionWatchUrl(pathEnc).contains("session=$pathEnc"))
     }
+
+    @Test fun `deleteSessions posts the ids and keeps per-item failures`() = runBlocking {
+        withTimeout(2_000) {
+            val seen = CopyOnWriteArrayList<String>()
+            val bodies = CopyOnWriteArrayList<String>()
+            val gw = HarnessGateway(
+                client { req ->
+                    seen += "${req.method} ${req.url.encodedPath}"
+                    val buf = okio.Buffer()
+                    req.body?.writeTo(buf)
+                    bodies += buf.readUtf8()
+                    json(req, 200, """{"results":[{"session":"$sid","ok":true,"conversations":1,"messages":4,"summaries":0},{"session":"codex:x","ok":false,"error":"session is live"}]}""")
+                },
+                base,
+            )
+            val res = gw.deleteSessions(listOf(sid, "codex:x"))
+            assertEquals("POST /api/sessions/delete", seen.single())
+            assertEquals("""{"sessions":["$sid","codex:x"]}""", bodies.single())
+            assertTrue(res.results[0].ok)
+            assertEquals("session is live", res.results[1].error)
+        }
+    }
+
+    @Test fun `delete routes missing on an older gateway are typed`() = runBlocking {
+        withTimeout(2_000) {
+            val gw = HarnessGateway(client { req -> json(req, 404, """{"error":"not found"}""") }, base)
+            val del = runCatching { gw.deleteSessions(listOf(sid)) }.exceptionOrNull()
+            assertTrue(del is SessionDeleteUnsupported)
+            val trash = runCatching { gw.trashSessions() }.exceptionOrNull()
+            assertTrue(trash is SessionDeleteUnsupported)
+        }
+    }
+
+    @Test fun `trashSessions reads candidates and rejects another 200 shape`() = runBlocking {
+        withTimeout(2_000) {
+            val ok = HarnessGateway(
+                client { req ->
+                    assertEquals("GET", req.method)
+                    assertTrue(req.url.encodedPath.endsWith("/api/sessions/trash"))
+                    json(req, 200, """{"candidates":[{"session":"$sid","harness":"claude-code","title":null,"updatedAt":"2026-10-01T00:00:00Z","reason":"empty","userTurns":0,"reply":null}]}""")
+                },
+                base,
+            )
+            val rows = ok.trashSessions()
+            assertEquals(sid, rows.single().session)
+            assertEquals("empty", rows.single().reason)
+            val odd = HarnessGateway(client { req -> json(req, 200, """{"session":{"id":"x"}}""") }, base)
+            assertTrue(runCatching { odd.trashSessions() }.exceptionOrNull() is SessionDeleteUnsupported)
+        }
+    }
+
+    @Test fun `keepSession puts the encoded id with no body and types an older gateway`() = runBlocking {
+        withTimeout(2_000) {
+            val seen = CopyOnWriteArrayList<String>()
+            val gw = HarnessGateway(
+                client { req ->
+                    seen += "${req.method} ${req.url.encodedPath} ${req.body?.contentLength()}"
+                    Response.Builder().request(req).protocol(Protocol.HTTP_1_1).code(204).message("No Content")
+                        .body("".toResponseBody(null)).build()
+                },
+                base,
+            )
+            gw.keepSession(sid)
+            assertEquals("PUT /api/sessions/$enc/keep 0", seen.single())
+            val old = HarnessGateway(client { req -> json(req, 405, """{"error":"method not allowed"}""") }, base)
+            assertTrue(runCatching { old.keepSession(sid) }.exceptionOrNull() is SessionDeleteUnsupported)
+            val gone = HarnessGateway(client { req -> json(req, 404, """{"error":"not found"}""") }, base)
+            assertEquals(404, (runCatching { gone.keepSession(sid) }.exceptionOrNull() as GatewayException).status)
+        }
+    }
+
+    @Test fun `topics read work topics and filings, and a gateway without them is typed`() = runBlocking {
+        withTimeout(2_000) {
+            val gw = HarnessGateway(
+                client { req ->
+                    when (req.url.encodedPath) {
+                        "/api/topics" -> json(req, 200, """{"topics":[{"id":"t1","kind":"work","slug":"android","name":"Android","aliases":[],"createdAt":1,"updatedAt":2,"sessionCount":3,"lastActive":4},{"id":"ty","kind":"type","slug":"people","name":"People","aliases":[],"createdAt":1,"updatedAt":1,"sessionCount":0}]}""")
+                        "/api/topics/filing" -> json(req, 200, """{"sessions":[{"sessionId":"$sid","topicId":"t1","by":"you","at":5,"title":"x"}],"conversations":[],"history":{"sessions":[]}}""")
+                        else -> json(req, 500, "{}")
+                    }
+                },
+                base,
+            )
+            assertEquals(listOf("t1"), gw.listTopics().map { it.id })
+            assertEquals("t1", gw.topicFiling().single().topicId)
+            val old = HarnessGateway(client { req -> json(req, 404, """{"error":"not found"}""") }, base)
+            assertTrue(runCatching { old.listTopics() }.exceptionOrNull() is TopicsUnsupported)
+        }
+    }
+
+    @Test fun `topic changes use the contract's methods and bodies`() = runBlocking {
+        withTimeout(2_000) {
+            val seen = CopyOnWriteArrayList<String>()
+            val gw = HarnessGateway(
+                client { req ->
+                    val buf = okio.Buffer()
+                    req.body?.writeTo(buf)
+                    seen += "${req.method} ${req.url.encodedPath} ${buf.readUtf8()}"
+                    if (req.method == "POST") {
+                        json(req, 201, """{"id":"t9","kind":"work","slug":"new","name":"New","aliases":[],"createdAt":1,"updatedAt":1,"sessionCount":0}""")
+                    } else {
+                        json(req, 200, """{"placement":null}""")
+                    }
+                },
+                base,
+            )
+            assertEquals("t9", gw.createTopic("New").id)
+            gw.renameTopic("t9", "Renamed")
+            gw.placeSession(sid, "t9")
+            gw.unplaceSession(sid)
+            gw.deleteTopic("t9")
+            assertEquals(
+                listOf(
+                    """POST /api/topics {"name":"New"}""",
+                    """PATCH /api/topics/t9 {"name":"Renamed"}""",
+                    """PUT /api/sessions/$enc/placement {"topicId":"t9"}""",
+                    "DELETE /api/sessions/$enc/placement ",
+                    "DELETE /api/topics/t9 ",
+                ),
+                seen,
+            )
+        }
+    }
+
+    @Test fun `history marks read from either filing shape, and title and history use their routes`() = runBlocking {
+        withTimeout(2_000) {
+            assertEquals(1, historyMarksOf(wireJson.parseToJsonElement("""[{"sessionId":"$sid","markedAt":5}]""")).size)
+            assertEquals(5L, historyMarksOf(wireJson.parseToJsonElement("""{"sessions":[{"sessionId":"$sid","markedAt":5}]}""")).single().markedAt)
+            val seen = CopyOnWriteArrayList<String>()
+            val gw = HarnessGateway(
+                client { req ->
+                    val buf = okio.Buffer()
+                    req.body?.writeTo(buf)
+                    seen += "${req.method} ${req.url.encodedPath} ${buf.readUtf8()}"
+                    if (req.url.encodedPath.endsWith("/title")) {
+                        json(req, 200, """{"sessionId":"$sid","harnessId":"claude-code","title":"New name"}""")
+                    } else {
+                        json(req, 200, """{"sessionId":"$sid","markedAt":5}""")
+                    }
+                },
+                base,
+            )
+            assertEquals("New name", gw.retitle(sid, "New name").title)
+            gw.markHistory(sid)
+            gw.unmarkHistory(sid)
+            assertEquals(
+                listOf(
+                    """PUT /api/harness-sessions/$enc/title {"title":"New name"}""",
+                    "PUT /api/sessions/$enc/history ",
+                    "DELETE /api/sessions/$enc/history ",
+                ),
+                seen,
+            )
+            val old = HarnessGateway(client { req -> json(req, 404, """{"error":"not found"}""") }, base)
+            assertTrue(runCatching { old.retitle(sid, "x") }.exceptionOrNull() is TopicsUnsupported)
+        }
+    }
 }

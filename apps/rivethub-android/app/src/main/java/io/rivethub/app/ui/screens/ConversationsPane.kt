@@ -147,8 +147,9 @@ fun ConversationsPane(
     )
     // Projects (hub state): rows filed under a project show in its block, not
     // in the dated sections below it.
-    val projects = st.prefs.projects
-    val membership = st.prefs.projectMembership
+    // rh topics when the entry node has them, else the hub-state projects (plane/Topics.kt).
+    val projects = st.drawerProjects
+    val membership = st.drawerMembership
     val projectSecs = remember(projects, membership, lists.live) { projectSections(projects, membership, lists.live) }
     val datedLive = remember(projects, membership, lists.live) { rowsOutsideProjects(lists.live, projects, membership) }
     var folded by remember { mutableStateOf(setOf<String>()) }
@@ -194,8 +195,27 @@ fun ConversationsPane(
     var projectMenuTarget by remember { mutableStateOf<HubProject?>(null) }
     var projectDeleteTarget by remember { mutableStateOf<HubProject?>(null) }
     var projectMoveTarget by remember { mutableStateOf<LocatedChatItem?>(null) }
+    // Delete + clean up (plane/SessionDelete.kt): select mode picks rows by
+    // key; a confirm holds the rows it would delete until it resolves.
+    var selecting by remember { mutableStateOf(false) }
+    var selected by remember { mutableStateOf(mapOf<String, LocatedChatItem>()) }
+    var deleteConfirm by remember { mutableStateOf<List<LocatedChatItem>?>(null) }
+    var cleanupOpen by remember { mutableStateOf(false) }
+    val deleteNotice = rememberDeleteNotice()
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
+    val topicSubtopics = stringResource(R.string.topic_has_subtopics)
+    val topicFailed = stringResource(R.string.topic_change_failed)
+    LaunchedEffect(vm) {
+        vm.topicNotices.collect { n ->
+            snackbar.showSnackbar(
+                when (n) {
+                    HubViewModel.TopicNotice.HasSubtopics -> topicSubtopics
+                    is HubViewModel.TopicNotice.Failed -> topicFailed.format(n.detail)
+                },
+            )
+        }
+    }
     val noAgentsHint = stringResource(R.string.no_agents_hint)
     val liveCount = lists.live.size
     val empty = conversationEmptyKind(
@@ -216,6 +236,35 @@ fun ConversationsPane(
             open != null -> onOpenChat(open)
             st.agents.isEmpty() -> scope.launch { snackbar.showSnackbar(noAgentsHint) }
             else -> pickerProject = project
+        }
+    }
+    // Select mode: a tap toggles a deletable row instead of opening it.
+    val tapRow: (LocatedChatItem, () -> Unit) -> () -> Unit = { row, open ->
+        {
+            if (!selecting) {
+                open()
+            } else if (vm.deleteTargetOf(row) != null) {
+                val k = row.item.key
+                selected = if (k in selected) selected - k else selected + (k to row)
+            }
+        }
+    }
+    val markFor: (LocatedChatItem) -> (@Composable () -> Unit)? = { row ->
+        if (!selecting) null else {
+            { SelectMark(row.item.key in selected, enabled = vm.deleteTargetOf(row) != null) }
+        }
+    }
+    val runDelete: (List<LocatedChatItem>) -> Unit = { rows ->
+        val targets = rows.mapNotNull { vm.deleteTargetOf(it) }
+        val labelBy = rows.mapNotNull { r ->
+            vm.deleteTargetOf(r)?.let { it.session to displayTitle(r.item, st.titleOverrides) }
+        }.toMap()
+        vm.deleteSessions(targets) { outcome ->
+            val deletedKeys = rows.filter { vm.deleteTargetOf(it)?.session in outcome.deleted }.map { it.item.key }
+            selected = selected - deletedKeys.toSet()
+            if (selected.isEmpty()) selecting = false
+            val text = deleteNotice(outcome) { labelBy[it] ?: it }
+            if (text.isNotBlank()) scope.launch { snackbar.showSnackbar(text) }
         }
     }
     // An archived open conversation is only reachable with the block open.
@@ -304,6 +353,17 @@ fun ConversationsPane(
                 },
             )
         }
+        DeleteToolbar(
+            selecting = selecting,
+            selectedCount = selected.size,
+            onSelect = { selecting = true },
+            onCleanUp = { cleanupOpen = true },
+            onDeleteSelected = { deleteConfirm = selected.values.toList() },
+            onCancel = {
+                selecting = false
+                selected = emptyMap()
+            },
+        )
         // Needs you (plane/NeedsYou.kt): each tap opens the next waiting
         // conversation, oldest first, cycling from the one on screen.
         if (st.needsYou.isNotEmpty()) {
@@ -383,11 +443,13 @@ fun ConversationsPane(
                                     ConversationRowChrome(
                                         title = title,
                                         accent = rivetHexColor(hex),
-                                        onOpen = { onOpenRow(row) },
+                                        onOpen = tapRow(row) { onOpenRow(row) },
                                         onArchive = { vm.archive(row.item.key) },
-                                        onLong = { menuTarget = row },
+                                        onLong = { if (!selecting) menuTarget = row },
                                         rowKey = "proj-$id-${row.item.key}",
-                                        active = row.item.key == activeKey,
+                                        active = if (selecting) row.item.key in selected else row.item.key == activeKey,
+                                        swipeEnabled = !selecting,
+                                        leading = markFor(row),
                                         status = rowStatus(row),
                                         harness = rowPillText(row.item.model, null, row.item.harnessId),
                                         pill = true,
@@ -411,11 +473,13 @@ fun ConversationsPane(
                                 ConversationRowChrome(
                                     title = title,
                                     accent = rivetHexColor(hex),
-                                    onOpen = { onOpenRow(row) },
+                                    onOpen = tapRow(row) { onOpenRow(row) },
                                     onArchive = { vm.archive(row.item.key) },
-                                    onLong = { menuTarget = row },
+                                    onLong = { if (!selecting) menuTarget = row },
                                     rowKey = row.item.key,
-                                    active = row.item.key == activeKey,
+                                    active = if (selecting) row.item.key in selected else row.item.key == activeKey,
+                                    swipeEnabled = !selecting,
+                                    leading = markFor(row),
                                     status = rowStatus(row),
                                     harness = rowPillText(row.item.model, null, row.item.harnessId),
                                     pill = true,
@@ -432,11 +496,13 @@ fun ConversationsPane(
                                 ConversationRowChrome(
                                     title = title,
                                     accent = rivetHexColor(hex),
-                                    onOpen = { vm.unarchive(row.item.key); onOpenRow(row) },
+                                    onOpen = tapRow(row) { vm.unarchive(row.item.key); onOpenRow(row) },
                                     onArchive = { vm.unarchive(row.item.key) },
-                                    onLong = { menuTarget = row },
+                                    onLong = { if (!selecting) menuTarget = row },
                                     rowKey = "arch-${row.item.key}",
-                                    active = row.item.key == activeKey,
+                                    active = if (selecting) row.item.key in selected else row.item.key == activeKey,
+                                    swipeEnabled = !selecting,
+                                    leading = markFor(row),
                                     archived = true,
                                     harness = rowPillText(row.item.model, null, row.item.harnessId),
                                     pill = true,
@@ -526,6 +592,7 @@ fun ConversationsPane(
             draft = isDraftRow(target.item, st.agents.mapNotNull { it.pointerSessionId }),
             agentCount = st.agents.size,
             projectCount = projects.size,
+            deletable = vm.deleteTargetOf(target) != null,
         )
         ConversationMenuSheet(
             title = displayTitle(target.item, st.titleOverrides),
@@ -551,6 +618,7 @@ fun ConversationsPane(
                         target.item.sessionId?.takeIf { it != key }?.let(vm::unarchive)
                     }
                     ConversationAction.Hide -> hideTarget = target
+                    ConversationAction.Delete -> deleteConfirm = listOf(target)
                     ConversationAction.DiscardDraft -> discardTarget = target
                 }
             },
@@ -670,7 +738,8 @@ fun ConversationsPane(
         val creating = target.id.isBlank()
         ProjectNameSheet(
             title = stringResource(if (creating) R.string.project_new_title else R.string.project_rename_title),
-            initial = target.name,
+            // A nested topic shows its path; rename edits only its own name.
+            initial = if (st.topicsOn) target.name.substringAfterLast(io.rivethub.app.plane.TOPIC_PATH_SEP) else target.name,
             onSave = { name ->
                 if (creating) vm.addProject(name) else vm.renameProject(target.id, name)
                 projectNameTarget = null
@@ -705,6 +774,27 @@ fun ConversationsPane(
                 projectDeleteTarget = null
             },
             onDismiss = { projectDeleteTarget = null },
+        )
+    }
+
+    deleteConfirm?.let { rows ->
+        DeleteConfirmDialog(
+            labels = rows.map { displayTitle(it.item, st.titleOverrides) },
+            onConfirm = {
+                deleteConfirm = null
+                runDelete(rows)
+            },
+            onDismiss = { deleteConfirm = null },
+        )
+    }
+
+    if (cleanupOpen) {
+        CleanupSheet(
+            vm = vm,
+            titleOverrides = st.titleOverrides,
+            openSessionKey = currentSessionKey,
+            onNotice = { text -> if (text.isNotBlank()) scope.launch { snackbar.showSnackbar(text) } },
+            onDismiss = { cleanupOpen = false },
         )
     }
 
@@ -751,9 +841,10 @@ private fun ConversationMenuSheet(
                 ConversationAction.Archive -> R.string.action_archive
                 ConversationAction.Unarchive -> R.string.action_unarchive
                 ConversationAction.Hide -> R.string.hide_conversation
+                ConversationAction.Delete -> R.string.action_delete_session
                 ConversationAction.DiscardDraft -> R.string.action_discard
             }
-            val danger = action == ConversationAction.DiscardDraft
+            val danger = action == ConversationAction.DiscardDraft || action == ConversationAction.Delete
             SheetTextRow(stringResource(label), if (danger) colors.red else colors.ink) { onAction(action) }
         }
     }
