@@ -49,6 +49,8 @@ fun ConversationRowChrome(
     swipeEnabled: Boolean = true,
     pill: Boolean = false,
     pinned: Boolean = false,
+    /** Drawn before the accent dot (the select-mode check box). */
+    leading: (@Composable () -> Unit)? = null,
 ) {
     val colors = RivetTheme.colors
     // chat.tsx:642-644 — idle rows are `text-ink-dim` (`group-hover:text-ink`
@@ -71,6 +73,7 @@ fun ConversationRowChrome(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
+            leading?.invoke()
             Box(
                 Modifier
                     .size(6.dp)

@@ -245,6 +245,39 @@ class Settings(context: Context) {
         }
     }
 
+    /**
+     * The node deleted these sessions: drop every local trace under each of
+     * [keys] (canonical and native ids alike) in ONE edit — name, archive,
+     * pin, hide, view mode, turn pick, project placement and the resume
+     * pointer — so nothing brings the row back. Hub state then syncs the
+     * removals to desktop.
+     */
+    suspend fun forgetSessions(keys: Set<String>) = ds.edit {
+        if (keys.isEmpty()) return@edit
+        fun dropKeys(k: Preferences.Key<String>) {
+            val cur = decodeMap(it[k])
+            val next = cur - keys
+            if (next.size != cur.size) it[k] = encodeMap(next)
+        }
+        fun dropFrom(k: Preferences.Key<Set<String>>) {
+            val cur = it[k] ?: return
+            val next = cur - keys
+            if (next.size != cur.size) it[k] = next
+        }
+        dropKeys(TITLES)
+        dropKeys(SESSION_MODES)
+        dropKeys(TURN_PICKS)
+        dropKeys(MEMBERSHIP)
+        dropFrom(ARCHIVED)
+        dropFrom(PINNED)
+        dropFrom(HIDDEN)
+        if (it[LAST_SESSION_KEY] in keys) {
+            it.remove(LAST_SESSION_KEY)
+            it.remove(LAST_SESSION_NODE)
+            it.remove(LAST_SESSION_AT)
+        }
+    }
+
     /** Change projects and membership in ONE edit (plane/Projects.kt does the logic). */
     suspend fun editProjects(block: (ProjectsState) -> ProjectsState) = ds.edit {
         val cur = ProjectsState(decodeProjects(it[PROJECTS]), decodeMap(it[MEMBERSHIP]), it[DEFAULT_PROJECT] ?: "")
