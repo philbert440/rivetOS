@@ -831,6 +831,7 @@ class HubViewModel(private val c: AppContainer, inboxLabels: InboxLabels) : View
                     if (status == WsStatus.OPEN) registryFrames.trySend(RegistryMail(url, null, identityGen))
                     _state.update { it.copy(registryOpen = watchStatus.values.any { s -> s == WsStatus.OPEN }) }
                 },
+                watcher = true,
             )
         }
         _state.update { it.copy(registryOpen = watchStatus.values.any { it == WsStatus.OPEN }) }

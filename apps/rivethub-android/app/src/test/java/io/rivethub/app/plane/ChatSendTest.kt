@@ -126,7 +126,7 @@ class ChatSendTest {
         assertNull(spawnStopError(SpawnConflict.Other, hosted, 409))
     }
 
-    @Test fun `agentId fallback surfaces den text except 404 and a stopping 409`() {
+    @Test fun `agentId fallback surfaces den text except 404, a directory failure and a stopping 409`() {
         val noHarness = "agent has no harness and no command was given"
         val badModel = "agent \"reviewer\" model must be a 1-64 token"
         val directory = "could not create agent directory: directory must be an absolute path"
@@ -134,7 +134,7 @@ class ChatSendTest {
         val recorded = "session runs in /tmp/old; edit the agent or start a new conversation"
         assertEquals(noHarness, agentAttemptFallbackError(400, noHarness))
         assertEquals(badModel, agentAttemptFallbackError(400, badModel))
-        assertEquals(directory, agentAttemptFallbackError(500, directory))
+        assertNull(agentAttemptFallbackError(500, directory))
         assertEquals("agent registry unavailable", agentAttemptFallbackError(503, "agent registry unavailable"))
         assertEquals(running, agentAttemptFallbackError(409, running))
         assertEquals("HTTP 400", agentAttemptFallbackError(400, null))
@@ -212,5 +212,15 @@ class ChatSendTest {
         assertEquals("waiting for you", agentStatusLine("blocked", "prompt", null))
         assertEquals("waiting for you", agentStatusLine("working", "prompt", null))
         assertNull(agentStatusLine("idle", null, null))
+    }
+
+    @Test fun `a directory failure on a known agent stops the spawn with the den text`() {
+        val escape = "could not create agent directory: directory escapes its requested path"
+        assertEquals(escape, agentDirectoryFailure(500, escape))
+        assertNull(agentDirectoryFailure(500, "internal error"))
+        assertNull(agentDirectoryFailure(500, null))
+        assertNull(agentDirectoryFailure(503, "agent registry unavailable"))
+        assertNull(agentDirectoryFailure(404, "agent not found"))
+        assertNull(agentDirectoryFailure(400, escape))
     }
 }

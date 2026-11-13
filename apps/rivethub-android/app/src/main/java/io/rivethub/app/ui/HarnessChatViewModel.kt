@@ -139,6 +139,7 @@ import io.rivethub.app.plane.SpawnConflict
 import io.rivethub.app.plane.SpawnNeedsConfirm
 import io.rivethub.app.plane.forcedRetry
 import io.rivethub.app.plane.agentAttemptFallbackError
+import io.rivethub.app.plane.agentDirectoryFailure
 import io.rivethub.app.plane.spawnAttempts
 import io.rivethub.app.plane.spawnConflict
 import io.rivethub.app.plane.spawnConflictStops
@@ -1723,6 +1724,11 @@ class HarnessChatViewModel(
                         }
                         val text = spawnStopError(conflict, http.message, http.status)
                         _state.update { it.copy(error = text, spawnConflict = null) }
+                        throw SpawnNeedsConfirm()
+                    }
+                    val directoryFailure = agentDirectoryFailure(http.status, http.message)
+                    if (directoryFailure != null) {
+                        _state.update { it.copy(error = directoryFailure, spawnConflict = null) }
                         throw SpawnNeedsConfirm()
                     }
                     val fallback = agentAttemptFallbackError(http.status, http.message)

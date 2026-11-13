@@ -317,6 +317,12 @@ fun SettingsScreen(
                             style = RivetType.xs,
                             modifier = Modifier.padding(top = 4.dp),
                         )
+                        Text(
+                            stringResource(R.string.settings_background_connection_helper),
+                            color = colors.inkDim,
+                            style = RivetType.xs,
+                            modifier = Modifier.padding(top = 8.dp),
+                        )
                         Spacer(Modifier.height(12.dp))
                         RivetButton(
                             text = stringResource(R.string.action_system_notification_settings),

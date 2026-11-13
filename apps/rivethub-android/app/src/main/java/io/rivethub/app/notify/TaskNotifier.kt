@@ -22,8 +22,9 @@ import io.rivethub.app.plane.systemNotificationId
 
 /**
  * OS notification for a task completion while the app is backgrounded
- * (UX-SPEC §6 Inbox). v1 only: it posts while the process is alive — no
- * foreground service, no push; delivery after process death is phase 2.
+ * (UX-SPEC §6 Inbox). It posts while the process is alive; the background
+ * connection (notify/AlertService) keeps it alive while any alert is on.
+ * No push: delivery after the process is killed would need one.
  * The decision to post lives in plane/Inbox.kt shouldPostSystemNotification;
  * this class only renders and delivers.
  */

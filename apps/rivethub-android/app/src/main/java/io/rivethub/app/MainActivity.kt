@@ -38,6 +38,11 @@ import androidx.compose.ui.res.stringResource
 import androidx.core.content.IntentCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
+import io.rivethub.app.notify.AlertService
+import io.rivethub.app.plane.wantsBackgroundWatch
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelStore
@@ -132,6 +137,25 @@ class MainActivity : ComponentActivity() {
             override fun onStart(owner: LifecycleOwner) = container.hubState.kick()
         })
         container.taskNotifier.ensureChannel()
+        // Background connection (notify/AlertService) follows the alert
+        // toggles. Synced on every start: Android only lets a foreground
+        // service start while the app is on screen, so this also restarts
+        // one the system stopped while the app was away.
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                container.settings.prefs
+                    .map {
+                        wantsBackgroundWatch(
+                            it.entryUrl,
+                            it.taskNotifications,
+                            it.agentFinishedNotifications,
+                            it.needsYouNotifications,
+                        )
+                    }
+                    .distinctUntilChanged()
+                    .collect { AlertService.sync(this@MainActivity, it) }
+            }
+        }
         setContent {
             val prefs by container.settings.prefs.collectAsState(initial = null)
             val mode = themeModeOf(prefs?.themeMode)
@@ -354,7 +378,8 @@ fun App(
         gateTitle = stringResource(R.string.inbox_gate_title),
         taskDoneStatusFallback = stringResource(R.string.inbox_task_done_status_fallback),
     )
-    val hubVm: HubViewModel = viewModel(key = "hub") { HubViewModel(c, inboxLabels) }
+    // Process-scoped, not activity-scoped: background alerts outlive the screen (AppContainer.hub).
+    val hubVm: HubViewModel = c.hub
     val agentFinishedTitle = stringResource(R.string.notif_agent_finished_title)
     val needsYouTitle = stringResource(R.string.notif_needs_you_title)
     val tasksVm: io.rivethub.app.ui.TasksViewModel = viewModel(key = "tasks") { io.rivethub.app.ui.TasksViewModel(c) }

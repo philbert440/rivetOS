@@ -2,11 +2,8 @@ package io.rivethub.app.gateway
 
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -15,12 +12,11 @@ import okhttp3.WebSocketListener
 import okio.ByteString
 import okio.ByteString.Companion.toByteString
 import java.io.Closeable
-import kotlin.random.Random
 
 /**
  * Reconnecting WebSocket for WS /api/terminal/ws.
  *
- * Same client-order / backoff / generation rules as [WsSubscription], plus
+ * Same client-order / [ReconnectScheduler] / generation rules as [WsSubscription], plus
  * [WebSocketListener.onMessage] ByteString for binary PTY frames. Detach
  * closes the socket; the caller must never send `{type:kill}`.
  *
@@ -38,9 +34,13 @@ class TermWs(
     @Volatile private var closed = false
     @Volatile private var ws: WebSocket? = null
     @Volatile private var generation = 0
-    @Volatile private var reconnectJob: Job? = null
-    @Volatile private var attempt = 0
+    @Volatile private var status = WsStatus.CONNECTING
     @Volatile var reconnectOnClose: Boolean = true
+    private val retry = ReconnectScheduler(scope) { connect() }
+    private val foreground = AppForeground.register { fg, away ->
+        if (!fg) retry.pause()
+        else if (reconnectOnClose && reconnectOnForeground(status, away)) retry.connectNow()
+    }
 
     init { connect() }
 
@@ -51,21 +51,26 @@ class TermWs(
         return socket.send(bytes.toByteString())
     }
 
+    private fun publish(next: WsStatus) {
+        status = next
+        onStatus(next)
+    }
+
     private fun connect() {
         if (closed) return
         val myGen = ++generation
         val old = ws
         ws = null
         old?.cancel()
-        onStatus(WsStatus.CONNECTING)
+        publish(WsStatus.CONNECTING)
         val req = Request.Builder().url(url).build()
-        val client = clientOrder[attempt % clientOrder.size]
+        val client = clientOrder[retry.attempt % clientOrder.size]
         val socket = client.newWebSocket(req, object : WebSocketListener() {
             private fun live(): Boolean = !closed && myGen == generation
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 if (!live()) { webSocket.cancel(); return }
-                attempt = 0
-                onStatus(WsStatus.OPEN)
+                retry.onOpen()
+                publish(WsStatus.OPEN)
             }
             override fun onMessage(webSocket: WebSocket, text: String) { if (live()) onText(text) }
             override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
@@ -79,24 +84,16 @@ class TermWs(
     }
 
     private fun reconnect() {
-        onStatus(WsStatus.CLOSED)
+        publish(WsStatus.CLOSED)
         if (closed || !reconnectOnClose) return
-        synchronized(this) {
-            if (reconnectJob?.isActive == true) return
-            val backoff = minOf(500L shl minOf(attempt, 6), 15_000L)
-            attempt += 1
-            reconnectJob = scope.launch {
-                delay(backoff + Random.nextLong(0, 250))
-                reconnectJob = null
-                connect()
-            }
-        }
+        retry.schedule()
     }
 
     override fun close() {
         closed = true
         reconnectOnClose = false
-        reconnectJob?.cancel()
+        foreground.close()
+        retry.cancel()
         ws?.close(1000, null)
         scope.cancel()
     }
