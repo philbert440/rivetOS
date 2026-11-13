@@ -21,7 +21,6 @@ import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import java.io.Closeable
 import java.io.IOException
-import kotlin.random.Random
 
 open class GatewayException(val status: Int, message: String, val code: String? = null) : IOException(message)
 
@@ -334,11 +333,12 @@ class Gateway(
 enum class WsStatus { CONNECTING, OPEN, CLOSED }
 
 /**
- * Reconnecting WebSocket: base 500ms, doubling, capped at 15s, jittered.
- * One socket at a time, identified by a generation number captured in its
- * listener — no lock is held across OkHttp calls (its callbacks can re-enter
- * from `cancel()`/`close()`), and a late `onOpen` from a superseded socket
- * can't report OPEN or reset the backoff.
+ * Reconnecting WebSocket ([ReconnectScheduler] sets the waits and ties them
+ * to the app's foreground). One socket at a time, identified by a
+ * generation number captured in its listener — no lock is held across
+ * OkHttp calls (its callbacks can re-enter from `cancel()`/`close()`), and a
+ * late `onOpen` from a superseded socket can't report OPEN or reset the
+ * backoff.
  */
 class WsSubscription(
     private val clientOrder: List<OkHttpClient>,
@@ -350,10 +350,18 @@ class WsSubscription(
     @Volatile private var closed = false
     @Volatile private var ws: WebSocket? = null
     @Volatile private var generation = 0
-    @Volatile private var reconnectJob: Job? = null
-    @Volatile private var attempt = 0
+    @Volatile private var status = WsStatus.CONNECTING
+    private val retry = ReconnectScheduler(scope) { connect() }
+    private val foreground = AppForeground.register { fg, away ->
+        if (!fg) retry.pause() else if (reconnectOnForeground(status, away)) retry.connectNow()
+    }
 
     init { connect() }
+
+    private fun publish(next: WsStatus) {
+        status = next
+        onStatus(next)
+    }
 
     private fun connect() {
         if (closed) return
@@ -361,16 +369,16 @@ class WsSubscription(
         val old = ws
         ws = null
         old?.cancel()
-        onStatus(WsStatus.CONNECTING)
+        publish(WsStatus.CONNECTING)
         val req = Request.Builder().url(url).build()
         // Alternate network paths across attempts — whichever one works wins.
-        val client = clientOrder[attempt % clientOrder.size]
+        val client = clientOrder[retry.attempt % clientOrder.size]
         val socket = client.newWebSocket(req, object : WebSocketListener() {
             private fun live(): Boolean = !closed && myGen == generation
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 if (!live()) { webSocket.cancel(); return }
-                attempt = 0
-                onStatus(WsStatus.OPEN)
+                retry.onOpen()
+                publish(WsStatus.OPEN)
             }
             override fun onMessage(webSocket: WebSocket, text: String) { if (live()) onText(text) }
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) { if (live()) reconnect() }
@@ -381,18 +389,9 @@ class WsSubscription(
     }
 
     private fun reconnect() {
-        onStatus(WsStatus.CLOSED)
+        publish(WsStatus.CLOSED)
         if (closed) return
-        synchronized(this) { // only guards the job handoff; no OkHttp call inside
-            if (reconnectJob?.isActive == true) return
-            val backoff = minOf(500L shl minOf(attempt, 6), 15_000L)
-            attempt += 1
-            reconnectJob = scope.launch {
-                delay(backoff + Random.nextLong(0, 250))
-                reconnectJob = null // a failure raised from inside connect() must be able to schedule the next try
-                connect()
-            }
-        }
+        retry.schedule()
     }
 
     /** Client → server text frame (e.g. `{"type":"sync"}` on the session watch). */
@@ -400,7 +399,8 @@ class WsSubscription(
 
     override fun close() {
         closed = true
-        reconnectJob?.cancel()
+        foreground.close()
+        retry.cancel()
         ws?.close(1000, null)
         scope.cancel()
     }

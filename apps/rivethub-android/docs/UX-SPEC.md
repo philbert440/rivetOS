@@ -178,7 +178,8 @@ that agent* so the den chooses the directory, command, model and effort. If the 
 session already runs in a different directory, the app offers "Resume here anyway" and only then retries
 with force. Against a node whose den predates the agent registry the app falls back to today's explicit
 spawn (command, model, effort) so the agent still opens, just in the node's default directory (slice D1
-owns this compatibility path).
+owns this compatibility path). A den that knows the agent but cannot prepare its directory does not fall back: the
+conversation shows the den's error and no session is started elsewhere.
 
 ## 4. Composer
 
