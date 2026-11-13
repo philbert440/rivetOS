@@ -4,6 +4,10 @@ First-class **RivetHub** plugin for **Grok Bot** (and Cursor-compatible install)
 
 Goal: get as close as possible to a full Rivet mesh member **without hacking the Grok Bot application**.
 
+## Skills moved to Rivethub/rstack
+
+Deprecated: RivetHub memory skills now live in [Rivethub/rstack](https://github.com/Rivethub/rstack). Install them with `npx skills add Rivethub/rstack`. This kit keeps the memory MCP, host-side capture, and the Grok Bot-specific onboard, status, and mesh-delegate skills.
+
 ## Install
 
 This kit is not self-contained yet. The helpers resolve
@@ -75,7 +79,7 @@ This package is the wider **member kit**. Phase 1 reuses that MCP launcher. We m
 
 ## Version
 
-0.2.0 — stranger onboarding scaffold. Not marketplace-published.
+0.3.0 — stranger onboarding scaffold; recall skill deprecated in favor of Rivethub/rstack. Not marketplace-published.
 
 Shared onboard/status helpers also persist `RIVETOS_EMBED_URL` and
 `RIVETOS_MCP_ENABLE_MEMORY_WRITE`. Status includes additive `embed_url:` and

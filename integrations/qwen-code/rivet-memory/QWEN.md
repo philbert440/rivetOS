@@ -4,7 +4,7 @@ _Distilled guidance for Qwen Code sessions using the `rivet-memory` plugin._
 
 Install by copying this file (or its memory section) into your project rules or
 global Qwen Code configuration so the discipline is always active. The installer
-ships this as a qwen extension skill (`/memory-recall`).
+ships the `memory-recall` skill separately, from Rivethub/rstack.
 
 ## Memory Is Your Source of Truth
 
@@ -48,7 +48,7 @@ For most recall tasks:
 3. Otherwise → run 2–3 `memory_search` calls from different angles.
 4. If results are weak → immediately retry with `mode="trigram"`.
 
-The `memory-recall` skill encodes this discipline in detail. Let it activate when the user asks about the past.
+The `memory-recall` skill from Rivethub/rstack encodes this discipline in detail. Let it activate when the user asks about the past.
 
 ## Cross-Agent Awareness
 

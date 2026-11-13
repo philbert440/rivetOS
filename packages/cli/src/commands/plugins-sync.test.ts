@@ -220,10 +220,9 @@ describe('plugins sync — rsync argv per mapping', () => {
     ])
   })
 
-  it('hermes: two managed dirs with --delete, no rivet-den when absent', async () => {
+  it('hermes: one managed dir with --delete, no rivet-den when absent', async () => {
     vfs.dir(`${ROOT}/integrations`)
     vfs.dir(`${ROOT}/integrations/hermes/rivet-memory`)
-    vfs.dir(`${ROOT}/integrations/hermes/memory-recall`)
     vfs.dir(`${HOME}/.hermes`)
 
     await pluginsSync(['--root', ROOT, '--tui', 'hermes'])
@@ -237,15 +236,6 @@ describe('plugins sync — rsync argv per mapping', () => {
         '--',
         `${ROOT}/integrations/hermes/rivet-memory/`,
         `${HOME}/.hermes/plugins/rivet_memory/`,
-      ],
-      [
-        '-a',
-        '-i',
-        '--delete',
-        ...EXCLUDES,
-        '--',
-        `${ROOT}/integrations/hermes/memory-recall/`,
-        `${HOME}/.hermes/skills/memory-recall/`,
       ],
     ])
   })

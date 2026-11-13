@@ -25,13 +25,14 @@ read-only. Message events are ignored — SQLite rows are the source of truth.
 - Provide automatic capture of user, assistant, reasoning, and tool turns from SQLite.
 - Keep the integration lightweight and idiomatic to OpenCode's plugin + MCP + skills model.
 
+## Skills moved to Rivethub/rstack
+
+The recall skills (`memory-recall`, `memory-today`, `memory-yesterday`, `memory-stats`) and the `memory-researcher` agent moved to [Rivethub/rstack](https://github.com/Rivethub/rstack). Install them with `npx skills add Rivethub/rstack`. This kit keeps the MCP server and the capture hooks.
+
 ## What It Ships
 
 | Component                  | Location                                                                                 | Purpose                                                                |
 | -------------------------- | ---------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
-| Core discipline skill      | `skills/memory-recall/SKILL.md`                                                          | Optimal `memory_browse` first + multi-angle search + trigram fallback. |
-| Quick commands             | `skills/memory-today/`, `memory-yesterday/`, `memory-stats/` + `commands/`               | High-frequency shortcuts.                                              |
-| Memory researcher subagent | `agents/memory-researcher.md`                                                            | Delegate heavy or multi-step recall work.                              |
 | Capture plugin             | `plugin/rivet-memory.ts` (copied to `~/.config/opencode/plugins/`)                       | Native event trigger.                                                  |
 | Capture ingest             | `capture/` (`@rivetos/opencode-rivet-memory-capture`) + `bin/opencode-memory-capture.sh` | `--ingest-session` / `--backfill` under `agent = "rivet-glm"`.         |
 | MCP launcher               | `bin/rivet-memory-mcp.sh`                                                                | Expose RivetOS memory tools to OpenCode.                               |

@@ -46,7 +46,7 @@ For most recall tasks:
 3. Otherwise → run 2–3 `memory_search` calls from different angles.
 4. If results are weak → immediately retry with `mode="trigram"`.
 
-The `memory-recall` skill encodes this discipline in detail. Let it activate when the user asks about the past.
+The `memory-recall` skill from Rivethub/rstack encodes this discipline in detail. Let it activate when the user asks about the past.
 
 ## Cross-Agent Awareness
 

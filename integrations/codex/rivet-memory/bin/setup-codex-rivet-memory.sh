@@ -11,12 +11,12 @@
 #
 # Flags:
 #   --link    Create symlinks for bin scripts into /usr/local/bin (uses sudo).
-#   --apply   Register MCP + skills + AGENTS.md, then register capture
+#   --apply   Register MCP + AGENTS.md, then register capture
 #             hooks in exactly one place: managed /etc/codex/requirements.toml
 #             when sudo -n works and the write validates; otherwise user
 #             ~/.codex/hooks.json. Never both. Disable the old watcher unit.
 #   --remove  Unregister capture hooks from both hooks.json and requirements.toml.
-#   --force   With --apply, overwrite existing AGENTS.md / skills / MCP.
+#   --force   With --apply, overwrite existing AGENTS.md / MCP.
 #
 set -euo pipefail
 
@@ -395,16 +395,7 @@ args = ["$PLUGIN_PATH/bin/rivet-memory-mcp.sh"]
 EOF
 
 echo
-echo "=== 2. Skills Installation ==="
-cat <<EOF
-
-# Point extra skill dirs at the plugin, or copy:
-mkdir -p $CODEX_HOME_DIR/skills
-cp -r $PLUGIN_PATH/skills/* $CODEX_HOME_DIR/skills/
-EOF
-
-echo
-echo "=== 3. Memory Discipline Reflex (CODEX.md) ==="
+echo "=== 2. Memory Discipline Reflex (CODEX.md) ==="
 cat <<EOF
 
 cp $PLUGIN_PATH/CODEX.md $CODEX_HOME_DIR/AGENTS.md
@@ -412,7 +403,7 @@ cp $PLUGIN_PATH/CODEX.md $CODEX_HOME_DIR/AGENTS.md
 EOF
 
 echo
-echo "=== 4. Automatic Capture (native Codex hooks) ==="
+echo "=== 3. Automatic Capture (native Codex hooks) ==="
 echo "Events: UserPromptSubmit, Stop, SessionEnd → $HOOK_MARKER --hook"
 echo "User hooks file: $USER_HOOKS"
 echo "Managed hooks file (sudo): $MANAGED_TOML"
@@ -434,7 +425,7 @@ echo "State: ~/.rivetos/codex-capture-state.json"
 echo "SessionEnd is clamped to 3s by Codex; --hook hands off ingest to a detached child."
 
 echo
-echo "=== 5. Backfill existing sessions ==="
+echo "=== 4. Backfill existing sessions ==="
 echo "$PLUGIN_PATH/bin/codex-memory-capture.sh --backfill [--days N]"
 echo "$RIVETOS_ROOT/integrations/codex/rivet-memory/backfill (npm test / --dry-run / --write)"
 
@@ -459,14 +450,6 @@ if [ "$DO_APPLY" -eq 1 ]; then
     echo "✅ Wrote $AGENTS_DEST"
   else
     echo "⚠️  $AGENTS_DEST exists (use --force to overwrite)"
-  fi
-
-  mkdir -p "$CODEX_HOME_DIR/skills"
-  if [ -z "$(ls -A "$CODEX_HOME_DIR/skills" 2>/dev/null || true)" ] || [ "$DO_FORCE" -eq 1 ]; then
-    cp -r "$PLUGIN_DIR/skills/." "$CODEX_HOME_DIR/skills/"
-    echo "✅ Copied skills to $CODEX_HOME_DIR/skills/"
-  else
-    echo "⚠️  $CODEX_HOME_DIR/skills/ not empty"
   fi
 
   echo
@@ -531,11 +514,10 @@ fi
 echo
 echo "=== Next Steps ==="
 echo "1. Configure the MCP server ($CODEX_HOME_DIR/config.toml)"
-echo "2. Install skills"
-echo "3. Add CODEX.md / AGENTS.md reflex"
-echo "4. Trust non-managed hooks once via /hooks in the Codex TUI (skip if managed)"
-echo "5. Optional: $PLUGIN_PATH/bin/codex-memory-capture.sh --backfill"
-echo "6. Test with a memory-stats or time-bounded recall question"
+echo "2. Add CODEX.md / AGENTS.md reflex"
+echo "3. Trust non-managed hooks once via /hooks in the Codex TUI (skip if managed)"
+echo "4. Optional: $PLUGIN_PATH/bin/codex-memory-capture.sh --backfill"
+echo "5. Test with a time-bounded recall question"
 echo
 if [ "${REGISTRATION_INCOMPLETE:-0}" -eq 1 ] || [ "${MIGRATION_INCOMPLETE:-0}" -eq 1 ]; then
   echo "⚠️  Setup finished with an INCOMPLETE step (see ❌/⚠️ above)."

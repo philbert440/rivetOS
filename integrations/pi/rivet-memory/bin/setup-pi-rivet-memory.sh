@@ -11,10 +11,10 @@
 #
 # Flags:
 #   --link    Create symlinks for bin scripts into /usr/local/bin (uses sudo).
-#   --apply   Register the pi extension, mcp.json merge, skills, AGENTS.md.
+#   --apply   Register the pi extension, mcp.json merge, AGENTS.md.
 #             Idempotent. Migrates off the old capture watcher unit/plist.
 #   --remove  Delete ~/.pi/agent/extensions/rivet-memory.ts (our file only).
-#   --force   With --apply, overwrite existing mcp.json / AGENTS.md / skills.
+#   --force   With --apply, overwrite existing mcp.json / AGENTS.md.
 #
 set -euo pipefail
 
@@ -109,15 +109,7 @@ cat <<EOF
 EOF
 
 echo
-echo "=== 2. Skills Installation ==="
-cat <<EOF
-
-mkdir -p $PI_HOME_DIR/skills
-cp -r $PLUGIN_PATH/skills/* $PI_HOME_DIR/skills/
-EOF
-
-echo
-echo "=== 3. Memory Discipline Reflex (PI.md) ==="
+echo "=== 2. Memory Discipline Reflex (PI.md) ==="
 cat <<EOF
 
 cp $PLUGIN_PATH/PI.md $PI_HOME_DIR/AGENTS.md
@@ -125,7 +117,7 @@ cp $PLUGIN_PATH/PI.md $PI_HOME_DIR/AGENTS.md
 EOF
 
 echo
-echo "=== 4. Automatic Capture (pi extension) ==="
+echo "=== 3. Automatic Capture (pi extension) ==="
 echo "Copy extension/rivet-memory.ts → $PI_HOME_DIR/extensions/rivet-memory.ts"
 echo "with PLUGIN_PATH rewritten to $PLUGIN_PATH."
 echo "On turn_end (debounced 1.5s) and agent_end / session_shutdown /"
@@ -263,14 +255,6 @@ EOF
   else
     echo "⚠️  $AGENTS_DEST exists (use --force to overwrite)"
   fi
-
-  mkdir -p "$PI_HOME_DIR/skills"
-  if [ -z "$(ls -A "$PI_HOME_DIR/skills" 2>/dev/null || true)" ] || [ "$DO_FORCE" -eq 1 ]; then
-    cp -r "$PLUGIN_DIR/skills/." "$PI_HOME_DIR/skills/"
-    echo "✅ Copied skills to $PI_HOME_DIR/skills/"
-  else
-    echo "⚠️  $PI_HOME_DIR/skills/ not empty"
-  fi
 fi
 
 if [ "$DO_LINK" -eq 1 ]; then
@@ -284,16 +268,15 @@ fi
 echo
 echo "=== Next Steps ==="
 echo "1. Configure the MCP server ($PI_HOME_DIR/mcp.json)"
-echo "2. Install skills"
-echo "3. Add PI.md / AGENTS.md reflex"
-echo "4. Register the capture extension:"
+echo "2. Add PI.md / AGENTS.md reflex"
+echo "3. Register the capture extension:"
 echo "   $PLUGIN_PATH/bin/setup-pi-rivet-memory.sh --apply"
 echo "   (or: rivetos plugins install --harness pi)"
-echo "5. Optional one-shot of existing sessions:"
+echo "4. Optional one-shot of existing sessions:"
 echo "   $PLUGIN_PATH/bin/pi-memory-capture.sh --backfill"
-echo "6. Ensure the capture workspace is in root package.json + built"
+echo "5. Ensure the capture workspace is in root package.json + built"
 echo "   (integrator: npm install --package-lock-only)"
-echo "7. Test with a memory-stats or time-bounded recall question"
+echo "6. Test with a time-bounded recall question"
 echo
 if [ "${MIGRATION_INCOMPLETE:-0}" -eq 1 ]; then
   echo "⚠️  Setup finished with an INCOMPLETE migration step (see ⚠️ above); the legacy unit was kept for a retry."

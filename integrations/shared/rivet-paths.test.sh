@@ -494,7 +494,7 @@ kit="$ROOT/../claude-code/rivet-memory"
 if [ ! -d "$kit" ]; then
   pass "plugin lib drift guard # SKIP kit directory absent"
 else
-  for name in rivet-paths.sh rivetos-onboard-persist.sh rivetos-status.sh; do
+  for name in rivet-paths.sh; do
     if cmp -s "$ROOT/$name" "$kit/lib/$name"; then
       pass "plugin lib/$name matches shared"
     else

@@ -30,7 +30,7 @@ If any answer is wrong, stop and talk.
 
 ## Memory Has the Answers
 
-You have persistent memory via the RivetOS MCP server (`memory_search`, `memory_browse`, `memory_get_full`, `memory_stats`, `wiki_search`, `wiki_read`). When you lack context, **query memory first** -- see MEMORY.md for which shelf to use. Full discipline lives in the `memory-recall` skill.
+You have persistent memory via the RivetOS MCP server (`memory_search`, `memory_browse`, `memory_get_full`, `memory_stats`, `wiki_search`, `wiki_read`). When you lack context, **query memory first** -- see MEMORY.md for which shelf to use. Full discipline lives in the `memory-recall` skill from Rivethub/rstack.
 
 Cursor turns land as agent `rivet-cursor`, channel `cursor`. The capture worker tails the agent transcript (one row per user text, assistant text, and tool call) and joins hook tool results onto those rows. `cursor-rivet-memory-capture --backfill` replays transcripts still on disk. Memory written by the other harnesses is in the same store.
 

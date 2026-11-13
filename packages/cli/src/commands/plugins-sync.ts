@@ -17,7 +17,6 @@
  *                ~/.grok/{skills,commands}/, hooks/hooks.json →
  *                ~/.grok/hooks/<plugin>.json, GROK.md → ~/.grok/AGENTS.md
  *   hermes       integrations/hermes/rivet-memory/ → ~/.hermes/plugins/rivet_memory/
- *                integrations/hermes/memory-recall/ → ~/.hermes/skills/memory-recall/
  *
  * Config files the user co-owns (~/.grok/config.toml, ~/.claude/settings.json)
  * are NOT written — sync prints a hint when a managed block looks missing.
@@ -471,15 +470,6 @@ export async function syncHermes(ctx: Ctx, root: string, home: string): Promise<
       pluginSrc,
       join(hermesDir, 'plugins', 'rivet_memory'),
       '~/.hermes/plugins/rivet_memory',
-    )
-  }
-  const skillSrc = join(root, 'integrations', 'hermes', 'memory-recall')
-  if (existsSync(skillSrc)) {
-    await syncManagedDir(
-      ctx,
-      skillSrc,
-      join(hermesDir, 'skills', 'memory-recall'),
-      '~/.hermes/skills/memory-recall',
     )
   }
   // rivet-den: the hook script is a managed file; its hooks: block is MERGED

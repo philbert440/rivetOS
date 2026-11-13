@@ -22,13 +22,14 @@ from a persisted cursor.
 - Provide automatic capture of user, assistant, and tool turns from rollout jsonl.
 - Keep the integration lightweight and idiomatic to Codex's MCP + skills + hooks model.
 
+## Skills moved to Rivethub/rstack
+
+The recall skills (`memory-recall`, `memory-today`, `memory-yesterday`, `memory-stats`) and the `memory-researcher` agent moved to [Rivethub/rstack](https://github.com/Rivethub/rstack). Install them with `npx skills add Rivethub/rstack`. This kit keeps the MCP server and the capture hooks.
+
 ## What It Ships
 
 | Component                  | Location                                                                                    | Purpose                                                                |
 | -------------------------- | ------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
-| Core discipline skill      | `skills/memory-recall/SKILL.md`                                                             | Optimal `memory_browse` first + multi-angle search + trigram fallback. |
-| Quick commands             | `skills/memory-today/`, `memory-yesterday/`, `memory-stats/` + `commands/`                  | High-frequency shortcuts.                                              |
-| Memory researcher subagent | `agents/memory-researcher.md`                                                               | Delegate heavy or multi-step recall work.                              |
 | Capture system             | `capture/` (`@rivetos/codex-rivet-memory-capture`) + `bin/codex-memory-capture.sh`          | Hook ingest under `agent = "rivet-gpt"`.                               |
 | Hook fragment              | `hooks/hooks.json`                                                                          | UserPromptSubmit / Stop / SessionEnd → `--hook`.                       |
 | Backfill                   | `backfill/` (`@rivetos/codex-rivet-memory-backfill`) + `codex-memory-capture.sh --backfill` | One-shot replay of existing rollouts.                                  |

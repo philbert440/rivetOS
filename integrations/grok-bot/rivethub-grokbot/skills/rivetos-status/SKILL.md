@@ -11,6 +11,8 @@ version: 0.1.0
 
 # RivetOS status (Grok Bot)
 
+Deprecated: RivetHub memory skills now live in Rivethub/rstack.
+
 Run the kit helper — do not invent ad-hoc `echo $RIVETOS_PG_URL` / `env` /
 `cat ~/.rivetos/.env` (those leak secrets):
 

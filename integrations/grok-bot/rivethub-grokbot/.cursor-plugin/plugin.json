@@ -1,7 +1,7 @@
 {
   "name": "rivethub-grokbot",
   "displayName": "RivetHub for Grok Bot",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "RivetHub mesh member kit for Grok Bot: shared memory MCP/skills, mesh delegation via list_agents and delegate_task, and stranger onboarding (cloud vs local DataHub).",
   "author": { "name": "RivetOS", "email": "rivetphilbot@gmail.com" },
   "license": "MIT",

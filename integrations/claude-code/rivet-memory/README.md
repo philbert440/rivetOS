@@ -22,17 +22,20 @@ claude plugin marketplace add philbert440/rivetOS
 claude plugin install rivet-memory@rivetos
 ```
 
-Then ask the agent to run the **`rivetos-onboard`** skill. One fork:
+Set mode, DataHub URL, embed URL and model, or cloud credentials in the
+plugin settings (`userConfig`) or in `~/.rivetos/.env`. Whenever an embed URL
+is given, set the embedding model (`RIVETOS_EMBED_MODEL`) too. Check the
+connection with `rh doctor` or `rh harness connect`, or with the
+`memory-doctor` skill from Rivethub/rstack.
 
-- **Cloud** — paste credentials from the Rivet Cloud dashboard (v1 is memory
-  only; no browser OAuth yet).
-- **Local** — Tailscale + one DataHub URL (`postgres://` maps to the memory
-  store; `https://` is stored as-is).
+## Skills moved to Rivethub/rstack
 
-Whenever an embed URL is given, onboard asks for the embedding model
-(`RIVETOS_EMBED_MODEL`) and persists both.
-
-Prove with **`rivetos-status`**, then `memory_stats`. Secrets are never echoed.
+The recall skills (`memory-recall`, `memory-today`, `memory-yesterday`,
+`memory-stats`), the `memory-researcher` agent, and the onboard and status
+skills (replaced by `memory-doctor`) moved to
+[Rivethub/rstack](https://github.com/Rivethub/rstack). Install them with
+`/plugin marketplace add Rivethub/rstack`. This kit keeps the MCP server and
+the capture hooks.
 
 The no-checkout MCP path is `npx -y @rivetos/mcp-sidecar@0.5.0 --stdio`. That
 package is not on npm yet; the path works once 0.5.0 is published. Until then,
@@ -52,10 +55,6 @@ claude plugin install rivet-memory@rivetos
 |---|---|---|
 | MCP server | `.mcp.json` → `bin/rivet-memory-mcp.sh` | Adds `memory_search`, `memory_browse`, `memory_stats`, `skill_*`, `internet_search`, `web_fetch`. Recall past decisions and commands without asking. |
 | Capture hooks | `hooks/hooks.json` → `bin/rivet-memory-hook.sh` | `UserPromptSubmit` + `PostToolUse` capture every prompt and tool call (name, args, result) straight from the hook payload. `Stop`/`SubagentStop`/`SessionEnd` capture assistant text from the transcript. |
-| Onboard / status | `skills/rivetos-onboard`, `skills/rivetos-status` | Agent-driven fork (cloud vs local), persist, prove. Status prints mode and `scheme host:port` only. |
-| Recall skill | `skills/memory-recall/SKILL.md` | Auto-loads on time-bounded recall prompts ("what did we do this morning", "check memory from yesterday"). Encodes the browse-with-date-range-FIRST discipline so memory is the first reflex, not the recovery move. |
-| Slash commands | `commands/memory-*.md` | `/memory-recall <query>`, `/memory-today [topic]`, `/memory-yesterday [topic]`, `/memory-stats` — user-invoked shortcuts to the same discipline. |
-| Subagent | `agents/memory-researcher.md` | Read-only memory specialist the main agent can delegate to via the Agent tool. Runs the full multi-angle / browse-first discipline and returns synthesized findings under 200 words, without burning main-context tokens on a search loop. |
 
 The `PostToolUse` row — tool name + full args + full result, one row per call —
 is the "which command fixed it 2.5 days ago" record.
@@ -64,7 +63,7 @@ is the "which command fixed it 2.5 days ago" record.
 
 This kit ships with **shell, file, and search write tools off**. Memory write
 tools (`memory_append`, `memory_ingest_session`) stay **off** until the user
-opts in during `rivetos-onboard`. Recall tools are available as soon as a
+opts in with `RIVETOS_MCP_ENABLE_MEMORY_WRITE`. Recall tools are available as soon as a
 DataHub / PG URL is configured.
 
 ## What's new in 0.3
@@ -76,7 +75,6 @@ stranger with no RivetOS checkout:
 - Capture hook: uses the checkout handler when available; otherwise logs
   one secret-free line to stderr, skips capture, and exits 0.
 - `userConfig` for mode, DataHub, embed, cloud URL, cloud token.
-- `rivetos-onboard` / `rivetos-status` skills.
 
 Upgrade in place:
 
@@ -94,8 +92,7 @@ claude plugin update rivet-memory@rivetos
 Run `npm run build` in the RivetOS repo if either is missing.
 
 **Without a checkout:** Node.js and `npx`, plus the pinned
-`@rivetos/mcp-sidecar@0.5.0` release once published. The onboard/status
-helpers use Python 3 for endpoint checks. Plugin settings or
+`@rivetos/mcp-sidecar@0.5.0` release once published. Plugin settings or
 `~/.rivetos/.env` supply the DataHub. Capture logs and skips; it requires
 a built checkout handler.
 
@@ -110,7 +107,6 @@ absent, the inherited value survives. Empty or unsubstituted plugin values
 `CLAUDE_PLUGIN_OPTION_<full userConfig key>`, which wins if both channels
 supply a value. Only effective plugin settings enter `RIVETOS_PLUGIN_KEYS`.
 A plugin-supplied Postgres DataHub also overrides the fallback PG URL.
-Persist never clobbers `RIVETOS_MODE=workspace|production`.
 
 | Var | Default | Purpose |
 |---|---|---|
@@ -127,8 +123,7 @@ Without `RIVETOS_PG_URL` the MCP server still starts, but with `echo` + web
 tools only — the memory tools are disabled.
 
 Server exits at start: with an embed URL and Postgres/DataHub URL set, check
-`RIVETOS_EMBED_MODEL`. Set the missing model in plugin settings or rerun onboard.
-`rivetos-status` reports `embed_model: set|unset` and names this configuration problem.
+`RIVETOS_EMBED_MODEL`. Set the missing model in plugin settings or `~/.rivetos/.env`, then run `rh doctor`.
 
 ## Transport
 

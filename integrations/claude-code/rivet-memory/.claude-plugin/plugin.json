@@ -1,7 +1,7 @@
 {
   "name": "rivet-memory",
-  "version": "0.3.0",
-  "description": "Persistent RivetOS memory for Claude Code: recall MCP tools, lifecycle capture, and agent-driven onboard (cloud vs your own hub).",
+  "version": "0.4.0",
+  "description": "Persistent RivetOS memory for Claude Code: recall MCP tools and lifecycle capture. Skills moved to Rivethub/rstack.",
   "userConfig": {
     "RIVETOS_MODE": {
       "type": "string",
@@ -55,10 +55,7 @@
     "mcp",
     "capture",
     "recall",
-    "rivetos",
-    "skill",
-    "agent",
-    "discipline"
+    "rivetos"
   ],
   "homepage": "https://github.com/philbert440/rivetOS",
   "repository": "https://github.com/philbert440/rivetOS",

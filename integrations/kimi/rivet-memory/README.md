@@ -19,13 +19,14 @@ but capture correctness beats everything else.
 - Provide automatic capture of turns, tool calls, and pre-compaction context (when hooks are enabled).
 - Keep the integration lightweight and idiomatic to kimi-code's MCP + skills + TOML hooks model.
 
+## Skills moved to Rivethub/rstack
+
+The recall skills (`memory-recall`, `memory-today`, `memory-yesterday`, `memory-stats`) and the `memory-researcher` agent moved to [Rivethub/rstack](https://github.com/Rivethub/rstack). Install them with `npx skills add Rivethub/rstack`. This kit keeps the MCP server and the capture hooks.
+
 ## Current Status
 
 | Component                | Status     | Notes |
 |--------------------------|------------|-------|
-| Memory discipline skill  | ✅ Excellent | Ported from grok/hermes lineage |
-| Helper skills            | ✅ Good    | memory-today, memory-yesterday, memory-stats |
-| Subagent                 | ✅ Good    | memory-researcher |
 | MCP tools                | ✅ Good    | Via existing RivetOS MCP server |
 | Capture                  | ✅ Solid   | Hook-payload first + content-hash dedup; session-file path ready for empirical wire-up |
 | Packaging & Install      | ✅ Good    | One-command setup script |
@@ -35,9 +36,6 @@ but capture correctness beats everything else.
 
 | Component                    | Location                                              | Purpose |
 |-----------------------------|-------------------------------------------------------|---------|
-| Core discipline skill       | `skills/memory-recall/SKILL.md`                       | Optimal `memory_browse` first + multi-angle search + trigram fallback. |
-| Quick commands              | `skills/memory-today/`, `memory-yesterday/`, `memory-stats/` + `commands/` | High-frequency shortcuts. |
-| Memory researcher subagent  | `agents/memory-researcher.md`                         | Delegate heavy or multi-step recall work. |
 | Capture system              | `capture/` (workspace `@rivetos/kimi-rivet-memory-capture`) + `bin/kimi-memory-hook.sh` | Non-blocking capture under `agent = "rivet-kimi"`. |
 | MCP launcher                | `bin/rivet-memory-mcp.sh`                             | Expose RivetOS memory tools to kimi-code. |
 | Project reflex              | `KIMI.md`                                             | Always-on memory discipline rules. |
@@ -72,7 +70,7 @@ This produces:
 $RIVETOS_ROOT/integrations/kimi/rivet-memory/bin/setup-kimi-rivet-memory.sh
 ```
 
-The script prints exact config snippets for MCP, skills, hooks, and `KIMI.md`,
+The script prints exact config snippets for MCP, hooks, and `KIMI.md`,
 and can optionally write them when run with `--apply` (see script help).
 
 ### 3. Configure the RivetOS MCP Server
@@ -93,21 +91,7 @@ kimi-code loads MCP servers from `mcp.json` in its config directory
 Place this at `$KIMI_CODE_HOME/mcp.json` (or `~/.kimi-code/mcp.json` /
 `~/.kimi/mcp.json` depending on which home the installed CLI uses).
 
-### 4. Install the Skills
-
-Skills live under skill dirs. kimi-code supports `extra_skill_dirs` in
-`config.toml` — point one entry at this plugin's skills, or copy them:
-
-```bash
-# Via extra_skill_dirs (recommended — stays in sync with the repo)
-# config.toml:
-#   extra_skill_dirs = ["/opt/rivetos/integrations/kimi/rivet-memory/skills"]
-
-# Or copy into the default skills path (verify default path on install):
-cp -r integrations/kimi/rivet-memory/skills/* ~/.kimi-code/skills/
-```
-
-### 5. Install the Reflex
+### 4. Install the Reflex
 
 Copy `KIMI.md` into always-on rules. If kimi-code reads `AGENTS.md`:
 
@@ -115,7 +99,7 @@ Copy `KIMI.md` into always-on rules. If kimi-code reads `AGENTS.md`:
 cp integrations/kimi/rivet-memory/KIMI.md ~/.kimi-code/AGENTS.md
 ```
 
-### 6. Enable Automatic Capture
+### 5. Enable Automatic Capture
 
 See **Capture** below.
 
@@ -210,8 +194,8 @@ Pre-compaction capture (`PreCompact`) is the highest-value trigger.
 - **Capture** — Hooks spool full stdin payloads; the worker extracts messages and
   inserts with content-hash `event_id` dedup. Optional session-file ingest can be
   enabled once the on-disk transcript layout is verified.
-- **Discipline** — Same strongest memory-recall rules as the grok integration,
-  adjusted for kimi-code tool-invocation conventions
+- **Discipline** — The memory-recall rules (now in Rivethub/rstack), adjusted
+  for kimi-code tool-invocation conventions
 
 ## Comparison with Siblings
 
@@ -230,7 +214,7 @@ Pre-compaction capture (`PreCompact`) is the highest-value trigger.
    ```bash
    $RIVETOS_ROOT/integrations/kimi/rivet-memory/bin/setup-kimi-rivet-memory.sh
    ```
-3. Follow the printed instructions for MCP, skills, `KIMI.md`, and capture hooks.
+3. Follow the printed instructions for MCP, `KIMI.md`, and capture hooks.
 4. Optional PATH links:
    ```bash
    $RIVETOS_ROOT/integrations/kimi/rivet-memory/bin/setup-kimi-rivet-memory.sh --link
