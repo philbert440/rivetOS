@@ -1,9 +1,12 @@
 /** Display helpers. Pure functions so they're trivially testable. */
 
-export function relativeTime(iso: string | null | undefined, now = Date.now()): string {
-  if (!iso) return '—'
-  const t = Date.parse(iso)
-  if (!Number.isFinite(t)) return iso.slice(0, 10)
+/** Accepts an ISO string or epoch ms: datahub's `recentSessions[].lastActive`
+ *  arrives as a number although the hub type says string, and `.slice` on a
+ *  number threw and blanked the whole Stats view. */
+export function relativeTime(iso: string | number | null | undefined, now = Date.now()): string {
+  if (iso === null || iso === undefined || iso === '') return '—'
+  const t = typeof iso === 'number' ? iso : Date.parse(iso)
+  if (!Number.isFinite(t)) return String(iso).slice(0, 10)
   const secs = Math.max(0, (now - t) / 1000)
   if (secs < 60) return 'just now'
   if (secs < 3600) return `${Math.floor(secs / 60)}m ago`
@@ -12,10 +15,10 @@ export function relativeTime(iso: string | null | undefined, now = Date.now()): 
   return new Date(t).toLocaleDateString()
 }
 
-export function shortTime(iso: string | null | undefined): string {
-  if (!iso) return '—'
-  const t = Date.parse(iso)
-  if (!Number.isFinite(t)) return iso
+export function shortTime(iso: string | number | null | undefined): string {
+  if (iso === null || iso === undefined || iso === '') return '—'
+  const t = typeof iso === 'number' ? iso : Date.parse(iso)
+  if (!Number.isFinite(t)) return String(iso)
   return new Date(t).toLocaleString(undefined, {
     month: 'short',
     day: 'numeric',
