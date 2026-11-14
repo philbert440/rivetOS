@@ -16,7 +16,7 @@
   "dependencies": {
     "@ai-sdk/provider": "^3.0.10",
     "@rivetos/types": "0.5.0",
-    "ai": "^6.0.177"
+    "ai": "^6.0.320"
   },
   "exports": {
     ".": {

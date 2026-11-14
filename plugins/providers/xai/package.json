@@ -14,11 +14,11 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@ai-sdk/xai": "^3.0.89",
+    "@ai-sdk/xai": "^3.0.147",
     "@rivetos/aisdk": "0.5.0",
     "@rivetos/token-command": "0.5.0",
     "@rivetos/types": "0.5.0",
-    "ai": "^6.0.177",
+    "ai": "^6.0.320",
     "@ai-sdk/provider": "3.0.10"
   },
   "rivetos": {
