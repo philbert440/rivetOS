@@ -493,3 +493,23 @@ export {
 export type { CaptureApiOptions } from './http/capture-api.js'
 export { captureBatch } from './tools/write-tools.js'
 export type { CaptureBatch, CaptureResult, CaptureWriteFn } from './tools/write-tools.js'
+export {
+  conversationStateHash,
+  derivedCaptureEventId,
+  derivedIngestEventId,
+  isRelocateRejection,
+  parseSourcePositionRepairPlan,
+  RelocateRejection,
+  relocateSourcePositions,
+  SOURCE_ORDINAL_STRIDE,
+  sourceOrdinal,
+  sourcePositionRepairPlanSchema,
+  sourceSubIndex,
+} from './source-position-repair/index.js'
+export type {
+  RelocateMode,
+  RelocateOutcome,
+  RelocateReport,
+  RelocateRejectionCode,
+  SourcePositionRepairPlan,
+} from './source-position-repair/index.js'

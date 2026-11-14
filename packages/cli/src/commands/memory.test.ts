@@ -7,6 +7,7 @@ import {
   parseRequeueFlags,
   parseExportFlags,
   parseImportFlags,
+  parseRelocateSourcePositionFlags,
   resolveSqliteMemoryPath,
   shouldRefuseGzipToTty,
   requeueDeadJobs,
@@ -351,5 +352,31 @@ describe('SQLite memory for export / import', () => {
     } finally {
       rmSync(home, { recursive: true, force: true })
     }
+  })
+})
+
+describe('parseRelocateSourcePositionFlags', () => {
+  it('defaults to dry-run and requires --plan', () => {
+    expect(parseRelocateSourcePositionFlags(['--plan', 'plan.json'])).toEqual({
+      planPath: 'plan.json',
+      apply: false,
+    })
+    expect(() => parseRelocateSourcePositionFlags([])).toThrow(/--plan/)
+  })
+
+  it('requires --backup with --apply and rejects --backup alone', () => {
+    expect(
+      parseRelocateSourcePositionFlags(['--plan', 'plan.json', '--apply', '--backup', 'before.json']),
+    ).toEqual({
+      planPath: 'plan.json',
+      apply: true,
+      backupPath: 'before.json',
+    })
+    expect(() =>
+      parseRelocateSourcePositionFlags(['--plan', 'plan.json', '--apply']),
+    ).toThrow(/--apply requires --backup/)
+    expect(() =>
+      parseRelocateSourcePositionFlags(['--plan', 'plan.json', '--backup', 'before.json']),
+    ).toThrow(/--backup is only valid with --apply/)
   })
 })

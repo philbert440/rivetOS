@@ -40,6 +40,10 @@ RivetOS Memory System — persistent transcript storage with hybrid-scored searc
 | `ros_summaries` | Compacted summaries forming a DAG (parent_id) |
 | `ros_summary_sources` | Links summaries to their source messages |
 
+Source-position relocation for existing capture rows lives in
+`src/source-position-repair/`. It is an operator repair, not an ingest path.
+See that directory's README.
+
 ## Scoring Formula
 
 ```
