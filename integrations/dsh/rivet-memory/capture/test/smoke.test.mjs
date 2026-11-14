@@ -17,6 +17,7 @@ import {
   eventIdFromEvent,
   deriveSessionKey,
   foldToolResultsInto,
+  sessionFileMatches,
 } from '../deepseek-memory-capture.mjs'
 
 function tempRoot() {
@@ -32,6 +33,15 @@ test('findSessionFiles accepts versioned transcripts', () => {
   }
   const found = findSessionFiles(root).map(f => path.basename(f)).sort()
   assert.deepEqual(found, ['session.jsonl.zstd', 'session.v4.jsonl.zstd', 'session.v5.jsonl'])
+})
+
+test('sessionFileMatches resolves Windows and POSIX transcript paths', () => {
+  const id = 'session-00000000-0000-4000-8000-000000000001'
+  const win = `C:\\Users\\user\\.dsh\\sessions\\--C-Users-user--\\${id}\\session.v4.jsonl.zstd`
+  const posix = `/home/user/.dsh/sessions/--home-user--/${id}/session.v4.jsonl.zstd`
+  assert.equal(sessionFileMatches(win, id), true)
+  assert.equal(sessionFileMatches(posix, id), true)
+  assert.equal(sessionFileMatches(win.replace(id, 'session-other'), id), false)
 })
 
 test('findSessionFiles ignores unrelated names', () => {
