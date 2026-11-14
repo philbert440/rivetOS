@@ -142,7 +142,47 @@ export async function api(page, path, options = {}) {
   )
 }
 
+/**
+ * Open one Settings tab (`/settings/<tab>`; see settings-tabs.ts). Since
+ * Settings became tabbed, bare `/settings` is General only — every other
+ * section lives behind its tab, so specs navigate here before touching it.
+ */
+export async function settings(page, tab) {
+  await page.goto(`app://bundle/settings/${tab}`)
+  await expect(page.getByRole('heading', { name: 'Settings', exact: true })).toBeVisible()
+  await expect(page.locator(`[data-settings-tab="${tab}"]`)).toBeVisible()
+}
+
+/** Experimental feature switches live on Settings → Advanced. */
 export async function enable(page, name) {
+  await settings(page, 'advanced')
   const toggle = page.getByRole('switch', { name, exact: true })
   if ((await toggle.getAttribute('aria-checked')) !== 'true') await toggle.click()
+}
+
+/**
+ * The node's shared filestore is a server-side setting (`den.files_root` /
+ * `RIVETOS_DEN_FILES_ROOT`; an empty value disables `/api/files/*` with 503).
+ * Specs that need it skip with that reason instead of failing on a UI that
+ * cannot exist; any other status is a real failure and is left to the spec.
+ */
+/**
+ * Workflows are a per-node feature (`workflows.enabled: false` leaves the
+ * `/api/workflows` family unmounted, so it answers 404 and the Workflows page
+ * says "Workflows are not available on this node"). Same skip rule as above.
+ */
+export async function skipUnlessWorkflowsApi(page) {
+  const probe = await api(page, '/api/workflows')
+  test.skip(
+    probe.status === 404,
+    `workflows API not served on this node (workflows.enabled is false in its config): ${JSON.stringify(probe.body)}`,
+  )
+}
+
+export async function skipUnlessFilesBrowser(page) {
+  const probe = await api(page, '/api/files/list?path=')
+  test.skip(
+    probe.status === 503,
+    `files browser disabled on this node (den.files_root / RIVETOS_DEN_FILES_ROOT is empty): ${JSON.stringify(probe.body)}`,
+  )
 }

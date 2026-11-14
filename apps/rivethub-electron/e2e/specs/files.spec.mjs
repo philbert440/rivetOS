@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto'
-import { test, expect, navigate, api, enable } from '../fixtures.mjs'
+import { test, expect, navigate, api, enable, skipUnlessFilesBrowser } from '../fixtures.mjs'
 
 test.beforeEach(async ({ hub }) => {
+  await skipUnlessFilesBrowser(hub)
   await enable(hub, 'Files')
   await navigate(hub, 'Files')
   await expect(hub.getByRole('button', { name: 'New folder', exact: true })).toBeVisible()

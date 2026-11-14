@@ -5,6 +5,7 @@
   "scripts": {
     "test": "playwright test",
     "test:remote": "node run-remote.mjs",
+    "test:remote:win": "node run-remote-win.mjs",
     "test:list": "playwright test --list",
     "report": "playwright show-report",
     "lint": "eslint . && prettier --check \"*.mjs\" \"specs/*.mjs\" README.md"

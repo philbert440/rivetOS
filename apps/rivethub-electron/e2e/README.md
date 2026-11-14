@@ -35,16 +35,16 @@ identity. Playwright does not need to download Chromium: it drives Electron's
 existing Chromium. Xvfb is needed for the separate `npm run check:sni` tray test,
 not for this suite on the existing desktop display.
 
-| Environment variable | Default / purpose                                              |
-| -------------------- | -------------------------------------------------------------- |
-| `E2E_SSH`            | **Required.** SSH target (`user@host`); no default             |
-| `E2E_BINARY`         | Remote RivetHub binary (optional; user-local install default)  |
-| `E2E_IDENTITY`       | Remote mTLS identity dir (optional; user config default)       |
-| `E2E_GATEWAY`        | `https://localhost:5174`, as reached **from the remote host**  |
-| `E2E_MEMORY_GATEWAY` | Same as gateway; explicit-memory tests only                    |
-| `E2E_DISPLAY`        | `:0`                                                           |
-| `E2E_EXPECT_SHA`     | Required; web build commit                                     |
-| `E2E_EXPECT_VERSION` | Optional desktop version assertion                             |
+| Environment variable | Default / purpose                                             |
+| -------------------- | ------------------------------------------------------------- |
+| `E2E_SSH`            | **Required.** SSH target (`user@host`); no default            |
+| `E2E_BINARY`         | Remote RivetHub binary (optional; user-local install default) |
+| `E2E_IDENTITY`       | Remote mTLS identity dir (optional; user config default)      |
+| `E2E_GATEWAY`        | `https://localhost:5174`, as reached **from the remote host** |
+| `E2E_MEMORY_GATEWAY` | Same as gateway; explicit-memory tests only                   |
+| `E2E_DISPLAY`        | `:0`                                                          |
+| `E2E_EXPECT_SHA`     | Required; web build commit                                    |
+| `E2E_EXPECT_VERSION` | Optional desktop version assertion                            |
 
 Run a subset by passing normal Playwright arguments:
 
@@ -58,6 +58,90 @@ npm run report
 For an already-managed isolated instance, set `E2E_CDP` and use `npm test`.
 Its native settings file must contain `"rivethub.e2eProfile": true`; the fixture
 refuses an unmarked profile. Do not add that marker to a personal profile.
+
+## Run against a Windows desktop
+
+`run-remote-win.mjs` is the same flow for a Windows 11 machine reached over
+OpenSSH whose default remote shell is **PowerShell** (Windows PowerShell 5.1 is
+what the runner invokes; `pwsh` is not required). Each remote step is one
+PowerShell script sent as `powershell -NoProfile -NonInteractive -EncodedCommand`
+(base64 of UTF-16LE), so no user-controlled value is ever spliced into a shell
+command line; paths and URLs are allow-list validated locally and land inside
+single-quoted PowerShell literals.
+
+```bash
+cd apps/rivethub-electron/e2e
+npm ci
+E2E_SSH=win-laptop E2E_GATEWAY=https://10.4.20.116:5174 E2E_EXPECT_SHA=<web-commit> E2E_EXPECT_VERSION=0.6.0 npm run test:remote:win
+```
+
+| Environment variable | Default / purpose                                                                                                                                                                                                                                            |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `E2E_SSH`            | **Required.** SSH target (`user@host` or config alias); no default                                                                                                                                                                                           |
+| `E2E_GATEWAY`        | **Required**, as reached **from the laptop**. No default on purpose: a Windows desktop is usually someone's personal machine and a silent default would point the test profile at their production node                                                      |
+| `E2E_BINARY`         | Absolute path to `RivetHub.exe`. Default: derived on the laptop from the per-user Uninstall registry entry (`InstallLocation`, else `DisplayIcon`), then a running `RivetHub` process, then `%LOCALAPPDATA%\Programs\@rivetosrivethub-electron\RivetHub.exe` |
+| `E2E_IDENTITY`       | mTLS identity dir. Default `%APPDATA%\RivetHub\mtls` (`ca.pem`, `device.crt`, `device.key`)                                                                                                                                                                  |
+| `E2E_MEMORY_GATEWAY` | Same as gateway; explicit-memory tests only                                                                                                                                                                                                                  |
+| `E2E_EXPECT_SHA`     | Required; web build commit                                                                                                                                                                                                                                   |
+| `E2E_EXPECT_VERSION` | Optional desktop version assertion                                                                                                                                                                                                                           |
+
+`E2E_DISPLAY` does not apply. Playwright arguments pass through exactly as for
+the Linux runner (`-- --grep 'files:'`, `-- specs/memory.spec.mjs`).
+
+What the runner does on the laptop: creates `%TEMP%\rivethub-e2e-<uuid>`, copies
+the three identity files into `<profile>\mtls`, writes a `settings.json` carrying
+`"rivethub.e2eProfile": true` and the gateway as `baseUrl`/`remoteUi`/roster,
+then launches `RivetHub.exe` through WMI (`Win32_Process.Create`) with
+`--user-data-dir=<profile> --remote-debugging-address=127.0.0.1 --remote-debugging-port=0 --disable-gpu`
+and polls `<profile>\DevToolsActivePort` for up to 60 s. WMI rather than
+`Start-Process`: a child of the ssh session's shell sits in that session's job
+object and is killed the moment the launch command returns. The DevTools port
+is tunnelled with `ssh -L` kept alive by a remote `Start-Sleep` (not `-N`:
+Windows OpenSSH spawns the default shell for a `-N` session regardless, the
+shell exits with no stdin, and the tunnel dies with it), the build stamp is
+checked against `E2E_EXPECT_SHA`/`E2E_EXPECT_VERSION` on Settings → Advanced,
+and `playwright test` runs with `E2E_CDP` set. Artifacts are the same files as
+the Linux runner; `artifacts/desktop.log` carries the profile's `logs\main.log`
+(a WMI-launched process has no captured stdio), and
+`artifacts/build.json` additionally records `platform` and the launched `pid`.
+
+Cleanup (also on `SIGINT`/`SIGTERM`): the app is asked to quit through its own
+IPC first; then every process whose command line contains this run's exact
+`--user-data-dir="<profile>"` gets `CloseMainWindow()`, up to 5 s to exit, and
+only then `Stop-Process -Force`; finally `Remove-Item -Recurse -Force` on the
+profile (retried while Windows releases file locks), guarded to paths under
+`%TEMP%\rivethub-e2e-*`. The user's own RivetHub is never matched: Electron's
+single-instance lock (`app.requestSingleInstanceLock()` in `src/main/index.ts`)
+is scoped to the userData directory, so the test profile starts a fully separate
+instance instead of being handed off to the running one, and the cleanup filter
+is the unique profile path, not the executable name.
+
+Caveats:
+
+- **Install folder.** electron-builder's per-user NSIS target installs under
+  `%LOCALAPPDATA%\Programs\@rivetosrivethub-electron\` — the folder is derived
+  from the npm package name `@rivetos/rivethub-electron` with the slash dropped,
+  not from `productName`. The Uninstall registry entry for it leaves
+  `InstallLocation` empty and only `DisplayIcon` (`<exe>,0`) carries the path,
+  which is why the runner parses that field.
+- **Session 0, not the user's desktop.** Windows OpenSSH runs the remote shell in
+  session 0 (the services session), while an app the user launched lives in the
+  console session. The test instance therefore starts in session 0: no window
+  appears on the user's screen, and whether the screen is locked or the user is
+  logged in at the console does not affect the launch. Electron runs there with
+  software rendering (hence `--disable-gpu`; without it the GPU process crashes
+  with exit code 34 and Chromium falls back anyway). First run on 2026-10-25
+  against an unpacked 0.6.1 build on a Windows 11 laptop: the desktop specs pass
+  this way, CDP screenshots come from the compositor and need no visible
+  desktop. A visible-desktop launch (scheduled task in the console session) is
+  not implemented.
+- **Console code page.** The laptop's console encoding is IBM437, so the runner
+  keeps remote stdout ASCII-only (PID, port, base64 blobs) and decodes logs
+  locally. Nested `powershell` invocations may emit CLIXML progress noise on
+  stderr; the runner only parses stdout.
+- The identity files are copied, not moved; the user's `%APPDATA%\RivetHub` is
+  otherwise never read or written. Tests still create real tasks/chats on the
+  configured gateway exactly as described under "Effects and cleanup".
 
 ## Evidence and failure semantics
 

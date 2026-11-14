@@ -13,7 +13,10 @@ test('conversation draft: rename, filter and discard', async ({ hub }) => {
   await draft(hub)
   const pane = hub.locator('#conversations-pane')
   const name = `E2E ${randomUUID()}`
-  await pane.getByRole('button', { name: 'new session', exact: true }).first().hover()
+  // Row controls show on hover or focus-within (drawer-item.tsx); focus is
+  // the deterministic one, since the invisible session-0 window on the
+  // Windows runner does not apply :hover.
+  await pane.getByRole('button', { name: 'new session', exact: true }).first().focus()
   await pane.getByRole('button', { name: 'rename session', exact: true }).first().click()
   await pane.locator('form input').fill(name)
   await pane.locator('form input').press('Enter')
@@ -23,7 +26,7 @@ test('conversation draft: rename, filter and discard', async ({ hub }) => {
     await pane.getByRole('button', { name: '+ new', exact: true }).click()
   await filter.fill(name)
   await expect(pane.getByRole('button', { name, exact: true })).toBeVisible()
-  await pane.getByRole('button', { name, exact: true }).hover()
+  await pane.getByRole('button', { name, exact: true }).focus()
   await pane.getByRole('button', { name: 'discard draft', exact: true }).click()
   await expect(pane.getByRole('button', { name, exact: true })).toHaveCount(0)
 })
@@ -48,10 +51,10 @@ test('composer auto-speak toggle can be enabled and disabled', async ({ hub }) =
 
 test('agent creation dialog validates the name and cancels', async ({ hub }) => {
   await hub.getByRole('button', { name: 'add agent', exact: true }).click()
-  await expect(hub.getByRole('dialog', { name: 'New agent', exact: true })).toBeVisible()
+  await expect(hub.getByRole('dialog', { name: /^New Agent$/i })).toBeVisible()
   await expect(hub.getByPlaceholder('Agent name')).toBeVisible()
   await hub.getByRole('button', { name: 'cancel', exact: true }).click()
-  await expect(hub.getByRole('dialog', { name: 'New agent', exact: true })).toHaveCount(0)
+  await expect(hub.getByRole('dialog', { name: /^New Agent$/i })).toHaveCount(0)
 })
 
 test('all advertised harnesses have working session-list endpoints', async ({ hub }) => {
@@ -159,7 +162,8 @@ test('live chat sends a turn and receives a persisted assistant reply', async ({
   const accepted = hub.waitForResponse(
     (r) =>
       r.request().method() === 'POST' &&
-      /\/messages$|\/turns$|\/terminal\/inject$/.test(new URL(r.url()).pathname),
+      // den: /turns; RivetHub runtime (#1199): /turn; legacy PTY: /terminal/inject
+      /\/messages$|\/turns?$|\/terminal\/inject$/.test(new URL(r.url()).pathname),
     { timeout: 25_000 },
   )
   await hub.getByRole('button', { name: 'send', exact: true }).click()

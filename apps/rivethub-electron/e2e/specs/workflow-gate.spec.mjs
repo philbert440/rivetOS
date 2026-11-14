@@ -1,5 +1,13 @@
 import { randomUUID } from 'node:crypto'
-import { test, expect, api, enable, navigate } from '../fixtures.mjs'
+import {
+  test,
+  expect,
+  api,
+  enable,
+  navigate,
+  skipUnlessFilesBrowser,
+  skipUnlessWorkflowsApi,
+} from '../fixtures.mjs'
 
 test('workflow fixture: edit source, run, answer a human gate, and persist completion', async ({
   hub,
@@ -11,6 +19,10 @@ test('workflow fixture: edit source, run, answer a human gate, and persist compl
   const answer = await step.human('approval', { prompt: 'Approve the E2E fixture?', fields: ['approved'] });
   await step.done({ name: ctx.input.name, approved: answer.approved });
 }\n`
+  // The fixture is written through /api/files and run through /api/workflows,
+  // so it needs both node features.
+  await skipUnlessWorkflowsApi(hub)
+  await skipUnlessFilesBrowser(hub)
   try {
     // The real definition loader reads the standard local-mode defs directory.
     // Only this test's unique definition is removed; parent directories remain.

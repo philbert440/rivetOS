@@ -1,8 +1,9 @@
-import { test, expect, gateway, navigate, api } from '../fixtures.mjs'
+import { test, expect, gateway, navigate, api, settings } from '../fixtures.mjs'
 
 test('local memory is discoverable without a datahub override', async ({ hub }) => {
   const result = await api(hub, '/api/memory/stats')
   expect(result.status, 'Local memory API prerequisite').toBe(200)
+  await settings(hub, 'node')
   await hub.getByPlaceholder('https://datahub-host:5174').fill('')
   await hub.getByRole('button', { name: 'Save datahub URL' }).click()
   expect(
@@ -31,6 +32,7 @@ test('local memory is discoverable without a datahub override', async ({ hub }) 
 })
 
 async function localMemory(hub, tab) {
+  await settings(hub, 'node')
   await hub
     .getByPlaceholder('https://datahub-host:5174')
     .fill(process.env.E2E_MEMORY_GATEWAY ?? gateway)
