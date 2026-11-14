@@ -17,8 +17,14 @@ import {
  * The Promise contract and one-at-a-time queue stay framework-free in
  * lib/confirm-dialog-queue.ts (unit-tested).
  */
+/** The confirm half of the dialog: asks one question, resolves true on the confirm action. */
+export type ConfirmFn = (
+  message: string,
+  opts?: { confirmLabel?: string; danger?: boolean },
+) => Promise<boolean>
+
 export function useConfirmDialog(): {
-  confirm: (message: string, opts?: { confirmLabel?: string; danger?: boolean }) => Promise<boolean>
+  confirm: ConfirmFn
   prompt: (
     message: string,
     opts?: { defaultValue?: string; confirmLabel?: string },

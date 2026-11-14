@@ -42,6 +42,8 @@ const queryClient = new QueryClient({
 watchFinishedTurns(queryClient)
 
 const router = createRouter({ routeTree })
+// Debug: expose the router for hand-tracing navigations in devtools.
+;(window as unknown as { __router?: unknown }).__router = router
 
 declare module '@tanstack/react-router' {
   interface Register {
