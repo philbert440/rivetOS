@@ -58,3 +58,5 @@ export {
   childRunIdByIdForCanvas,
   overlayEdgeKind,
 } from './flow-overlay.js'
+
+export { pollUnlessMissing, retryUnlessNotFound, workflowsAvailability } from './availability.js'
