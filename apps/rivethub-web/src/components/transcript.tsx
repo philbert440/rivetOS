@@ -1,4 +1,14 @@
-import { memo, useEffect, useMemo, useRef, useState, type JSX, type ReactNode } from 'react'
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type JSX,
+  type ReactNode,
+} from 'react'
 import { ArrowDown, ArrowUp, Check, Clock3, Copy, Zap } from 'lucide-react'
 import type { HarnessTranscriptTool, MessageUsage, SessionMessage } from '@rivetos/types'
 import { storedToolStatus, type LiveTurn, type LiveToolEntry } from '../lib/fold-stream.js'
@@ -10,6 +20,8 @@ import { SpeakMessage } from './speak-message.js'
 import { TranscriptAttachments } from './transcript-attachments.js'
 import { arrivalJump, scrollToEnd, type TranscriptEdge } from '../lib/transcript-follow.js'
 import { usePreferences } from '../stores/preferences.js'
+import { TurnNavigator } from './turn-navigator.js'
+import { activeTurnIndex, turnRailItems, type TurnRailItem } from '../lib/turn-rail.js'
 
 /** Transcript-sourced tool → the live stack's entry shape (same renderer). */
 function toLiveTool(t: HarnessTranscriptTool, id: string, over: boolean): LiveToolEntry {
@@ -210,12 +222,20 @@ function Row(props: {
   accent?: string
   /** Solid messages skip offscreen layout/paint; the live bubble never does. */
   offscreenSkip?: boolean
+  /** User rows: 0-based turn index — the rail's jump anchor (`data-turn`). */
+  turn?: number
   children: ReactNode
 }): JSX.Element {
   return (
     <div
+      data-turn={props.turn}
       className={`group/msg flex flex-col gap-1.5 ${props.mine ? 'items-end' : 'items-start'} ${
-        props.offscreenSkip ? '[content-visibility:auto] [contain-intrinsic-size:auto_96px]' : ''
+        // The intrinsic size stays on even while a row paints for real: `auto`
+        // records the rendered size only while it applies, and the rail's jump
+        // (Transcript `paintAll`) relies on that record when the skip returns.
+        props.offscreenSkip
+          ? '[content-visibility:auto] [contain-intrinsic-size:auto_96px]'
+          : '[contain-intrinsic-size:auto_96px]'
       }`}
     >
       <AvatarRow mine={props.mine} ts={props.ts} model={props.model} accent={props.accent} />
@@ -278,6 +298,8 @@ const Bubble = memo(function Bubble(props: {
   outboundNote?: string
   /** This message's turn has ended (see `Transcript` `idle`). */
   over?: boolean
+  /** Turn index for user rows (see `Row`). */
+  turn?: number
 }): JSX.Element {
   const mine = props.msg.role === 'user'
   const over = props.over === true
@@ -295,6 +317,7 @@ const Bubble = memo(function Bubble(props: {
       model={mine ? undefined : props.msg.model}
       accent={mine ? undefined : props.accent}
       offscreenSkip={props.offscreenSkip}
+      turn={mine ? props.turn : undefined}
     >
       {mine ? (
         // User text is plain — right-aligned bubble, no markdown.
@@ -406,6 +429,9 @@ const NEAR_BOTTOM_PX = 120
  *  breaks. Deep history can afford the estimate. */
 const CV_EDGE_ROWS = 12
 
+/** Breathing room above a turn the rail jumped to. */
+const JUMP_INSET_PX = 12
+
 export function Transcript(props: {
   messages: SessionMessage[]
   live?: LiveTurn
@@ -438,12 +464,94 @@ export function Transcript(props: {
   const reasonLen = props.live?.reasoningText.length ?? 0
   const outboundN = props.outbound ? Object.keys(props.outbound).length : 0
 
+  // Turn rail: one mark per user prompt; the active one follows the reading
+  // line. Measured from the `data-turn` rows, rAF-coalesced like the follow
+  // scroll so a streaming reply never forces layout per token.
+  const railItems = useMemo(() => turnRailItems(props.messages), [props.messages])
+  const turnIndexById = useMemo(
+    () => new Map(railItems.map((item) => [item.messageId, item.index] as const)),
+    [railItems],
+  )
+  const [activeTurn, setActiveTurn] = useState<number | null>(null)
+  const railRafRef = useRef<number | undefined>(undefined)
+  const measureActiveTurn = useCallback((): void => {
+    if (railRafRef.current !== undefined) return
+    railRafRef.current = requestAnimationFrame(() => {
+      railRafRef.current = undefined
+      const el = scrollRef.current
+      if (!el) return
+      const rows = el.querySelectorAll<HTMLElement>('[data-turn]')
+      if (rows.length === 0) {
+        setActiveTurn(null)
+        return
+      }
+      const frameTop = el.getBoundingClientRect().top - el.scrollTop
+      const tops: number[] = []
+      rows.forEach((row) => tops.push(row.getBoundingClientRect().top - frameTop))
+      setActiveTurn(
+        activeTurnIndex(tops, el.scrollTop, el.clientHeight, el.scrollHeight, JUMP_INSET_PX + 8),
+      )
+    })
+  }, [])
+  useEffect(measureActiveTurn, [railItems.length, measureActiveTurn])
+  useEffect(
+    () => () => {
+      if (railRafRef.current !== undefined) cancelAnimationFrame(railRafRef.current)
+    },
+    [],
+  )
+
+  // Jump = paint every row for real, then set scrollTop. Offscreen rows are
+  // `content-visibility:auto` with a 96px intrinsic guess, so a scrollTop
+  // computed against the guessed layout lands short and keeps chasing the
+  // target as rows near the viewport take their real heights. Painting all
+  // rows once records each row's size (`contain-intrinsic-size: auto …`
+  // remembers it), the layout effect below lands against that true layout,
+  // and the skip comes back without a shift. Never the element
+  // scroll-into-view API: that also scrolls canvas ancestors
+  // (transcript-follow.test.ts).
+  const [paintAll, setPaintAll] = useState(false)
+  const jumpRef = useRef<number | undefined>(undefined)
+  const jumpToTurn = (item: TurnRailItem): void => {
+    if (!scrollRef.current) return
+    // Leaving the floor unpins; landing on the last turn keeps following.
+    const last = item.index === railItems.length - 1
+    pinnedRef.current = last
+    setPinned(last)
+    setActiveTurn(item.index)
+    jumpRef.current = item.index
+    setPaintAll(true)
+  }
+  useLayoutEffect(() => {
+    if (!paintAll) return
+    const el = scrollRef.current
+    const index = jumpRef.current
+    jumpRef.current = undefined
+    const row =
+      index === undefined ? null : el?.querySelector<HTMLElement>(`[data-turn="${String(index)}"]`)
+    if (el && row) {
+      el.scrollTop +=
+        row.getBoundingClientRect().top - el.getBoundingClientRect().top - JUMP_INSET_PX
+    }
+    // Sizes are remembered at the next rendering opportunity, not at this
+    // synchronous layout: give the browser a painted frame with every row
+    // real before the skip returns, or the rows collapse back to the guess.
+    let raf = requestAnimationFrame(() => {
+      raf = requestAnimationFrame(() => {
+        setPaintAll(false)
+        measureActiveTurn()
+      })
+    })
+    return () => cancelAnimationFrame(raf)
+  }, [paintAll, measureActiveTurn])
+
   const onScroll = (): void => {
     const el = scrollRef.current
     if (!el) return
     const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_PX
     pinnedRef.current = nearBottom
     setPinned(nearBottom)
+    measureActiveTurn()
   }
 
   const jumpToLatest = (): void => {
@@ -486,10 +594,13 @@ export function Transcript(props: {
   useEffect(() => {
     const el = contentRef.current
     if (!el || typeof ResizeObserver === 'undefined') return
-    const observer = new ResizeObserver(followSoon)
+    const observer = new ResizeObserver(() => {
+      followSoon()
+      measureActiveTurn()
+    })
     observer.observe(el)
     return () => observer.disconnect()
-  }, [])
+  }, [measureActiveTurn])
   useEffect(
     () => () => {
       if (rafRef.current !== undefined) cancelAnimationFrame(rafRef.current)
@@ -498,7 +609,7 @@ export function Transcript(props: {
   )
 
   return (
-    <div className="relative min-h-0 flex-1">
+    <div className="@container relative min-h-0 flex-1">
       <div ref={scrollRef} onScroll={onScroll} className="h-full overflow-y-auto">
         <div ref={contentRef} className="mx-auto flex max-w-3xl flex-col gap-5 px-6 py-4">
           {props.messages.map((m, i) => (
@@ -506,7 +617,8 @@ export function Transcript(props: {
               accent={props.accent}
               key={m.id}
               msg={m}
-              offscreenSkip={i < props.messages.length - CV_EDGE_ROWS}
+              turn={turnIndexById.get(m.id)}
+              offscreenSkip={!paintAll && i < props.messages.length - CV_EDGE_ROWS}
               outboundStatus={props.outbound?.[m.id]}
               outboundNote={props.outboundNotes?.[m.id]}
               over={props.idle === true || i < props.messages.length - 1}
@@ -518,6 +630,13 @@ export function Transcript(props: {
           )}
         </div>
       </div>
+      {/* No gutter for the rail below 900px of transcript width. */}
+      <TurnNavigator
+        items={railItems}
+        activeIndex={activeTurn}
+        onJump={jumpToTurn}
+        className="hidden @[900px]:block"
+      />
       {!pinned && (
         <button
           type="button"
