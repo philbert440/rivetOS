@@ -53,7 +53,11 @@ import { ingestGrokbotSession, type GrokbotIngestMemory } from './ingest-rows.js
 import { normalizeRecords, toIngestRows } from './normalize.js'
 import { formatMergeConflicts, normalizePages } from './pages.js'
 import { parseInput } from './parse.js'
-import { connectAndFetchGrokbotRows, loadRivetosPgUrlFromEnv } from './pg-readonly.js'
+import {
+  applyRhPrincipalOnConnect,
+  connectAndFetchGrokbotRows,
+  loadRivetosPgUrlFromEnv,
+} from './pg-readonly.js'
 import {
   FROM_ROWS_LIMITS,
   LIST_CONVERSATIONS_SQL,
@@ -1099,6 +1103,10 @@ async function createPgCommit(url: string): Promise<IngestPagesDeps['commit']> {
   }
   return async (input) => {
     const memory = new memoryMod.PostgresMemory({ connectionString: url })
+    const pool = (memory as { getPool?: () => unknown }).getPool?.()
+    if (pool && typeof (pool as { on?: unknown }).on === 'function') {
+      applyRhPrincipalOnConnect(pool as Parameters<typeof applyRhPrincipalOnConnect>[0])
+    }
     try {
       return await ingestGrokbotSession(memory, input)
     } finally {

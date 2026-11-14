@@ -1,6 +1,7 @@
 /**
  * Read-only Postgres access for re-clean. Never accepts a URL on argv.
  * Connection string comes from RIVETOS_PG_URL (env or ~/.rivetos/.env).
+ * RIVETOS_RH_PRINCIPAL, when set, is applied as rh.principal on each new connection.
  * Every query is issued inside BEGIN TRANSACTION READ ONLY and rolled back.
  */
 import { readFileSync } from 'node:fs'
@@ -13,6 +14,28 @@ export const READONLY_POOL_OPTIONS = {
   max: 1,
   options: '-c default_transaction_read_only=on',
 } as const
+
+/** Env var naming the principal for rh.* RLS policies (current_setting('rh.principal')). */
+export const RH_PRINCIPAL_ENV = 'RIVETOS_RH_PRINCIPAL'
+
+export function rhPrincipalFromEnv(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const v = env[RH_PRINCIPAL_ENV]?.trim()
+  return v ? v : undefined
+}
+
+/**
+ * When a principal is configured, set rh.principal (session scope) on every new
+ * pool connection. pg queues it ahead of any later query on that client.
+ */
+export function applyRhPrincipalOnConnect(
+  pool: { on: (event: 'connect', cb: (client: Queryable) => void) => unknown },
+  principal: string | undefined = rhPrincipalFromEnv(),
+): void {
+  if (!principal) return
+  pool.on('connect', (client) => {
+    void client.query("SELECT set_config('rh.principal', $1, false)", [principal])
+  })
+}
 
 const WRITE_SQL_RE =
   /\b(INSERT|UPDATE|DELETE|MERGE|TRUNCATE|ALTER|DROP|CREATE|GRANT|REVOKE|COPY|CALL|DO)\b/i
@@ -142,6 +165,7 @@ export async function connectAndFetchGrokbotRows(
     connectionString: url,
     ...READONLY_POOL_OPTIONS,
   })
+  applyRhPrincipalOnConnect(pool)
   const client = await pool.connect()
   try {
     return await fetchGrokbotRows(client, sessionKey, agent)
